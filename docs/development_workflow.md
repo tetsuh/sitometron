@@ -97,8 +97,9 @@ The PR records concise structured RED evidence:
 - one representative failure-message line;
 - a complete CI-log link only when the excerpt is insufficient.
 
-It also records the final passing command. A test that unexpectedly passes during RED must be
-reviewed before implementation continues. Production code without tests is prohibited.
+It also records the final passing GREEN command and the REFACTOR command and result, or an explicit
+N/A reason when no structural change was needed after GREEN. A test that unexpectedly passes during
+RED must be reviewed before implementation continues. Production code without tests is prohibited.
 Documentation, build metadata, and non-executable examples may use applicable validation instead of
 a RED test.
 

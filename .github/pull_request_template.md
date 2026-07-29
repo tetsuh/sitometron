@@ -29,6 +29,7 @@ For production behavior; write N/A with a reason for documentation or metadata c
 - Representative failure line:
 - Complete log link, if needed:
 - GREEN command and result:
+- REFACTOR command and result, or N/A with reason:
 
 ## Verification
 

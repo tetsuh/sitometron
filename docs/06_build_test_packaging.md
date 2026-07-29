@@ -47,15 +47,16 @@ ApplicationRunner ports, and explicit event injection. Do not use real sleeps to
 Each normative Requirement ID maps directly to required test or check names. Test implementations
 may iterate internal machine-readable vectors without creating a second stable fixture-ID registry.
 
-| Requirement | Required tests or checks |
-|---|---|
-| `NFR-001` | CI jobs `linux`, `windows` |
-| `NFR-002` | `core_dependency_isolation`, `core_dependency_isolation_rejects_third_party` |
-| `NFR-003` | CI jobs `linux`, `windows`; in-source rejection check before Phase 0A exit |
-| `NFR-004` | Applied to every unit test; no dedicated runtime test |
+| Requirement | Required tests or checks | Status |
+|---|---|---|
+| `NFR-001` | CI jobs `linux`, `windows` | Active |
+| `NFR-002` | CTest `core_dependency_isolation`, `core_dependency_isolation_rejects_third_party` | Active |
+| `NFR-003` | CI jobs `linux`, `windows`; CTest `in_source_build_rejected` | CI active; rejection test planned before the Phase 0A Gate closes |
+| `NFR-004` | CTest `sitometron_core_tests`; policy check `unit_tests_reject_real_sleep` | Core test active; policy check planned before the Phase 0A Gate closes |
 
 Owning design Issues add required test names to this table before production implementation. A test
-name may change only with the corresponding Requirement review.
+name may change only with the corresponding Requirement review. A Planned check name is stable even
+before its implementation; the owning Gate must record activation evidence before it closes.
 
 ## 5. Evidence
 
