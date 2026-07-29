@@ -43,6 +43,7 @@ class LocalDraft202012Schemas:
 
     root: Path
     schemas: dict[Path, dict[str, Any]]
+    retrieval_uris: dict[Path, str]
     registry: Registry[Any]
 
     @classmethod
@@ -53,8 +54,8 @@ class LocalDraft202012Schemas:
             raise ValueError(f"no *.schema.json files under {resolved_root}")
 
         documents: dict[Path, dict[str, Any]] = {}
+        retrieval_uris: dict[Path, str] = {}
         registry: Registry[Any] = Registry(retrieve=_deny_external_retrieval)
-        registered_uris: set[str] = set()
 
         for path in schema_paths:
             document = json.loads(path.read_text(encoding="utf-8"))
@@ -63,23 +64,26 @@ class LocalDraft202012Schemas:
             if document.get("$schema") != _DRAFT_2020_12:
                 raise ValueError(f"schema must declare Draft 2020-12: {path}")
             Draft202012Validator.check_schema(document)
-            documents[path.resolve()] = document
+            resolved_path = path.resolve()
+            documents[resolved_path] = document
 
             resource = Resource.from_contents(document, default_specification=DRAFT202012)
             relative_uri = path.relative_to(resolved_root).as_posix()
+            retrieval_uris[resolved_path] = relative_uri
             schema_id = document.get("$id", relative_uri)
             if not isinstance(schema_id, str) or not schema_id:
                 raise ValueError(f"schema $id must be a non-empty string: {path}")
             _require_local_uri(schema_id)
 
-            for uri in dict.fromkeys((relative_uri, schema_id)):
-                if uri in registered_uris:
-                    raise ValueError(f"duplicate local schema URI {uri!r}")
-                registry = registry.with_resource(uri, resource)
-                registered_uris.add(uri)
+            registry = registry.with_resource(relative_uri, resource)
 
         registry = registry.crawl()
-        loaded = cls(root=resolved_root, schemas=documents, registry=registry)
+        loaded = cls(
+            root=resolved_root,
+            schemas=documents,
+            retrieval_uris=retrieval_uris,
+            registry=registry,
+        )
         loaded._validate_all_references()
         return loaded
 
@@ -104,8 +108,13 @@ class LocalDraft202012Schemas:
             schema = self.schemas[resolved_path]
         except KeyError as error:
             raise ValueError(f"schema is outside the loaded registry: {resolved_path}") from error
+        retrieval_uri = self.retrieval_uris[resolved_path]
+        schema_id = schema.get("$id")
+        effective_id = urljoin(retrieval_uri, schema_id) if schema_id is not None else retrieval_uri
+        schema_for_validation = dict(schema)
+        schema_for_validation["$id"] = effective_id
         Draft202012Validator(
-            schema,
+            schema_for_validation,
             registry=self.registry,
             format_checker=Draft202012Validator.FORMAT_CHECKER,
         ).validate(instance)

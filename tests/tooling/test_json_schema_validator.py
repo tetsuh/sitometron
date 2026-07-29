@@ -56,7 +56,7 @@ class LocalDraft202012SchemasTest(unittest.TestCase):
             "sub/target.schema.json",
             {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "$id": "sub/target.schema.json",
+                "$id": "target.schema.json",
                 "type": "integer",
                 "minimum": 1,
             },
@@ -74,6 +74,59 @@ class LocalDraft202012SchemasTest(unittest.TestCase):
         schemas = LocalDraft202012Schemas.load(self.root)
 
         schemas.validate_instance(root_schema, {"value": 7})
+
+    def test_preserves_subdirectory_retrieval_uri_without_identifier(self) -> None:
+        self.write_json(
+            "target.schema.json",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "target.schema.json",
+                "type": "string",
+            },
+        )
+        self.write_json(
+            "sub/target.schema.json",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "target.schema.json",
+                "type": "integer",
+            },
+        )
+        root_schema = self.write_json(
+            "sub/root.schema.json",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$ref": "target.schema.json",
+            },
+        )
+        schemas = LocalDraft202012Schemas.load(self.root)
+
+        schemas.validate_instance(root_schema, 7)
+        with self.assertRaises(ValidationError):
+            schemas.validate_instance(root_schema, "wrong target")
+
+    def test_resolves_relative_identifier_from_retrieval_uri(self) -> None:
+        self.write_json(
+            "sub/alias/target.schema.json",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "target.schema.json",
+                "type": "integer",
+            },
+        )
+        root_schema = self.write_json(
+            "sub/root.schema.json",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "alias/root.schema.json",
+                "$ref": "target.schema.json",
+            },
+        )
+        schemas = LocalDraft202012Schemas.load(self.root)
+
+        schemas.validate_instance(root_schema, 7)
+        with self.assertRaises(ValidationError):
+            schemas.validate_instance(root_schema, "wrong target")
 
     def test_rejects_invalid_schema(self) -> None:
         self.write_json(
