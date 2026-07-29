@@ -56,6 +56,12 @@ body:
     validations:
       required: true
   - type: textarea
+    id: adr_authority
+    attributes:
+      label: ADR link and decision, or explicit not-required reason
+    validations:
+      required: true
+  - type: textarea
     id: acceptance
     attributes:
       label: Acceptance criteria

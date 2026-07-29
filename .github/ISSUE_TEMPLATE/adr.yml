@@ -16,6 +16,24 @@ body:
     validations:
       required: true
   - type: textarea
+    id: references
+    attributes:
+      label: Reference documents and applicable sections
+    validations:
+      required: true
+  - type: textarea
+    id: target
+    attributes:
+      label: Target component or contract surface
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and blockers
+    validations:
+      required: true
+  - type: textarea
     id: requirements
     attributes:
       label: Requirement IDs or N/A

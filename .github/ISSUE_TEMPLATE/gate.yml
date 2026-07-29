@@ -23,6 +23,13 @@ body:
       description: Inventory shared mechanisms, contract surfaces, dependencies and intake changes, and Planned sections. Give every finding a disposition and owner.
     validations:
       required: true
+  - type: checkboxes
+    id: planned_banners
+    attributes:
+      label: Planned-section authority banners
+      options:
+        - label: Every Planned or non-normative specification section names its owning Issue or ADR in the required authority banner.
+          required: true
   - type: textarea
     id: exit
     attributes:

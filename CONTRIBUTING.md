@@ -7,8 +7,9 @@ Before changing the repository:
 
 1. read [the clean-room policy](docs/clean-room-policy.md) and
    [the development workflow](docs/development_workflow.md);
-2. create or select the owning Issue;
-3. identify its Phase, Gate, Requirement IDs, ADRs, dependencies, and Contract Registry rows;
+2. create or select the owning Issue and read it completely;
+3. read its referenced ADRs and affected Contract Registry rows, then identify its Phase, Gate,
+   Requirement IDs, dependencies, and remaining applicable artifacts;
 4. create `feat/<issue-number>-<short-kebab-description>` from current `main`;
 5. follow RED, GREEN, REFACTOR for production behavior;
 6. open one PR with `Closes #NN` and the required evidence.
