@@ -48,11 +48,14 @@ Development-time schema checks run with Python 3.12.13 and dependencies frozen b
 ```text
 uv sync --frozen --only-group schema
 uv run --frozen --only-group schema python -m unittest discover -s tests/tooling -p 'test_*.py' -v
+uv run --frozen --only-group schema python tools/validate_core_contract.py
 ```
 
 `tools/json_schema_validator.py` checks Draft 2020-12 schema definitions, an explicit local-only
-schema registry, local reference resolution, and instances. Contract-specific checks remain in their
-own validators; generic JSON Schema validation does not interpret project extension keywords.
+schema registry, local reference resolution, known formats, and instances.
+`tools/validate_core_contract.py` applies it to every core schema plus the contract and vector
+documents. Contract-specific checks remain in their own validators; generic JSON Schema validation
+does not interpret project extension keywords.
 
 ## 4. Requirement-to-test mapping
 

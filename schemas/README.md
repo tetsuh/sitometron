@@ -9,4 +9,6 @@ Machine-readable contracts are registered here before implementation.
 - `worker-protocol/`: Worker loopback HTTP JSON schemas.
 
 A contract becomes normative only when its named authority is Accepted and its Contract Registry row
-is Normative. Each proposed contract carries an explicit status and authority.
+is Normative. Each proposed contract carries an explicit status and authority. Core schemas are
+validated generically by `tools/validate_core_contract.py` and semantically by their
+contract-specific checker.

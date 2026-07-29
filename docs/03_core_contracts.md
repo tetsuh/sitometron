@@ -30,8 +30,10 @@ The Phase 0A Job reducer contract is split into reviewable machine-readable arti
   fixtures;
 - [`job-state-diagram.dot`](../schemas/core/v1/job-state-diagram.dot): human-readable Graphviz state
   diagram whose edge inventory is checked against the matrix;
-- [`check_core_job_contract.cmake`](../cmake/check_core_job_contract.cmake): dependency-free structural,
-  coverage, fixture, and diagram consistency check.
+- [`validate_core_contract.py`](../tools/validate_core_contract.py): pinned development-time Draft
+  2020-12 metaschema, local-reference, format, and instance validation;
+- [`check_core_job_contract.cmake`](../cmake/check_core_job_contract.cmake): dependency-free
+  Sitometron-specific structural, cross-field, coverage, fixture, and diagram consistency check.
 
 ADR-0002 explains the decision and authority boundary. The JSON contract defines exact cases.
 Physical JobJournal durability remains Phase 0B scope.
@@ -114,14 +116,20 @@ and digest, and cleanup facts are monotonic state-preserving terminal audits. A
 `process_exit_confirmation` timeout may force stop and quarantine resources without changing the
 terminal result.
 
-## 5. Contract check
+## 5. Contract checks
 
-Run the contract check directly:
+Run the generic Draft 2020-12 validation and the contract-specific check directly:
 
 ```sh
+uv sync --frozen --only-group schema
+uv run --frozen --only-group schema python tools/validate_core_contract.py
 cmake \
   -DSITOMETRON_SOURCE_DIR="$PWD" \
   -P cmake/check_core_job_contract.cmake
 ```
 
-The configured test suite exposes the same check as CTest `core_job_contract`.
+The generic validator checks all eight core schemas and the contract and vector documents. It does
+not interpret Sitometron extension annotations. The dependency-free CMake check owns exact digest,
+UTF-8 byte-limit, cross-field identity, matrix reachability, timer, sequence, and DOT consistency.
+The configured test suite exposes the latter as CTest `core_job_contract`; Linux and Windows CI run
+both checks.
