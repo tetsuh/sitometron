@@ -17,6 +17,20 @@ body:
     validations:
       required: true
   - type: textarea
+    id: horizontal_review
+    attributes:
+      label: Horizontal design review
+      description: Inventory shared mechanisms, contract surfaces, dependencies and intake changes, and Planned sections. Give every finding a disposition and owner.
+    validations:
+      required: true
+  - type: checkboxes
+    id: planned_banners
+    attributes:
+      label: Planned-section authority banners
+      options:
+        - label: Every Planned or non-normative specification section names its owning Issue or ADR in the required authority banner.
+          required: true
+  - type: textarea
     id: exit
     attributes:
       label: Exit gate
@@ -27,6 +41,6 @@ body:
     id: evidence
     attributes:
       label: Evidence
-      description: Link ADRs, Contract Registry rows, CI runs, and qualification reports.
+      description: Link owner acceptance, finding dispositions, ADRs, Contract Registry rows, CI runs, and qualification reports.
     validations:
       required: true

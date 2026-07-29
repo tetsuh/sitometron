@@ -1,12 +1,12 @@
-name: Feature
-description: Propose or implement a Sitometron capability
-title: ""
-labels: []
+name: Architecture decision
+description: Propose a decision that requires an ADR
+title: "[ADR] "
+labels: ["type:adr"]
 body:
   - type: textarea
-    id: summary
+    id: context
     attributes:
-      label: Summary
+      label: Context and decision to make
     validations:
       required: true
   - type: input
@@ -22,15 +22,9 @@ body:
     validations:
       required: true
   - type: textarea
-    id: requirements
+    id: target
     attributes:
-      label: Requirement IDs or N/A
-    validations:
-      required: true
-  - type: textarea
-    id: targets
-    attributes:
-      label: Target files or components
+      label: Target component or contract surface
     validations:
       required: true
   - type: textarea
@@ -40,32 +34,28 @@ body:
     validations:
       required: true
   - type: textarea
-    id: contracts
+    id: requirements
     attributes:
-      label: Contract Registry rows and transitions or N/A
-    validations:
-      required: true
-  - type: dropdown
-    id: adr
-    attributes:
-      label: ADR required?
-      options:
-        - "Yes"
-        - "No"
-        - "Needs review"
+      label: Requirement IDs or N/A
     validations:
       required: true
   - type: textarea
-    id: adr_authority
+    id: contracts
     attributes:
-      label: ADR link and decision, or explicit not-required reason
+      label: Contract Registry rows and intended transitions
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options requiring owner decision
     validations:
       required: true
   - type: textarea
     id: acceptance
     attributes:
       label: Acceptance criteria
-      description: Use a verifiable checklist. Design scope may evolve until owner freeze; implementation scope freezes when work starts.
+      description: Include ADR review, owner decision, Registry updates, and implementation gate.
     validations:
       required: true
   - type: checkboxes
