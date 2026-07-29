@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.parse import urldefrag, urlparse
+from urllib.parse import urljoin, urlparse
 
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
@@ -20,17 +20,17 @@ def _deny_external_retrieval(uri: str) -> Resource[Any]:
     raise NoSuchResource(ref=uri)
 
 
-def _references(value: object) -> Iterator[str]:
-    if isinstance(value, dict):
-        for keyword in ("$ref", "$dynamicRef"):
-            reference = value.get(keyword)
-            if isinstance(reference, str):
-                yield reference
-        for child in value.values():
-            yield from _references(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _references(child)
+def _schema_resources(
+    resource: Resource[Any], base_uri: str
+) -> Iterator[tuple[Resource[Any], str]]:
+    resource_id = resource.id()
+    current_base = urljoin(base_uri, resource_id) if resource_id is not None else base_uri
+    parsed_id = urlparse(current_base)
+    if parsed_id.scheme or parsed_id.netloc:
+        raise Unresolvable(ref=current_base)
+    yield resource, current_base
+    for subresource in resource.subresources():
+        yield from _schema_resources(subresource, current_base)
 
 
 @dataclass(frozen=True)
@@ -76,28 +76,24 @@ class LocalDraft202012Schemas:
                 registry = registry.with_resource(uri, resource)
                 registered_uris.add(uri)
 
+        registry = registry.crawl()
         loaded = cls(root=resolved_root, schemas=documents, registry=registry)
         loaded._validate_all_references()
         return loaded
 
     def _validate_all_references(self) -> None:
         for path, document in self.schemas.items():
-            base_uri = document.get("$id", path.relative_to(self.root).as_posix())
-            resolver = self.registry.resolver(base_uri=base_uri)
-            for reference in _references(document):
-                reference_uri, _ = urldefrag(reference)
-                parsed = urlparse(reference_uri)
-                if parsed.scheme or parsed.netloc:
-                    raise Unresolvable(ref=reference)
-                if reference_uri:
-                    target = (path.parent / reference_uri).resolve()
-                    try:
-                        target.relative_to(self.root)
-                    except ValueError as error:
-                        raise Unresolvable(ref=reference) from error
-                    if target not in self.schemas:
-                        raise Unresolvable(ref=reference)
-                resolver.lookup(reference)
+            base_uri = path.relative_to(self.root).as_posix()
+            resource = Resource.from_contents(document, default_specification=DRAFT202012)
+            for subresource, effective_base in _schema_resources(resource, base_uri):
+                contents = subresource.contents
+                if not isinstance(contents, dict):
+                    continue
+                resolver = self.registry.resolver(base_uri=effective_base)
+                for keyword in ("$ref", "$dynamicRef"):
+                    reference = contents.get(keyword)
+                    if isinstance(reference, str):
+                        resolver.lookup(reference)
 
     def validate_instance(self, schema_path: Path, instance: object) -> None:
         resolved_path = schema_path.resolve(strict=True)

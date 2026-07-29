@@ -51,6 +51,30 @@ class LocalDraft202012SchemasTest(unittest.TestCase):
 
         schemas.validate_instance(root_schema, {"identifier": 7})
 
+    def test_accepts_local_reference_under_nested_identifier(self) -> None:
+        self.write_json(
+            "sub/target.schema.json",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "sub/target.schema.json",
+                "type": "integer",
+                "minimum": 1,
+            },
+        )
+        root_schema = self.write_json(
+            "root.schema.json",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "root.schema.json",
+                "properties": {
+                    "value": {"$id": "sub/", "$ref": "target.schema.json"}
+                },
+            },
+        )
+        schemas = LocalDraft202012Schemas.load(self.root)
+
+        schemas.validate_instance(root_schema, {"value": 7})
+
     def test_rejects_invalid_schema(self) -> None:
         self.write_json(
             "invalid.schema.json",
@@ -63,6 +87,38 @@ class LocalDraft202012SchemasTest(unittest.TestCase):
 
         with self.assertRaises(SchemaError):
             LocalDraft202012Schemas.load(self.root)
+
+    def test_rejects_relative_reference_under_nested_remote_identifier(self) -> None:
+        self.write_json(
+            "root.schema.json",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "root.schema.json",
+                "properties": {
+                    "value": {
+                        "$id": "https://example.invalid/sub/",
+                        "$ref": "target.schema.json",
+                    }
+                },
+            },
+        )
+
+        with self.assertRaises(Unresolvable):
+            LocalDraft202012Schemas.load(self.root)
+
+    def test_ignores_reference_shaped_data_inside_const(self) -> None:
+        value = {"$ref": "https://example.invalid/not-a-schema-reference"}
+        root_schema = self.write_json(
+            "root.schema.json",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "root.schema.json",
+                "const": value,
+            },
+        )
+        schemas = LocalDraft202012Schemas.load(self.root)
+
+        schemas.validate_instance(root_schema, value)
 
     def test_rejects_unresolved_local_reference(self) -> None:
         self.write_json(
