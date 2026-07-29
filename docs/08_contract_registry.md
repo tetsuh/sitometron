@@ -21,9 +21,9 @@ values are `Planned`, `In progress`, `Implemented`, and `Removed`.
 | Contract surface | Maturity | Implementation | Normative or design authority | Owner |
 |---|---|---|---|---|
 | Core/adapter dependency boundary | Normative | Implemented | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) | Phase 0A |
-| Core Job states and transitions | Planned | Planned | [Issue #3](https://github.com/tetsuh/sitometron/issues/3) → ADR | Phase 0A |
-| Core commands and rejection reasons | Planned | Planned | [Issue #3](https://github.com/tetsuh/sitometron/issues/3) → ADR | Phase 0A |
-| JobJournal envelope and event schemas | Planned | Planned | Pending Phase 0A Issue and ADR | Phase 0A |
+| Core Job states and transitions | Planned | Planned | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) under [Issue #3](https://github.com/tetsuh/sitometron/issues/3) | Phase 0A |
+| Core commands and rejection reasons | Planned | Planned | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) under [Issue #3](https://github.com/tetsuh/sitometron/issues/3) | Phase 0A |
+| JobJournal envelope and event schemas | Planned | Planned | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) for the logical contract; Phase 0B ADR pending for physical durability | Phase 0A / 0B |
 | External REST v1 | Planned | Planned | Pending Phase 1 Issue and ADR | Phase 1 |
 | Application Registry schema | Planned | Planned | Pending Phase 1 Issue and ADR | Phase 1 |
 | Worker HTTP v1 routes and JSON schemas | Planned | Planned | Pending Phase 2 Issue and ADR | Phase 2 |

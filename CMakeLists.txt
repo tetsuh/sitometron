@@ -83,6 +83,13 @@ if(SITOMETRON_BUILD_TESTS)
   add_test(NAME sitometron_core_tests COMMAND sitometron_core_tests)
 
   add_test(
+    NAME core_job_contract
+    COMMAND
+      ${CMAKE_COMMAND}
+      -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_job_contract.cmake)
+
+  add_test(
     NAME core_dependency_isolation
     COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_dependency_isolation.cmake)
   add_test(

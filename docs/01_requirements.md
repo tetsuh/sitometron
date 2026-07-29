@@ -40,11 +40,29 @@ A Planned Requirement cannot authorize production implementation by itself.
 | `NFR-003` | MUST | Use CMake 3.28 or later with Ninja presets and reject in-source builds. | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) |
 | `NFR-004` | MUST | Keep unit tests deterministic and avoid real sleeps when a fake clock or explicit event can express the behavior. | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) |
 
-## 4. Planned domains
+## 4. Proposed Phase 0A Job requirements
+
+> **Planned, not yet normative:** Issue #3 and proposed ADR-0002 own these requirements.
+> Implementers must not treat them as normative until the repository owner accepts ADR-0002.
+
+| ID | Level | Requirement | Authority |
+|---|---|---|---|
+| `JOB-001` | MUST | Use the closed Job state set and terminal classification defined by the exhaustive core contract. | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
+| `JOB-002` | MUST | Decide every entity-position/event and entity-position/command pair as transition, audit, late audit, or stable rejection using a pure reducer. | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
+| `JOB-003` | MUST | Latch the first accepted stop or failure reason and permit later forced-stop escalation without changing that reason. | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
+| `JOB-004` | MUST | Treat successful Worker completion as a candidate and apply a terminal state only after a matching terminal Journal event is synced. | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
+| `JOB-005` | MUST | Keep preparation, execution, cooperative-stop, and process-exit-confirmation timeout behavior deterministic across `stopping`, `finalizing`, and terminal cleanup. | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
+| `JOB-006` | MUST | Keep terminal state and reason immutable while allowing checked process-exit, completion-mode, resource-release, cleanup, and late-Worker audit facts. | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
+| `JOB-007` | MUST | Resolve competing controls and Worker or process facts by single-writer acceptance order without scheduler timing or real sleeps. | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
+| `JRN-001` | MUST | Use the ADR-0002 minimum logical Job-event envelope, closed event kinds, payload discriminators, and global sequence ordering. | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
+| `JRN-002` | MUST | Append and disk-sync each accepted event before reducer apply, response, acknowledgment, or external post-sync effect. | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
+| `JRN-003` | MUST | Append no rejected input and fail closed without inferring a state transition when append or sync fails or has unknown outcome. | Proposed [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
+
+## 5. Planned domains
 
 > **Planned, not yet normative:** The owning Phase Issues and ADRs own these mechanisms.
 > Implementers must not treat this outline as a finalized contract.
 
-`JOB`, `ADM`, `JRN`, `WRK`, `RES`, `APP`, `PAR`, `ART`, `SEC`, and `OPS` requirements are added by
-their owning design Issues before implementation. Issue #3 owns the first `JOB` reducer and state
-requirements.
+The remaining `ADM`, `JRN`, `WRK`, `RES`, `APP`, `PAR`, `ART`, `SEC`, and `OPS` requirements are added
+by their owning design Issues before implementation. Issue #3 owns the first `JOB` reducer and
+logical `JRN` requirements; Phase 0B owns physical JobJournal durability requirements.

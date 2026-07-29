@@ -1,0 +1,117 @@
+# Core contracts
+
+> **Planned, not yet normative:** Issue #3 and proposed ADR-0002 own this mechanism.
+> Implementers must not treat this contract as normative until the repository owner accepts ADR-0002.
+
+## 1. Source files
+
+The Phase 0A Job reducer contract is split into reviewable machine-readable artifacts:
+
+- [`job-command.schema.json`](../schemas/core/v1/job-command.schema.json): strict core cancel and
+  terminate command DTO;
+- [`job-candidate-event.schema.json`](../schemas/core/v1/job-candidate-event.schema.json): strict
+  pre-envelope lifecycle fact DTO;
+- [`job-rejection.schema.json`](../schemas/core/v1/job-rejection.schema.json): closed stable rejection
+  reasons;
+- [`job-reducer-snapshot.schema.json`](../schemas/core/v1/job-reducer-snapshot.schema.json): closed
+  reducer state and durable identity bindings;
+- [`job-journal-event.schema.json`](../schemas/core/v1/job-journal-event.schema.json): strict logical
+  JobJournal envelope and typed event payloads;
+- [`job-reducer-contract.schema.json`](../schemas/core/v1/job-reducer-contract.schema.json): JSON
+  Schema for the contract document;
+- [`job-reducer-contract.json`](../schemas/core/v1/job-reducer-contract.json): closed enums,
+  command decisions, and the exhaustive state/event matrix;
+- [`job-reducer-vectors.schema.json`](../schemas/core/v1/job-reducer-vectors.schema.json): JSON Schema
+  for the fixture document;
+- [`job-reducer-vectors.json`](../schemas/core/v1/job-reducer-vectors.json): one concrete reachable
+  fixture per ordered matrix case, concrete invalid-payload fixtures, and chained sequence/race
+  fixtures;
+- [`job-state-diagram.dot`](../schemas/core/v1/job-state-diagram.dot): human-readable Graphviz state
+  diagram whose edge inventory is checked against the matrix;
+- [`check_core_job_contract.cmake`](../cmake/check_core_job_contract.cmake): dependency-free structural,
+  coverage, fixture, and diagram consistency check.
+
+ADR-0002 explains the decision and authority boundary. The JSON contract defines exact cases.
+Physical JobJournal durability remains Phase 0B scope.
+
+## 2. Lifecycle model
+
+The public closed state set is:
+
+```text
+admitted
+preparing
+running
+stopping
+finalizing
+succeeded
+failed
+cancelled
+terminated
+timed_out
+```
+
+`absent` appears only as an entity position for `job_created`. It is not a Job state.
+
+The state enum does not contain enough information to decide every input. The reducer snapshot also
+tracks the first latched reason, successful completion candidate, completion mode, resource status,
+allocation identity and digest, Worker-launch operation and Worker identity, process-exit
+confirmation, Session identity and retention status, finalization status, cleanup status, and a
+pending terminal Worker-event acknowledgment.
+
+## 3. Decision and apply boundary
+
+The single state writer evaluates commands and candidate events against one snapshot.
+
+```text
+input
+  -> pure decision
+      -> reject(reason), with no Journal record
+      -> accepted Journal event
+          -> append and disk sync
+          -> pure reducer apply
+          -> typed post-sync effects
+```
+
+The four exhaustive dispositions are `transition`, `audit`, `late_audit`, and `reject`. Cases use a
+closed predicate AST and ordered-first-match semantics, with a mechanically checked final
+`otherwise` for conditional rows. An effect identifier is a request to an adapter or supervisor; the
+reducer never performs I/O.
+
+`cancel` and `terminate` use the command matrix because rejection occurs before the accepted-control
+Journal event exists. Lifecycle facts use the event matrix. A delayed terminal Worker fact is
+normalized to `late_worker_event` before append; an already normalized late fact is copied without
+wrapping it again.
+
+Timer generation is decided before event-matrix ingress. Current active generation emits a
+`timeout_expired` candidate. Stale or disarmed notifications emit no candidate and no Journal event.
+Attempting to arm after the non-wrapping uint64 generation is exhausted fails closed. Four dedicated
+fixtures mechanically check these cases.
+
+## 4. Completion and cleanup axes
+
+`worker_completed` creates a successful completion candidate and enters `finalizing`. Success is not
+committed until finalization has completed and `terminal_outcome_committed{outcome=succeeded}` has
+been synced.
+
+The execution timer remains active through terminal commit. Its expiration in `finalizing` may
+replace a sole success candidate with `timed_out`. An earlier cancel, terminate, timeout, or failure
+reason remains immutable.
+
+Normal success may become terminal before process exit. A later confirmed exit must match the launch
+operation binding and sets completion mode. Resource release must match the committed allocation ID
+and digest, and cleanup facts are monotonic state-preserving terminal audits. A
+`process_exit_confirmation` timeout may force stop and quarantine resources without changing the
+terminal result.
+
+## 5. Contract check
+
+Run the contract check directly:
+
+```sh
+cmake \
+  -DSITOMETRON_SOURCE_DIR="$PWD" \
+  -P cmake/check_core_job_contract.cmake
+```
+
+The configured test suite exposes the same check as CTest `core_job_contract`.

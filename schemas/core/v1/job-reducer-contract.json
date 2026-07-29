@@ -1,0 +1,6382 @@
+{
+  "$schema": "job-reducer-contract.schema.json",
+  "contract_version": 1,
+  "status": "proposed",
+  "authority": "ADR-0002",
+  "job_states": [
+    "admitted",
+    "preparing",
+    "running",
+    "stopping",
+    "finalizing",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "terminated",
+    "timed_out"
+  ],
+  "terminal_states": [
+    "succeeded",
+    "failed",
+    "cancelled",
+    "terminated",
+    "timed_out"
+  ],
+  "entity_positions": [
+    "absent",
+    "admitted",
+    "preparing",
+    "running",
+    "stopping",
+    "finalizing",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "terminated",
+    "timed_out"
+  ],
+  "command_kinds": [
+    "cancel",
+    "terminate"
+  ],
+  "journal_event_kinds": [
+    "job_created",
+    "resources_committed",
+    "worker_launch_intent",
+    "worker_launch_observed",
+    "worker_running",
+    "cancel_accepted",
+    "terminate_accepted",
+    "timeout_expired",
+    "worker_completed",
+    "worker_failed",
+    "process_exit_confirmed",
+    "session_retain_requested",
+    "session_retained",
+    "finalization_completed",
+    "finalization_failed",
+    "terminal_outcome_committed",
+    "resources_released",
+    "cleanup_status_recorded",
+    "late_worker_event"
+  ],
+  "timeout_phases": [
+    "preparation",
+    "execution",
+    "cooperative_stop",
+    "process_exit_confirmation"
+  ],
+  "terminal_outcomes": [
+    "succeeded",
+    "failed",
+    "cancelled",
+    "terminated",
+    "timed_out"
+  ],
+  "dispositions": [
+    "transition",
+    "audit",
+    "late_audit",
+    "reject"
+  ],
+  "rejection_reasons": [
+    "job_not_found",
+    "job_already_exists",
+    "command_not_allowed_in_state",
+    "event_not_allowed_in_state",
+    "stop_cause_already_latched",
+    "timeout_phase_mismatch",
+    "terminal_outcome_mismatch",
+    "required_finalization_fact_missing",
+    "invalid_event_payload",
+    "invariant_violation"
+  ],
+  "post_sync_effects": [
+    "arm_preparation_timeout",
+    "disarm_preparation_timeout",
+    "launch_worker_once",
+    "arm_execution_timeout",
+    "disarm_execution_timeout",
+    "request_cooperative_stop",
+    "request_forced_stop",
+    "retain_session_same_identity",
+    "ack_terminal_worker_event_if_pending",
+    "ack_late_worker_event",
+    "publish_terminal_result",
+    "arm_process_exit_confirmation_timeout_if_needed",
+    "quarantine_resources",
+    "set_readiness_false",
+    "arm_cooperative_stop_timeout",
+    "disarm_cooperative_stop_timeout",
+    "disarm_process_exit_confirmation_timeout"
+  ],
+  "command_matrix": [
+    {
+      "pair_id": "absent__cancel",
+      "entity_position": "absent",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__terminate",
+      "entity_position": "absent",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__cancel",
+      "entity_position": "admitted",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "accept",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "audit",
+          "journal_event_type": "cancel_accepted",
+          "journal_payload": {
+            "principal_subject": {
+              "from": "command.principal_subject"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__terminate",
+      "entity_position": "admitted",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "accept",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "audit",
+          "journal_event_type": "terminate_accepted",
+          "journal_payload": {
+            "principal_subject": {
+              "from": "command.principal_subject"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__cancel",
+      "entity_position": "preparing",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "accept",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "audit",
+          "journal_event_type": "cancel_accepted",
+          "journal_payload": {
+            "principal_subject": {
+              "from": "command.principal_subject"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__terminate",
+      "entity_position": "preparing",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "accept",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "audit",
+          "journal_event_type": "terminate_accepted",
+          "journal_payload": {
+            "principal_subject": {
+              "from": "command.principal_subject"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "pair_id": "running__cancel",
+      "entity_position": "running",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "accept",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "audit",
+          "journal_event_type": "cancel_accepted",
+          "journal_payload": {
+            "principal_subject": {
+              "from": "command.principal_subject"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "pair_id": "running__terminate",
+      "entity_position": "running",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "accept",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "audit",
+          "journal_event_type": "terminate_accepted",
+          "journal_payload": {
+            "principal_subject": {
+              "from": "command.principal_subject"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__cancel",
+      "entity_position": "stopping",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "stop_cause_already_latched"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__terminate",
+      "entity_position": "stopping",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "accept_live_process",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "terminate_accepted",
+          "journal_payload": {
+            "principal_subject": {
+              "from": "command.principal_subject"
+            }
+          }
+        },
+        {
+          "case_id": "already_exited",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__cancel",
+      "entity_position": "finalizing",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__terminate",
+      "entity_position": "finalizing",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "accept_live_process",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "terminate_accepted",
+          "journal_payload": {
+            "principal_subject": {
+              "from": "command.principal_subject"
+            }
+          }
+        },
+        {
+          "case_id": "already_exited",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__cancel",
+      "entity_position": "succeeded",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__terminate",
+      "entity_position": "succeeded",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__cancel",
+      "entity_position": "failed",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__terminate",
+      "entity_position": "failed",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__cancel",
+      "entity_position": "cancelled",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__terminate",
+      "entity_position": "cancelled",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__cancel",
+      "entity_position": "terminated",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__terminate",
+      "entity_position": "terminated",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__cancel",
+      "entity_position": "timed_out",
+      "command_kind": "cancel",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__terminate",
+      "entity_position": "timed_out",
+      "command_kind": "terminate",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    }
+  ],
+  "event_matrix": [
+    {
+      "pair_id": "absent__job_created",
+      "entity_position": "absent",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "create",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "transition",
+          "next_state": "admitted",
+          "journal_event_type": "job_created",
+          "updates": {
+            "latched_reason": null,
+            "completion_candidate": null,
+            "completion_mode": null,
+            "resource_status": "none",
+            "worker_launch_status": "not_started",
+            "process_presence": "absent",
+            "process_exit_confirmed": false,
+            "session_retention_status": "not_started",
+            "finalization_status": "not_started",
+            "cleanup_status": "pending",
+            "pending_worker_event_ack": false,
+            "job_id": {
+              "from": "input.job_id"
+            },
+            "session_id": {
+              "from": "payload.session_id"
+            },
+            "allocation_id": null,
+            "allocation_digest": null,
+            "launch_operation_id": null,
+            "worker_id": null,
+            "pending_worker_id": null,
+            "pending_worker_event_sequence": null
+          }
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__resources_committed",
+      "entity_position": "absent",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__worker_launch_intent",
+      "entity_position": "absent",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__worker_launch_observed",
+      "entity_position": "absent",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__worker_running",
+      "entity_position": "absent",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__cancel_accepted",
+      "entity_position": "absent",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__terminate_accepted",
+      "entity_position": "absent",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__timeout_expired",
+      "entity_position": "absent",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__worker_completed",
+      "entity_position": "absent",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__worker_failed",
+      "entity_position": "absent",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__process_exit_confirmed",
+      "entity_position": "absent",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__session_retain_requested",
+      "entity_position": "absent",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__session_retained",
+      "entity_position": "absent",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__finalization_completed",
+      "entity_position": "absent",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__finalization_failed",
+      "entity_position": "absent",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__terminal_outcome_committed",
+      "entity_position": "absent",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__resources_released",
+      "entity_position": "absent",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__cleanup_status_recorded",
+      "entity_position": "absent",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "absent__late_worker_event",
+      "entity_position": "absent",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_not_found"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__job_created",
+      "entity_position": "admitted",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_already_exists"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__resources_committed",
+      "entity_position": "admitted",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "commit_resources",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "transition",
+          "next_state": "preparing",
+          "journal_event_type": "resources_committed",
+          "updates": {
+            "resource_status": "committed",
+            "allocation_id": {
+              "from": "payload.allocation_id"
+            },
+            "allocation_digest": {
+              "from": "payload.allocation_digest"
+            }
+          },
+          "post_sync_effects": [
+            "arm_preparation_timeout"
+          ]
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__worker_launch_intent",
+      "entity_position": "admitted",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__worker_launch_observed",
+      "entity_position": "admitted",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__worker_running",
+      "entity_position": "admitted",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__cancel_accepted",
+      "entity_position": "admitted",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "no_worker",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "cancel_accepted",
+          "updates": {
+            "latched_reason": "cancelled",
+            "completion_mode": "process_already_exited",
+            "process_exit_confirmed": true,
+            "finalization_status": "pending"
+          }
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__terminate_accepted",
+      "entity_position": "admitted",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "no_worker",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "terminate_accepted",
+          "updates": {
+            "latched_reason": "terminated",
+            "completion_mode": "process_already_exited",
+            "process_exit_confirmed": true,
+            "finalization_status": "pending"
+          }
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__timeout_expired",
+      "entity_position": "admitted",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__worker_completed",
+      "entity_position": "admitted",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__worker_failed",
+      "entity_position": "admitted",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__process_exit_confirmed",
+      "entity_position": "admitted",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__session_retain_requested",
+      "entity_position": "admitted",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__session_retained",
+      "entity_position": "admitted",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__finalization_completed",
+      "entity_position": "admitted",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__finalization_failed",
+      "entity_position": "admitted",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__terminal_outcome_committed",
+      "entity_position": "admitted",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__resources_released",
+      "entity_position": "admitted",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__cleanup_status_recorded",
+      "entity_position": "admitted",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "admitted__late_worker_event",
+      "entity_position": "admitted",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__job_created",
+      "entity_position": "preparing",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_already_exists"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__resources_committed",
+      "entity_position": "preparing",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__worker_launch_intent",
+      "entity_position": "preparing",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "record_intent",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "worker_launch_status",
+                "operator": "eq",
+                "value": "not_started"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "worker_launch_intent",
+          "updates": {
+            "worker_launch_status": "intent_recorded",
+            "process_presence": "unknown",
+            "launch_operation_id": {
+              "from": "payload.operation_id"
+            },
+            "worker_id": {
+              "from": "payload.worker_id"
+            }
+          },
+          "post_sync_effects": [
+            "launch_worker_once"
+          ]
+        },
+        {
+          "case_id": "launch_already_started",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__worker_launch_observed",
+      "entity_position": "preparing",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "started",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "worker_launch_status",
+                "operator": "eq",
+                "value": "intent_recorded"
+              },
+              {
+                "source": "payload",
+                "field": "outcome",
+                "operator": "eq",
+                "value": "started"
+              },
+              {
+                "source": "payload",
+                "field": "operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "worker_launch_observed",
+          "updates": {
+            "worker_launch_status": "observed",
+            "process_presence": "present"
+          }
+        },
+        {
+          "case_id": "definite_failure",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "worker_launch_status",
+                "operator": "eq",
+                "value": "intent_recorded"
+              },
+              {
+                "source": "payload",
+                "field": "outcome",
+                "operator": "eq",
+                "value": "failed"
+              },
+              {
+                "source": "payload",
+                "field": "operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "worker_launch_observed",
+          "updates": {
+            "worker_launch_status": "failed",
+            "process_presence": "absent",
+            "process_exit_confirmed": true,
+            "latched_reason": "failed",
+            "completion_mode": "process_already_exited",
+            "finalization_status": "pending"
+          },
+          "post_sync_effects": [
+            "disarm_preparation_timeout"
+          ]
+        },
+        {
+          "case_id": "invalid_launch_order_or_outcome",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__worker_running",
+      "entity_position": "preparing",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "running",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "worker_launch_status",
+                "operator": "eq",
+                "value": "observed"
+              },
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "running",
+          "journal_event_type": "worker_running",
+          "post_sync_effects": [
+            "disarm_preparation_timeout",
+            "arm_execution_timeout"
+          ],
+          "updates": {
+            "worker_id": {
+              "from": "payload.worker_id"
+            },
+            "process_presence": "present"
+          }
+        },
+        {
+          "case_id": "launch_not_observed",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__cancel_accepted",
+      "entity_position": "preparing",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "no_process",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_presence",
+                "operator": "eq",
+                "value": "absent"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "cancel_accepted",
+          "updates": {
+            "latched_reason": "cancelled",
+            "completion_mode": "process_already_exited",
+            "process_exit_confirmed": true,
+            "finalization_status": "pending"
+          },
+          "post_sync_effects": [
+            "disarm_preparation_timeout"
+          ]
+        },
+        {
+          "case_id": "process_may_exist",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "transition",
+          "next_state": "stopping",
+          "journal_event_type": "cancel_accepted",
+          "updates": {
+            "latched_reason": "cancelled",
+            "completion_mode": "cooperative"
+          },
+          "post_sync_effects": [
+            "disarm_preparation_timeout",
+            "request_cooperative_stop",
+            "arm_cooperative_stop_timeout"
+          ]
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__terminate_accepted",
+      "entity_position": "preparing",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "no_process",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_presence",
+                "operator": "eq",
+                "value": "absent"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "terminate_accepted",
+          "updates": {
+            "latched_reason": "terminated",
+            "completion_mode": "process_already_exited",
+            "process_exit_confirmed": true,
+            "finalization_status": "pending"
+          },
+          "post_sync_effects": [
+            "disarm_preparation_timeout"
+          ]
+        },
+        {
+          "case_id": "process_may_exist",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "transition",
+          "next_state": "stopping",
+          "journal_event_type": "terminate_accepted",
+          "updates": {
+            "latched_reason": "terminated",
+            "completion_mode": "forced"
+          },
+          "post_sync_effects": [
+            "disarm_preparation_timeout",
+            "request_forced_stop",
+            "disarm_cooperative_stop_timeout",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ]
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__timeout_expired",
+      "entity_position": "preparing",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "preparation_no_process",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "preparation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_presence",
+                "operator": "eq",
+                "value": "absent"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "latched_reason": "timed_out",
+            "completion_mode": "process_already_exited",
+            "process_exit_confirmed": true,
+            "finalization_status": "pending"
+          },
+          "post_sync_effects": [
+            "disarm_preparation_timeout"
+          ]
+        },
+        {
+          "case_id": "preparation_process_may_exist",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "preparation"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "stopping",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "latched_reason": "timed_out",
+            "completion_mode": "cooperative"
+          },
+          "post_sync_effects": [
+            "disarm_preparation_timeout",
+            "request_cooperative_stop",
+            "arm_cooperative_stop_timeout"
+          ]
+        },
+        {
+          "case_id": "wrong_phase",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "timeout_phase_mismatch"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__worker_completed",
+      "entity_position": "preparing",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__worker_failed",
+      "entity_position": "preparing",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "terminal_failure",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "payload",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "worker_failed",
+          "updates": {
+            "latched_reason": "failed",
+            "finalization_status": "pending",
+            "pending_worker_event_ack": true,
+            "pending_worker_id": {
+              "from": "payload.worker_id"
+            },
+            "pending_worker_event_sequence": {
+              "from": "payload.event_sequence"
+            }
+          },
+          "post_sync_effects": [
+            "disarm_preparation_timeout"
+          ]
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__process_exit_confirmed",
+      "entity_position": "preparing",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "unexpected_exit",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "process_exit_confirmed",
+          "updates": {
+            "latched_reason": "failed",
+            "completion_mode": "process_already_exited",
+            "process_presence": "absent",
+            "process_exit_confirmed": true,
+            "finalization_status": "pending"
+          },
+          "post_sync_effects": [
+            "disarm_preparation_timeout"
+          ]
+        },
+        {
+          "case_id": "launch_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__session_retain_requested",
+      "entity_position": "preparing",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__session_retained",
+      "entity_position": "preparing",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__finalization_completed",
+      "entity_position": "preparing",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__finalization_failed",
+      "entity_position": "preparing",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__terminal_outcome_committed",
+      "entity_position": "preparing",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__resources_released",
+      "entity_position": "preparing",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__cleanup_status_recorded",
+      "entity_position": "preparing",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "preparing__late_worker_event",
+      "entity_position": "preparing",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__job_created",
+      "entity_position": "running",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_already_exists"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__resources_committed",
+      "entity_position": "running",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__worker_launch_intent",
+      "entity_position": "running",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__worker_launch_observed",
+      "entity_position": "running",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__worker_running",
+      "entity_position": "running",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__cancel_accepted",
+      "entity_position": "running",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "cooperative_stop",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "transition",
+          "next_state": "stopping",
+          "journal_event_type": "cancel_accepted",
+          "updates": {
+            "latched_reason": "cancelled",
+            "completion_mode": "cooperative"
+          },
+          "post_sync_effects": [
+            "request_cooperative_stop",
+            "arm_cooperative_stop_timeout"
+          ]
+        }
+      ]
+    },
+    {
+      "pair_id": "running__terminate_accepted",
+      "entity_position": "running",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "forced_stop",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "transition",
+          "next_state": "stopping",
+          "journal_event_type": "terminate_accepted",
+          "updates": {
+            "latched_reason": "terminated",
+            "completion_mode": "forced"
+          },
+          "post_sync_effects": [
+            "request_forced_stop",
+            "disarm_cooperative_stop_timeout",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ]
+        }
+      ]
+    },
+    {
+      "pair_id": "running__timeout_expired",
+      "entity_position": "running",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "execution",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "execution"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "stopping",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "latched_reason": "timed_out",
+            "completion_mode": "cooperative"
+          },
+          "post_sync_effects": [
+            "request_cooperative_stop",
+            "arm_cooperative_stop_timeout"
+          ]
+        },
+        {
+          "case_id": "wrong_phase",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "timeout_phase_mismatch"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__worker_completed",
+      "entity_position": "running",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "success_candidate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "worker_completed",
+          "updates": {
+            "completion_candidate": "succeeded",
+            "finalization_status": "pending",
+            "pending_worker_event_ack": true,
+            "pending_worker_id": {
+              "from": "payload.worker_id"
+            },
+            "pending_worker_event_sequence": {
+              "from": "payload.event_sequence"
+            }
+          },
+          "post_sync_effects": []
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__worker_failed",
+      "entity_position": "running",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "terminal_failure",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "worker_failed",
+          "updates": {
+            "latched_reason": "failed",
+            "finalization_status": "pending",
+            "pending_worker_event_ack": true,
+            "pending_worker_id": {
+              "from": "payload.worker_id"
+            },
+            "pending_worker_event_sequence": {
+              "from": "payload.event_sequence"
+            }
+          },
+          "post_sync_effects": []
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__process_exit_confirmed",
+      "entity_position": "running",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "unexpected_exit",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "process_exit_confirmed",
+          "updates": {
+            "latched_reason": "failed",
+            "completion_mode": "process_already_exited",
+            "process_presence": "absent",
+            "process_exit_confirmed": true,
+            "finalization_status": "pending"
+          }
+        },
+        {
+          "case_id": "launch_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__session_retain_requested",
+      "entity_position": "running",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__session_retained",
+      "entity_position": "running",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__finalization_completed",
+      "entity_position": "running",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__finalization_failed",
+      "entity_position": "running",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__terminal_outcome_committed",
+      "entity_position": "running",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__resources_released",
+      "entity_position": "running",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__cleanup_status_recorded",
+      "entity_position": "running",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "running__late_worker_event",
+      "entity_position": "running",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__job_created",
+      "entity_position": "stopping",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_already_exists"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__resources_committed",
+      "entity_position": "stopping",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__worker_launch_intent",
+      "entity_position": "stopping",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__worker_launch_observed",
+      "entity_position": "stopping",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__worker_running",
+      "entity_position": "stopping",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__cancel_accepted",
+      "entity_position": "stopping",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "stop_cause_already_latched"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__terminate_accepted",
+      "entity_position": "stopping",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "escalate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "terminate_accepted",
+          "updates": {
+            "completion_mode": "forced"
+          },
+          "post_sync_effects": [
+            "request_forced_stop",
+            "disarm_cooperative_stop_timeout",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ],
+          "note": "Preserve the first latched reason."
+        },
+        {
+          "case_id": "already_exited",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__timeout_expired",
+      "entity_position": "stopping",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "cooperative_stop_expired",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "cooperative_stop"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "completion_mode": "forced"
+          },
+          "post_sync_effects": [
+            "disarm_cooperative_stop_timeout",
+            "request_forced_stop",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ],
+          "note": "Preserve the first latched reason."
+        },
+        {
+          "case_id": "other_timeout_phase",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "stop_cause_already_latched"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__worker_completed",
+      "entity_position": "stopping",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "worker_completed",
+          "updates": {
+            "finalization_status": "pending",
+            "pending_worker_event_ack": true,
+            "pending_worker_id": {
+              "from": "payload.worker_id"
+            },
+            "pending_worker_event_sequence": {
+              "from": "payload.event_sequence"
+            }
+          },
+          "note": "Preserve the first latched reason.",
+          "post_sync_effects": [
+            "disarm_cooperative_stop_timeout"
+          ]
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__worker_failed",
+      "entity_position": "stopping",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "worker_failed",
+          "updates": {
+            "finalization_status": "pending",
+            "pending_worker_event_ack": true,
+            "pending_worker_id": {
+              "from": "payload.worker_id"
+            },
+            "pending_worker_event_sequence": {
+              "from": "payload.event_sequence"
+            }
+          },
+          "note": "Preserve the first latched reason.",
+          "post_sync_effects": [
+            "disarm_cooperative_stop_timeout"
+          ]
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__process_exit_confirmed",
+      "entity_position": "stopping",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "exit",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "finalizing",
+          "journal_event_type": "process_exit_confirmed",
+          "updates": {
+            "process_presence": "absent",
+            "process_exit_confirmed": true,
+            "finalization_status": "pending"
+          },
+          "note": "Preserve the first latched reason and stop completion mode.",
+          "post_sync_effects": [
+            "disarm_cooperative_stop_timeout",
+            "disarm_process_exit_confirmation_timeout"
+          ]
+        },
+        {
+          "case_id": "launch_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__session_retain_requested",
+      "entity_position": "stopping",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__session_retained",
+      "entity_position": "stopping",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__finalization_completed",
+      "entity_position": "stopping",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__finalization_failed",
+      "entity_position": "stopping",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__terminal_outcome_committed",
+      "entity_position": "stopping",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__resources_released",
+      "entity_position": "stopping",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__cleanup_status_recorded",
+      "entity_position": "stopping",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "stopping__late_worker_event",
+      "entity_position": "stopping",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__job_created",
+      "entity_position": "finalizing",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_already_exists"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__resources_committed",
+      "entity_position": "finalizing",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__worker_launch_intent",
+      "entity_position": "finalizing",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__worker_launch_observed",
+      "entity_position": "finalizing",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__worker_running",
+      "entity_position": "finalizing",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__cancel_accepted",
+      "entity_position": "finalizing",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__terminate_accepted",
+      "entity_position": "finalizing",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "force_live_process",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "terminate_accepted",
+          "updates": {
+            "completion_mode": "forced"
+          },
+          "post_sync_effects": [
+            "request_forced_stop",
+            "disarm_cooperative_stop_timeout",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ],
+          "note": "Preserve the latched reason or successful completion candidate."
+        },
+        {
+          "case_id": "process_already_exited",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__timeout_expired",
+      "entity_position": "finalizing",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "execution_overrides_success_candidate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "execution"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "source": "snapshot",
+                "field": "completion_candidate",
+                "operator": "eq",
+                "value": "succeeded"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "latched_reason": "timed_out",
+            "completion_candidate": null,
+            "completion_mode": "forced"
+          },
+          "post_sync_effects": [
+            "request_forced_stop",
+            "disarm_cooperative_stop_timeout",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ]
+        },
+        {
+          "case_id": "execution_overrides_success_candidate_after_exit",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "execution"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "source": "snapshot",
+                "field": "completion_candidate",
+                "operator": "eq",
+                "value": "succeeded"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "latched_reason": "timed_out",
+            "completion_candidate": null,
+            "completion_mode": "process_already_exited"
+          }
+        },
+        {
+          "case_id": "execution_preserves_reason_live",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "execution"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "in",
+                "values": [
+                  "failed",
+                  "cancelled",
+                  "terminated",
+                  "timed_out"
+                ]
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "completion_mode": "forced"
+          },
+          "post_sync_effects": [
+            "request_forced_stop",
+            "disarm_cooperative_stop_timeout",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ]
+        },
+        {
+          "case_id": "execution_preserves_reason_after_exit",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "execution"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "in",
+                "values": [
+                  "failed",
+                  "cancelled",
+                  "terminated",
+                  "timed_out"
+                ]
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired"
+        },
+        {
+          "case_id": "wrong_phase_or_snapshot",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "timeout_phase_mismatch"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__worker_completed",
+      "entity_position": "finalizing",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__worker_failed",
+      "entity_position": "finalizing",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__process_exit_confirmed",
+      "entity_position": "finalizing",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "first_confirmation",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed",
+          "updates": {
+            "process_presence": "absent",
+            "process_exit_confirmed": true,
+            "completion_mode": {
+              "from": "payload.completion_mode"
+            }
+          },
+          "post_sync_effects": [
+            "disarm_cooperative_stop_timeout",
+            "disarm_process_exit_confirmation_timeout"
+          ]
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "completion_mode",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "completion_mode"
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed"
+        },
+        {
+          "case_id": "conflicting_duplicate",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__session_retain_requested",
+      "entity_position": "finalizing",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "request",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "session_retention_status",
+                "operator": "eq",
+                "value": "not_started"
+              },
+              {
+                "source": "payload",
+                "field": "session_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "session_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "session_retain_requested",
+          "updates": {
+            "session_retention_status": "requested"
+          },
+          "post_sync_effects": [
+            "retain_session_same_identity"
+          ]
+        },
+        {
+          "case_id": "retention_already_started",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__session_retained",
+      "entity_position": "finalizing",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "retained",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "session_retention_status",
+                "operator": "eq",
+                "value": "requested"
+              },
+              {
+                "source": "payload",
+                "field": "session_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "session_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "session_retained",
+          "updates": {
+            "session_retention_status": "retained"
+          }
+        },
+        {
+          "case_id": "retain_not_requested_or_duplicate",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__finalization_completed",
+      "entity_position": "finalizing",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "complete",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "session_retention_status",
+                "operator": "eq",
+                "value": "retained"
+              },
+              {
+                "source": "snapshot",
+                "field": "finalization_status",
+                "operator": "eq",
+                "value": "pending"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "finalization_completed",
+          "updates": {
+            "finalization_status": "completed"
+          }
+        },
+        {
+          "case_id": "retention_missing",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "session_retention_status",
+                "operator": "not_eq",
+                "value": "retained"
+              }
+            ]
+          },
+          "disposition": "reject",
+          "rejection_reason": "required_finalization_fact_missing"
+        },
+        {
+          "case_id": "already_finalized",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__finalization_failed",
+      "entity_position": "finalizing",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "replace_success_candidate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "finalization_status",
+                "operator": "eq",
+                "value": "pending"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "source": "snapshot",
+                "field": "completion_candidate",
+                "operator": "eq",
+                "value": "succeeded"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "finalization_failed",
+          "updates": {
+            "latched_reason": "failed",
+            "completion_candidate": null,
+            "finalization_status": "failed",
+            "cleanup_status": "incomplete"
+          }
+        },
+        {
+          "case_id": "preserve_reason",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "finalization_status",
+                "operator": "eq",
+                "value": "pending"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "in",
+                "values": [
+                  "failed",
+                  "cancelled",
+                  "terminated",
+                  "timed_out"
+                ]
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "finalization_failed",
+          "updates": {
+            "finalization_status": "failed",
+            "cleanup_status": "incomplete"
+          }
+        },
+        {
+          "case_id": "invalid_finalization_snapshot",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__terminal_outcome_committed",
+      "entity_position": "finalizing",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "finalization_pending",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "finalization_status",
+                "operator": "eq",
+                "value": "pending"
+              }
+            ]
+          },
+          "disposition": "reject",
+          "rejection_reason": "required_finalization_fact_missing"
+        },
+        {
+          "case_id": "commit_succeeded",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "finalization_status",
+                "operator": "in",
+                "values": [
+                  "completed",
+                  "failed"
+                ]
+              },
+              {
+                "source": "payload",
+                "field": "outcome",
+                "operator": "eq",
+                "value": "succeeded"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "source": "snapshot",
+                "field": "completion_candidate",
+                "operator": "eq",
+                "value": "succeeded"
+              },
+              {
+                "source": "snapshot",
+                "field": "finalization_status",
+                "operator": "eq",
+                "value": "completed"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "succeeded",
+          "journal_event_type": "terminal_outcome_committed",
+          "post_sync_effects": [
+            "disarm_execution_timeout",
+            "ack_terminal_worker_event_if_pending",
+            "publish_terminal_result",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ]
+        },
+        {
+          "case_id": "commit_failed",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "finalization_status",
+                "operator": "in",
+                "values": [
+                  "completed",
+                  "failed"
+                ]
+              },
+              {
+                "source": "payload",
+                "field": "outcome",
+                "operator": "eq",
+                "value": "failed"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "eq",
+                "value": "failed"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "failed",
+          "journal_event_type": "terminal_outcome_committed",
+          "post_sync_effects": [
+            "disarm_execution_timeout",
+            "ack_terminal_worker_event_if_pending",
+            "publish_terminal_result",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ]
+        },
+        {
+          "case_id": "commit_cancelled",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "finalization_status",
+                "operator": "in",
+                "values": [
+                  "completed",
+                  "failed"
+                ]
+              },
+              {
+                "source": "payload",
+                "field": "outcome",
+                "operator": "eq",
+                "value": "cancelled"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "eq",
+                "value": "cancelled"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "cancelled",
+          "journal_event_type": "terminal_outcome_committed",
+          "post_sync_effects": [
+            "disarm_execution_timeout",
+            "ack_terminal_worker_event_if_pending",
+            "publish_terminal_result",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ]
+        },
+        {
+          "case_id": "commit_terminated",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "finalization_status",
+                "operator": "in",
+                "values": [
+                  "completed",
+                  "failed"
+                ]
+              },
+              {
+                "source": "payload",
+                "field": "outcome",
+                "operator": "eq",
+                "value": "terminated"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "eq",
+                "value": "terminated"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "terminated",
+          "journal_event_type": "terminal_outcome_committed",
+          "post_sync_effects": [
+            "disarm_execution_timeout",
+            "ack_terminal_worker_event_if_pending",
+            "publish_terminal_result",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ]
+        },
+        {
+          "case_id": "commit_timed_out",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "finalization_status",
+                "operator": "in",
+                "values": [
+                  "completed",
+                  "failed"
+                ]
+              },
+              {
+                "source": "payload",
+                "field": "outcome",
+                "operator": "eq",
+                "value": "timed_out"
+              },
+              {
+                "source": "snapshot",
+                "field": "latched_reason",
+                "operator": "eq",
+                "value": "timed_out"
+              }
+            ]
+          },
+          "disposition": "transition",
+          "next_state": "timed_out",
+          "journal_event_type": "terminal_outcome_committed",
+          "post_sync_effects": [
+            "disarm_execution_timeout",
+            "ack_terminal_worker_event_if_pending",
+            "publish_terminal_result",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ]
+        },
+        {
+          "case_id": "outcome_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "terminal_outcome_mismatch"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__resources_released",
+      "entity_position": "finalizing",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__cleanup_status_recorded",
+      "entity_position": "finalizing",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "finalizing__late_worker_event",
+      "entity_position": "finalizing",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "normalized_late_event",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "The input is already a normalized late Worker event."
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__job_created",
+      "entity_position": "succeeded",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_already_exists"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__resources_committed",
+      "entity_position": "succeeded",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__worker_launch_intent",
+      "entity_position": "succeeded",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__worker_launch_observed",
+      "entity_position": "succeeded",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__worker_running",
+      "entity_position": "succeeded",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__cancel_accepted",
+      "entity_position": "succeeded",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__terminate_accepted",
+      "entity_position": "succeeded",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__timeout_expired",
+      "entity_position": "succeeded",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "exit_confirmation_expired_live",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "process_exit_confirmation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "cleanup_status": "incomplete"
+          },
+          "post_sync_effects": [
+            "request_forced_stop",
+            "quarantine_resources",
+            "set_readiness_false"
+          ]
+        },
+        {
+          "case_id": "stale_after_exit_invariant",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "process_exit_confirmation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              }
+            ]
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        },
+        {
+          "case_id": "wrong_phase",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "timeout_phase_mismatch"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__worker_completed",
+      "entity_position": "succeeded",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__worker_failed",
+      "entity_position": "succeeded",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__process_exit_confirmed",
+      "entity_position": "succeeded",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "first_confirmation",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed",
+          "updates": {
+            "process_presence": "absent",
+            "process_exit_confirmed": true,
+            "completion_mode": {
+              "from": "payload.completion_mode"
+            }
+          },
+          "post_sync_effects": [
+            "disarm_cooperative_stop_timeout",
+            "disarm_process_exit_confirmation_timeout"
+          ]
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "completion_mode",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "completion_mode"
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed"
+        },
+        {
+          "case_id": "conflicting_duplicate",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__session_retain_requested",
+      "entity_position": "succeeded",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__session_retained",
+      "entity_position": "succeeded",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__finalization_completed",
+      "entity_position": "succeeded",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__finalization_failed",
+      "entity_position": "succeeded",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__terminal_outcome_committed",
+      "entity_position": "succeeded",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__resources_released",
+      "entity_position": "succeeded",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "release",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "resource_status",
+                "operator": "eq",
+                "value": "committed"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "resources_released",
+          "updates": {
+            "resource_status": "released"
+          }
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "resource_status",
+                "operator": "eq",
+                "value": "released"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "resources_released"
+        },
+        {
+          "case_id": "release_precondition_failed",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__cleanup_status_recorded",
+      "entity_position": "succeeded",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "first_record",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "cleanup_status",
+                "operator": "eq",
+                "value": "pending"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "cleanup_status_recorded",
+          "updates": {
+            "cleanup_status": {
+              "from": "payload.status"
+            }
+          }
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "status",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "cleanup_status"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "cleanup_status_recorded"
+        },
+        {
+          "case_id": "status_regression",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "succeeded__late_worker_event",
+      "entity_position": "succeeded",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "normalized_late_event",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "The input is already a normalized late Worker event."
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__job_created",
+      "entity_position": "failed",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_already_exists"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__resources_committed",
+      "entity_position": "failed",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__worker_launch_intent",
+      "entity_position": "failed",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__worker_launch_observed",
+      "entity_position": "failed",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__worker_running",
+      "entity_position": "failed",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__cancel_accepted",
+      "entity_position": "failed",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__terminate_accepted",
+      "entity_position": "failed",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__timeout_expired",
+      "entity_position": "failed",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "exit_confirmation_expired_live",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "process_exit_confirmation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "cleanup_status": "incomplete"
+          },
+          "post_sync_effects": [
+            "request_forced_stop",
+            "quarantine_resources",
+            "set_readiness_false"
+          ]
+        },
+        {
+          "case_id": "stale_after_exit_invariant",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "process_exit_confirmation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              }
+            ]
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        },
+        {
+          "case_id": "wrong_phase",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "timeout_phase_mismatch"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__worker_completed",
+      "entity_position": "failed",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__worker_failed",
+      "entity_position": "failed",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__process_exit_confirmed",
+      "entity_position": "failed",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "first_confirmation",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed",
+          "updates": {
+            "process_presence": "absent",
+            "process_exit_confirmed": true,
+            "completion_mode": {
+              "from": "payload.completion_mode"
+            }
+          },
+          "post_sync_effects": [
+            "disarm_cooperative_stop_timeout",
+            "disarm_process_exit_confirmation_timeout"
+          ]
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "completion_mode",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "completion_mode"
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed"
+        },
+        {
+          "case_id": "conflicting_duplicate",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__session_retain_requested",
+      "entity_position": "failed",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__session_retained",
+      "entity_position": "failed",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__finalization_completed",
+      "entity_position": "failed",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__finalization_failed",
+      "entity_position": "failed",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__terminal_outcome_committed",
+      "entity_position": "failed",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__resources_released",
+      "entity_position": "failed",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "release",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "resource_status",
+                "operator": "eq",
+                "value": "committed"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "resources_released",
+          "updates": {
+            "resource_status": "released"
+          }
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "resource_status",
+                "operator": "eq",
+                "value": "released"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "resources_released"
+        },
+        {
+          "case_id": "release_precondition_failed",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__cleanup_status_recorded",
+      "entity_position": "failed",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "first_record",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "cleanup_status",
+                "operator": "eq",
+                "value": "pending"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "cleanup_status_recorded",
+          "updates": {
+            "cleanup_status": {
+              "from": "payload.status"
+            }
+          }
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "status",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "cleanup_status"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "cleanup_status_recorded"
+        },
+        {
+          "case_id": "status_regression",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "failed__late_worker_event",
+      "entity_position": "failed",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "normalized_late_event",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "The input is already a normalized late Worker event."
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__job_created",
+      "entity_position": "cancelled",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_already_exists"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__resources_committed",
+      "entity_position": "cancelled",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__worker_launch_intent",
+      "entity_position": "cancelled",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__worker_launch_observed",
+      "entity_position": "cancelled",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__worker_running",
+      "entity_position": "cancelled",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__cancel_accepted",
+      "entity_position": "cancelled",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__terminate_accepted",
+      "entity_position": "cancelled",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__timeout_expired",
+      "entity_position": "cancelled",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "exit_confirmation_expired_live",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "process_exit_confirmation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "cleanup_status": "incomplete"
+          },
+          "post_sync_effects": [
+            "request_forced_stop",
+            "quarantine_resources",
+            "set_readiness_false"
+          ]
+        },
+        {
+          "case_id": "stale_after_exit_invariant",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "process_exit_confirmation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              }
+            ]
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        },
+        {
+          "case_id": "wrong_phase",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "timeout_phase_mismatch"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__worker_completed",
+      "entity_position": "cancelled",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__worker_failed",
+      "entity_position": "cancelled",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__process_exit_confirmed",
+      "entity_position": "cancelled",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "first_confirmation",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed",
+          "updates": {
+            "process_presence": "absent",
+            "process_exit_confirmed": true,
+            "completion_mode": {
+              "from": "payload.completion_mode"
+            }
+          },
+          "post_sync_effects": [
+            "disarm_cooperative_stop_timeout",
+            "disarm_process_exit_confirmation_timeout"
+          ]
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "completion_mode",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "completion_mode"
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed"
+        },
+        {
+          "case_id": "conflicting_duplicate",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__session_retain_requested",
+      "entity_position": "cancelled",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__session_retained",
+      "entity_position": "cancelled",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__finalization_completed",
+      "entity_position": "cancelled",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__finalization_failed",
+      "entity_position": "cancelled",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__terminal_outcome_committed",
+      "entity_position": "cancelled",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__resources_released",
+      "entity_position": "cancelled",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "release",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "resource_status",
+                "operator": "eq",
+                "value": "committed"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "resources_released",
+          "updates": {
+            "resource_status": "released"
+          }
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "resource_status",
+                "operator": "eq",
+                "value": "released"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "resources_released"
+        },
+        {
+          "case_id": "release_precondition_failed",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__cleanup_status_recorded",
+      "entity_position": "cancelled",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "first_record",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "cleanup_status",
+                "operator": "eq",
+                "value": "pending"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "cleanup_status_recorded",
+          "updates": {
+            "cleanup_status": {
+              "from": "payload.status"
+            }
+          }
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "status",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "cleanup_status"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "cleanup_status_recorded"
+        },
+        {
+          "case_id": "status_regression",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "cancelled__late_worker_event",
+      "entity_position": "cancelled",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "normalized_late_event",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "The input is already a normalized late Worker event."
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__job_created",
+      "entity_position": "terminated",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_already_exists"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__resources_committed",
+      "entity_position": "terminated",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__worker_launch_intent",
+      "entity_position": "terminated",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__worker_launch_observed",
+      "entity_position": "terminated",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__worker_running",
+      "entity_position": "terminated",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__cancel_accepted",
+      "entity_position": "terminated",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__terminate_accepted",
+      "entity_position": "terminated",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__timeout_expired",
+      "entity_position": "terminated",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "exit_confirmation_expired_live",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "process_exit_confirmation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "cleanup_status": "incomplete"
+          },
+          "post_sync_effects": [
+            "request_forced_stop",
+            "quarantine_resources",
+            "set_readiness_false"
+          ]
+        },
+        {
+          "case_id": "stale_after_exit_invariant",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "process_exit_confirmation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              }
+            ]
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        },
+        {
+          "case_id": "wrong_phase",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "timeout_phase_mismatch"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__worker_completed",
+      "entity_position": "terminated",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__worker_failed",
+      "entity_position": "terminated",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__process_exit_confirmed",
+      "entity_position": "terminated",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "first_confirmation",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed",
+          "updates": {
+            "process_presence": "absent",
+            "process_exit_confirmed": true,
+            "completion_mode": {
+              "from": "payload.completion_mode"
+            }
+          },
+          "post_sync_effects": [
+            "disarm_cooperative_stop_timeout",
+            "disarm_process_exit_confirmation_timeout"
+          ]
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "completion_mode",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "completion_mode"
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed"
+        },
+        {
+          "case_id": "conflicting_duplicate",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__session_retain_requested",
+      "entity_position": "terminated",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__session_retained",
+      "entity_position": "terminated",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__finalization_completed",
+      "entity_position": "terminated",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__finalization_failed",
+      "entity_position": "terminated",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__terminal_outcome_committed",
+      "entity_position": "terminated",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__resources_released",
+      "entity_position": "terminated",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "release",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "resource_status",
+                "operator": "eq",
+                "value": "committed"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "resources_released",
+          "updates": {
+            "resource_status": "released"
+          }
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "resource_status",
+                "operator": "eq",
+                "value": "released"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "resources_released"
+        },
+        {
+          "case_id": "release_precondition_failed",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__cleanup_status_recorded",
+      "entity_position": "terminated",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "first_record",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "cleanup_status",
+                "operator": "eq",
+                "value": "pending"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "cleanup_status_recorded",
+          "updates": {
+            "cleanup_status": {
+              "from": "payload.status"
+            }
+          }
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "status",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "cleanup_status"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "cleanup_status_recorded"
+        },
+        {
+          "case_id": "status_regression",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "terminated__late_worker_event",
+      "entity_position": "terminated",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "normalized_late_event",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "The input is already a normalized late Worker event."
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__job_created",
+      "entity_position": "timed_out",
+      "event_kind": "job_created",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "job_already_exists"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__resources_committed",
+      "entity_position": "timed_out",
+      "event_kind": "resources_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__worker_launch_intent",
+      "entity_position": "timed_out",
+      "event_kind": "worker_launch_intent",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__worker_launch_observed",
+      "entity_position": "timed_out",
+      "event_kind": "worker_launch_observed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__worker_running",
+      "entity_position": "timed_out",
+      "event_kind": "worker_running",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__cancel_accepted",
+      "entity_position": "timed_out",
+      "event_kind": "cancel_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__terminate_accepted",
+      "entity_position": "timed_out",
+      "event_kind": "terminate_accepted",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "command_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__timeout_expired",
+      "entity_position": "timed_out",
+      "event_kind": "timeout_expired",
+      "cases": [
+        {
+          "case_id": "exit_confirmation_expired_live",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "process_exit_confirmation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "cleanup_status": "incomplete"
+          },
+          "post_sync_effects": [
+            "request_forced_stop",
+            "quarantine_resources",
+            "set_readiness_false"
+          ]
+        },
+        {
+          "case_id": "stale_after_exit_invariant",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "process_exit_confirmation"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              }
+            ]
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        },
+        {
+          "case_id": "wrong_phase",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "timeout_phase_mismatch"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__worker_completed",
+      "entity_position": "timed_out",
+      "event_kind": "worker_completed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__worker_failed",
+      "entity_position": "timed_out",
+      "event_kind": "worker_failed",
+      "cases": [
+        {
+          "case_id": "delayed_terminal_worker_event",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "worker_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "worker_id"
+              }
+            ]
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "normalize_to": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "Preserve terminal reason and completion candidate."
+        },
+        {
+          "case_id": "worker_identity_mismatch",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__process_exit_confirmed",
+      "entity_position": "timed_out",
+      "event_kind": "process_exit_confirmed",
+      "cases": [
+        {
+          "case_id": "first_confirmation",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": false
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed",
+          "updates": {
+            "process_presence": "absent",
+            "process_exit_confirmed": true,
+            "completion_mode": {
+              "from": "payload.completion_mode"
+            }
+          },
+          "post_sync_effects": [
+            "disarm_cooperative_stop_timeout",
+            "disarm_process_exit_confirmation_timeout"
+          ]
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "completion_mode",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "completion_mode"
+              },
+              {
+                "source": "payload",
+                "field": "launch_operation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "launch_operation_id"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "process_exit_confirmed"
+        },
+        {
+          "case_id": "conflicting_duplicate",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__session_retain_requested",
+      "entity_position": "timed_out",
+      "event_kind": "session_retain_requested",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__session_retained",
+      "entity_position": "timed_out",
+      "event_kind": "session_retained",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__finalization_completed",
+      "entity_position": "timed_out",
+      "event_kind": "finalization_completed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__finalization_failed",
+      "entity_position": "timed_out",
+      "event_kind": "finalization_failed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__terminal_outcome_committed",
+      "entity_position": "timed_out",
+      "event_kind": "terminal_outcome_committed",
+      "cases": [
+        {
+          "case_id": "rejected",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "event_not_allowed_in_state"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__resources_released",
+      "entity_position": "timed_out",
+      "event_kind": "resources_released",
+      "cases": [
+        {
+          "case_id": "release",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "resource_status",
+                "operator": "eq",
+                "value": "committed"
+              },
+              {
+                "source": "snapshot",
+                "field": "process_exit_confirmed",
+                "operator": "eq",
+                "value": true
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "resources_released",
+          "updates": {
+            "resource_status": "released"
+          }
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "resource_status",
+                "operator": "eq",
+                "value": "released"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_id",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_id"
+              },
+              {
+                "source": "payload",
+                "field": "allocation_digest",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "allocation_digest"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "resources_released"
+        },
+        {
+          "case_id": "release_precondition_failed",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__cleanup_status_recorded",
+      "entity_position": "timed_out",
+      "event_kind": "cleanup_status_recorded",
+      "cases": [
+        {
+          "case_id": "first_record",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "snapshot",
+                "field": "cleanup_status",
+                "operator": "eq",
+                "value": "pending"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "cleanup_status_recorded",
+          "updates": {
+            "cleanup_status": {
+              "from": "payload.status"
+            }
+          }
+        },
+        {
+          "case_id": "matching_duplicate",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "status",
+                "operator": "eq_field",
+                "right_source": "snapshot",
+                "right_field": "cleanup_status"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "cleanup_status_recorded"
+        },
+        {
+          "case_id": "status_regression",
+          "when": {
+            "operator": "otherwise"
+          },
+          "disposition": "reject",
+          "rejection_reason": "invariant_violation"
+        }
+      ]
+    },
+    {
+      "pair_id": "timed_out__late_worker_event",
+      "entity_position": "timed_out",
+      "event_kind": "late_worker_event",
+      "cases": [
+        {
+          "case_id": "normalized_late_event",
+          "when": {
+            "operator": "always"
+          },
+          "disposition": "late_audit",
+          "journal_event_type": "late_worker_event",
+          "post_sync_effects": [
+            "ack_late_worker_event"
+          ],
+          "note": "The input is already a normalized late Worker event."
+        }
+      ]
+    }
+  ],
+  "case_semantics": "ordered_first_match",
+  "snapshot_schema": "job-reducer-snapshot.schema.json",
+  "candidate_event_schema": "job-candidate-event.schema.json",
+  "accepted_event_payload_rule": "copy_validated_candidate_payload",
+  "timeout_generation_validation_rule": "validate_before_candidate_event",
+  "timer_ingress_contract": {
+    "generation_type": "uint64_nonzero_nonwrapping",
+    "case_semantics": "ordered_first_match",
+    "cases": [
+      {
+        "case_id": "generation_exhausted",
+        "when": "arm_requested_at_uint64_max",
+        "disposition": "fail_closed",
+        "post_sync_effects": [
+          "set_readiness_false"
+        ]
+      },
+      {
+        "case_id": "disarmed_notification",
+        "when": "active_generation_is_null",
+        "disposition": "discard_without_candidate"
+      },
+      {
+        "case_id": "current_notification",
+        "when": "notification_generation_equals_active",
+        "disposition": "emit_candidate_event"
+      },
+      {
+        "case_id": "stale_notification",
+        "when": "otherwise",
+        "disposition": "discard_without_candidate"
+      }
+    ]
+  }
+}

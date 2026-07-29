@@ -17,6 +17,7 @@ See:
 - [Overview](docs/00_overview.md)
 - [Requirements](docs/01_requirements.md)
 - [Architecture](docs/02_architecture.md)
+- [Core contracts](docs/03_core_contracts.md)
 - [Build and test](docs/06_build_test_packaging.md)
 - [Issue breakdown](docs/07_issue_breakdown.md)
 - [Contract Registry](docs/08_contract_registry.md)

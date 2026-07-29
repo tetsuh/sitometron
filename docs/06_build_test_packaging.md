@@ -53,6 +53,16 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `NFR-002` | CTest `core_dependency_isolation`, `core_dependency_isolation_rejects_third_party` | Active |
 | `NFR-003` | CI jobs `linux`, `windows`; CTest `in_source_build_rejected` | CI active; rejection test planned before the Phase 0A Gate closes |
 | `NFR-004` | CTest `sitometron_core_tests`; policy check `unit_tests_reject_real_sleep` | Core test active; policy check planned before the Phase 0A Gate closes |
+| `JOB-001` | CTest `core_job_contract`; C++ test `job_closed_state_set` | Contract check active; C++ test planned after ADR-0002 acceptance |
+| `JOB-002` | CTest `core_job_contract`; C++ tests `job_state_event_vectors`, `job_command_vectors` | Contract check active; C++ tests planned after ADR-0002 acceptance |
+| `JOB-003` | C++ test `job_first_cause_vectors` | Planned after ADR-0002 acceptance |
+| `JOB-004` | C++ test `job_finalization_vectors` | Planned after ADR-0002 acceptance |
+| `JOB-005` | C++ test `job_timeout_vectors` | Planned after ADR-0002 acceptance |
+| `JOB-006` | C++ test `job_late_cleanup_vectors` | Planned after ADR-0002 acceptance |
+| `JOB-007` | C++ test `job_ordering_vectors` | Planned after ADR-0002 acceptance |
+| `JRN-001` | CTest `core_job_contract`; C++ test `job_journal_envelope_vectors` | Contract check active; C++ test planned in Phase 0B |
+| `JRN-002` | C++ test `job_journal_commit_order` | Planned in Phase 0B |
+| `JRN-003` | C++ tests `job_rejected_input_no_append`, `job_journal_failure_fail_closed` | Planned after ADR-0002 acceptance and in Phase 0B respectively |
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even

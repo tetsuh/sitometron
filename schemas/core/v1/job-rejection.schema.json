@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "job-rejection.schema.json",
+  "title": "Sitometron core Job rejection v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "reason"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "reason": {
+      "enum": [
+        "job_not_found",
+        "job_already_exists",
+        "command_not_allowed_in_state",
+        "event_not_allowed_in_state",
+        "stop_cause_already_latched",
+        "timeout_phase_mismatch",
+        "terminal_outcome_mismatch",
+        "required_finalization_fact_missing",
+        "invalid_event_payload",
+        "invariant_violation"
+      ]
+    }
+  }
+}
