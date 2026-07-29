@@ -1,0 +1,32 @@
+# Contract Registry
+
+The Registry is the inventory of cross-component contracts and stable identifiers. Contract maturity
+and implementation status are independent.
+
+## 1. Rules
+
+1. Register a Planned row before implementation begins.
+2. Give each unresolved decision one design authority. A new surface that overlaps an existing row
+   must reuse its authority or obtain an ADR explaining why it cannot.
+3. An Accepted ADR may make a Contract Normative while implementation remains Planned.
+4. A PR names every affected row and its maturity and implementation transitions, or gives N/A.
+5. An unresolved specification section uses the standard Planned-not-normative banner.
+6. A Milestone horizontal review checks every new or changed surface against this Registry.
+
+Contract maturity values are `Planned`, `Normative`, `Deprecated`, and `Superseded`. Implementation
+values are `Planned`, `In progress`, `Implemented`, and `Removed`.
+
+## 2. Registered surfaces
+
+| Contract surface | Maturity | Implementation | Normative or design authority | Owner |
+|---|---|---|---|---|
+| Core/adapter dependency boundary | Normative | Implemented | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) | Phase 0A |
+| Core Job states and transitions | Planned | Planned | [Issue #3](https://github.com/tetsuh/sitometron/issues/3) → ADR | Phase 0A |
+| Core commands and rejection reasons | Planned | Planned | [Issue #3](https://github.com/tetsuh/sitometron/issues/3) → ADR | Phase 0A |
+| JobJournal envelope and event schemas | Planned | Planned | Pending Phase 0A Issue and ADR | Phase 0A |
+| External REST v1 | Planned | Planned | Pending Phase 1 Issue and ADR | Phase 1 |
+| Application Registry schema | Planned | Planned | Pending Phase 1 Issue and ADR | Phase 1 |
+| Worker HTTP v1 routes and JSON schemas | Planned | Planned | Pending Phase 2 Issue and ADR | Phase 2 |
+| ResourceProfile and ExecutionPolicy schemas | Planned | Planned | Pending Phase 3 Issue and ADR | Phase 3 |
+| Sitos adapter boundary | Planned | Planned | Upstream contracts plus pending Phase 4 ADR | Phase 4 |
+| Artifact REST and manifest schemas | Planned | Planned | Pending Phase 5 Issue and ADR | Phase 5 |

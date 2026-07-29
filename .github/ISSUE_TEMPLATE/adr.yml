@@ -1,0 +1,49 @@
+name: Architecture decision
+description: Propose a decision that requires an ADR
+title: "[ADR] "
+labels: ["type:adr"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and decision to make
+    validations:
+      required: true
+  - type: input
+    id: phase
+    attributes:
+      label: Phase and Gate Issue
+    validations:
+      required: true
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Requirement IDs or N/A
+    validations:
+      required: true
+  - type: textarea
+    id: contracts
+    attributes:
+      label: Contract Registry rows and intended transitions
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options requiring owner decision
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Include ADR review, owner decision, Registry updates, and implementation gate.
+    validations:
+      required: true
+  - type: checkboxes
+    id: provenance
+    attributes:
+      label: Clean-room confirmation
+      options:
+        - label: This Issue contains no proprietary implementation material.
+          required: true

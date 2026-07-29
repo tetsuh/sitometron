@@ -17,6 +17,8 @@ jobs:
         run: cmake --preset dev-linux
       - name: Build
         run: cmake --build --preset dev-linux
+      - name: Format
+        run: git ls-files '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror
       - name: Test
         run: ctest --preset dev-linux
       - name: Core dependency isolation

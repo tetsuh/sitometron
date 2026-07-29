@@ -14,11 +14,16 @@ APIs. Adapters are composed only by `sitometrond`.
 
 See:
 
-- [Architecture boundaries](docs/architecture/boundaries.md)
+- [Overview](docs/00_overview.md)
+- [Requirements](docs/01_requirements.md)
+- [Architecture](docs/02_architecture.md)
+- [Build and test](docs/06_build_test_packaging.md)
+- [Issue breakdown](docs/07_issue_breakdown.md)
+- [Contract Registry](docs/08_contract_registry.md)
+- [Dependency policy](docs/09_dependency_policy.md)
+- [ADR process](docs/10_adr_process.md)
 - [Clean-room policy](docs/clean-room-policy.md)
 - [Development workflow](docs/development_workflow.md)
-- [Dependency policy](docs/dependency_policy.md)
-- [Contract registry](docs/contract_registry.md)
 
 ## Build
 

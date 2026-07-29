@@ -2,8 +2,9 @@
 
 ## C++ dependencies
 
-Sitometron uses vcpkg manifest mode for third-party C++ dependencies. The repository pins the
-builtin baseline and CI provisioning commit. Developers and CI pre-provision `VCPKG_ROOT`; project
+Sitometron uses vcpkg manifest mode for third-party C++ dependencies. `vcpkg.json` pins builtin
+baseline `40f3c709db80acf154ac4b17a1f83c564ebd022e`; CI provisioning uses a separately pinned tool
+commit when dependencies are introduced. Developers and CI pre-provision `VCPKG_ROOT`; project
 CMake never clones, bootstraps, updates, or invokes a package manager.
 
 Conan and general dependency acquisition through CMake `FetchContent` are not used. Runtime code
