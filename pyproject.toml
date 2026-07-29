@@ -1,0 +1,14 @@
+[project]
+name = "sitometron-tooling"
+version = "0.0.0"
+description = "Development-only tooling for Sitometron"
+requires-python = "==3.12.*"
+dependencies = []
+
+[dependency-groups]
+schema = [
+  "jsonschema==4.26.0",
+]
+
+[tool.uv]
+package = false
