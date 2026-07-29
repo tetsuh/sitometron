@@ -146,6 +146,30 @@ class LocalDraft202012SchemasTest(unittest.TestCase):
         with self.assertRaises(Unresolvable):
             LocalDraft202012Schemas.load(self.root)
 
+    def test_rejects_windows_path_reference_forms(self) -> None:
+        references = [
+            r"\\attacker.example\share\schema.json",
+            r"C:\temp\schema.json",
+            r"\\?\C:\temp\schema.json",
+            r"folder\schema.json",
+        ]
+        for reference in references:
+            with self.subTest(reference=reference):
+                root = self.root / str(len(list(self.root.iterdir())))
+                root.mkdir()
+                (root / "root.schema.json").write_text(
+                    json.dumps(
+                        {
+                            "$schema": "https://json-schema.org/draft/2020-12/schema",
+                            "$id": "root.schema.json",
+                            "$ref": reference,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaises((SchemaError, Unresolvable)):
+                    LocalDraft202012Schemas.load(root)
+
     def test_rejects_invalid_instance(self) -> None:
         root_schema = self.write_json(
             "root.schema.json",

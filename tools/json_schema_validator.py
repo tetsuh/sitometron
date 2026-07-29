@@ -20,14 +20,18 @@ def _deny_external_retrieval(uri: str) -> Resource[Any]:
     raise NoSuchResource(ref=uri)
 
 
+def _require_local_uri(uri: str) -> None:
+    parsed = urlparse(uri)
+    if parsed.scheme or parsed.netloc or "\\" in uri:
+        raise Unresolvable(ref=uri)
+
+
 def _schema_resources(
     resource: Resource[Any], base_uri: str
 ) -> Iterator[tuple[Resource[Any], str]]:
     resource_id = resource.id()
     current_base = urljoin(base_uri, resource_id) if resource_id is not None else base_uri
-    parsed_id = urlparse(current_base)
-    if parsed_id.scheme or parsed_id.netloc:
-        raise Unresolvable(ref=current_base)
+    _require_local_uri(current_base)
     yield resource, current_base
     for subresource in resource.subresources():
         yield from _schema_resources(subresource, current_base)
@@ -66,9 +70,7 @@ class LocalDraft202012Schemas:
             schema_id = document.get("$id", relative_uri)
             if not isinstance(schema_id, str) or not schema_id:
                 raise ValueError(f"schema $id must be a non-empty string: {path}")
-            parsed_id = urlparse(schema_id)
-            if parsed_id.scheme or parsed_id.netloc:
-                raise Unresolvable(ref=schema_id)
+            _require_local_uri(schema_id)
 
             for uri in dict.fromkeys((relative_uri, schema_id)):
                 if uri in registered_uris:
@@ -93,6 +95,7 @@ class LocalDraft202012Schemas:
                 for keyword in ("$ref", "$dynamicRef"):
                     reference = contents.get(keyword)
                     if isinstance(reference, str):
+                        _require_local_uri(reference)
                         resolver.lookup(reference)
 
     def validate_instance(self, schema_path: Path, instance: object) -> None:
