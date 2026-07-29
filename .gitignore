@@ -1,0 +1,12 @@
+/build/
+/CMakeUserPresets.json
+/.cache/
+/.clangd/
+/.idea/
+/.vscode/
+*.user
+*.suo
+*.swp
+__pycache__/
+.pytest_cache/
+.venv/

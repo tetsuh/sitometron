@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Configure
+        run: cmake --preset dev-linux
+      - name: Build
+        run: cmake --build --preset dev-linux
+      - name: Test
+        run: ctest --preset dev-linux
+      - name: Core dependency isolation
+        run: cmake -P cmake/check_core_dependency_isolation.cmake
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Configure, build, and test
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -property installationPath
+          Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
+          cmake --preset dev-windows
+          cmake --build --preset dev-windows
+          ctest --preset dev-windows
+      - name: Core dependency isolation
+        run: cmake -P cmake/check_core_dependency_isolation.cmake

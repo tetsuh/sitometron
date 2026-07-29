@@ -1,0 +1,32 @@
+name: Phase gate
+description: Track one Phase entry, exit, and evidence gate
+title: "[Gate] "
+labels: ["gate"]
+body:
+  - type: input
+    id: phase
+    attributes:
+      label: Phase and Milestone
+    validations:
+      required: true
+  - type: textarea
+    id: entry
+    attributes:
+      label: Entry gate
+      description: Use a checklist and link every prerequisite.
+    validations:
+      required: true
+  - type: textarea
+    id: exit
+    attributes:
+      label: Exit gate
+      description: Use a checklist with measurable completion criteria.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Link ADRs, Contract Registry rows, CI runs, and qualification reports.
+    validations:
+      required: true

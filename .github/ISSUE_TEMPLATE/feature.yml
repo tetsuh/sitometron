@@ -1,0 +1,46 @@
+name: Feature
+description: Propose or implement a Sitometron capability
+title: ""
+labels: []
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+  - type: input
+    id: phase
+    attributes:
+      label: Phase and Gate Issue
+    validations:
+      required: true
+  - type: textarea
+    id: contracts
+    attributes:
+      label: Contract Registry rows or N/A
+    validations:
+      required: true
+  - type: dropdown
+    id: adr
+    attributes:
+      label: ADR required?
+      options:
+        - "Yes"
+        - "No"
+        - "Needs review"
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true
+  - type: checkboxes
+    id: provenance
+    attributes:
+      label: Clean-room confirmation
+      options:
+        - label: This Issue contains no proprietary implementation material.
+          required: true
