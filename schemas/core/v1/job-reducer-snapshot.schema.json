@@ -35,7 +35,8 @@
       "$ref": "#/$defs/uuidV7"
     },
     "session_id": {
-      "$ref": "#/$defs/uuidV7"
+      "$ref": "#/$defs/uuidV7",
+      "x-sitometron-equals-field": "job_id"
     },
     "state": {
       "enum": [

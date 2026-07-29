@@ -84,7 +84,7 @@
           "$ref": "job-command.schema.json"
         },
         {
-          "$ref": "job-candidate-event.schema.json"
+          "$ref": "job-reducer-input-event.schema.json"
         }
       ]
     },

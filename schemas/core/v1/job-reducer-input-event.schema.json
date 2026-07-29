@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "job-candidate-event.schema.json",
-  "title": "Sitometron core Job candidate event v1",
+  "$id": "job-reducer-input-event.schema.json",
+  "title": "Sitometron internal core Job reducer input event v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -41,6 +41,12 @@
       "$ref": "job-journal-event.schema.json#/$defs/workerRunning"
     },
     {
+      "$ref": "job-journal-event.schema.json#/$defs/cancelAccepted"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/terminateAccepted"
+    },
+    {
       "$ref": "job-journal-event.schema.json#/$defs/timeoutExpired"
     },
     {
@@ -72,6 +78,9 @@
     },
     {
       "$ref": "job-journal-event.schema.json#/$defs/cleanupStatusRecorded"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/lateWorkerEvent"
     }
   ]
 }

@@ -26,7 +26,12 @@
     "candidate_event_schema",
     "accepted_event_payload_rule",
     "timeout_generation_validation_rule",
-    "timer_ingress_contract"
+    "timer_ingress_contract",
+    "raw_candidate_event_kinds",
+    "command_produced_event_kinds",
+    "reducer_normalized_event_kinds",
+    "reducer_input_event_schema",
+    "terminal_worker_ack_contract"
   ],
   "properties": {
     "$schema": {
@@ -110,6 +115,57 @@
       "items": {
         "$ref": "#/$defs/eventRow"
       }
+    },
+    "raw_candidate_event_kinds": {
+      "const": [
+        "job_created",
+        "resources_committed",
+        "worker_launch_intent",
+        "worker_launch_observed",
+        "worker_running",
+        "timeout_expired",
+        "worker_completed",
+        "worker_failed",
+        "process_exit_confirmed",
+        "session_retain_requested",
+        "session_retained",
+        "finalization_completed",
+        "finalization_failed",
+        "terminal_outcome_committed",
+        "resources_released",
+        "cleanup_status_recorded"
+      ]
+    },
+    "command_produced_event_kinds": {
+      "const": [
+        "cancel_accepted",
+        "terminate_accepted"
+      ]
+    },
+    "reducer_normalized_event_kinds": {
+      "const": [
+        "late_worker_event"
+      ]
+    },
+    "reducer_input_event_schema": {
+      "const": "job-reducer-input-event.schema.json"
+    },
+    "terminal_worker_ack_contract": {
+      "const": {
+        "bind_on_events": [
+          "worker_completed",
+          "worker_failed"
+        ],
+        "identity_fields": [
+          "worker_id",
+          "event_sequence"
+        ],
+        "emit_after": "synced_terminal_outcome_committed",
+        "delivery_owner": "phase_2_worker_adapter",
+        "delivery_semantics": "idempotent_retry_until_ack_or_process_exit",
+        "clear_on": "first_accepted_process_exit_confirmed",
+        "terminal_commit_clears_binding": false
+      }
     }
   },
   "$defs": {
@@ -118,6 +174,7 @@
       "additionalProperties": false,
       "required": [
         "generation_type",
+        "generation_scope",
         "case_semantics",
         "cases"
       ],
@@ -154,6 +211,9 @@
               "disposition": "discard_without_candidate"
             }
           ]
+        },
+        "generation_scope": {
+          "const": "per_timeout_phase"
         }
       }
     },

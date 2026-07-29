@@ -7,6 +7,7 @@ endif()
 set(V1 "${SITOMETRON_SOURCE_DIR}/schemas/core/v1")
 set(COMMAND_SCHEMA_PATH "${V1}/job-command.schema.json")
 set(CANDIDATE_SCHEMA_PATH "${V1}/job-candidate-event.schema.json")
+set(REDUCER_INPUT_SCHEMA_PATH "${V1}/job-reducer-input-event.schema.json")
 set(JOURNAL_SCHEMA_PATH "${V1}/job-journal-event.schema.json")
 set(REJECTION_SCHEMA_PATH "${V1}/job-rejection.schema.json")
 set(SNAPSHOT_SCHEMA_PATH "${V1}/job-reducer-snapshot.schema.json")
@@ -19,6 +20,7 @@ set(DIAGRAM_PATH "${V1}/job-state-diagram.dot")
 foreach(path IN ITEMS
         "${COMMAND_SCHEMA_PATH}"
         "${CANDIDATE_SCHEMA_PATH}"
+        "${REDUCER_INPUT_SCHEMA_PATH}"
         "${JOURNAL_SCHEMA_PATH}"
         "${REJECTION_SCHEMA_PATH}"
         "${SNAPSHOT_SCHEMA_PATH}"
@@ -34,6 +36,7 @@ endforeach()
 
 file(READ "${COMMAND_SCHEMA_PATH}" command_schema)
 file(READ "${CANDIDATE_SCHEMA_PATH}" candidate_schema)
+file(READ "${REDUCER_INPUT_SCHEMA_PATH}" reducer_input_schema)
 file(READ "${JOURNAL_SCHEMA_PATH}" journal_schema)
 file(READ "${REJECTION_SCHEMA_PATH}" rejection_schema)
 file(READ "${SNAPSHOT_SCHEMA_PATH}" snapshot_schema)
@@ -54,6 +57,21 @@ function(read_string_array json output)
       list(APPEND values "${value}")
     endforeach()
   endif()
+  set(${output} "${values}" PARENT_SCOPE)
+endfunction()
+
+function(read_event_definition_refs schema output)
+  string(JSON count LENGTH "${schema}" oneOf)
+  math(EXPR last "${count} - 1")
+  set(values "")
+  foreach(index RANGE 0 ${last})
+    string(JSON reference GET "${schema}" oneOf ${index} "$ref")
+    if(NOT reference MATCHES "^job-journal-event.schema.json#/[$]defs/[A-Za-z][A-Za-z0-9]*$")
+      message(FATAL_ERROR "Event schema has an unexpected reference: ${reference}")
+    endif()
+    string(REGEX REPLACE "^.*/" "" definition "${reference}")
+    list(APPEND values "${definition}")
+  endforeach()
   set(${output} "${values}" PARENT_SCOPE)
 endfunction()
 
@@ -85,7 +103,7 @@ function(json_signature json output)
 endfunction()
 
 # Validate draft declarations and document identities without adding a package-manager dependency.
-foreach(schema_name IN ITEMS command candidate journal rejection snapshot contract vectors)
+foreach(schema_name IN ITEMS command candidate reducer_input journal rejection snapshot contract vectors)
   string(JSON draft GET "${${schema_name}_schema}" "$schema")
   if(NOT draft STREQUAL "https://json-schema.org/draft/2020-12/schema")
     message(FATAL_ERROR "${schema_name} schema must use JSON Schema draft 2020-12")
@@ -98,10 +116,13 @@ string(JSON authority GET "${contract}" authority)
 string(JSON case_semantics GET "${contract}" case_semantics)
 string(JSON contract_schema_id GET "${contract_schema}" "$id")
 string(JSON declared_contract_schema GET "${contract}" "$schema")
-if(NOT contract_version EQUAL 1 OR NOT contract_status STREQUAL "proposed" OR
-   NOT authority STREQUAL "ADR-0002" OR NOT case_semantics STREQUAL "ordered_first_match" OR
+if(NOT contract_status MATCHES "^(proposed|normative|deprecated|superseded)$")
+  message(FATAL_ERROR "Unknown core contract status: ${contract_status}")
+endif()
+if(NOT contract_version EQUAL 1 OR NOT authority STREQUAL "ADR-0002" OR
+   NOT case_semantics STREQUAL "ordered_first_match" OR
    NOT declared_contract_schema STREQUAL contract_schema_id)
-  message(FATAL_ERROR "Unexpected core contract identity, status, schema, or case semantics")
+  message(FATAL_ERROR "Unexpected core contract identity, schema, or case semantics")
 endif()
 
 string(JSON vectors_version GET "${vectors}" contract_version)
@@ -113,12 +134,50 @@ if(NOT vectors_version EQUAL contract_version OR NOT vectors_status STREQUAL con
    NOT vectors_authority STREQUAL authority OR NOT declared_vectors_schema STREQUAL vectors_schema_id)
   message(FATAL_ERROR "Vector identity, status, or schema differs from the core contract")
 endif()
+string(JSON declared_candidate_schema GET "${contract}" candidate_event_schema)
+string(JSON candidate_schema_id GET "${candidate_schema}" "$id")
+string(JSON declared_reducer_input_schema GET "${contract}" reducer_input_event_schema)
+string(JSON reducer_input_schema_id GET "${reducer_input_schema}" "$id")
+if(NOT declared_candidate_schema STREQUAL candidate_schema_id OR
+   NOT declared_reducer_input_schema STREQUAL reducer_input_schema_id)
+  message(FATAL_ERROR "Candidate or internal reducer-input schema identity differs from the contract")
+endif()
+string(JSON session_identity_source GET "${snapshot_schema}" properties session_id
+       x-sitometron-equals-field)
+if(NOT session_identity_source STREQUAL "job_id")
+  message(FATAL_ERROR "The snapshot schema must declare the v0.1 Job/Session identity equality")
+endif()
+string(JSON timer_generation_scope GET "${contract}" timer_ingress_contract generation_scope)
+if(NOT timer_generation_scope STREQUAL "per_timeout_phase")
+  message(FATAL_ERROR "Timer generation must be independently scoped per timeout phase")
+endif()
+read_string_array("${contract}" ack_bind_events terminal_worker_ack_contract bind_on_events)
+read_string_array("${contract}" ack_identity_fields terminal_worker_ack_contract identity_fields)
+string(JSON ack_emit_after GET "${contract}" terminal_worker_ack_contract emit_after)
+string(JSON ack_delivery_owner GET "${contract}" terminal_worker_ack_contract delivery_owner)
+string(JSON ack_delivery_semantics GET "${contract}" terminal_worker_ack_contract delivery_semantics)
+string(JSON ack_clear_on GET "${contract}" terminal_worker_ack_contract clear_on)
+string(JSON terminal_commit_clears GET "${contract}" terminal_worker_ack_contract
+       terminal_commit_clears_binding)
+set(expected_ack_bind_events worker_completed worker_failed)
+set(expected_ack_identity_fields worker_id event_sequence)
+if(NOT ack_bind_events STREQUAL expected_ack_bind_events OR
+   NOT ack_identity_fields STREQUAL expected_ack_identity_fields OR
+   NOT ack_emit_after STREQUAL "synced_terminal_outcome_committed" OR
+   NOT ack_delivery_owner STREQUAL "phase_2_worker_adapter" OR
+   NOT ack_delivery_semantics STREQUAL "idempotent_retry_until_ack_or_process_exit" OR
+   NOT ack_clear_on STREQUAL "first_accepted_process_exit_confirmed" OR terminal_commit_clears)
+  message(FATAL_ERROR "Terminal Worker-event ACK contract differs from ADR-0002")
+endif()
 
 read_string_array("${contract}" states job_states)
 read_string_array("${contract}" terminal_states terminal_states)
 read_string_array("${contract}" positions entity_positions)
 read_string_array("${contract}" commands command_kinds)
 read_string_array("${contract}" events journal_event_kinds)
+read_string_array("${contract}" raw_candidate_events raw_candidate_event_kinds)
+read_string_array("${contract}" command_produced_events command_produced_event_kinds)
+read_string_array("${contract}" reducer_normalized_events reducer_normalized_event_kinds)
 read_string_array("${contract}" timeout_phases timeout_phases)
 read_string_array("${contract}" terminal_outcomes terminal_outcomes)
 read_string_array("${contract}" dispositions dispositions)
@@ -129,11 +188,45 @@ read_string_array("${snapshot_schema}" snapshot_fields required)
 set(expected_states admitted preparing running stopping finalizing succeeded failed cancelled terminated timed_out)
 set(expected_terminal_states succeeded failed cancelled terminated timed_out)
 set(expected_commands cancel terminate)
+set(expected_reducer_input_definitions
+    jobCreated
+    resourcesCommitted
+    workerLaunchIntent
+    workerLaunchObserved
+    workerRunning
+    cancelAccepted
+    terminateAccepted
+    timeoutExpired
+    workerCompleted
+    workerFailed
+    processExitConfirmed
+    sessionRetainRequested
+    sessionRetained
+    finalizationCompleted
+    finalizationFailed
+    terminalOutcomeCommitted
+    resourcesReleased
+    cleanupStatusRecorded
+    lateWorkerEvent)
+set(expected_candidate_definitions ${expected_reducer_input_definitions})
+list(REMOVE_ITEM expected_candidate_definitions cancelAccepted terminateAccepted lateWorkerEvent)
+read_event_definition_refs("${candidate_schema}" candidate_definitions)
+read_event_definition_refs("${reducer_input_schema}" reducer_input_definitions)
+set(expected_command_produced_events cancel_accepted terminate_accepted)
+set(expected_reducer_normalized_events late_worker_event)
+set(expected_raw_candidate_events ${events})
+list(REMOVE_ITEM expected_raw_candidate_events ${expected_command_produced_events}
+                 ${expected_reducer_normalized_events})
 set(expected_dispositions transition audit late_audit reject)
 set(expected_positions absent ${expected_states})
 if(NOT states STREQUAL expected_states OR NOT terminal_states STREQUAL expected_terminal_states OR
    NOT commands STREQUAL expected_commands OR NOT dispositions STREQUAL expected_dispositions OR
-   NOT positions STREQUAL expected_positions)
+   NOT positions STREQUAL expected_positions OR
+   NOT raw_candidate_events STREQUAL expected_raw_candidate_events OR
+   NOT command_produced_events STREQUAL expected_command_produced_events OR
+   NOT reducer_normalized_events STREQUAL expected_reducer_normalized_events OR
+   NOT candidate_definitions STREQUAL expected_candidate_definitions OR
+   NOT reducer_input_definitions STREQUAL expected_reducer_input_definitions)
   message(FATAL_ERROR "Closed core enum differs from ADR-0002")
 endif()
 foreach(list_name IN ITEMS states terminal_states positions commands events timeout_phases
@@ -191,6 +284,19 @@ function(is_sha256 value output)
   else()
     set(${output} FALSE PARENT_SCOPE)
   endif()
+endfunction()
+
+function(is_uint64_nonzero value output)
+  string(LENGTH "${value}" length)
+  if(value MATCHES "^[1-9][0-9]*$" AND length LESS 21)
+    set(valid TRUE)
+  elseif(value MATCHES "^[1-9][0-9]*$" AND length EQUAL 20 AND
+         NOT value STRGREATER "18446744073709551615")
+    set(valid TRUE)
+  else()
+    set(valid FALSE)
+  endif()
+  set(${output} ${valid} PARENT_SCOPE)
 endfunction()
 
 # Validate candidate payload fields and the scalar/nested constraints used by every core fixture.
@@ -301,7 +407,8 @@ function(validate_event_payload event payload label expect_valid)
       string(JSON worker_id GET "${payload}" worker_id)
       string(JSON sequence GET "${payload}" event_sequence)
       is_uuid_v4("${worker_id}" worker_valid)
-      if(NOT worker_valid OR sequence LESS 1)
+      is_uint64_nonzero("${sequence}" sequence_valid)
+      if(NOT worker_valid OR NOT sequence_valid)
         set(valid FALSE)
       endif()
     elseif(event STREQUAL "cancel_accepted" OR event STREQUAL "terminate_accepted")
@@ -314,7 +421,8 @@ function(validate_event_payload event payload label expect_valid)
       string(JSON phase GET "${payload}" phase)
       string(JSON generation GET "${payload}" timer_generation)
       list(FIND timeout_phases "${phase}" phase_index)
-      if(phase_index EQUAL -1 OR generation LESS 1)
+      is_uint64_nonzero("${generation}" generation_valid)
+      if(phase_index EQUAL -1 OR NOT generation_valid)
         set(valid FALSE)
       endif()
     elseif(event STREQUAL "process_exit_confirmed")
@@ -347,7 +455,9 @@ function(validate_event_payload event payload label expect_valid)
       string(JSON worker_id GET "${payload}" worker_id)
       string(JSON sequence GET "${payload}" event_sequence)
       is_uuid_v4("${worker_id}" worker_valid)
-      if(NOT original MATCHES "^worker_(completed|failed)$" OR NOT worker_valid OR sequence LESS 1)
+      is_uint64_nonzero("${sequence}" sequence_valid)
+      if(NOT original MATCHES "^worker_(completed|failed)$" OR NOT worker_valid OR
+         NOT sequence_valid)
         set(valid FALSE)
       endif()
     endif()
@@ -505,6 +615,37 @@ foreach(matrix IN ITEMS event_matrix command_matrix)
         endif()
       endif()
     endforeach()
+  endforeach()
+endforeach()
+
+# A first accepted process exit ends the bound terminal Worker-event ACK obligation.
+string(JSON event_matrix_count LENGTH "${contract}" event_matrix)
+math(EXPR event_matrix_last "${event_matrix_count} - 1")
+foreach(row_index RANGE 0 ${event_matrix_last})
+  string(JSON event_kind GET "${contract}" event_matrix ${row_index} event_kind)
+  if(NOT event_kind STREQUAL "process_exit_confirmed")
+    continue()
+  endif()
+  string(JSON case_count LENGTH "${contract}" event_matrix ${row_index} cases)
+  math(EXPR case_last "${case_count} - 1")
+  foreach(case_index RANGE 0 ${case_last})
+    string(JSON case_id GET "${contract}" event_matrix ${row_index} cases ${case_index} case_id)
+    string(JSON disposition GET "${contract}" event_matrix ${row_index} cases ${case_index} disposition)
+    if(disposition STREQUAL "reject" OR case_id STREQUAL "matching_duplicate")
+      continue()
+    endif()
+    string(JSON ack_type TYPE "${contract}" event_matrix ${row_index} cases ${case_index} updates
+           pending_worker_event_ack)
+    string(JSON ack_value GET "${contract}" event_matrix ${row_index} cases ${case_index} updates
+           pending_worker_event_ack)
+    string(JSON worker_type TYPE "${contract}" event_matrix ${row_index} cases ${case_index} updates
+           pending_worker_id)
+    string(JSON sequence_type TYPE "${contract}" event_matrix ${row_index} cases ${case_index} updates
+           pending_worker_event_sequence)
+    if(NOT ack_type STREQUAL "BOOLEAN" OR ack_value OR NOT worker_type STREQUAL "NULL" OR
+       NOT sequence_type STREQUAL "NULL")
+      message(FATAL_ERROR "process_exit_confirmed/${case_id}: ACK binding is not cleared")
+    endif()
   endforeach()
 endforeach()
 
@@ -997,11 +1138,14 @@ foreach(vector_index RANGE 0 ${sequence_last})
     validate_snapshot_invariants("${current_snapshot}" "${vector_id}/${step_index}/next")
   endforeach()
   string(JSON expected_final GET "${vectors}" sequence_vectors ${vector_index} expected_final_snapshot)
-  json_signature("${current_snapshot}" current_signature)
-  json_signature("${expected_final}" final_signature)
-  if(NOT current_signature STREQUAL final_signature)
-    message(FATAL_ERROR "${vector_id}: final snapshot differs from the chained steps")
-  endif()
+  foreach(field IN LISTS snapshot_fields)
+    json_signature("${current_snapshot}" chained_signature ${field})
+    json_signature("${expected_final}" declared_signature ${field})
+    if(NOT chained_signature STREQUAL declared_signature)
+      message(FATAL_ERROR
+        "${vector_id}: final snapshot field ${field} differs: ${declared_signature} != ${chained_signature}")
+    endif()
+  endforeach()
 endforeach()
 assert_unique("${actual_sequences}" "sequence vector IDs")
 list(SORT actual_sequences)
@@ -1027,29 +1171,70 @@ foreach(index RANGE 0 ${timer_vector_last})
   string(JSON arm_requested GET "${vectors}" timer_ingress_vectors ${index} arm_requested)
   if(active_type STREQUAL "NUMBER")
     string(JSON active_generation GET "${vectors}" timer_ingress_vectors ${index} active_generation)
+    is_uint64_nonzero("${active_generation}" active_generation_valid)
+    if(NOT active_generation_valid)
+      message(FATAL_ERROR "${vector_id}: active timer generation is outside uint64")
+    endif()
   endif()
   if(notification_type STREQUAL "NUMBER")
     string(JSON notification_generation GET "${vectors}" timer_ingress_vectors ${index}
            notification_generation)
+    is_uint64_nonzero("${notification_generation}" notification_generation_valid)
+    if(NOT notification_generation_valid)
+      message(FATAL_ERROR "${vector_id}: notification timer generation is outside uint64")
+    endif()
   endif()
-  if(arm_requested AND active_type STREQUAL "NUMBER" AND
-     active_generation STREQUAL "18446744073709551615")
-    set(case_id generation_exhausted)
-    set(disposition fail_closed)
-  elseif(active_type STREQUAL "NULL")
-    set(case_id disarmed_notification)
-    set(disposition discard_without_candidate)
-  elseif(notification_type STREQUAL "NUMBER" AND notification_generation STREQUAL active_generation)
-    set(case_id current_notification)
-    set(disposition emit_candidate_event)
-  else()
-    set(case_id stale_notification)
-    set(disposition discard_without_candidate)
+  set(case_id "")
+  set(disposition "")
+  set(contract_effects "")
+  string(JSON timer_case_count LENGTH "${contract}" timer_ingress_contract cases)
+  math(EXPR timer_case_last "${timer_case_count} - 1")
+  foreach(case_index RANGE 0 ${timer_case_last})
+    if(NOT case_id STREQUAL "")
+      break()
+    endif()
+    string(JSON condition GET "${contract}" timer_ingress_contract cases ${case_index} when)
+    set(matches FALSE)
+    if(condition STREQUAL "arm_requested_at_uint64_max")
+      if(arm_requested AND active_type STREQUAL "NUMBER" AND
+         active_generation STREQUAL "18446744073709551615")
+        set(matches TRUE)
+      endif()
+    elseif(condition STREQUAL "active_generation_is_null")
+      if(active_type STREQUAL "NULL")
+        set(matches TRUE)
+      endif()
+    elseif(condition STREQUAL "notification_generation_equals_active")
+      if(notification_type STREQUAL "NUMBER" AND active_type STREQUAL "NUMBER" AND
+         notification_generation STREQUAL active_generation)
+        set(matches TRUE)
+      endif()
+    elseif(condition STREQUAL "otherwise")
+      set(matches TRUE)
+    else()
+      message(FATAL_ERROR "Unknown timer ingress predicate: ${condition}")
+    endif()
+    if(matches)
+      string(JSON case_id GET "${contract}" timer_ingress_contract cases ${case_index} case_id)
+      string(JSON disposition GET "${contract}" timer_ingress_contract cases ${case_index} disposition)
+      string(JSON effects_length ERROR_VARIABLE effects_error LENGTH "${contract}"
+             timer_ingress_contract cases ${case_index} post_sync_effects)
+      if(effects_error STREQUAL "NOTFOUND")
+        read_string_array("${contract}" contract_effects timer_ingress_contract cases ${case_index}
+                          post_sync_effects)
+      endif()
+    endif()
+  endforeach()
+  if(case_id STREQUAL "")
+    message(FATAL_ERROR "${vector_id}: timer ingress contract selected no case")
   endif()
   string(JSON expected_case GET "${vectors}" timer_ingress_vectors ${index} expected case_id)
   string(JSON expected_disposition GET "${vectors}" timer_ingress_vectors ${index} expected disposition)
-  if(NOT case_id STREQUAL expected_case OR NOT disposition STREQUAL expected_disposition)
-    message(FATAL_ERROR "${vector_id}: timer ingress decision differs from the closed contract")
+  read_string_array("${vectors}" expected_timer_effects timer_ingress_vectors ${index} expected
+                    post_sync_effects)
+  if(NOT case_id STREQUAL expected_case OR NOT disposition STREQUAL expected_disposition OR
+     NOT contract_effects STREQUAL expected_timer_effects)
+    message(FATAL_ERROR "${vector_id}: timer ingress result differs from the machine contract")
   endif()
   string(JSON candidate_type TYPE "${vectors}" timer_ingress_vectors ${index} expected candidate_event)
   if(disposition STREQUAL "emit_candidate_event")

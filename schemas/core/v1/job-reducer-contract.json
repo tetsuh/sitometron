@@ -1629,7 +1629,10 @@
             "completion_mode": "process_already_exited",
             "process_presence": "absent",
             "process_exit_confirmed": true,
-            "finalization_status": "pending"
+            "finalization_status": "pending",
+            "pending_worker_event_ack": false,
+            "pending_worker_id": null,
+            "pending_worker_event_sequence": null
           },
           "post_sync_effects": [
             "disarm_preparation_timeout"
@@ -2046,7 +2049,10 @@
             "completion_mode": "process_already_exited",
             "process_presence": "absent",
             "process_exit_confirmed": true,
-            "finalization_status": "pending"
+            "finalization_status": "pending",
+            "pending_worker_event_ack": false,
+            "pending_worker_id": null,
+            "pending_worker_event_sequence": null
           }
         },
         {
@@ -2340,12 +2346,37 @@
           "note": "Preserve the first latched reason."
         },
         {
-          "case_id": "other_timeout_phase",
+          "case_id": "execution_timeout_escalation",
+          "when": {
+            "operator": "all",
+            "predicates": [
+              {
+                "source": "payload",
+                "field": "phase",
+                "operator": "eq",
+                "value": "execution"
+              }
+            ]
+          },
+          "disposition": "audit",
+          "journal_event_type": "timeout_expired",
+          "updates": {
+            "completion_mode": "forced"
+          },
+          "post_sync_effects": [
+            "disarm_execution_timeout",
+            "disarm_cooperative_stop_timeout",
+            "request_forced_stop",
+            "arm_process_exit_confirmation_timeout_if_needed"
+          ]
+        },
+        {
+          "case_id": "wrong_phase",
           "when": {
             "operator": "otherwise"
           },
           "disposition": "reject",
-          "rejection_reason": "stop_cause_already_latched"
+          "rejection_reason": "timeout_phase_mismatch"
         }
       ]
     },
@@ -2468,7 +2499,10 @@
           "updates": {
             "process_presence": "absent",
             "process_exit_confirmed": true,
-            "finalization_status": "pending"
+            "finalization_status": "pending",
+            "pending_worker_event_ack": false,
+            "pending_worker_id": null,
+            "pending_worker_event_sequence": null
           },
           "note": "Preserve the first latched reason and stop completion mode.",
           "post_sync_effects": [
@@ -3014,7 +3048,10 @@
             "process_exit_confirmed": true,
             "completion_mode": {
               "from": "payload.completion_mode"
-            }
+            },
+            "pending_worker_event_ack": false,
+            "pending_worker_id": null,
+            "pending_worker_event_sequence": null
           },
           "post_sync_effects": [
             "disarm_cooperative_stop_timeout",
@@ -3842,7 +3879,10 @@
             "process_exit_confirmed": true,
             "completion_mode": {
               "from": "payload.completion_mode"
-            }
+            },
+            "pending_worker_event_ack": false,
+            "pending_worker_id": null,
+            "pending_worker_event_sequence": null
           },
           "post_sync_effects": [
             "disarm_cooperative_stop_timeout",
@@ -4398,7 +4438,10 @@
             "process_exit_confirmed": true,
             "completion_mode": {
               "from": "payload.completion_mode"
-            }
+            },
+            "pending_worker_event_ack": false,
+            "pending_worker_id": null,
+            "pending_worker_event_sequence": null
           },
           "post_sync_effects": [
             "disarm_cooperative_stop_timeout",
@@ -4954,7 +4997,10 @@
             "process_exit_confirmed": true,
             "completion_mode": {
               "from": "payload.completion_mode"
-            }
+            },
+            "pending_worker_event_ack": false,
+            "pending_worker_id": null,
+            "pending_worker_event_sequence": null
           },
           "post_sync_effects": [
             "disarm_cooperative_stop_timeout",
@@ -5510,7 +5556,10 @@
             "process_exit_confirmed": true,
             "completion_mode": {
               "from": "payload.completion_mode"
-            }
+            },
+            "pending_worker_event_ack": false,
+            "pending_worker_id": null,
+            "pending_worker_event_sequence": null
           },
           "post_sync_effects": [
             "disarm_cooperative_stop_timeout",
@@ -6066,7 +6115,10 @@
             "process_exit_confirmed": true,
             "completion_mode": {
               "from": "payload.completion_mode"
-            }
+            },
+            "pending_worker_event_ack": false,
+            "pending_worker_id": null,
+            "pending_worker_event_sequence": null
           },
           "post_sync_effects": [
             "disarm_cooperative_stop_timeout",
@@ -6377,6 +6429,48 @@
         "when": "otherwise",
         "disposition": "discard_without_candidate"
       }
-    ]
+    ],
+    "generation_scope": "per_timeout_phase"
+  },
+  "raw_candidate_event_kinds": [
+    "job_created",
+    "resources_committed",
+    "worker_launch_intent",
+    "worker_launch_observed",
+    "worker_running",
+    "timeout_expired",
+    "worker_completed",
+    "worker_failed",
+    "process_exit_confirmed",
+    "session_retain_requested",
+    "session_retained",
+    "finalization_completed",
+    "finalization_failed",
+    "terminal_outcome_committed",
+    "resources_released",
+    "cleanup_status_recorded"
+  ],
+  "command_produced_event_kinds": [
+    "cancel_accepted",
+    "terminate_accepted"
+  ],
+  "reducer_normalized_event_kinds": [
+    "late_worker_event"
+  ],
+  "reducer_input_event_schema": "job-reducer-input-event.schema.json",
+  "terminal_worker_ack_contract": {
+    "bind_on_events": [
+      "worker_completed",
+      "worker_failed"
+    ],
+    "identity_fields": [
+      "worker_id",
+      "event_sequence"
+    ],
+    "emit_after": "synced_terminal_outcome_committed",
+    "delivery_owner": "phase_2_worker_adapter",
+    "delivery_semantics": "idempotent_retry_until_ack_or_process_exit",
+    "clear_on": "first_accepted_process_exit_confirmed",
+    "terminal_commit_clears_binding": false
   }
 }

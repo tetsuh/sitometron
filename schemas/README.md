@@ -2,8 +2,8 @@
 
 Machine-readable contracts are registered here before implementation.
 
-- `core/v1/`: proposed ADR-0002 Job states, commands, Journal events, exhaustive reducer matrix,
-  vectors, and checked state diagram;
+- `core/v1/`: proposed ADR-0002 raw-candidate and internal reducer-input DTOs, Job states, commands,
+  Journal events, exhaustive reducer matrix, vectors, and checked state diagram;
 - `openapi/`: External REST contracts;
 - `application-registry/`: trusted application records;
 - `worker-protocol/`: Worker loopback HTTP JSON schemas.

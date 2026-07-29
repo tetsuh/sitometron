@@ -9,8 +9,10 @@ The Phase 0A Job reducer contract is split into reviewable machine-readable arti
 
 - [`job-command.schema.json`](../schemas/core/v1/job-command.schema.json): strict core cancel and
   terminate command DTO;
-- [`job-candidate-event.schema.json`](../schemas/core/v1/job-candidate-event.schema.json): strict
-  pre-envelope lifecycle fact DTO;
+- [`job-candidate-event.schema.json`](../schemas/core/v1/job-candidate-event.schema.json): strict raw
+  lifecycle-candidate DTO that excludes command-owned and reducer-normalized event kinds;
+- [`job-reducer-input-event.schema.json`](../schemas/core/v1/job-reducer-input-event.schema.json):
+  complete internal pre-envelope event DTO passed to the reducer matrix;
 - [`job-rejection.schema.json`](../schemas/core/v1/job-rejection.schema.json): closed stable rejection
   reasons;
 - [`job-reducer-snapshot.schema.json`](../schemas/core/v1/job-reducer-snapshot.schema.json): closed
@@ -57,11 +59,14 @@ The state enum does not contain enough information to decide every input. The re
 tracks the first latched reason, successful completion candidate, completion mode, resource status,
 allocation identity and digest, Worker-launch operation and Worker identity, process-exit
 confirmation, Session identity and retention status, finalization status, cleanup status, and a
-pending terminal Worker-event acknowledgment.
+terminal Worker-event acknowledgment obligation. The same Controller-issued UUIDv7 is both the Job
+ID and Session ID in v0.1; a schema annotation and the contract-specific checker enforce equality.
 
 ## 3. Decision and apply boundary
 
-The single state writer evaluates commands and candidate events against one snapshot.
+The single state writer evaluates commands and internal reducer-input events against one snapshot.
+Raw lifecycle candidates exclude `cancel_accepted`, `terminate_accepted`, and `late_worker_event`;
+only the command table or reducer normalization may create those internal event kinds.
 
 ```text
 input
@@ -83,10 +88,11 @@ Journal event exists. Lifecycle facts use the event matrix. A delayed terminal W
 normalized to `late_worker_event` before append; an already normalized late fact is copied without
 wrapping it again.
 
-Timer generation is decided before event-matrix ingress. Current active generation emits a
-`timeout_expired` candidate. Stale or disarmed notifications emit no candidate and no Journal event.
-Attempting to arm after the non-wrapping uint64 generation is exhausted fails closed. Four dedicated
-fixtures mechanically check these cases.
+Timer generation is decided before event-matrix ingress. Each timeout phase has an independent
+active generation. A notification matching its phase's active generation emits a `timeout_expired`
+candidate; stale or disarmed notifications emit no candidate and no Journal event. Attempting to arm
+after the non-wrapping uint64 generation is exhausted fails closed. Four dedicated fixtures are
+evaluated against the machine-readable timer contract.
 
 ## 4. Completion and cleanup axes
 
@@ -94,11 +100,15 @@ fixtures mechanically check these cases.
 committed until finalization has completed and `terminal_outcome_committed{outcome=succeeded}` has
 been synced.
 
-The execution timer remains active through terminal commit. Its expiration in `finalizing` may
-replace a sole success candidate with `timed_out`. An earlier cancel, terminate, timeout, or failure
-reason remains immutable.
+Preparation timeout enters `finalizing` directly when no process may exist and enters `stopping`
+with cooperative stop otherwise. The execution timer remains active through terminal commit. Its
+expiration in `stopping` forces stop without replacing the latched reason; expiration in `finalizing`
+may replace a sole success candidate with `timed_out`. An earlier cancel, terminate, timeout, or
+failure reason remains immutable.
 
-Normal success may become terminal before process exit. A later confirmed exit must match the launch
+A terminal Worker event binds an ACK obligation to Worker ID and event sequence. Terminal commit
+enables an idempotent Phase 2 ACK retry, and first confirmed process exit clears the binding. Normal
+success may become terminal before process exit. A later confirmed exit must match the launch
 operation binding and sets completion mode. Resource release must match the committed allocation ID
 and digest, and cleanup facts are monotonic state-preserving terminal audits. A
 `process_exit_confirmation` timeout may force stop and quarantine resources without changing the

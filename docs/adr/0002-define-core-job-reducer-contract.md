@@ -47,7 +47,7 @@ it is not a Job state.
 A reducer snapshot also carries closed internal fields needed by guards: durable Job, Session,
 allocation, launch, and Worker bindings; latched reason; completion candidate and mode; resource and
 Worker-launch status; process-exit confirmation; Session-retention status; finalization status;
-cleanup status; and a pending terminal Worker-event acknowledgment. The strict snapshot schema is
+cleanup status; and a terminal Worker-event acknowledgment obligation. The strict snapshot schema is
 [`job-reducer-snapshot.schema.json`](../../schemas/core/v1/job-reducer-snapshot.schema.json). Public
 APIs may project these fields without introducing a second lifecycle state machine.
 
@@ -57,8 +57,13 @@ The command decision table owns the external Job controls `cancel` and `terminat
 command produces `cancel_accepted` or `terminate_accepted`. A rejected command produces a stable
 rejection reason and no Journal record.
 
-Lifecycle subsystems submit strict typed candidate events without Journal sequence or timestamp.
-The single state writer validates them, decides them, and supplies the accepted logical event with
+Lifecycle subsystems submit strict typed raw candidate events without Journal sequence or timestamp.
+Raw candidates cannot claim `cancel_accepted`, `terminate_accepted`, or `late_worker_event` authority.
+Accepted commands create the first two internal reducer-input events; only a `late_audit` decision
+creates the third. [`job-reducer-input-event.schema.json`](../../schemas/core/v1/job-reducer-input-event.schema.json)
+covers the complete internal event set passed to the matrix, while the narrower
+[`job-candidate-event.schema.json`](../../schemas/core/v1/job-candidate-event.schema.json) covers
+external subsystem ingress. The single state writer validates inputs, decides them, and supplies the accepted logical event with
 the global sequence and diagnostic timestamp. The event decision table classifies every entity
 position and event-kind pair as exactly one of:
 
@@ -107,13 +112,17 @@ fixture.
 
 ### Lifecycle and outcome rules
 
-`job_created` creates an `admitted` Job and binds the Controller-issued Job and Session identity.
+`job_created` creates an `admitted` Job. In v0.1 the Controller issues one UUIDv7 and uses that exact
+value as both `job_id` and `session_id`; clients cannot select either identity.
 `resources_committed` enters `preparing` and carries the entire resolved allocation as a strict
 core-neutral envelope containing its schema identity, version, UTF-8 JSON text bounded to 65,536
 bytes, and SHA-256 digest over those exact bytes. Whitespace and key order are part of the identity;
 ADR-0002 does not impose a second canonicalization algorithm on the Phase-owned payload schema.
 Phase 3 owns the allocation payload schema and interpretation; ADR-0002 owns only the envelope and
-the requirement to sync the exact resolved bytes before apply. `worker_launch_intent` binds its
+the requirement to sync the exact resolved bytes before apply. Standard JSON Schema treats
+`x-sitometron-max-utf8-bytes`, `x-sitometron-sha256-field`, and cross-field annotations as metadata;
+the contract-specific checker normatively enforces those extensions in addition to generic Draft
+2020-12 validation. `worker_launch_intent` binds its
 stable operation ID, pre-generated Worker ID, verified Application identity, and committed allocation
 identity before launch. `worker_running` must match the bound Worker ID before entering `running`.
 Post-sync launch-effect arguments come from the synced intent payload; the v0.1 snapshot does not
@@ -142,16 +151,22 @@ that event has been disk-synced.
 
 ### Timeout and post-terminal cleanup
 
-The preparation timer covers synced resource commitment through synced `running`. The execution
-timer covers synced `running` through synced terminal transition, including `finalizing`.
+The preparation timer covers synced resource commitment through synced `running`. Its expiry in
+`preparing` enters `finalizing` with `timed_out` and `process_already_exited` when no process may
+exist; otherwise it enters `stopping`, requests cooperative stop, and preserves `timed_out` as the
+latched reason. The execution timer covers synced `running` through synced terminal transition,
+including `stopping` and `finalizing`.
 `finalizing` rejects new cooperative cancel but accepts expiration of the existing execution timer.
 If only a successful completion candidate exists, that timeout latches `timed_out`. If another reason
 is already latched, timeout or terminate escalation preserves it and requests only the necessary
-force action.
+force action. In `stopping`, either cooperative-stop expiry or execution-timeout expiry requests
+forced stop without replacing the accepted reason; other timeout phases are mismatches.
 
 `timeout_expired` has the closed phases `preparation`, `execution`, `cooperative_stop`, and
-`process_exit_confirmation`, plus a non-wrapping timer generation. The single writer validates that
-generation against its active timer before creating a candidate event; stale notifications never
+`process_exit_confirmation`. Each phase owns an independent, non-wrapping timer generation so the
+execution and cooperative-stop timers may overlap without sharing identity. The single writer
+validates a notification against the active generation for its phase before creating a candidate
+event; stale notifications never
 become Journal events. Finalization operations also have bounded operation-specific deadlines.
 A JobJournal append or sync failure is not a Journal event: it is a persistence-authority failure
 that stops normal progress, latches readiness false, permits safety stop, quarantines resources, and
@@ -184,8 +199,12 @@ Payload validation precedes matrix evaluation. U-12 will map these core reasons 
 error catalogue and transport-specific responses; this ADR defines no HTTP status.
 
 Worker delivery deduplication and sequence validation occur at the Worker-protocol boundary. A
-Worker lifecycle event that arrives after an outcome or completion candidate is fixed is normalized
-to `late_worker_event`, synced as an audit fact, and acknowledged without changing the result.
+terminal Worker event binds an acknowledgment obligation to its Worker ID and event sequence. After
+the matching terminal outcome is synced, the Phase 2 adapter sends that idempotent ACK and retries
+until delivery or confirmed process exit. Terminal commit does not erase retry identity; the first
+accepted `process_exit_confirmed` clears the binding. A Worker lifecycle event that arrives after an
+outcome or completion candidate is fixed is normalized to `late_worker_event`, synced as an audit
+fact, and acknowledged without changing the result.
 Operation, Session, allocation, Worker, and process-exit facts must match their snapshot bindings; a
 conflicting identity is `invariant_violation` and is never applied. Process-exit facts carry the
 launch operation ID so stale or misrouted process observations cannot terminate another launch.
