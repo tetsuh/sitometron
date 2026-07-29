@@ -27,6 +27,7 @@ Phase 0A PR CI requires:
 
 - Linux configure, build, and CTest;
 - Windows configure, build, and CTest;
+- pinned development-time Draft 2020-12 schema-tooling tests on Linux and Windows;
 - clang-format dry-run;
 - positive and negative core dependency-isolation checks.
 
@@ -41,6 +42,17 @@ must follow before merge.
 
 Unit tests are deterministic. Use fake clocks, deterministic UUID generation, fake Journal and
 ApplicationRunner ports, and explicit event injection. Do not use real sleeps to establish ordering.
+
+Development-time schema checks run with Python 3.12.13 and dependencies frozen by `uv.lock`:
+
+```text
+uv sync --frozen --only-group schema
+uv run --frozen --only-group schema python -m unittest discover -s tests/tooling -p 'test_*.py' -v
+```
+
+`tools/json_schema_validator.py` checks Draft 2020-12 schema definitions, an explicit local-only
+schema registry, local reference resolution, and instances. Contract-specific checks remain in their
+own validators; generic JSON Schema validation does not interpret project extension keywords.
 
 ## 4. Requirement-to-test mapping
 

@@ -20,10 +20,16 @@ installed CMake package through `find_package`.
 
 ## Python dependencies
 
-Python dependencies use `pyproject.toml` plus a committed lock file. They are not managed by vcpkg
-or Conan.
+Python dependencies use `pyproject.toml` plus a committed `uv.lock`. They are not managed by vcpkg
+or Conan. CI provisions the exact `uv` and Python versions outside project CMake, then uses
+`uv sync --frozen`; dependency resolution or lock-file updates are never implicit build steps.
+
+Phase 0A permits Python only for development-time Draft 2020-12 schema validation. This exception
+does not make Python a dependency of `sitometron_core`, `sitometrond`, a Worker, an SDK, or a product
+package. Runtime or product-build use requires a separately reviewed decision.
 
 ## CI and caches
 
 Binary caches are performance optimizations and never correctness authorities. A clean build must
-remain reproducible from pinned manifests and documented provisioning inputs.
+remain reproducible from pinned manifests and documented provisioning inputs. Project CMake and
+runtime targets never invoke `uv`, Python package installers, or network retrieval.
