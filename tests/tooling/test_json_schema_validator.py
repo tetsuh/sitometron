@@ -105,6 +105,21 @@ class LocalDraft202012SchemasTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             schemas.validate_instance(root_schema, 0)
 
+    def test_enforces_known_format_annotations(self) -> None:
+        root_schema = self.write_json(
+            "root.schema.json",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "root.schema.json",
+                "type": "string",
+                "format": "date-time",
+            },
+        )
+        schemas = LocalDraft202012Schemas.load(self.root)
+
+        with self.assertRaises(ValidationError):
+            schemas.validate_instance(root_schema, "not-a-date-time")
+
 
 if __name__ == "__main__":
     unittest.main()

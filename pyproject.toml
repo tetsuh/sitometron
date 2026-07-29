@@ -7,7 +7,7 @@ dependencies = []
 
 [dependency-groups]
 schema = [
-  "jsonschema==4.26.0",
+  "jsonschema[format-nongpl]==4.26.0",
 ]
 
 [tool.uv]

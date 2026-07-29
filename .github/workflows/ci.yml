@@ -13,6 +13,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: "0.11.19"
+          enable-cache: true
+      - name: Validate schema tooling
+        env:
+          UV_LINK_MODE: copy
+        run: |
+          uv sync --frozen --only-group schema
+          uv run --frozen --only-group schema python -m unittest discover -s tests/tooling -p 'test_*.py' -v
       - name: Configure
         run: cmake --preset dev-linux
       - name: Build
@@ -28,6 +39,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: "0.11.19"
+          enable-cache: true
+      - name: Validate schema tooling
+        env:
+          UV_LINK_MODE: copy
+        shell: pwsh
+        run: |
+          uv sync --frozen --only-group schema
+          uv run --frozen --only-group schema python -m unittest discover -s tests/tooling -p 'test_*.py' -v
       - name: Configure, build, and test
         shell: pwsh
         run: |
