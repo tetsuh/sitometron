@@ -249,7 +249,7 @@ claim that physical durability is implemented.
 - Bad: The reducer snapshot contains orthogonal internal fields in addition to the public state enum.
 - Bad: The exhaustive matrix and vectors are larger than a handwritten switch statement.
 - Neutral: Adapter-specific Sitos, Worker, HTTP, and filesystem payloads remain owned by later phases.
-- Neutral: Implementation remains prohibited until this ADR is Accepted by the repository owner.
+- Neutral: Reducer implementation remains separate Planned work after this contract becomes normative.
 
 ## Options considered
 

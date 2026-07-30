@@ -294,6 +294,15 @@
         "properties": {
           "process_presence": {
             "const": "absent"
+          },
+          "pending_worker_event_ack": {
+            "const": false
+          },
+          "pending_worker_id": {
+            "type": "null"
+          },
+          "pending_worker_event_sequence": {
+            "type": "null"
           }
         }
       }

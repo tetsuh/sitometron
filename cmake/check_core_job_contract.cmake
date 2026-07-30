@@ -889,6 +889,41 @@ function(validate_expected matrix row_index case_index initial_snapshot input pa
   endforeach()
 endfunction()
 
+function(is_process_exit_ack_binding_valid snapshot output)
+  string(JSON process_exit_confirmed GET "${snapshot}" process_exit_confirmed)
+  string(JSON pending_ack GET "${snapshot}" pending_worker_event_ack)
+  json_signature("${snapshot}" pending_worker_id pending_worker_id)
+  json_signature("${snapshot}" pending_worker_sequence pending_worker_event_sequence)
+  if(process_exit_confirmed AND
+     (pending_ack OR NOT pending_worker_id STREQUAL "NULL" OR
+      NOT pending_worker_sequence STREQUAL "NULL"))
+    set(valid FALSE)
+  else()
+    set(valid TRUE)
+  endif()
+  set(${output} ${valid} PARENT_SCOPE)
+endfunction()
+
+set(exit_ack_valid_snapshot
+    [=[{
+      "process_exit_confirmed": true,
+      "pending_worker_event_ack": false,
+      "pending_worker_id": null,
+      "pending_worker_event_sequence": null
+    }]=])
+set(exit_ack_invalid_snapshot
+    [=[{
+      "process_exit_confirmed": true,
+      "pending_worker_event_ack": true,
+      "pending_worker_id": "123e4567-e89b-42d3-a456-426614174000",
+      "pending_worker_event_sequence": 1
+    }]=])
+is_process_exit_ack_binding_valid("${exit_ack_valid_snapshot}" exit_ack_valid)
+is_process_exit_ack_binding_valid("${exit_ack_invalid_snapshot}" exit_ack_invalid)
+if(NOT exit_ack_valid OR exit_ack_invalid)
+  message(FATAL_ERROR "Confirmed process-exit Worker ACK boundary validation is incorrect")
+endif()
+
 function(validate_snapshot_invariants snapshot label)
   string(JSON job_id GET "${snapshot}" job_id)
   string(JSON session_id GET "${snapshot}" session_id)
@@ -921,6 +956,10 @@ function(validate_snapshot_invariants snapshot label)
   endif()
   if(process_exit_confirmed AND NOT process_presence STREQUAL "absent")
     message(FATAL_ERROR "${label}: confirmed process exit retains process presence")
+  endif()
+  is_process_exit_ack_binding_valid("${snapshot}" exit_ack_binding_valid)
+  if(NOT exit_ack_binding_valid)
+    message(FATAL_ERROR "${label}: confirmed process exit retains a Worker ACK binding")
   endif()
   if(completion_mode_type STREQUAL "STRING")
     string(JSON completion_mode GET "${snapshot}" completion_mode)
