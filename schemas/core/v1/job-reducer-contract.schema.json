@@ -665,6 +665,11 @@
                   "required": [
                     "post_sync_effects"
                   ]
+                },
+                {
+                  "required": [
+                    "normalize_to"
+                  ]
                 }
               ]
             }

@@ -80,10 +80,11 @@ input
           -> typed post-sync effects
 ```
 
-The four exhaustive dispositions are `transition`, `audit`, `late_audit`, and `reject`. Cases use a
-closed predicate AST and ordered-first-match semantics, with a mechanically checked final
-`otherwise` for conditional rows. An effect identifier is a request to an adapter or supervisor; the
-reducer never performs I/O.
+The four exhaustive dispositions are `transition`, `audit`, `late_audit`, and `reject`. A reject case
+cannot emit, update, request an effect, or normalize to another event kind. Cases use a closed
+predicate AST and ordered-first-match semantics, with a mechanically checked final `otherwise` for
+conditional rows. An effect identifier is a request to an adapter or supervisor; the reducer never
+performs I/O.
 
 `cancel` and `terminate` use the command matrix because rejection occurs before the accepted-control
 Journal event exists. Lifecycle facts use the event matrix. A delayed terminal Worker fact is
