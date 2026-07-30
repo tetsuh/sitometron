@@ -1,4 +1,4 @@
-"""Validate the proposed core contract with the pinned Draft 2020-12 tooling."""
+"""Validate the normative core contract with the pinned Draft 2020-12 tooling."""
 
 from __future__ import annotations
 
