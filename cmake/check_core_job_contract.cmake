@@ -288,7 +288,7 @@ endfunction()
 
 function(is_uint64_nonzero value output)
   string(LENGTH "${value}" length)
-  if(value MATCHES "^[1-9][0-9]*$" AND length LESS 21)
+  if(value MATCHES "^[1-9][0-9]*$" AND length LESS 20)
     set(valid TRUE)
   elseif(value MATCHES "^[1-9][0-9]*$" AND length EQUAL 20 AND
          NOT value STRGREATER "18446744073709551615")
