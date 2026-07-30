@@ -43,6 +43,30 @@ def _require_reject_normalization_forbidden(
     raise AssertionError("reject cases must forbid normalize_to")
 
 
+def _require_confirmed_exit_ack_binding_forbidden(
+    schemas: LocalDraft202012Schemas,
+    schema_root: Path,
+    vectors: dict[str, Any],
+) -> None:
+    snapshot = copy.deepcopy(
+        next(
+            vector["expected"]["next_snapshot"]
+            for vector in vectors["case_vectors"]
+            if vector["expected"]["next_snapshot"] is not None
+            and vector["expected"]["next_snapshot"]["process_exit_confirmed"]
+        )
+    )
+    snapshot["pending_worker_event_ack"] = True
+    snapshot["pending_worker_id"] = "123e4567-e89b-42d3-a456-426614174000"
+    snapshot["pending_worker_event_sequence"] = 1
+    try:
+        schemas.validate_instance(schema_root / "job-reducer-snapshot.schema.json", snapshot)
+    except ValidationError:
+        print("Validated that confirmed process exit cannot retain a Worker ACK binding")
+        return
+    raise AssertionError("confirmed process exit must clear the Worker ACK binding")
+
+
 def validate_core_contract(project_root: Path) -> None:
     """Validate core schemas, local references, formats, and contract instances."""
     schema_root = project_root.resolve(strict=True) / "schemas" / "core" / "v1"
@@ -60,6 +84,11 @@ def validate_core_contract(project_root: Path) -> None:
         schemas,
         schema_root,
         instances["job-reducer-contract.json"],
+    )
+    _require_confirmed_exit_ack_binding_forbidden(
+        schemas,
+        schema_root,
+        instances["job-reducer-vectors.json"],
     )
     print(f"Validated {len(schemas.schemas)} Draft 2020-12 core schemas")
 
