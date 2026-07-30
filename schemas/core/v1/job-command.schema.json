@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "job-command.schema.json",
+  "title": "Sitometron core Job control command v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "command_type",
+    "job_id",
+    "principal_subject"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "command_type": {
+      "enum": [
+        "cancel",
+        "terminate"
+      ]
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "principal_subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    }
+  }
+}

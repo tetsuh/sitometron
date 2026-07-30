@@ -1,0 +1,39 @@
+digraph job_state_v1 {
+  rankdir=LR;
+  node [shape=box];
+  absent [shape=point];
+  succeeded [shape=doublecircle];
+  failed [shape=doublecircle];
+  cancelled [shape=doublecircle];
+  terminated [shape=doublecircle];
+  timed_out [shape=doublecircle];
+
+  absent -> admitted [label="job_created"];
+  admitted -> finalizing [label="cancel_accepted"];
+  admitted -> preparing [label="resources_committed"];
+  admitted -> finalizing [label="terminate_accepted"];
+  finalizing -> cancelled [label="terminal_outcome_committed"];
+  finalizing -> failed [label="terminal_outcome_committed"];
+  finalizing -> succeeded [label="terminal_outcome_committed"];
+  finalizing -> terminated [label="terminal_outcome_committed"];
+  finalizing -> timed_out [label="terminal_outcome_committed"];
+  preparing -> finalizing [label="cancel_accepted"];
+  preparing -> stopping [label="cancel_accepted"];
+  preparing -> finalizing [label="process_exit_confirmed"];
+  preparing -> finalizing [label="terminate_accepted"];
+  preparing -> stopping [label="terminate_accepted"];
+  preparing -> finalizing [label="timeout_expired"];
+  preparing -> stopping [label="timeout_expired"];
+  preparing -> finalizing [label="worker_failed"];
+  preparing -> finalizing [label="worker_launch_observed"];
+  preparing -> running [label="worker_running"];
+  running -> stopping [label="cancel_accepted"];
+  running -> finalizing [label="process_exit_confirmed"];
+  running -> stopping [label="terminate_accepted"];
+  running -> stopping [label="timeout_expired"];
+  running -> finalizing [label="worker_completed"];
+  running -> finalizing [label="worker_failed"];
+  stopping -> finalizing [label="process_exit_confirmed"];
+  stopping -> finalizing [label="worker_completed"];
+  stopping -> finalizing [label="worker_failed"];
+}

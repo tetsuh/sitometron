@@ -1,0 +1,593 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "job-journal-event.schema.json",
+  "title": "Sitometron logical JobJournal event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "sequence",
+    "event_type",
+    "recorded_at",
+    "job_id",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "event_type": {
+      "type": "string"
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "job_id": {
+      "$ref": "#/$defs/uuidV7"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/jobCreated"
+    },
+    {
+      "$ref": "#/$defs/resourcesCommitted"
+    },
+    {
+      "$ref": "#/$defs/workerLaunchIntent"
+    },
+    {
+      "$ref": "#/$defs/workerLaunchObserved"
+    },
+    {
+      "$ref": "#/$defs/workerRunning"
+    },
+    {
+      "$ref": "#/$defs/cancelAccepted"
+    },
+    {
+      "$ref": "#/$defs/terminateAccepted"
+    },
+    {
+      "$ref": "#/$defs/timeoutExpired"
+    },
+    {
+      "$ref": "#/$defs/workerCompleted"
+    },
+    {
+      "$ref": "#/$defs/workerFailed"
+    },
+    {
+      "$ref": "#/$defs/processExitConfirmed"
+    },
+    {
+      "$ref": "#/$defs/sessionRetainRequested"
+    },
+    {
+      "$ref": "#/$defs/sessionRetained"
+    },
+    {
+      "$ref": "#/$defs/finalizationCompleted"
+    },
+    {
+      "$ref": "#/$defs/finalizationFailed"
+    },
+    {
+      "$ref": "#/$defs/terminalOutcomeCommitted"
+    },
+    {
+      "$ref": "#/$defs/resourcesReleased"
+    },
+    {
+      "$ref": "#/$defs/cleanupStatusRecorded"
+    },
+    {
+      "$ref": "#/$defs/lateWorkerEvent"
+    }
+  ],
+  "$defs": {
+    "uuidV7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "uuidV4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "stableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "principalSubject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "emptyPayload": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "workerEventPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worker_id",
+        "event_sequence"
+      ],
+      "properties": {
+        "worker_id": {
+          "$ref": "#/$defs/uuidV4"
+        },
+        "event_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "jobCreated": {
+      "properties": {
+        "event_type": {
+          "const": "job_created"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "#/$defs/uuidV7"
+            }
+          }
+        }
+      }
+    },
+    "resourcesCommitted": {
+      "properties": {
+        "event_type": {
+          "const": "resources_committed"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allocation_id",
+            "allocation_digest",
+            "resolved_allocation"
+          ],
+          "properties": {
+            "allocation_id": {
+              "$ref": "#/$defs/stableId"
+            },
+            "allocation_digest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "resolved_allocation": {
+              "$ref": "#/$defs/resolvedAllocation"
+            }
+          }
+        }
+      }
+    },
+    "workerLaunchIntent": {
+      "properties": {
+        "event_type": {
+          "const": "worker_launch_intent"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation_id",
+            "application",
+            "allocation_id",
+            "allocation_digest",
+            "worker_id"
+          ],
+          "properties": {
+            "operation_id": {
+              "$ref": "#/$defs/stableId"
+            },
+            "application": {
+              "$ref": "#/$defs/applicationIdentity"
+            },
+            "allocation_id": {
+              "$ref": "#/$defs/stableId"
+            },
+            "allocation_digest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "worker_id": {
+              "$ref": "#/$defs/uuidV4"
+            }
+          }
+        }
+      }
+    },
+    "workerLaunchObserved": {
+      "properties": {
+        "event_type": {
+          "const": "worker_launch_observed"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation_id",
+            "outcome"
+          ],
+          "properties": {
+            "operation_id": {
+              "$ref": "#/$defs/stableId"
+            },
+            "outcome": {
+              "enum": [
+                "started",
+                "failed"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "workerRunning": {
+      "properties": {
+        "event_type": {
+          "const": "worker_running"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worker_id"
+          ],
+          "properties": {
+            "worker_id": {
+              "$ref": "#/$defs/uuidV4"
+            }
+          }
+        }
+      }
+    },
+    "cancelAccepted": {
+      "properties": {
+        "event_type": {
+          "const": "cancel_accepted"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "principal_subject"
+          ],
+          "properties": {
+            "principal_subject": {
+              "$ref": "#/$defs/principalSubject"
+            }
+          }
+        }
+      }
+    },
+    "terminateAccepted": {
+      "properties": {
+        "event_type": {
+          "const": "terminate_accepted"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "principal_subject"
+          ],
+          "properties": {
+            "principal_subject": {
+              "$ref": "#/$defs/principalSubject"
+            }
+          }
+        }
+      }
+    },
+    "timeoutExpired": {
+      "properties": {
+        "event_type": {
+          "const": "timeout_expired"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "phase",
+            "timer_generation"
+          ],
+          "properties": {
+            "phase": {
+              "enum": [
+                "preparation",
+                "execution",
+                "cooperative_stop",
+                "process_exit_confirmation"
+              ]
+            },
+            "timer_generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            }
+          }
+        }
+      }
+    },
+    "workerCompleted": {
+      "properties": {
+        "event_type": {
+          "const": "worker_completed"
+        },
+        "payload": {
+          "$ref": "#/$defs/workerEventPayload"
+        }
+      }
+    },
+    "workerFailed": {
+      "properties": {
+        "event_type": {
+          "const": "worker_failed"
+        },
+        "payload": {
+          "$ref": "#/$defs/workerEventPayload"
+        }
+      }
+    },
+    "processExitConfirmed": {
+      "properties": {
+        "event_type": {
+          "const": "process_exit_confirmed"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "completion_mode",
+            "launch_operation_id"
+          ],
+          "properties": {
+            "completion_mode": {
+              "enum": [
+                "cooperative",
+                "forced",
+                "process_already_exited"
+              ]
+            },
+            "launch_operation_id": {
+              "$ref": "#/$defs/stableId"
+            }
+          }
+        }
+      }
+    },
+    "sessionRetainRequested": {
+      "properties": {
+        "event_type": {
+          "const": "session_retain_requested"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "#/$defs/uuidV7"
+            }
+          }
+        }
+      }
+    },
+    "sessionRetained": {
+      "properties": {
+        "event_type": {
+          "const": "session_retained"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "#/$defs/uuidV7"
+            }
+          }
+        }
+      }
+    },
+    "finalizationCompleted": {
+      "properties": {
+        "event_type": {
+          "const": "finalization_completed"
+        },
+        "payload": {
+          "$ref": "#/$defs/emptyPayload"
+        }
+      }
+    },
+    "finalizationFailed": {
+      "properties": {
+        "event_type": {
+          "const": "finalization_failed"
+        },
+        "payload": {
+          "$ref": "#/$defs/emptyPayload"
+        }
+      }
+    },
+    "terminalOutcomeCommitted": {
+      "properties": {
+        "event_type": {
+          "const": "terminal_outcome_committed"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "enum": [
+                "succeeded",
+                "failed",
+                "cancelled",
+                "terminated",
+                "timed_out"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "resourcesReleased": {
+      "properties": {
+        "event_type": {
+          "const": "resources_released"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allocation_id",
+            "allocation_digest"
+          ],
+          "properties": {
+            "allocation_id": {
+              "$ref": "#/$defs/stableId"
+            },
+            "allocation_digest": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      }
+    },
+    "cleanupStatusRecorded": {
+      "properties": {
+        "event_type": {
+          "const": "cleanup_status_recorded"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "completed",
+                "incomplete"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "lateWorkerEvent": {
+      "properties": {
+        "event_type": {
+          "const": "late_worker_event"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "original_event_type",
+            "worker_id",
+            "event_sequence"
+          ],
+          "properties": {
+            "original_event_type": {
+              "enum": [
+                "worker_completed",
+                "worker_failed"
+              ]
+            },
+            "worker_id": {
+              "$ref": "#/$defs/uuidV4"
+            },
+            "event_sequence": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            }
+          }
+        }
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "resolvedAllocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_id",
+        "schema_version",
+        "payload_utf8"
+      ],
+      "properties": {
+        "schema_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "payload_utf8": {
+          "type": "string",
+          "maxLength": 65536,
+          "contentMediaType": "application/json",
+          "x-sitometron-max-utf8-bytes": 65536,
+          "x-sitometron-sha256-field": "allocation_digest"
+        }
+      }
+    },
+    "applicationIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "application_id",
+        "version",
+        "bundle_sha256"
+      ],
+      "properties": {
+        "application_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "bundle_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

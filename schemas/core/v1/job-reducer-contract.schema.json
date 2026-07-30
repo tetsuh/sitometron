@@ -1,0 +1,738 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "job-reducer-contract.schema.json",
+  "title": "Sitometron core Job reducer contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "contract_version",
+    "status",
+    "authority",
+    "job_states",
+    "terminal_states",
+    "entity_positions",
+    "command_kinds",
+    "journal_event_kinds",
+    "timeout_phases",
+    "terminal_outcomes",
+    "dispositions",
+    "rejection_reasons",
+    "post_sync_effects",
+    "command_matrix",
+    "event_matrix",
+    "case_semantics",
+    "snapshot_schema",
+    "candidate_event_schema",
+    "accepted_event_payload_rule",
+    "timeout_generation_validation_rule",
+    "timer_ingress_contract",
+    "raw_candidate_event_kinds",
+    "command_produced_event_kinds",
+    "reducer_normalized_event_kinds",
+    "reducer_input_event_schema",
+    "terminal_worker_ack_contract"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "job-reducer-contract.schema.json"
+    },
+    "contract_version": {
+      "const": 1
+    },
+    "status": {
+      "enum": [
+        "proposed",
+        "normative",
+        "deprecated",
+        "superseded"
+      ]
+    },
+    "authority": {
+      "const": "ADR-0002"
+    },
+    "case_semantics": {
+      "const": "ordered_first_match"
+    },
+    "snapshot_schema": {
+      "const": "job-reducer-snapshot.schema.json"
+    },
+    "candidate_event_schema": {
+      "const": "job-candidate-event.schema.json"
+    },
+    "accepted_event_payload_rule": {
+      "const": "copy_validated_candidate_payload"
+    },
+    "timeout_generation_validation_rule": {
+      "const": "validate_before_candidate_event"
+    },
+    "timer_ingress_contract": {
+      "$ref": "#/$defs/timerIngressContract"
+    },
+    "job_states": {
+      "$ref": "#/$defs/uniqueStrings"
+    },
+    "terminal_states": {
+      "$ref": "#/$defs/uniqueStrings"
+    },
+    "entity_positions": {
+      "$ref": "#/$defs/uniqueStrings"
+    },
+    "command_kinds": {
+      "$ref": "#/$defs/uniqueStrings"
+    },
+    "journal_event_kinds": {
+      "$ref": "#/$defs/uniqueStrings"
+    },
+    "timeout_phases": {
+      "$ref": "#/$defs/uniqueStrings"
+    },
+    "terminal_outcomes": {
+      "$ref": "#/$defs/uniqueStrings"
+    },
+    "dispositions": {
+      "const": [
+        "transition",
+        "audit",
+        "late_audit",
+        "reject"
+      ]
+    },
+    "rejection_reasons": {
+      "$ref": "#/$defs/uniqueStrings"
+    },
+    "post_sync_effects": {
+      "$ref": "#/$defs/uniqueStrings"
+    },
+    "command_matrix": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/commandRow"
+      }
+    },
+    "event_matrix": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/eventRow"
+      }
+    },
+    "raw_candidate_event_kinds": {
+      "const": [
+        "job_created",
+        "resources_committed",
+        "worker_launch_intent",
+        "worker_launch_observed",
+        "worker_running",
+        "timeout_expired",
+        "worker_completed",
+        "worker_failed",
+        "process_exit_confirmed",
+        "session_retain_requested",
+        "session_retained",
+        "finalization_completed",
+        "finalization_failed",
+        "terminal_outcome_committed",
+        "resources_released",
+        "cleanup_status_recorded"
+      ]
+    },
+    "command_produced_event_kinds": {
+      "const": [
+        "cancel_accepted",
+        "terminate_accepted"
+      ]
+    },
+    "reducer_normalized_event_kinds": {
+      "const": [
+        "late_worker_event"
+      ]
+    },
+    "reducer_input_event_schema": {
+      "const": "job-reducer-input-event.schema.json"
+    },
+    "terminal_worker_ack_contract": {
+      "const": {
+        "bind_on_events": [
+          "worker_completed",
+          "worker_failed"
+        ],
+        "identity_fields": [
+          "worker_id",
+          "event_sequence"
+        ],
+        "emit_after": "synced_terminal_outcome_committed",
+        "delivery_owner": "phase_2_worker_adapter",
+        "delivery_semantics": "idempotent_retry_until_ack_or_process_exit",
+        "clear_on": "first_accepted_process_exit_confirmed",
+        "terminal_commit_clears_binding": false
+      }
+    }
+  },
+  "$defs": {
+    "timerIngressContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation_type",
+        "generation_scope",
+        "case_semantics",
+        "cases"
+      ],
+      "properties": {
+        "generation_type": {
+          "const": "uint64_nonzero_nonwrapping"
+        },
+        "case_semantics": {
+          "const": "ordered_first_match"
+        },
+        "cases": {
+          "const": [
+            {
+              "case_id": "generation_exhausted",
+              "when": "arm_requested_at_uint64_max",
+              "disposition": "fail_closed",
+              "post_sync_effects": [
+                "set_readiness_false"
+              ]
+            },
+            {
+              "case_id": "disarmed_notification",
+              "when": "active_generation_is_null",
+              "disposition": "discard_without_candidate"
+            },
+            {
+              "case_id": "current_notification",
+              "when": "notification_generation_equals_active",
+              "disposition": "emit_candidate_event"
+            },
+            {
+              "case_id": "stale_notification",
+              "when": "otherwise",
+              "disposition": "discard_without_candidate"
+            }
+          ]
+        },
+        "generation_scope": {
+          "const": "per_timeout_phase"
+        }
+      }
+    },
+    "uniqueStrings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from"
+      ],
+      "properties": {
+        "from": {
+          "enum": [
+            "input.job_id",
+            "command.principal_subject",
+            "payload.session_id",
+            "payload.allocation_id",
+            "payload.allocation_digest",
+            "payload.operation_id",
+            "payload.worker_id",
+            "payload.event_sequence",
+            "payload.completion_mode",
+            "payload.status"
+          ]
+        }
+      }
+    },
+    "boundValue": {
+      "oneOf": [
+        {
+          "type": [
+            "string",
+            "integer",
+            "boolean",
+            "null"
+          ]
+        },
+        {
+          "$ref": "#/$defs/binding"
+        }
+      ]
+    },
+    "snapshotUpdates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "session_id": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "latched_reason": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "completion_candidate": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "completion_mode": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "resource_status": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "allocation_id": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "allocation_digest": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "worker_launch_status": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "launch_operation_id": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "worker_id": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "process_presence": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "process_exit_confirmed": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "session_retention_status": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "finalization_status": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "cleanup_status": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "pending_worker_event_ack": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "pending_worker_id": {
+          "$ref": "#/$defs/boundValue"
+        },
+        "pending_worker_event_sequence": {
+          "$ref": "#/$defs/boundValue"
+        }
+      }
+    },
+    "operandSource": {
+      "enum": [
+        "snapshot",
+        "payload"
+      ]
+    },
+    "fieldName": {
+      "enum": [
+        "latched_reason",
+        "completion_candidate",
+        "completion_mode",
+        "resource_status",
+        "allocation_id",
+        "allocation_digest",
+        "worker_launch_status",
+        "launch_operation_id",
+        "worker_id",
+        "process_presence",
+        "process_exit_confirmed",
+        "session_id",
+        "session_retention_status",
+        "finalization_status",
+        "cleanup_status",
+        "pending_worker_event_ack",
+        "pending_worker_id",
+        "pending_worker_event_sequence",
+        "phase",
+        "outcome",
+        "operation_id",
+        "event_sequence",
+        "status"
+      ]
+    },
+    "literalPredicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "field",
+        "operator"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/operandSource"
+        },
+        "field": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "operator": {
+          "enum": [
+            "eq",
+            "not_eq",
+            "in"
+          ]
+        },
+        "value": {
+          "type": [
+            "string",
+            "integer",
+            "boolean",
+            "null"
+          ]
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": [
+              "string",
+              "integer",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operator": {
+                "enum": [
+                  "eq",
+                  "not_eq"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "not": {
+              "required": [
+                "values"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operator": {
+                "const": "in"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "values"
+            ],
+            "not": {
+              "required": [
+                "value"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "fieldPredicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "field",
+        "operator",
+        "right_source",
+        "right_field"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/operandSource"
+        },
+        "field": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "operator": {
+          "const": "eq_field"
+        },
+        "right_source": {
+          "$ref": "#/$defs/operandSource"
+        },
+        "right_field": {
+          "$ref": "#/$defs/fieldName"
+        }
+      }
+    },
+    "predicate": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/literalPredicate"
+        },
+        {
+          "$ref": "#/$defs/fieldPredicate"
+        }
+      ]
+    },
+    "when": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operator"
+          ],
+          "properties": {
+            "operator": {
+              "enum": [
+                "always",
+                "otherwise"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operator",
+            "predicates"
+          ],
+          "properties": {
+            "operator": {
+              "const": "all"
+            },
+            "predicates": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/predicate"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "journalPayload": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/binding"
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "when",
+        "disposition"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "when": {
+          "$ref": "#/$defs/when"
+        },
+        "disposition": {
+          "enum": [
+            "transition",
+            "audit",
+            "late_audit",
+            "reject"
+          ]
+        },
+        "next_state": {
+          "type": "string"
+        },
+        "journal_event_type": {
+          "type": "string"
+        },
+        "journal_payload": {
+          "$ref": "#/$defs/journalPayload"
+        },
+        "normalize_to": {
+          "type": "string"
+        },
+        "updates": {
+          "$ref": "#/$defs/snapshotUpdates"
+        },
+        "post_sync_effects": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "rejection_reason": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "disposition": {
+                "const": "transition"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "next_state",
+              "journal_event_type"
+            ],
+            "not": {
+              "required": [
+                "rejection_reason"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "disposition": {
+                "enum": [
+                  "audit",
+                  "late_audit"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "journal_event_type"
+            ],
+            "not": {
+              "required": [
+                "rejection_reason"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "disposition": {
+                "const": "reject"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "rejection_reason"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "journal_event_type"
+                  ]
+                },
+                {
+                  "required": [
+                    "journal_payload"
+                  ]
+                },
+                {
+                  "required": [
+                    "next_state"
+                  ]
+                },
+                {
+                  "required": [
+                    "updates"
+                  ]
+                },
+                {
+                  "required": [
+                    "post_sync_effects"
+                  ]
+                },
+                {
+                  "required": [
+                    "normalize_to"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    },
+    "commandRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pair_id",
+        "entity_position",
+        "command_kind",
+        "cases"
+      ],
+      "properties": {
+        "pair_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*__[a-z][a-z0-9_]*$"
+        },
+        "entity_position": {
+          "type": "string"
+        },
+        "command_kind": {
+          "type": "string"
+        },
+        "cases": {
+          "$ref": "#/$defs/cases"
+        }
+      }
+    },
+    "eventRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pair_id",
+        "entity_position",
+        "event_kind",
+        "cases"
+      ],
+      "properties": {
+        "pair_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*__[a-z][a-z0-9_]*$"
+        },
+        "entity_position": {
+          "type": "string"
+        },
+        "event_kind": {
+          "type": "string"
+        },
+        "cases": {
+          "$ref": "#/$defs/cases"
+        }
+      }
+    }
+  }
+}

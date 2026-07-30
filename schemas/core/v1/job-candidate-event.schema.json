@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "job-candidate-event.schema.json",
+  "title": "Sitometron core Job candidate event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "event_type",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "job_id": {
+      "$ref": "job-journal-event.schema.json#/$defs/uuidV7"
+    },
+    "event_type": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/jobCreated"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/resourcesCommitted"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/workerLaunchIntent"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/workerLaunchObserved"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/workerRunning"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/timeoutExpired"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/workerCompleted"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/workerFailed"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/processExitConfirmed"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/sessionRetainRequested"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/sessionRetained"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/finalizationCompleted"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/finalizationFailed"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/terminalOutcomeCommitted"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/resourcesReleased"
+    },
+    {
+      "$ref": "job-journal-event.schema.json#/$defs/cleanupStatusRecorded"
+    }
+  ]
+}

@@ -1,0 +1,376 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "job-reducer-vectors.schema.json",
+  "title": "Sitometron core Job reducer vectors v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "contract_version",
+    "status",
+    "authority",
+    "case_vectors",
+    "invalid_payload_vectors",
+    "sequence_vectors",
+    "timer_ingress_vectors"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "job-reducer-vectors.schema.json"
+    },
+    "contract_version": {
+      "const": 1
+    },
+    "status": {
+      "enum": [
+        "proposed",
+        "normative",
+        "deprecated",
+        "superseded"
+      ]
+    },
+    "authority": {
+      "const": "ADR-0002"
+    },
+    "case_vectors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/caseVector"
+      }
+    },
+    "invalid_payload_vectors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/invalidPayloadVector"
+      }
+    },
+    "sequence_vectors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sequenceVector"
+      }
+    },
+    "timer_ingress_vectors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/timerIngressVector"
+      }
+    }
+  },
+  "$defs": {
+    "nullableSnapshot": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "job-reducer-snapshot.schema.json"
+        }
+      ]
+    },
+    "nullableJournalEvent": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "job-journal-event.schema.json"
+        }
+      ]
+    },
+    "input": {
+      "oneOf": [
+        {
+          "$ref": "job-command.schema.json"
+        },
+        {
+          "$ref": "job-reducer-input-event.schema.json"
+        }
+      ]
+    },
+    "expectedCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disposition",
+        "journal_event",
+        "next_snapshot",
+        "post_sync_effects",
+        "rejection_reason"
+      ],
+      "properties": {
+        "disposition": {
+          "enum": [
+            "transition",
+            "audit",
+            "late_audit",
+            "reject"
+          ]
+        },
+        "journal_event": {
+          "$ref": "#/$defs/nullableJournalEvent"
+        },
+        "next_snapshot": {
+          "$ref": "#/$defs/nullableSnapshot"
+        },
+        "post_sync_effects": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "rejection_reason": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "job-rejection.schema.json#/properties/reason"
+            }
+          ]
+        }
+      }
+    },
+    "caseVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vector_id",
+        "matrix",
+        "pair_id",
+        "case_id",
+        "initial_snapshot",
+        "input",
+        "expected"
+      ],
+      "properties": {
+        "vector_id": {
+          "type": "string",
+          "pattern": "^(command|event)__[a-z0-9_]+__[a-z0-9_]+__[a-z0-9_]+$"
+        },
+        "matrix": {
+          "enum": [
+            "command",
+            "event"
+          ]
+        },
+        "pair_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*__[a-z][a-z0-9_]*$"
+        },
+        "case_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "initial_snapshot": {
+          "$ref": "#/$defs/nullableSnapshot"
+        },
+        "input": {
+          "$ref": "#/$defs/input"
+        },
+        "expected": {
+          "$ref": "#/$defs/expectedCase"
+        }
+      }
+    },
+    "invalidPayloadVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vector_id",
+        "input",
+        "expected"
+      ],
+      "properties": {
+        "vector_id": {
+          "type": "string",
+          "pattern": "^invalid_payload__[a-z][a-z0-9_]*(?:__[a-z][a-z0-9_]*)?$"
+        },
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "job_id",
+            "event_type",
+            "payload"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": 1
+            },
+            "job_id": {
+              "type": "string"
+            },
+            "event_type": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object"
+            }
+          }
+        },
+        "expected": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "disposition",
+            "journal_event",
+            "rejection_reason"
+          ],
+          "properties": {
+            "disposition": {
+              "const": "reject"
+            },
+            "journal_event": {
+              "type": "null"
+            },
+            "rejection_reason": {
+              "const": "invalid_event_payload"
+            }
+          }
+        }
+      }
+    },
+    "timerIngressVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vector_id",
+        "active_generation",
+        "notification_generation",
+        "arm_requested",
+        "expected"
+      ],
+      "properties": {
+        "vector_id": {
+          "type": "string",
+          "pattern": "^timer__[a-z][a-z0-9_]*$"
+        },
+        "active_generation": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "notification_generation": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "arm_requested": {
+          "type": "boolean"
+        },
+        "expected": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "case_id",
+            "disposition",
+            "candidate_event",
+            "post_sync_effects"
+          ],
+          "properties": {
+            "case_id": {
+              "enum": [
+                "generation_exhausted",
+                "disarmed_notification",
+                "current_notification",
+                "stale_notification"
+              ]
+            },
+            "disposition": {
+              "enum": [
+                "fail_closed",
+                "discard_without_candidate",
+                "emit_candidate_event"
+              ]
+            },
+            "candidate_event": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "job-candidate-event.schema.json"
+                }
+              ]
+            },
+            "post_sync_effects": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "sequenceStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "command_case_id",
+        "event_case_id",
+        "expected"
+      ],
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/input"
+        },
+        "command_case_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event_case_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected": {
+          "$ref": "#/$defs/expectedCase"
+        }
+      }
+    },
+    "sequenceVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vector_id",
+        "initial_snapshot",
+        "steps",
+        "expected_final_snapshot"
+      ],
+      "properties": {
+        "vector_id": {
+          "type": "string",
+          "pattern": "^(race|finalization|cleanup)__[a-z][a-z0-9_]*$"
+        },
+        "initial_snapshot": {
+          "$ref": "job-reducer-snapshot.schema.json"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/sequenceStep"
+          }
+        },
+        "expected_final_snapshot": {
+          "$ref": "job-reducer-snapshot.schema.json"
+        }
+      }
+    }
+  }
+}

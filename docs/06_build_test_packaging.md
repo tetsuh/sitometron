@@ -48,11 +48,14 @@ Development-time schema checks run with Python 3.12.13 and dependencies frozen b
 ```text
 uv sync --frozen --only-group schema
 uv run --frozen --only-group schema python -m unittest discover -s tests/tooling -p 'test_*.py' -v
+uv run --frozen --only-group schema python tools/validate_core_contract.py
 ```
 
 `tools/json_schema_validator.py` checks Draft 2020-12 schema definitions, an explicit local-only
-schema registry, local reference resolution, and instances. Contract-specific checks remain in their
-own validators; generic JSON Schema validation does not interpret project extension keywords.
+schema registry, local reference resolution, known formats, and instances.
+`tools/validate_core_contract.py` applies it to every core schema plus the contract and vector
+documents. Contract-specific checks remain in their own validators; generic JSON Schema validation
+does not interpret project extension keywords.
 
 ## 4. Requirement-to-test mapping
 
@@ -65,6 +68,16 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `NFR-002` | CTest `core_dependency_isolation`, `core_dependency_isolation_rejects_third_party` | Active |
 | `NFR-003` | CI jobs `linux`, `windows`; CTest `in_source_build_rejected` | CI active; rejection test planned before the Phase 0A Gate closes |
 | `NFR-004` | CTest `sitometron_core_tests`; policy check `unit_tests_reject_real_sleep` | Core test active; policy check planned before the Phase 0A Gate closes |
+| `JOB-001` | CTest `core_job_contract`; C++ test `job_closed_state_set` | Contract check active; C++ test planned for reducer implementation |
+| `JOB-002` | CTest `core_job_contract`; C++ tests `job_state_event_vectors`, `job_command_vectors` | Contract check active; C++ tests planned for reducer implementation |
+| `JOB-003` | C++ test `job_first_cause_vectors` | Planned for reducer implementation |
+| `JOB-004` | C++ test `job_finalization_vectors` | Planned for reducer implementation |
+| `JOB-005` | C++ test `job_timeout_vectors` | Planned for reducer implementation |
+| `JOB-006` | C++ test `job_late_cleanup_vectors` | Planned for reducer implementation |
+| `JOB-007` | C++ test `job_ordering_vectors` | Planned for reducer implementation |
+| `JRN-001` | CTest `core_job_contract`; C++ test `job_journal_envelope_vectors` | Contract check active; C++ test planned in Phase 0B |
+| `JRN-002` | C++ test `job_journal_commit_order` | Planned in Phase 0B |
+| `JRN-003` | C++ tests `job_rejected_input_no_append`, `job_journal_failure_fail_closed` | Planned for reducer implementation and Phase 0B respectively |
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even

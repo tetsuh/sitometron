@@ -41,12 +41,13 @@ The core owns deterministic policy. Adapters own I/O and external side effects. 
 writer orders accepted commands and events. Journal and external-side-effect commit protocols are
 specified before production adapters use them.
 
-> **Planned, not yet normative:** Issue/ADR #3 owns the Job state, event, and reducer mechanism.
-> Implementers must not treat this outline as a finalized contract.
+Accepted ADR-0002 owns the normative Job state, event, command, rejection, and reducer mechanism.
+Implementation remains Planned.
 
-The machine-readable Job transition contract will be introduced by Issue #3. Worker HTTP schemas,
-external REST schemas, Journal records, containment markers, and Artifact manifests remain separate
-contract surfaces in the [Contract Registry](08_contract_registry.md).
+The machine-readable Job transition contract is documented in
+[the core contracts](03_core_contracts.md). Worker HTTP schemas, external REST schemas, physical
+Journal records, containment markers, and Artifact manifests remain separate contract surfaces in
+the [Contract Registry](08_contract_registry.md).
 
 ## 4. Application boundary
 
