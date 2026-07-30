@@ -299,6 +299,12 @@ function(is_uint64_nonzero value output)
   set(${output} ${valid} PARENT_SCOPE)
 endfunction()
 
+is_uint64_nonzero("18446744073709551615" uint64_max_valid)
+is_uint64_nonzero("18446744073709551616" uint64_overflow_valid)
+if(NOT uint64_max_valid OR uint64_overflow_valid)
+  message(FATAL_ERROR "Nonzero uint64 boundary validation is incorrect")
+endif()
+
 # Validate candidate payload fields and the scalar/nested constraints used by every core fixture.
 function(validate_event_payload event payload label expect_valid)
   set(def_key "EVENT_DEF_${event}")
