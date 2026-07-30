@@ -1,8 +1,12 @@
 # ADR-0001: Bootstrap a standard-library-only C++20 core
 
-- Status: Accepted
-- Date: 2026-07-29
-- Owners: Sitometron maintainers
+## Status
+
+Accepted — 2026-07-29
+
+## Owners
+
+Sitometron maintainers
 
 ## Context
 

@@ -1,7 +1,7 @@
 {
   "$schema": "job-reducer-vectors.schema.json",
   "contract_version": 1,
-  "status": "proposed",
+  "status": "normative",
   "authority": "ADR-0002",
   "case_vectors": [
     {

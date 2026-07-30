@@ -1,7 +1,6 @@
 # Core contracts
 
-> **Planned, not yet normative:** Issue #3 and proposed ADR-0002 own this mechanism.
-> Implementers must not treat this contract as normative until the repository owner accepts ADR-0002.
+Accepted ADR-0002 makes the Phase 0A core Job contract normative. Implementation remains Planned.
 
 ## 1. Source files
 

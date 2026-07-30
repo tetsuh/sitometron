@@ -1,7 +1,7 @@
 {
   "$schema": "job-reducer-contract.schema.json",
   "contract_version": 1,
-  "status": "proposed",
+  "status": "normative",
   "authority": "ADR-0002",
   "job_states": [
     "admitted",
