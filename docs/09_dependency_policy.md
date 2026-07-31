@@ -11,8 +11,15 @@ Conan and general dependency acquisition through CMake `FetchContent` are not us
 does not download dependencies. Dependency updates use dedicated pull requests with Linux and
 Windows evidence.
 
-`sitometron_core` depends only on the C++ standard library. Adapter targets own all third-party and
-platform dependencies.
+`sitometron_core` currently depends only on the C++ standard library under ADR-0001. Adapter targets
+own all other third-party, platform, I/O, and framework dependencies.
+
+> **Proposed, not yet normative:** [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) would
+> allow only the direct manifest ports and CMake targets for `nlohmann-json`, `boost-uuid`, and
+> `boost-hash2`. Dependency-owned types would remain out of public core headers. Baseline-resolved
+> transitive packages would be opaque build prerequisites, not direct source-level authorization.
+> ADR-0001 remains effective until ADR-0004 is owner-accepted, and manifest/CMake integration remains
+> blocked on a separate implementation Issue.
 
 Sitos remains outside the Sitometron vcpkg manifest. Phase 4 builds and installs one pinned Sitos
 release or commit separately, verifies provenance and required contracts, and consumes it as an

@@ -40,6 +40,19 @@ A Planned Requirement cannot authorize production implementation by itself.
 | `NFR-003` | MUST | Use CMake 3.28 or later with Ninja presets and reject in-source builds. | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) |
 | `NFR-004` | MUST | Keep unit tests deterministic and avoid real sleeps when a fake clock or explicit event can express the behavior. | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) |
 
+### Planned replacement dependency requirement
+
+> **Planned, not yet normative:** Proposed ADR-0004 and
+> [Issue #15](https://github.com/tetsuh/sitometron/issues/15) own this replacement. ADR-0001 and
+> `NFR-002` remain effective until owner acceptance.
+
+| ID | Level | Requirement | Authority |
+|---|---|---|---|
+| `NFR-005` | MUST | Keep `sitometron_core` dependency-minimal: permit only dependencies explicitly named by the accepted core allowlist and pinned manifest, expose Sitometron-owned public types, treat transitive packages as opaque prerequisites, and mechanically reject unapproved direct targets, includes, and public dependency leakage. | Proposed [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) under [Issue #15](https://github.com/tetsuh/sitometron/issues/15) |
+
+If ADR-0004 is accepted, `NFR-002` becomes Superseded by `NFR-005` and unchanged `NFR-001`,
+`NFR-003`, and `NFR-004` move to ADR-0004 authority.
+
 ## 4. Normative Phase 0A Job requirements
 
 Accepted ADR-0002 makes these requirements binding on implementation.

@@ -12,14 +12,18 @@ sitometrond
   -> sitometron_core
 ```
 
-Adapters may depend on the core. The core must not depend on adapters, third-party frameworks, or
-platform APIs. Only `sitometrond` composes concrete adapters.
+Adapters may depend on the core. The core must not depend on adapters, unapproved third-party
+libraries, third-party frameworks, or platform APIs. Only `sitometrond` composes concrete adapters.
+
+> **Proposed, not yet normative:** [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) would
+> replace ADR-0001's standard-library-only restriction with a closed direct allowlist while keeping
+> this dependency direction and all I/O/framework ownership unchanged.
 
 ## 2. Initial targets
 
 | Target | Responsibility | Dependency policy |
 |---|---|---|
-| `sitometron_core` | Domain state, commands, reducer, admission, scheduling policy | C++ standard library only |
+| `sitometron_core` | Domain state, commands, reducer, admission, scheduling policy | Currently C++ standard library only; explicit allowlist proposed by ADR-0004 |
 | `sitometron_test_support` | Deterministic fakes and test helpers | Tests only |
 | `sitometrond` | Composition root and daemon entry point | Core initially; adapters by Phase |
 
@@ -68,5 +72,6 @@ Linux and Windows share domain policy and protocol contracts. Process containmen
 filesystem synchronization, and platform diagnostics remain adapter implementations qualified on
 each platform.
 
-See [the detailed boundary rules](architecture/boundaries.md) and
-[ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md).
+See [the detailed boundary rules](architecture/boundaries.md),
+[ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md), and Proposed
+[ADR-0004](adr/0004-allow-explicit-core-dependencies.md).

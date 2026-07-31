@@ -65,7 +65,8 @@ may iterate internal machine-readable vectors without creating a second stable f
 | Requirement | Required tests or checks | Status |
 |---|---|---|
 | `NFR-001` | CI jobs `linux`, `windows` | Active |
-| `NFR-002` | CTest `core_dependency_isolation`, `core_dependency_isolation_rejects_third_party` | Active |
+| `NFR-002` | CTest `core_dependency_isolation`, `core_dependency_isolation_rejects_third_party` | Active while ADR-0001 remains effective |
+| `NFR-005` | CTests `core_dependency_allowlist`, `core_dependency_rejects_unapproved_target`, `core_dependency_rejects_unapproved_private_include`, `core_public_api_dependency_isolation`, `core_dependency_api_smoke`; CI jobs `linux`, `windows` | Planned under Proposed ADR-0004; activation requires the separate integration Issue |
 | `NFR-003` | CI jobs `linux`, `windows`; CTest `in_source_build_rejected` | CI active; rejection test planned before the Phase 0A Gate closes |
 | `NFR-004` | CTest `sitometron_core_tests`; policy check `unit_tests_reject_real_sleep` | Core test active; policy check planned before the Phase 0A Gate closes |
 | `JOB-001` | CTest `core_job_contract`; C++ test `job_closed_state_set` | Contract check active; C++ test planned for reducer implementation |

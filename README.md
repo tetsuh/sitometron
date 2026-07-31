@@ -8,9 +8,13 @@ The project is in its bootstrap phase. No production API or compatibility guaran
 
 ## Design boundaries
 
-`sitometron_core` is a C++20, standard-library-only domain library. It does not depend on HTTP,
-Sitos, Zenoh, Holoscan, Python, logging backends, hardware-topology libraries, or platform process
-APIs. Adapters are composed only by `sitometrond`.
+`sitometron_core` is currently a C++20, standard-library-only domain library under ADR-0001. It
+does not depend on HTTP, Sitos, Zenoh, Holoscan, Python, logging backends, hardware-topology
+libraries, or platform process APIs. Adapters are composed only by `sitometrond`.
+
+> **Proposed, not yet normative:** [ADR-0004](docs/adr/0004-allow-explicit-core-dependencies.md)
+> would replace only the standard-library restriction with a closed allowlist for nlohmann/json,
+> Boost.UUID, and Boost.Hash2. ADR-0001 remains effective until the owner accepts ADR-0004.
 
 See:
 
