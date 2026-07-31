@@ -197,6 +197,7 @@ an Apache-style project `NOTICE` file unless a later packaging requirement makes
 ## References
 
 - Issue #15
+- PR #16
 - Issue #9
 - Gate #1
 - Requirements: `NFR-001`, `NFR-002`, `NFR-003`, `NFR-004`, proposed `NFR-005`
