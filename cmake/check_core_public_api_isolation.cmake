@@ -11,7 +11,7 @@ foreach(_file IN LISTS _files)
     message(FATAL_ERROR "CorePublicApiIsolation setup failure: missing scan file ${_file}")
   endif()
   file(READ "${_file}" _contents)
-  if(_contents MATCHES "#include[ \\t]*<(nlohmann/json\.hpp|boost/[^>]+)>")
+  if(_contents MATCHES "#include[ \\t]*[<\"](nlohmann/[^>\"]+|boost/[^>\"]+)[>\"]")
     message(FATAL_ERROR
       "CorePublicApiIsolation dependency-owned public include: ${_file}")
   endif()

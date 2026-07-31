@@ -30,11 +30,16 @@ jobs:
         id: vcpkg-cache-identity
         run: |
           set -euo pipefail
-          test -n "${ImageOS:-}" && test -n "${ImageVersion:-}"
+          if [[ -z "${ImageOS:-}" || -z "${ImageVersion:-}" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           identity="${ImageOS}-${ImageVersion}"
           identity="${identity//[^a-zA-Z0-9._-]/-}"
+          echo "available=true" >> "$GITHUB_OUTPUT"
           echo "value=$identity" >> "$GITHUB_OUTPUT"
       - name: Restore vcpkg filesystem binary cache
+        if: steps.vcpkg-cache-identity.outputs.available == 'true'
         id: vcpkg-binary-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -42,11 +47,15 @@ jobs:
           key: vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ hashFiles('vcpkg.json') }}-${{ steps.vcpkg-cache-identity.outputs.value }}
           restore-keys: |
             vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-files-v1-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-files-v1-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ hashFiles('vcpkg.json') }}
       - name: Configure vcpkg filesystem binary cache
         run: |
-          mkdir -p "$RUNNER_TEMP/vcpkg-binary-cache"
-          echo "VCPKG_BINARY_SOURCES=clear;files,$RUNNER_TEMP/vcpkg-binary-cache,readwrite" >> "$GITHUB_ENV"
+          if [[ '${{ steps.vcpkg-cache-identity.outputs.available }}' == 'true' ]]; then
+            mkdir -p "$RUNNER_TEMP/vcpkg-binary-cache"
+            echo "VCPKG_BINARY_SOURCES=clear;files,$RUNNER_TEMP/vcpkg-binary-cache,readwrite" >> "$GITHUB_ENV"
+          else
+            echo "VCPKG_BINARY_SOURCES=clear" >> "$GITHUB_ENV"
+          fi
       - name: Checkout and bootstrap pinned vcpkg
         run: |
           set -euo pipefail
@@ -65,7 +74,7 @@ jobs:
           "$RUNNER_TEMP/vcpkg/vcpkg" install --triplet=x64-linux --x-manifest-root="$GITHUB_WORKSPACE" --x-install-root="$GITHUB_WORKSPACE/build/vcpkg-installed"
           "$RUNNER_TEMP/vcpkg/vcpkg" list
       - name: Configure
-        run: cmake --preset dev-linux -DCMAKE_TOOLCHAIN_FILE="$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-linux -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/build/vcpkg-installed" -DVCPKG_MANIFEST_INSTALL=OFF
+        run: cmake --preset dev-linux -DCMAKE_TOOLCHAIN_FILE="$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-linux -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/build/vcpkg-installed" -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_APPLOCAL_DEPS=OFF
       - name: Build
         run: cmake --build --preset dev-linux
       - name: Format
@@ -73,7 +82,7 @@ jobs:
       - name: Test
         run: ctest --preset dev-linux
       - name: Save vcpkg filesystem binary cache
-        if: success() && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
+        if: success() && steps.vcpkg-cache-identity.outputs.available == 'true' && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/vcpkg-binary-cache
@@ -112,10 +121,16 @@ jobs:
         id: vcpkg-cache-identity
         shell: pwsh
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:ImageOS) -or [string]::IsNullOrWhiteSpace($env:ImageVersion)) { throw 'runner image identity unavailable' }
+          if ([string]::IsNullOrWhiteSpace($env:ImageOS) -or
+              [string]::IsNullOrWhiteSpace($env:ImageVersion)) {
+            'available=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            exit 0
+          }
           $identity = "$($env:ImageOS)-$($env:ImageVersion)" -replace '[^A-Za-z0-9._-]', '-'
+          'available=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "value=$identity" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - name: Restore vcpkg filesystem binary cache
+        if: steps.vcpkg-cache-identity.outputs.available == 'true'
         id: vcpkg-binary-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -123,14 +138,18 @@ jobs:
           key: vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-windows-${{ hashFiles('vcpkg.json') }}-${{ steps.vcpkg-cache-identity.outputs.value }}
           restore-keys: |
             vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-windows-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-files-v1-${{ runner.os }}-${{ runner.arch }}-x64-windows-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-files-v1-${{ runner.os }}-${{ runner.arch }}-x64-windows-${{ hashFiles('vcpkg.json') }}
       - name: Configure vcpkg filesystem binary cache
         shell: pwsh
         run: |
-          $cache = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
-          New-Item -ItemType Directory -Path $cache -Force | Out-Null
-          $cache = $cache.Replace('\\', '/')
-          "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ('${{ steps.vcpkg-cache-identity.outputs.available }}' -eq 'true') {
+            $cache = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
+            New-Item -ItemType Directory -Path $cache -Force | Out-Null
+            $cache = $cache.Replace('\', '/')
+            "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            'VCPKG_BINARY_SOURCES=clear' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
       - name: Checkout and bootstrap pinned vcpkg
         shell: pwsh
         run: |
@@ -156,11 +175,14 @@ jobs:
           $install = & $vswhere -latest -property installationPath
           Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
-          cmake --preset dev-windows -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/build/vcpkg-installed" -DVCPKG_MANIFEST_INSTALL=OFF
+          cmake --preset dev-windows -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/build/vcpkg-installed" -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_APPLOCAL_DEPS=OFF
+          if (Select-String -Path "$env:GITHUB_WORKSPACE/build/dev-windows/build.ninja" -Pattern 'z-applocal' -Quiet) {
+            throw 'project build still invokes vcpkg z-applocal after explicit provisioning'
+          }
           cmake --build --preset dev-windows
           ctest --preset dev-windows
       - name: Save vcpkg filesystem binary cache
-        if: success() && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
+        if: success() && steps.vcpkg-cache-identity.outputs.available == 'true' && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/vcpkg-binary-cache

@@ -68,10 +68,13 @@ sitometron_enable_project_warnings(sitometron_core)
 sitometron_enable_sanitizers(sitometron_core)
 
 get_target_property(SITOMETRON_CORE_LINK_LIBRARIES sitometron_core LINK_LIBRARIES)
-if(NOT SITOMETRON_CORE_LINK_LIBRARIES)
+get_target_property(
+  SITOMETRON_CORE_INTERFACE_LINK_LIBRARIES sitometron_core INTERFACE_LINK_LIBRARIES)
+if(NOT SITOMETRON_CORE_LINK_LIBRARIES OR NOT SITOMETRON_CORE_INTERFACE_LINK_LIBRARIES)
   message(FATAL_ERROR "sitometron_core must link the approved private dependency targets")
 endif()
 set(SITOMETRON_CORE_LINK_TARGETS ${SITOMETRON_CORE_LINK_LIBRARIES})
+set(SITOMETRON_CORE_INTERFACE_LINK_TARGETS ${SITOMETRON_CORE_INTERFACE_LINK_LIBRARIES})
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_link_target_allowlist.cmake)
 
 add_executable(sitometrond apps/sitometrond/main.cpp)
@@ -124,6 +127,7 @@ if(SITOMETRON_BUILD_TESTS)
     COMMAND
       ${CMAKE_COMMAND}
       -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DSITOMETRON_NEGATIVE_SCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/core-target-probe
       -DCORE_NEGATIVE_MODE=target
       -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_negative_isolation.cmake)
 

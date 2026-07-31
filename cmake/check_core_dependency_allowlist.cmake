@@ -5,6 +5,12 @@ if(NOT DEFINED SITOMETRON_SOURCE_DIR OR "${SITOMETRON_SOURCE_DIR}" STREQUAL "")
 endif()
 
 file(READ "${SITOMETRON_SOURCE_DIR}/vcpkg.json" _manifest)
+string(JSON _baseline ERROR_VARIABLE _baseline_error GET "${_manifest}" builtin-baseline)
+if(_baseline_error OR
+   NOT _baseline STREQUAL "40f3c709db80acf154ac4b17a1f83c564ebd022e")
+  message(FATAL_ERROR
+    "CoreDependencyAllowlist builtin baseline must match the owner-approved vcpkg pin")
+endif()
 string(JSON _dependency_count ERROR_VARIABLE _json_error LENGTH "${_manifest}" dependencies)
 if(_json_error OR NOT _dependency_count EQUAL 3)
   message(FATAL_ERROR
@@ -40,7 +46,6 @@ endforeach()
 
 execute_process(
   COMMAND "${CMAKE_COMMAND}"
-    "-DSITOMETRON_CORE_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/include/sitometron/core/version.hpp\\;${SITOMETRON_SOURCE_DIR}/src/core/version.cpp"
     -P "${SITOMETRON_SOURCE_DIR}/cmake/check_core_dependency_isolation.cmake"
   RESULT_VARIABLE _isolation_result
   OUTPUT_VARIABLE _isolation_output
