@@ -36,6 +36,7 @@ traceable.
 
 ### Preserved bootstrap decisions
 
+- Support Linux with GCC and Windows with MSVC using C++20.
 - Use C++20 with CMake 3.28 or later and Ninja presets.
 - Build `sitometron_core` as an internal static library with no ABI-stability promise in v0.1.
 - Keep domain ports and public APIs in Sitometron-owned types.
@@ -44,7 +45,7 @@ traceable.
 - Compose concrete adapters only in `sitometrond`.
 - Enable exceptions and RTTI.
 - Reject in-source builds.
-- Compile project code with warnings as errors without imposing project warnings on dependencies.
+- Compile project code with warnings as errors.
 - Use fake-driven deterministic unit tests without real sleeps when explicit inputs can express the
   behavior.
 - Use manifest-mode vcpkg with pinned acquisition and no package-manager or network invocation from
@@ -77,7 +78,9 @@ target_link_libraries(
 The integration Issue may refine placement into private implementation targets if that preserves the
 same direct allowlist and public boundary. Because `sitometron_core` is static, CMake may retain
 private dependencies as `$<LINK_ONLY:...>` metadata for final linking. That metadata does not
-permit dependency-owned includes or types in public core headers.
+permit dependency-owned includes or types in public core headers. Project warning-as-error options
+apply to Sitometron targets; the project does not modify imported dependency targets or impose its
+warning policy on them.
 
 The baseline-resolved transitive Boost ports and any system link requirements are permitted only as
 opaque upstream implementation prerequisites. Sitometron core source must not directly include,
@@ -97,11 +100,13 @@ introduced.
 
 For ADR-0002 resolved allocations, the implementation retains the original UTF-8 JSON byte
 sequence, validates its syntax, and applies SHA-256 to those exact bytes. It does not parse and
-reserialize before hashing. A raw NUL byte makes the JSON text invalid and is rejected as a syntax
-error; a JSON string represents U+0000 through its original `\\u0000` escape bytes. Independently,
-the SHA-256 primitive is length-safe for arbitrary byte sequences, including embedded NUL bytes.
-The result is a Sitometron-owned lowercase 64-hex digest; Boost digest types are not stored in
-snapshots, DTOs, or public APIs.
+reserialize before hashing. JSON parsing receives an explicit bounded byte range, consumes that
+entire range, and never relies on a null-terminated pointer overload. A raw NUL byte anywhere in the
+range makes the JSON text invalid and is rejected as a syntax error, including valid JSON followed
+by a NUL and trailing bytes; a JSON string represents U+0000 through its original `\u0000` escape
+bytes. Independently, the SHA-256 primitive is length-safe for arbitrary byte sequences, including
+embedded NUL bytes. The result is a Sitometron-owned lowercase 64-hex digest; Boost digest types are
+not stored in snapshots, DTOs, or public APIs.
 
 Boost.UUID parsing does not define Sitometron's accepted text grammar. Sitometron enforces lowercase
 canonical `8-4-4-4-12` text and rejects braces, uppercase, compact forms, wrong versions, and wrong
@@ -111,20 +116,25 @@ that contract.
 
 This ADR selects Boost.UUID but does not define production generation semantics. UUIDv7 clock,
 random-source, rollback, monotonicity, and same-millisecond rules belong to the later ID-generator
-Issue. Deterministic fake generation does not call Boost generators. UUIDs are identifiers and are
-never used as the 256-bit Worker bearer credential, whose CSPRNG mechanism requires separate review.
+Issue. Deterministic fake generation does not call Boost generators. This ADR establishes only the
+negative security constraint that UUIDs are identifiers and must never be used as Worker bearer
+credentials. Issue #15 fixes the future token size at 256 bits; its CSPRNG generation, storage,
+transport, and protocol remain Planned under a separate owning design.
 
 ### Requirements and checks
 
 ADR-0004 replaces `NFR-002` with this requirement when accepted:
 
-- `NFR-005` (MUST): Keep `sitometron_core` dependency-minimal. Permit only dependencies explicitly
-  named by the accepted core allowlist and pinned manifest; expose Sitometron-owned public types;
-  treat transitive packages as opaque prerequisites; and mechanically reject unapproved direct
-  targets, includes, and public dependency leakage.
+- `NFR-005` (MUST): Keep `sitometron_core` dependency-minimal. Permit only C++ standard headers
+  named by the reviewed standard-header allowlist and third-party dependencies named by the accepted
+  core dependency allowlist and pinned manifest; expose Sitometron-owned public types; treat
+  transitive packages as opaque prerequisites; and mechanically reject unapproved standard headers,
+  direct targets, dependency includes, and public dependency leakage.
 
 The following `NFR-005` checks are stable but remain Planned until the separate integration Issue
-implements and activates them:
+implements and activates them. `core_dependency_allowlist` subsumes the existing reviewed
+standard-header scan; the integration must preserve that enforcement when it retires the legacy
+`NFR-002` check names:
 
 - `core_dependency_allowlist`;
 - `core_dependency_rejects_unapproved_target`;
@@ -133,18 +143,20 @@ implements and activates them:
 - `core_dependency_api_smoke`.
 
 `core_dependency_api_smoke` covers JSON, UUID, and SHA-256 APIs, official SHA-256 known-answer
-vectors, arbitrary-byte embedded-NUL and explicit-length hashing, rejection of raw-NUL JSON text,
-and lowercase 64-hex over the original valid JSON bytes. Linux and Windows CI must configure,
+vectors, arbitrary-byte embedded-NUL and explicit-length hashing, explicit-range JSON parsing, and
+rejection of raw-NUL JSON text including valid JSON followed by NUL and trailing bytes. It also
+checks lowercase 64-hex over the original valid JSON bytes. Linux and Windows CI must configure,
 compile, link, and run the applicable checks without hidden package acquisition.
 
 While this ADR is Proposed, ADR-0001 and `NFR-002` remain Normative and their existing checks and
 the standard-library-only rule in `AGENTS.md` remain Active. If ADR-0004 is accepted, ADR-0001 and
 `NFR-002` become Superseded, `NFR-005` becomes Normative with Planned implementation, and unchanged
 `NFR-001`, `NFR-003`, and `NFR-004` move to ADR-0004 authority. The acceptance commit also updates
-`AGENTS.md` to the closed allowlist and synchronizes Gate #1, Issue #9, and the Phase 0A label
-description without implying implementation. Only the later integration Issue activates `NFR-005`
-checks, retires the legacy `NFR-002` checks, updates the manifest/CMake/CI, and promotes the new
-Registry row to Implemented.
+the Requirements, Contract Registry, ADR index, all Proposed-status banners, and `AGENTS.md`; it
+synchronizes Gate #1, Issue #9, and the Phase 0A label description without implying implementation.
+Only the later integration Issue activates `NFR-005` checks, retires the legacy `NFR-002` check
+names while preserving the standard-header enforcement, updates the manifest/CMake/CI, and promotes
+the new Registry row to Implemented.
 
 ### Acquisition and attribution
 

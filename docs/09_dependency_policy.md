@@ -15,9 +15,10 @@ Windows evidence.
 own all other third-party, platform, I/O, and framework dependencies.
 
 > **Proposed, not yet normative:** [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) would
-> allow only the direct manifest ports and CMake targets for `nlohmann-json`, `boost-uuid`, and
-> `boost-hash2`. Dependency-owned types would remain out of public core headers. Baseline-resolved
-> transitive packages would be opaque build prerequisites, not direct source-level authorization.
+> preserve the reviewed standard-header allowlist and allow only the direct manifest ports and CMake
+> targets for `nlohmann-json`, `boost-uuid`, and `boost-hash2`. Dependency-owned types would remain
+> out of public core headers. Baseline-resolved transitive packages would be opaque build
+> prerequisites, not direct source-level authorization.
 > ADR-0001 remains effective until ADR-0004 is owner-accepted, and manifest/CMake integration remains
 > blocked on a separate implementation Issue.
 
