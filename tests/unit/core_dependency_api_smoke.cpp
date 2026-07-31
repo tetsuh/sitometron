@@ -27,13 +27,15 @@ int CheckSha256(const void* bytes, std::size_t size, std::string_view expected) 
   return Check(boost::hash2::to_string(hasher.result()) == expected, "SHA-256 vector");
 }
 
-int CheckUuid(std::string_view text, boost::uuids::uuid::version_type version,
+int CheckUuid(std::string_view text, std::string_view canonical,
+              boost::uuids::uuid::version_type version,
               boost::uuids::uuid::variant_type variant) {
   const boost::uuids::string_generator parse;
   const auto value = parse(text);
   int result = 0;
   result |= Check(value.version() == version, "UUID version inspection");
   result |= Check(value.variant() == variant, "UUID variant inspection");
+  result |= Check(boost::uuids::to_string(value) == canonical, "UUID canonical formatting");
   return result;
 }
 
@@ -83,24 +85,31 @@ int main() {
                   "JSON digest is lowercase hexadecimal");
 
   result |= CheckUuid("550e8400-e29b-41d4-a716-446655440000",
+                      "550e8400-e29b-41d4-a716-446655440000",
                       boost::uuids::uuid::version_random_number_based,
                       boost::uuids::uuid::variant_rfc_4122);
   result |= CheckUuid("01890f30-7b54-7cc3-98c4-dc0c0c07398f",
+                      "01890f30-7b54-7cc3-98c4-dc0c0c07398f",
                       boost::uuids::uuid::version_time_based_v7,
                       boost::uuids::uuid::variant_rfc_4122);
   result |= CheckUuid("{550e8400-e29b-41d4-a716-446655440000}",
+                      "550e8400-e29b-41d4-a716-446655440000",
                       boost::uuids::uuid::version_random_number_based,
                       boost::uuids::uuid::variant_rfc_4122);
   result |= CheckUuid("550E8400-E29B-41D4-A716-446655440000",
+                      "550e8400-e29b-41d4-a716-446655440000",
                       boost::uuids::uuid::version_random_number_based,
                       boost::uuids::uuid::variant_rfc_4122);
   result |= CheckUuid("550e8400e29b41d4a716446655440000",
+                      "550e8400-e29b-41d4-a716-446655440000",
                       boost::uuids::uuid::version_random_number_based,
                       boost::uuids::uuid::variant_rfc_4122);
   result |= CheckUuid("550e8400-e29b-61d4-a716-446655440000",
+                      "550e8400-e29b-61d4-a716-446655440000",
                       boost::uuids::uuid::version_time_based_v6,
                       boost::uuids::uuid::variant_rfc_4122);
   result |= CheckUuid("550e8400-e29b-41d4-c716-446655440000",
+                      "550e8400-e29b-41d4-c716-446655440000",
                       boost::uuids::uuid::version_random_number_based,
                       boost::uuids::uuid::variant_microsoft);
 
