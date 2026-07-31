@@ -62,7 +62,7 @@ jobs:
           pin=40f3c709db80acf154ac4b17a1f83c564ebd022e
           baseline="$(python3 -c 'import json; print(json.load(open("vcpkg.json"))["builtin-baseline"])')"
           test "$pin" = "$baseline"
-          git clone --filter=blob:none https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git clone https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
           git -C "$RUNNER_TEMP/vcpkg" checkout --detach "$pin"
           test "$(git -C "$RUNNER_TEMP/vcpkg" rev-parse HEAD)" = "$pin"
           "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
@@ -165,7 +165,7 @@ jobs:
           $pin = '40f3c709db80acf154ac4b17a1f83c564ebd022e'
           $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
           if ($pin -ne $manifest.'builtin-baseline') { throw 'vcpkg tool and registry pins differ' }
-          git clone --filter=blob:none https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
+          git clone https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
           git -C "$env:RUNNER_TEMP\vcpkg" checkout --detach $pin
           if ((git -C "$env:RUNNER_TEMP\vcpkg" rev-parse HEAD) -ne $pin) { throw 'vcpkg pin mismatch' }
           & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
