@@ -18,9 +18,11 @@ Dependency-owned types remain out of public core headers, and baseline-resolved 
 are opaque build prerequisites rather than direct source-level authorization. Adapter targets own
 all other third-party, platform, I/O, and framework dependencies.
 
-The current source, manifest, and CMake guard remain standard-library-only until
-[Issue #17](https://github.com/tetsuh/sitometron/issues/17) integrates the allowlist and activates
-its checks.
+Issue #17 activates the allowlist. Production core source may include only `<string_view>` and
+`<nlohmann/json.hpp>`, `<boost/uuid/uuid.hpp>`, `<boost/uuid/string_generator.hpp>`,
+`<boost/uuid/uuid_io.hpp>`, and `<boost/hash2/sha2.hpp>`. UUID generator headers and all
+baseline-resolved transitive headers remain rejected. The five stable `NFR-005` checks mechanically
+enforce this boundary and reject direct target, private include, and public API leakage.
 
 Sitos remains outside the Sitometron vcpkg manifest. Phase 4 builds and installs one pinned Sitos
 release or commit separately, verifies provenance and required contracts, and consumes it as an
@@ -38,6 +40,17 @@ package. Runtime or product-build use requires a separately reviewed decision.
 
 ## CI and caches
 
+CI independently checks out official vcpkg at `40f3c709db80acf154ac4b17a1f83c564ebd022e`, the same
+value used as `builtin-baseline`, and provisions `x64-linux` or `x64-windows` outside project CMake.
+Normal configure uses the pre-provisioned tree with `VCPKG_MANIFEST_INSTALL=OFF`. The filesystem
+binary cache follows Sitos ADR-0031: its SHA-pinned `actions/cache` restore/save steps use a key
+containing cache format, OS, architecture, triplet, manifest hash, and runner image identity, with a
+compatible-prefix restore migration. Cache misses remain fully correct and the cache is never a
+resolution authority. The complete closure and license evidence is maintained in
+[`dependency_closure.md`](dependency_closure.md).
+
 Binary caches are performance optimizations and never correctness authorities. A clean build must
 remain reproducible from pinned manifests and documented provisioning inputs. Project CMake and
-runtime targets never invoke `uv`, Python package installers, or network retrieval.
+runtime targets never invoke `uv`, Python package installers, or network retrieval. Distribution
+retains nlohmann/json MIT attribution and applicable Boost Software License 1.0 terms for the full
+resolved closure; no project `NOTICE` file is added.

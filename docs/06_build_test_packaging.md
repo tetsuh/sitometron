@@ -65,10 +65,10 @@ may iterate internal machine-readable vectors without creating a second stable f
 | Requirement | Required tests or checks | Status |
 |---|---|---|
 | `NFR-001` | CI jobs `linux`, `windows` | Active |
-| `NFR-002` | CTest `core_dependency_isolation`, `core_dependency_isolation_rejects_third_party` | Requirement Superseded; legacy checks remain Active until [Issue #17](https://github.com/tetsuh/sitometron/issues/17) |
+| `NFR-002` | Legacy check names retired by Issue #17; standard-header enforcement continues under `NFR-005` | Requirement Superseded |
 | `NFR-003` | CI jobs `linux`, `windows`; CTest `in_source_build_rejected` | CI active; rejection test planned before the Phase 0A Gate closes |
 | `NFR-004` | CTest `sitometron_core_tests`; policy check `unit_tests_reject_real_sleep` | Core test active; policy check planned before the Phase 0A Gate closes |
-| `NFR-005` | CTests `core_dependency_allowlist` (including the reviewed standard-header allowlist), `core_dependency_rejects_unapproved_target`, `core_dependency_rejects_unapproved_private_include`, `core_public_api_dependency_isolation`, `core_dependency_api_smoke`; CI jobs `linux`, `windows` | Normative under Accepted ADR-0004; implementation Planned until [Issue #17](https://github.com/tetsuh/sitometron/issues/17) |
+| `NFR-005` | CTests `core_dependency_allowlist` (including the reviewed standard-header allowlist), `core_dependency_rejects_unapproved_target`, `core_dependency_rejects_unapproved_private_include`, `core_public_api_dependency_isolation`, `core_dependency_api_smoke`; CI jobs `linux`, `windows` | Normative under Accepted ADR-0004; implemented by Issue #17 |
 | `JOB-001` | CTest `core_job_contract`; C++ test `job_closed_state_set` | Contract check active; C++ test planned for reducer implementation |
 | `JOB-002` | CTest `core_job_contract`; C++ tests `job_state_event_vectors`, `job_command_vectors` | Contract check active; C++ tests planned for reducer implementation |
 | `JOB-003` | C++ test `job_first_cause_vectors` | Planned for reducer implementation |
@@ -90,7 +90,23 @@ A production PR records structured RED evidence and final GREEN commands as requ
 [the development workflow](development_workflow.md). Documentation-only changes provide link,
 formatting, schema, and workflow validation instead of a RED test.
 
-## 6. Packaging
+## 6. Dependency provisioning evidence
+
+CI checks out official vcpkg at `40f3c709db80acf154ac4b17a1f83c564ebd022e`, independently verifies that
+checkout, and uses the same commit as the manifest `builtin-baseline`. Linux uses the
+`ubuntu-24.04` x64 runner and `x64-linux`; Windows uses the `windows-latest` x64 runner and
+`x64-windows`. CI bootstraps vcpkg and runs `vcpkg install` outside project CMake, then configures
+with the pre-provisioned installed tree and `VCPKG_MANIFEST_INSTALL=OFF`. The configure/build/CTest
+phase therefore performs no package-manager or network acquisition. The filesystem binary cache is
+an optional `actions/cache` optimization; its keys include cache format, OS, architecture, triplet,
+manifest hash, and runner image identity. A cache miss remains correct.
+
+The direct manifest and closure/license evidence are recorded in
+[`dependency_closure.md`](dependency_closure.md). The manifest, immutable baseline, and separately
+verified tool checkout are the resolution authority; closure tables are audit evidence and not an
+unofficial lock file.
+
+## 7. Packaging
 
 > **Planned, not yet normative:** The Phase 6 release Design Issue and ADR own this mechanism.
 > Implementers must not treat this outline as a finalized contract.

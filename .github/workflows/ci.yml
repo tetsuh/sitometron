@@ -26,16 +26,58 @@ jobs:
           uv run --frozen --only-group schema python -m unittest discover -s tests/tooling -p 'test_*.py' -v
       - name: Validate core contracts
         run: uv run --frozen --only-group schema python tools/validate_core_contract.py
+      - name: Resolve vcpkg cache identity
+        id: vcpkg-cache-identity
+        run: |
+          set -euo pipefail
+          test -n "${ImageOS:-}" && test -n "${ImageVersion:-}"
+          identity="${ImageOS}-${ImageVersion}"
+          identity="${identity//[^a-zA-Z0-9._-]/-}"
+          echo "value=$identity" >> "$GITHUB_OUTPUT"
+      - name: Restore vcpkg filesystem binary cache
+        id: vcpkg-binary-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ hashFiles('vcpkg.json') }}-${{ steps.vcpkg-cache-identity.outputs.value }}
+          restore-keys: |
+            vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-files-v1-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ hashFiles('vcpkg.json') }}-
+      - name: Configure vcpkg filesystem binary cache
+        run: |
+          mkdir -p "$RUNNER_TEMP/vcpkg-binary-cache"
+          echo "VCPKG_BINARY_SOURCES=clear;files,$RUNNER_TEMP/vcpkg-binary-cache,readwrite" >> "$GITHUB_ENV"
+      - name: Checkout and bootstrap pinned vcpkg
+        run: |
+          set -euo pipefail
+          pin=40f3c709db80acf154ac4b17a1f83c564ebd022e
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout --detach "$pin"
+          test "$(git -C "$RUNNER_TEMP/vcpkg" rev-parse HEAD)" = "$pin"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          "$RUNNER_TEMP/vcpkg/vcpkg" version
+          gcc --version | head -1
+          cmake --version | head -1
+          ninja --version
+      - name: Provision pinned manifest outside project CMake
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/vcpkg/vcpkg" install --triplet=x64-linux --x-manifest-root="$GITHUB_WORKSPACE" --x-install-root="$GITHUB_WORKSPACE/build/vcpkg-installed"
+          "$RUNNER_TEMP/vcpkg/vcpkg" list
       - name: Configure
-        run: cmake --preset dev-linux
+        run: cmake --preset dev-linux -DCMAKE_TOOLCHAIN_FILE="$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-linux -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/build/vcpkg-installed" -DVCPKG_MANIFEST_INSTALL=OFF
       - name: Build
         run: cmake --build --preset dev-linux
       - name: Format
         run: git ls-files '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror
       - name: Test
         run: ctest --preset dev-linux
-      - name: Core dependency isolation
-        run: cmake -P cmake/check_core_dependency_isolation.cmake
+      - name: Save vcpkg filesystem binary cache
+        if: success() && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: ${{ steps.vcpkg-binary-cache.outputs.cache-primary-key }}
 
   windows:
     runs-on: windows-latest
@@ -55,6 +97,58 @@ jobs:
           uv run --frozen --only-group schema python -m unittest discover -s tests/tooling -p 'test_*.py' -v
       - name: Validate core contracts
         run: uv run --frozen --only-group schema python tools/validate_core_contract.py
+      - name: Configure MSVC environment
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -property installationPath
+          Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
+          "VS_INSTALL=$install" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          cl 2>&1 | Select-Object -First 1
+          cmake --version | Select-Object -First 1
+          ninja --version
+      - name: Resolve vcpkg cache identity
+        id: vcpkg-cache-identity
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ImageOS) -or [string]::IsNullOrWhiteSpace($env:ImageVersion)) { throw 'runner image identity unavailable' }
+          $identity = "$($env:ImageOS)-$($env:ImageVersion)" -replace '[^A-Za-z0-9._-]', '-'
+          "value=$identity" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Restore vcpkg filesystem binary cache
+        id: vcpkg-binary-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-windows-${{ hashFiles('vcpkg.json') }}-${{ steps.vcpkg-cache-identity.outputs.value }}
+          restore-keys: |
+            vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-windows-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-files-v1-${{ runner.os }}-${{ runner.arch }}-x64-windows-${{ hashFiles('vcpkg.json') }}-
+      - name: Configure vcpkg filesystem binary cache
+        shell: pwsh
+        run: |
+          $cache = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
+          New-Item -ItemType Directory -Path $cache -Force | Out-Null
+          $cache = $cache.Replace('\\', '/')
+          "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Checkout and bootstrap pinned vcpkg
+        shell: pwsh
+        run: |
+          $pin = '40f3c709db80acf154ac4b17a1f83c564ebd022e'
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
+          git -C "$env:RUNNER_TEMP\vcpkg" checkout --detach $pin
+          if ((git -C "$env:RUNNER_TEMP\vcpkg" rev-parse HEAD) -ne $pin) { throw 'vcpkg pin mismatch' }
+          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" version
+      - name: Provision pinned manifest outside project CMake
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -property installationPath
+          Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install --triplet=x64-windows --x-manifest-root="$env:GITHUB_WORKSPACE" --x-install-root="$env:GITHUB_WORKSPACE/build/vcpkg-installed"
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" list
       - name: Configure, build, and test
         shell: pwsh
         run: |
@@ -62,8 +156,12 @@ jobs:
           $install = & $vswhere -latest -property installationPath
           Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
-          cmake --preset dev-windows
+          cmake --preset dev-windows -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/build/vcpkg-installed" -DVCPKG_MANIFEST_INSTALL=OFF
           cmake --build --preset dev-windows
           ctest --preset dev-windows
-      - name: Core dependency isolation
-        run: cmake -P cmake/check_core_dependency_isolation.cmake
+      - name: Save vcpkg filesystem binary cache
+        if: success() && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: ${{ steps.vcpkg-binary-cache.outputs.cache-primary-key }}
