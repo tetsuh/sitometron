@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-07-31
+Accepted — 2026-07-31
 
 ## Context
 
@@ -30,9 +30,8 @@ preserve the remaining bootstrap decisions and must not change ADR-0002 lifecycl
 
 ## Decision
 
-If accepted, this ADR supersedes ADR-0001 as a whole. It replaces only the standard-library-only
-restriction and restates every unaffected bootstrap decision below so that their authority remains
-traceable.
+This ADR supersedes ADR-0001 as a whole. It replaces only the standard-library-only restriction and
+restates every unaffected bootstrap decision below so that their authority remains traceable.
 
 ### Preserved bootstrap decisions
 
@@ -123,7 +122,7 @@ transport, and protocol remain Planned under a separate owning design.
 
 ### Requirements and checks
 
-ADR-0004 replaces `NFR-002` with this requirement when accepted:
+ADR-0004 replaces `NFR-002` with this requirement:
 
 - `NFR-005` (MUST): Keep `sitometron_core` dependency-minimal. Permit only C++ standard headers
   named by the reviewed standard-header allowlist and third-party dependencies named by the accepted
@@ -148,15 +147,12 @@ rejection of raw-NUL JSON text including valid JSON followed by NUL and trailing
 checks lowercase 64-hex over the original valid JSON bytes. Linux and Windows CI must configure,
 compile, link, and run the applicable checks without hidden package acquisition.
 
-While this ADR is Proposed, ADR-0001 and `NFR-002` remain Normative and their existing checks and
-the standard-library-only rule in `AGENTS.md` remain Active. If ADR-0004 is accepted, ADR-0001 and
-`NFR-002` become Superseded, `NFR-005` becomes Normative with Planned implementation, and unchanged
-`NFR-001`, `NFR-003`, and `NFR-004` move to ADR-0004 authority. The acceptance commit also updates
-the Requirements, Contract Registry, ADR index, all Proposed-status banners, and `AGENTS.md`; it
-synchronizes Gate #1, Issue #9, and the Phase 0A label description without implying implementation.
-Only the later integration Issue activates `NFR-005` checks, retires the legacy `NFR-002` check
-names while preserving the standard-header enforcement, updates the manifest/CMake/CI, and promotes
-the new Registry row to Implemented.
+ADR-0001 and `NFR-002` are Superseded. `NFR-005` is Normative with Planned implementation, and
+unchanged `NFR-001`, `NFR-003`, and `NFR-004` now derive their authority from ADR-0004. The current
+standard-library-only source and checks remain implemented until the separate dependency-integration
+[Issue #17](https://github.com/tetsuh/sitometron/issues/17) activates the `NFR-005` checks, retires
+the legacy `NFR-002` check names while preserving the standard-header enforcement, updates the
+manifest/CMake/CI, and promotes the new Registry row to Implemented.
 
 ### Acquisition and attribution
 
@@ -211,10 +207,11 @@ an Apache-style project `NOTICE` file unless a later packaging requirement makes
 - Issue #15
 - PR #16
 - Issue #9
+- Issue #17
 - Gate #1
-- Requirements: `NFR-001`, `NFR-002`, `NFR-003`, `NFR-004`, proposed `NFR-005`
-- Contract Registry: `Core/adapter standard-library-only dependency boundary`, proposed `Approved
-  core dependency boundary and allowlist`
+- Requirements: `NFR-001`, superseded `NFR-002`, `NFR-003`, `NFR-004`, `NFR-005`
+- Contract Registry: superseded `Core/adapter standard-library-only dependency boundary`,
+  `Approved core dependency boundary and allowlist`
 - Related ADRs: [ADR-0001](0001-bootstrap-a-stdlib-only-cpp20-core.md),
   [ADR-0002](0002-define-core-job-reducer-contract.md)
 - RFC 9562: UUIDs

@@ -26,13 +26,15 @@ Sitometron does not construct compute graphs, interpret application parameters, 
 input payloads through its Worker-control protocol, or execute application algorithms in its core.
 Trusted Applications run in separate Worker processes.
 
-`sitometron_core` is currently a C++20 standard-library-only domain library under ADR-0001. HTTP,
-persistence, process, hardware-topology, Sitos, Zenoh, Python, logging, and other I/O/framework
-dependencies remain in adapters composed by `sitometrond`.
+`sitometron_core` is a C++20 dependency-minimal domain library under Accepted
+[ADR-0004](adr/0004-allow-explicit-core-dependencies.md). Its closed direct allowlist permits only
+nlohmann/json, Boost.UUID, and Boost.Hash2 behind Sitometron-owned public types. HTTP, persistence,
+process, hardware-topology, Sitos, Zenoh, Python, logging, and other I/O/framework dependencies
+remain in adapters composed by `sitometrond`.
 
-> **Proposed, not yet normative:** [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) would
-> permit only nlohmann/json, Boost.UUID, and Boost.Hash2 behind Sitometron-owned public types.
-> ADR-0001 remains effective until ADR-0004 is owner-accepted.
+The current implementation remains standard-library-only until
+[dependency-integration Issue #17](https://github.com/tetsuh/sitometron/issues/17) activates the
+Accepted boundary and its Linux/Windows checks.
 
 See [the architecture](02_architecture.md) and
 [the detailed dependency boundaries](architecture/boundaries.md).

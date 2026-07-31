@@ -35,23 +35,16 @@ A Planned Requirement cannot authorize production implementation by itself.
 
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
-| `NFR-001` | MUST | Support Linux with GCC and Windows with MSVC using C++20. | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) |
-| `NFR-002` | MUST | Keep `sitometron_core` limited to the C++ standard library. | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) |
-| `NFR-003` | MUST | Use CMake 3.28 or later with Ninja presets and reject in-source builds. | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) |
-| `NFR-004` | MUST | Keep unit tests deterministic and avoid real sleeps when a fake clock or explicit event can express the behavior. | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) |
+| `NFR-001` | MUST | Support Linux with GCC and Windows with MSVC using C++20. | [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) |
+| `NFR-003` | MUST | Use CMake 3.28 or later with Ninja presets and reject in-source builds. | [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) |
+| `NFR-004` | MUST | Keep unit tests deterministic and avoid real sleeps when a fake clock or explicit event can express the behavior. | [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) |
+| `NFR-005` | MUST | Keep `sitometron_core` dependency-minimal: permit only C++ standard headers named by the reviewed standard-header allowlist and third-party dependencies named by the accepted core dependency allowlist and pinned manifest, expose Sitometron-owned public types, treat transitive packages as opaque prerequisites, and mechanically reject unapproved standard headers, direct targets, dependency includes, and public dependency leakage. | [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) under [Issue #15](https://github.com/tetsuh/sitometron/issues/15) |
 
-## 4. Planned cross-cutting requirements
+## 4. Superseded requirements
 
-> **Planned, not yet normative:** Proposed ADR-0004 and
-> [Issue #15](https://github.com/tetsuh/sitometron/issues/15) own this replacement. ADR-0001 and
-> `NFR-002` remain effective until owner acceptance.
-
-| ID | Level | Requirement | Authority |
+| ID | Former level | Requirement | Supersession |
 |---|---|---|---|
-| `NFR-005` | MUST | Keep `sitometron_core` dependency-minimal: permit only C++ standard headers named by the reviewed standard-header allowlist and third-party dependencies named by the accepted core dependency allowlist and pinned manifest, expose Sitometron-owned public types, treat transitive packages as opaque prerequisites, and mechanically reject unapproved standard headers, direct targets, dependency includes, and public dependency leakage. | Proposed [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) under [Issue #15](https://github.com/tetsuh/sitometron/issues/15) |
-
-If ADR-0004 is accepted, `NFR-002` becomes Superseded by `NFR-005` and unchanged `NFR-001`,
-`NFR-003`, and `NFR-004` move to ADR-0004 authority.
+| `NFR-002` | MUST | Keep `sitometron_core` limited to the C++ standard library. | Superseded by `NFR-005` and [ADR-0004](adr/0004-allow-explicit-core-dependencies.md); the legacy implementation guard remains active until [Issue #17](https://github.com/tetsuh/sitometron/issues/17). |
 
 ## 5. Normative Phase 0A Job requirements
 

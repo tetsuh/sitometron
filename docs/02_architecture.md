@@ -13,17 +13,16 @@ sitometrond
 ```
 
 Adapters may depend on the core. The core must not depend on adapters, unapproved third-party
-libraries, third-party frameworks, or platform APIs. Only `sitometrond` composes concrete adapters.
-
-> **Proposed, not yet normative:** [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) would
-> replace ADR-0001's standard-library-only restriction with a closed direct allowlist while keeping
-> this dependency direction and all I/O/framework ownership unchanged.
+libraries, third-party frameworks, or platform APIs. Accepted
+[ADR-0004](adr/0004-allow-explicit-core-dependencies.md) replaces ADR-0001's standard-library-only
+restriction with a closed direct allowlist while preserving this dependency direction and all
+I/O/framework ownership. Only `sitometrond` composes concrete adapters.
 
 ## 2. Initial targets
 
 | Target | Responsibility | Dependency policy |
 |---|---|---|
-| `sitometron_core` | Domain state, commands, reducer, admission, scheduling policy | Currently C++ standard library only; explicit allowlist proposed by ADR-0004 |
+| `sitometron_core` | Domain state, commands, reducer, admission, scheduling policy | Accepted closed allowlist; current implementation remains standard-library-only pending [Issue #17](https://github.com/tetsuh/sitometron/issues/17) |
 | `sitometron_test_support` | Deterministic fakes and test helpers | Tests only |
 | `sitometrond` | Composition root and daemon entry point | Core initially; adapters by Phase |
 
@@ -72,6 +71,6 @@ Linux and Windows share domain policy and protocol contracts. Process containmen
 filesystem synchronization, and platform diagnostics remain adapter implementations qualified on
 each platform.
 
-See [the detailed boundary rules](architecture/boundaries.md),
-[ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md), and Proposed
+See [the detailed boundary rules](architecture/boundaries.md), superseded
+[ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md), and Accepted
 [ADR-0004](adr/0004-allow-explicit-core-dependencies.md).

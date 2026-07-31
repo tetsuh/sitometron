@@ -3,13 +3,12 @@
 ## Core
 
 `sitometron_core` owns domain identifiers, commands, events, reducers, lifecycle rules, admission,
-and scheduling policy. It must remain deterministic and currently depends only on the C++ standard
-library under ADR-0001.
-
-> **Proposed, not yet normative:** [ADR-0004](../adr/0004-allow-explicit-core-dependencies.md)
-> would preserve the reviewed standard-header allowlist and permit only nlohmann/json, Boost.UUID,
-> and Boost.Hash2 behind Sitometron-owned public types. The adapter ownership below does not change,
-> and ADR-0001 remains effective until ADR-0004 is owner-accepted.
+and scheduling policy. It must remain deterministic and dependency-minimal under Accepted
+[ADR-0004](../adr/0004-allow-explicit-core-dependencies.md). The reviewed standard-header allowlist
+is preserved, and only nlohmann/json, Boost.UUID, and Boost.Hash2 are permitted behind
+Sitometron-owned public types. The current implementation remains standard-library-only until
+[dependency-integration Issue #17](https://github.com/tetsuh/sitometron/issues/17) activates the
+Accepted boundary. The adapter ownership below does not change.
 
 The core must not include:
 

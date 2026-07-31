@@ -10,7 +10,7 @@ Non-negotiable rules:
 - Read the complete Issue, referenced ADRs, and affected Contract Registry rows.
 - Do not expand the frozen Issue scope or make drive-by fixes.
 - Confirm and record structured RED evidence before production implementation.
-- Keep `sitometron_core` limited to the C++ standard library.
+- Keep `sitometron_core` dependency-minimal under ADR-0004: use only reviewed standard headers and approved direct dependency targets/includes, and expose no dependency-owned public types.
 - Do not copy proprietary code, schemas, protocols, identifiers, or internal structures.
 - Never push directly to `main`.
 - Never enable auto-merge.
