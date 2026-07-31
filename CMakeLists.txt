@@ -47,6 +47,9 @@ function(sitometron_enable_sanitizers target)
   endif()
 endfunction()
 
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(Boost CONFIG REQUIRED COMPONENTS uuid hash2)
+
 add_library(sitometron_core STATIC src/core/version.cpp)
 add_library(sitometron::core ALIAS sitometron_core)
 target_include_directories(
@@ -55,13 +58,24 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_compile_features(sitometron_core PUBLIC cxx_std_20)
+target_link_libraries(
+  sitometron_core
+  PRIVATE
+    nlohmann_json::nlohmann_json
+    Boost::uuid
+    Boost::hash2)
 sitometron_enable_project_warnings(sitometron_core)
 sitometron_enable_sanitizers(sitometron_core)
 
 get_target_property(SITOMETRON_CORE_LINK_LIBRARIES sitometron_core LINK_LIBRARIES)
-if(SITOMETRON_CORE_LINK_LIBRARIES)
-  message(FATAL_ERROR "sitometron_core must not link non-standard-library targets")
+get_target_property(
+  SITOMETRON_CORE_INTERFACE_LINK_LIBRARIES sitometron_core INTERFACE_LINK_LIBRARIES)
+if(NOT SITOMETRON_CORE_LINK_LIBRARIES OR NOT SITOMETRON_CORE_INTERFACE_LINK_LIBRARIES)
+  message(FATAL_ERROR "sitometron_core must link the approved private dependency targets")
 endif()
+set(SITOMETRON_CORE_LINK_TARGETS ${SITOMETRON_CORE_LINK_LIBRARIES})
+set(SITOMETRON_CORE_INTERFACE_LINK_TARGETS ${SITOMETRON_CORE_INTERFACE_LINK_LIBRARIES})
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_link_target_allowlist.cmake)
 
 add_executable(sitometrond apps/sitometrond/main.cpp)
 target_link_libraries(sitometrond PRIVATE sitometron::core)
@@ -89,14 +103,47 @@ if(SITOMETRON_BUILD_TESTS)
       -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_job_contract.cmake)
 
+  add_executable(sitometron_core_dependency_api_smoke tests/unit/core_dependency_api_smoke.cpp)
+  target_link_libraries(
+    sitometron_core_dependency_api_smoke
+    PRIVATE
+      sitometron::core
+      nlohmann_json::nlohmann_json
+      Boost::uuid
+      Boost::hash2)
+  sitometron_enable_project_warnings(sitometron_core_dependency_api_smoke)
+  sitometron_enable_sanitizers(sitometron_core_dependency_api_smoke)
+  add_test(NAME core_dependency_api_smoke COMMAND sitometron_core_dependency_api_smoke)
+
   add_test(
-    NAME core_dependency_isolation
-    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_dependency_isolation.cmake)
-  add_test(
-    NAME core_dependency_isolation_rejects_third_party
+    NAME core_dependency_allowlist
     COMMAND
       ${CMAKE_COMMAND}
-      -DSITOMETRON_CORE_SCAN_FILES=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/core_dependency_forbidden.hpp
-      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_dependency_isolation.cmake)
-  set_tests_properties(core_dependency_isolation_rejects_third_party PROPERTIES WILL_FAIL TRUE)
+      -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_dependency_allowlist.cmake)
+
+  add_test(
+    NAME core_dependency_rejects_unapproved_target
+    COMMAND
+      ${CMAKE_COMMAND}
+      -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DSITOMETRON_NEGATIVE_SCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/core-target-probe
+      -DCORE_NEGATIVE_MODE=target
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_negative_isolation.cmake)
+
+  add_test(
+    NAME core_dependency_rejects_unapproved_private_include
+    COMMAND
+      ${CMAKE_COMMAND}
+      -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DCORE_NEGATIVE_MODE=private
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_negative_isolation.cmake)
+
+  add_test(
+    NAME core_public_api_dependency_isolation
+    COMMAND
+      ${CMAKE_COMMAND}
+      -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DCORE_NEGATIVE_MODE=public
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_negative_isolation.cmake)
 endif()

@@ -2,5 +2,18 @@
   "name": "sitometron",
   "version-string": "0.1.0",
   "builtin-baseline": "40f3c709db80acf154ac4b17a1f83c564ebd022e",
-  "dependencies": []
+  "dependencies": [
+    {
+      "name": "nlohmann-json",
+      "version>=": "3.12.0"
+    },
+    {
+      "name": "boost-uuid",
+      "version>=": "1.91.0"
+    },
+    {
+      "name": "boost-hash2",
+      "version>=": "1.91.0"
+    }
+  ]
 }
