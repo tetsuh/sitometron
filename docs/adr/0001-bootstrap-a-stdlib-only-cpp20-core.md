@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-07-29
+Superseded by [ADR-0004](0004-allow-explicit-core-dependencies.md) — 2026-07-31
 
 ## Owners
 

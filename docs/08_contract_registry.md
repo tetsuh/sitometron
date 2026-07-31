@@ -20,7 +20,8 @@ values are `Planned`, `In progress`, `Implemented`, and `Removed`.
 
 | Contract surface | Maturity | Implementation | Normative or design authority | Owner |
 |---|---|---|---|---|
-| Core/adapter dependency boundary | Normative | Implemented | [ADR-0001](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md) | Phase 0A |
+| Core/adapter standard-library-only dependency boundary | Superseded | Implemented | Superseded by Accepted [ADR-0004](adr/0004-allow-explicit-core-dependencies.md); legacy enforcement remains until [Issue #17](https://github.com/tetsuh/sitometron/issues/17) | Phase 0A |
+| Approved core dependency boundary and allowlist | Normative | Planned | Accepted [ADR-0004](adr/0004-allow-explicit-core-dependencies.md) under [Issue #15](https://github.com/tetsuh/sitometron/issues/15); implementation owned by [Issue #17](https://github.com/tetsuh/sitometron/issues/17) | Phase 0A |
 | Core Job states and transitions | Normative | Planned | Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) under [Issue #3](https://github.com/tetsuh/sitometron/issues/3) | Phase 0A |
 | Core commands and rejection reasons | Normative | Planned | Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) under [Issue #3](https://github.com/tetsuh/sitometron/issues/3) | Phase 0A |
 | JobJournal envelope and event schemas | Normative | Planned | Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) for the logical contract; Phase 0B ADR pending for physical durability | Phase 0A / 0B |
