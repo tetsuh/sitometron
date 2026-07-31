@@ -60,6 +60,8 @@ jobs:
         run: |
           set -euo pipefail
           pin=40f3c709db80acf154ac4b17a1f83c564ebd022e
+          baseline="$(python3 -c 'import json; print(json.load(open("vcpkg.json"))["builtin-baseline"])')"
+          test "$pin" = "$baseline"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
           git -C "$RUNNER_TEMP/vcpkg" checkout --detach "$pin"
           test "$(git -C "$RUNNER_TEMP/vcpkg" rev-parse HEAD)" = "$pin"
@@ -71,8 +73,13 @@ jobs:
       - name: Provision pinned manifest outside project CMake
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/vcpkg/vcpkg" install --triplet=x64-linux --x-manifest-root="$GITHUB_WORKSPACE" --x-install-root="$GITHUB_WORKSPACE/build/vcpkg-installed"
-          "$RUNNER_TEMP/vcpkg/vcpkg" list
+          install_root="$GITHUB_WORKSPACE/build/vcpkg-installed"
+          "$RUNNER_TEMP/vcpkg/vcpkg" install --triplet=x64-linux --x-manifest-root="$GITHUB_WORKSPACE" --x-install-root="$install_root"
+          installed="$("$RUNNER_TEMP/vcpkg/vcpkg" list --x-install-root="$install_root")"
+          printf '%s\n' "$installed"
+          for port in nlohmann-json boost-uuid boost-hash2; do
+            grep -Eq "^${port}:x64-linux[[:space:]]" <<<"$installed"
+          done
       - name: Configure
         run: cmake --preset dev-linux -DCMAKE_TOOLCHAIN_FILE="$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-linux -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/build/vcpkg-installed" -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_APPLOCAL_DEPS=OFF
       - name: Build
@@ -153,7 +160,11 @@ jobs:
       - name: Checkout and bootstrap pinned vcpkg
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $pin = '40f3c709db80acf154ac4b17a1f83c564ebd022e'
+          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
+          if ($pin -ne $manifest.'builtin-baseline') { throw 'vcpkg tool and registry pins differ' }
           git clone --filter=blob:none https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
           git -C "$env:RUNNER_TEMP\vcpkg" checkout --detach $pin
           if ((git -C "$env:RUNNER_TEMP\vcpkg" rev-parse HEAD) -ne $pin) { throw 'vcpkg pin mismatch' }
@@ -162,15 +173,26 @@ jobs:
       - name: Provision pinned manifest outside project CMake
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $install = & $vswhere -latest -property installationPath
           Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
-          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install --triplet=x64-windows --x-manifest-root="$env:GITHUB_WORKSPACE" --x-install-root="$env:GITHUB_WORKSPACE/build/vcpkg-installed"
-          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" list
+          $installRoot = "$env:GITHUB_WORKSPACE/build/vcpkg-installed"
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install --triplet=x64-windows --x-manifest-root="$env:GITHUB_WORKSPACE" --x-install-root="$installRoot"
+          $installed = & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" list --x-install-root="$installRoot"
+          $installed | Write-Output
+          foreach ($port in 'nlohmann-json', 'boost-uuid', 'boost-hash2') {
+            if (-not ($installed -match "^$([regex]::Escape($port)):x64-windows\s")) {
+              throw "expected direct port is absent from the installed closure: $port"
+            }
+          }
       - name: Configure, build, and test
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $install = & $vswhere -latest -property installationPath
           Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"

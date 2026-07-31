@@ -63,6 +63,10 @@ int main() {
   result |= Check(!ParseExactJson(raw_nul_json.data(), raw_nul_json.data() + raw_nul_json.size(),
                                   &bounded_value),
                   "exact-range JSON path rejects raw NUL and trailing bytes");
+  constexpr std::array<char, 3> trailing_json{'{', '}', 'x'};
+  result |= Check(!ParseExactJson(trailing_json.data(), trailing_json.data() + trailing_json.size(),
+                                  &bounded_value),
+                  "exact-range JSON path rejects non-NUL trailing bytes");
 
   constexpr std::array<char, 14> escaped_nul_json{'{', '"', 'x', '"', ':', '"', '\\',
                                                   'u', '0', '0', '0', '0', '"', '}'};

@@ -3,6 +3,7 @@
 
 #include <string_view>
 
+// Documentation may mention #include <boost/uuid/uuid.hpp> without exposing it.
 namespace sitometron::fixture {
 using PublicText = std::string_view;
 }

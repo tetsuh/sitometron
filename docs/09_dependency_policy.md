@@ -42,11 +42,13 @@ package. Runtime or product-build use requires a separately reviewed decision.
 
 CI independently checks out official vcpkg at `40f3c709db80acf154ac4b17a1f83c564ebd022e`, the same
 value used as `builtin-baseline`, and provisions `x64-linux` or `x64-windows` outside project CMake.
-Normal configure uses the pre-provisioned tree with `VCPKG_MANIFEST_INSTALL=OFF`. The filesystem
-binary cache follows Sitos ADR-0031: its SHA-pinned `actions/cache` restore/save steps use a key
-containing cache format, OS, architecture, triplet, manifest hash, and runner image identity, with a
-compatible-prefix restore migration. Cache misses remain fully correct and the cache is never a
-resolution authority. The complete closure and license evidence is maintained in
+Normal configure uses the pre-provisioned tree with `VCPKG_MANIFEST_INSTALL=OFF`. Under Accepted
+ADR-0004 and Issue #17, Sitometron independently owns a filesystem binary-cache policy whose key
+shape is intentionally compatible with the model documented by Sitos ADR-0031. SHA-pinned
+`actions/cache` restore/save steps use a key containing cache format, OS, architecture, triplet,
+manifest hash, and runner image identity, with a compatible-prefix restore migration. Cache misses
+remain fully correct and the cache is never a resolution authority. The complete closure and license
+evidence is maintained in
 [`dependency_closure.md`](dependency_closure.md).
 
 Binary caches are performance optimizations and never correctness authorities. A clean build must

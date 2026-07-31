@@ -17,8 +17,9 @@ installed trees, downloads, caches, and build artifacts are not committed.
 | Provisioning command | `vcpkg install --triplet=x64-linux --x-manifest-root=$GITHUB_WORKSPACE --x-install-root=$GITHUB_WORKSPACE/build/vcpkg-installed` | `vcpkg install --triplet=x64-windows --x-manifest-root=$GITHUB_WORKSPACE --x-install-root=$GITHUB_WORKSPACE/build/vcpkg-installed` |
 | Configure boundary | pre-provisioned tree, `VCPKG_MANIFEST_INSTALL=OFF` | pre-provisioned tree, `VCPKG_MANIFEST_INSTALL=OFF` |
 
-CI records runner image identity, compiler, CMake, Ninja, and vcpkg versions in each job log. The
-filesystem binary cache follows Sitos ADR-0031 and is not required for correctness.
+CI records runner image identity, compiler, CMake, Ninja, and vcpkg versions in each job log.
+Sitometron owns the cache policy under ADR-0004 and Issue #17; its key shape is intentionally
+compatible with the model documented by Sitos ADR-0031 and is not required for correctness.
 
 ## Resolved packages
 
