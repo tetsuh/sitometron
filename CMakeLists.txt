@@ -90,9 +90,14 @@ if(SITOMETRON_BUILD_TESTS)
   add_library(sitometron::test_support ALIAS sitometron_test_support)
   target_include_directories(sitometron_test_support INTERFACE tests/support)
 
+  add_executable(sitometron_version_test tests/unit/version_test.cpp)
+  target_link_libraries(sitometron_version_test PRIVATE sitometron::core sitometron::test_support)
+  sitometron_enable_project_warnings(sitometron_version_test)
+  sitometron_enable_sanitizers(sitometron_version_test)
+  add_test(NAME sitometron_version_test COMMAND sitometron_version_test)
+
   add_executable(
     sitometron_core_tests
-    tests/unit/version_test.cpp
     tests/unit/job_reducer_test.cpp
     tests/unit/job_reducer_vectors_test.cpp)
   target_link_libraries(
@@ -117,7 +122,8 @@ if(SITOMETRON_BUILD_TESTS)
     add_test(
       NAME ${_job_reducer_check}
       COMMAND sitometron_core_tests
-        ${CMAKE_CURRENT_SOURCE_DIR}/schemas/core/v1/job-reducer-vectors.json)
+        ${CMAKE_CURRENT_SOURCE_DIR}/schemas/core/v1/job-reducer-vectors.json
+        ${_job_reducer_check})
   endforeach()
 
   add_test(

@@ -23,7 +23,7 @@ struct Digest {
   friend bool operator==(const Digest&, const Digest&) = default;
 };
 
-enum class JobState { kAbsent, kAdmitted, kPreparing, kRunning, kStopping, kFinalizing,
+enum class JobState { kAdmitted, kPreparing, kRunning, kStopping, kFinalizing,
                       kSucceeded, kFailed, kCancelled, kTerminated, kTimedOut };
 enum class CommandType { kCancel, kTerminate };
 enum class TimeoutPhase { kPreparation, kExecution, kCooperativeStop, kProcessExitConfirmation };
@@ -83,7 +83,8 @@ struct Snapshot {
   std::uint32_t schema_version = 1;
   Uuid job_id;
   Uuid session_id;
-  JobState state = JobState::kAbsent;
+  bool entity_exists = false;
+  JobState state = JobState::kAdmitted;
   std::optional<TerminalOutcome> latched_reason;
   bool completion_candidate = false;
   CompletionMode completion_mode = CompletionMode::kNone;
@@ -113,22 +114,44 @@ struct PreEnvelopeProposal { std::uint32_t schema_version = 1; Uuid job_id;
   EventType event_type; EventPayload payload; };
 struct Rejection { std::uint32_t schema_version = 1; RejectionReason reason; };
 struct Decision { std::variant<Rejection, PreEnvelopeProposal> value; };
+struct NormalizedCandidate { std::variant<Rejection, InternalEvent> value; };
 struct Effect { EffectId id; };
-struct ApplyResult { Snapshot snapshot; std::vector<Effect> effects; };
+struct ApplyResult {
+  Snapshot snapshot;
+  std::vector<Effect> effects;
+  std::optional<Rejection> rejection;
+};
+struct TimerArmRequest {
+  Uuid job_id;
+  TimeoutPhase phase;
+  std::uint64_t generation = 0;
+};
+struct TimerNotification {
+  Uuid job_id;
+  TimeoutPhase phase;
+  std::uint64_t generation = 0;
+};
 
 enum class TimerIngressKind { kFailClosed, kDiscardWithoutCandidate, kEmitCandidateEvent };
 struct TimerState { bool preparation_armed = false; bool execution_armed = false;
   bool cooperative_stop_armed = false; bool process_exit_confirmation_armed = false;
   std::uint64_t preparation_generation = 0; std::uint64_t execution_generation = 0;
   std::uint64_t cooperative_stop_generation = 0; std::uint64_t process_exit_confirmation_generation = 0; };
-struct TimerIngressResult { TimerIngressKind kind; std::optional<RawCandidateEvent> candidate;
+struct TimeoutCandidate { Uuid job_id; TimeoutExpiredPayload payload; };
+struct TimerIngressInput {
+  TimerArmRequest arm_request;
+  std::optional<TimerNotification> notification;
+};
+struct TimerIngressResult { TimerIngressKind kind; std::optional<TimeoutCandidate> candidate;
   std::vector<Effect> effects; };
 
 [[nodiscard]] Snapshot InitialSnapshot(const Uuid& job_id, const Uuid& session_id);
 [[nodiscard]] Decision DecideCommand(const Snapshot&, const Command&);
-[[nodiscard]] Decision NormalizeCandidate(const Snapshot&, const RawCandidateEvent&);
+[[nodiscard]] NormalizedCandidate NormalizeCandidate(const Snapshot&, const RawCandidateEvent&);
 [[nodiscard]] Decision DecideEvent(const Snapshot&, const InternalEvent&);
 [[nodiscard]] ApplyResult Apply(const Snapshot&, const PreEnvelopeProposal&);
+[[nodiscard]] TimerIngressResult IngestTimer(const TimerState&, const TimerIngressInput&);
+[[nodiscard]] TimerIngressResult IngestTimer(const TimerState&, const TimerNotification&);
 [[nodiscard]] TimerIngressResult IngestTimer(const TimerState&, const Uuid&, TimeoutPhase,
                                               std::uint64_t generation);
 
