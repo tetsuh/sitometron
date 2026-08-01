@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 
 namespace sitometron::test {
@@ -59,6 +60,25 @@ int Run() {
                 std::get<Rejection>(DecideCommand(present, default_command).value).reason ==
                     RejectionReason::kInvalidEventPayload,
             "default command enum fails closed");
+  const auto absent_invalid_command = DecideCommand(absent, default_command);
+  result |= Check(std::holds_alternative<Rejection>(absent_invalid_command.value) &&
+                      std::get<Rejection>(absent_invalid_command.value).reason ==
+                          RejectionReason::kInvalidEventPayload,
+                  "invalid command DTO is rejected before entity lookup");
+  const auto principal_decision = [&](std::string principal) {
+    return DecideCommand(present, Command{1, CommandType::kCancel, job, std::move(principal)});
+  };
+  std::string principal_256;
+  for (std::size_t index = 0; index < 256; ++index) principal_256 += "\xC3\xA9";
+  result |=
+      Check(std::holds_alternative<PreEnvelopeProposal>(principal_decision(principal_256).value),
+            "principal accepts 256 Unicode scalars");
+  std::string principal_257 = principal_256 + "\xC3\xA9";
+  result |= Check(std::holds_alternative<Rejection>(principal_decision(principal_257).value),
+                  "principal rejects 257 Unicode scalars");
+  result |= Check(std::holds_alternative<Rejection>(
+                      principal_decision(std::string{"\xF0\x28\x8C\x28", 4}).value),
+                  "principal rejects malformed UTF-8");
   InternalEvent default_event;
   default_event.schema_version = 1;
   default_event.job_id = job;
@@ -95,6 +115,47 @@ int Run() {
                       TimerArmRequest{}.phase == TimeoutPhase::kInvalid &&
                       TimerNotification{}.phase == TimeoutPhase::kInvalid,
                   "default snapshot and payload enums fail closed");
+  const Command valid_cancel{1, CommandType::kCancel, job, "operator@example"};
+  Snapshot released_without_exit = present;
+  released_without_exit.resource_status = ResourceStatus::kReleased;
+  released_without_exit.allocation_id = StableId{"allocation-1"};
+  released_without_exit.allocation_digest =
+      Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"};
+  const auto released_decision = DecideCommand(released_without_exit, valid_cancel);
+  result |= Check(std::holds_alternative<Rejection>(released_decision.value) &&
+                      std::get<Rejection>(released_decision.value).reason ==
+                          RejectionReason::kInvariantViolation,
+                  "released resources require confirmed process exit");
+  const auto admitted_snapshot_rejected = [&](const Snapshot& invalid, std::string_view label) {
+    const auto applied = Apply(invalid, PreEnvelopeProposal{1, job, EventType::kCancelAccepted,
+                                                            PrincipalPayload{"operator@example"}});
+    return Check(applied.rejection.has_value() &&
+                     applied.rejection->reason == RejectionReason::kInvariantViolation &&
+                     applied.effects.empty() && applied.snapshot.job_id == invalid.job_id &&
+                     applied.snapshot.state == invalid.state &&
+                     applied.snapshot.resource_status == invalid.resource_status &&
+                     applied.snapshot.worker_launch_status == invalid.worker_launch_status &&
+                     applied.snapshot.process_presence == invalid.process_presence &&
+                     applied.snapshot.process_exit_confirmed == invalid.process_exit_confirmed,
+                 label);
+  };
+  Snapshot admitted_resources = present;
+  admitted_resources.resource_status = ResourceStatus::kCommitted;
+  admitted_resources.allocation_id = StableId{"allocation-1"};
+  admitted_resources.allocation_digest =
+      Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"};
+  result |= admitted_snapshot_rejected(admitted_resources, "admitted resources fail closed");
+  Snapshot admitted_launch = present;
+  admitted_launch.worker_launch_status = LaunchStatus::kIntentRecorded;
+  admitted_launch.launch_operation_id = StableId{"launch-op-1"};
+  admitted_launch.worker_id = Uuid{std::string(kWorker)};
+  result |= admitted_snapshot_rejected(admitted_launch, "admitted Worker launch fails closed");
+  Snapshot admitted_process = present;
+  admitted_process.process_presence = ProcessPresence::kPresent;
+  result |= admitted_snapshot_rejected(admitted_process, "admitted process presence fails closed");
+  Snapshot admitted_exit = present;
+  admitted_exit.process_exit_confirmed = true;
+  result |= admitted_snapshot_rejected(admitted_exit, "admitted confirmed exit fails closed");
   const RawCandidateEvent created{1, job, "job_created",
                                   "{\"session_id\":\"" + std::string(kJob) + "\"}"};
   const auto normalized_created = NormalizeCandidate(absent, created);
@@ -125,6 +186,50 @@ int Run() {
     absent = Apply(absent, std::get<PreEnvelopeProposal>(allocation_decision.value)).snapshot;
     result |= Check(absent.state == JobState::kPreparing, "allocation enters preparing");
   }
+  const auto launch_intent_decision = [&](std::string application_version,
+                                          std::string application_id = "application-1") {
+    return DecideEvent(
+        absent, InternalEvent{
+                    1, job, EventType::kWorkerLaunchIntent,
+                    WorkerLaunchIntentPayload{
+                        StableId{"launch-op-1"}, StableId{std::move(application_id)},
+                        std::move(application_version),
+                        Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
+                        StableId{"allocation-1"},
+                        Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
+                        Uuid{std::string(kWorker)}}});
+  };
+  std::string version_128;
+  for (std::size_t index = 0; index < 128; ++index) version_128 += "\xF0\x9F\x98\x80";
+  result |=
+      Check(std::holds_alternative<PreEnvelopeProposal>(launch_intent_decision(version_128).value),
+            "application version accepts 128 Unicode scalars");
+  std::string version_129 = version_128 + "\xF0\x9F\x98\x80";
+  result |= Check(std::holds_alternative<Rejection>(launch_intent_decision(version_129).value),
+                  "application version rejects 129 Unicode scalars");
+  result |= Check(std::holds_alternative<Rejection>(
+                      launch_intent_decision(std::string{"\xED\xA0\x80", 3}).value),
+                  "application version rejects UTF-8 encoded surrogate");
+  result |= Check(std::holds_alternative<Rejection>(
+                      launch_intent_decision("1", std::string{"\xC4\xAA", 2}).value),
+                  "stable Application ID rejects non-ASCII letters");
+  const auto raw_launch_intent = [&](const std::string& application_version) {
+    const nlohmann::json payload{
+        {"operation_id", "launch-op-1"},
+        {"application",
+         {{"application_id", "application-1"},
+          {"version", application_version},
+          {"bundle_sha256", "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}},
+        {"allocation_id", "allocation-1"},
+        {"allocation_digest", "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
+        {"worker_id", std::string(kWorker)}};
+    return NormalizeCandidate(absent,
+                              RawCandidateEvent{1, job, "worker_launch_intent", payload.dump()});
+  };
+  result |= Check(std::holds_alternative<InternalEvent>(raw_launch_intent(version_128).value),
+                  "raw application version accepts 128 Unicode scalars");
+  result |= Check(std::holds_alternative<Rejection>(raw_launch_intent(version_129).value),
+                  "raw application version rejects 129 Unicode scalars");
   const auto boundary_candidate = [&](std::size_t payload_size, std::string_view digest) {
     const std::string payload = "{\"x\":\"" + std::string(payload_size - 8, 'a') + "\"}";
     const nlohmann::json envelope{
@@ -174,6 +279,15 @@ int Run() {
             std::get<Rejection>(normalized.value).reason == RejectionReason::kInvalidEventPayload,
         label);
   };
+  const auto max_timer_generation = NormalizeCandidate(
+      absent,
+      RawCandidateEvent{1, job, "timeout_expired",
+                        R"({"phase":"preparation","timer_generation":18446744073709551615})"});
+  result |= Check(std::holds_alternative<InternalEvent>(max_timer_generation.value),
+                  "timeout payload accepts UINT64_MAX");
+  result |= expect_invalid_payload(
+      "timeout_expired", R"({"phase":"preparation","timer_generation":18446744073709551616})",
+      "timeout payload rejects uint64 overflow");
   result |= expect_invalid_payload(
       "job_created", R"({"session_id":"01890f3e-7b00-7abc-8abc-0123456789ab"} // comment)",
       "strict JSON rejects line comments");
@@ -209,8 +323,26 @@ int Run() {
           forged.snapshot.pending_worker_event_ack == forged_before.pending_worker_event_ack &&
           forged.effects.empty(),
       "forged proposal cannot bypass decision");
+  Snapshot finalizing = absent;
+  finalizing.state = JobState::kFinalizing;
+  finalizing.worker_launch_status = LaunchStatus::kObserved;
+  finalizing.launch_operation_id = StableId{"launch-op-1"};
+  finalizing.worker_id = Uuid{std::string(kWorker)};
+  finalizing.process_presence = ProcessPresence::kPresent;
+  finalizing.finalization_status = FinalizationStatus::kPending;
+  const auto normalized_forgery =
+      Apply(finalizing, PreEnvelopeProposal{1, job, EventType::kWorkerCompleted,
+                                            WorkerEventPayload{Uuid{std::string(kWorker)}, 1}});
+  result |=
+      Check(normalized_forgery.rejection.has_value() &&
+                normalized_forgery.rejection->reason == RejectionReason::kInvariantViolation &&
+                normalized_forgery.snapshot.state == JobState::kFinalizing &&
+                !normalized_forgery.snapshot.pending_worker_event_ack &&
+                normalized_forgery.effects.empty(),
+            "Apply rejects a proposal that requires late-event normalization");
 
   TimerState timer;
+  timer.job_id = job;
   timer.preparation_armed = true;
   timer.preparation_generation = 9;
   const auto timer_result = IngestTimer(timer, job, TimeoutPhase::kPreparation, 9);
@@ -228,6 +360,14 @@ int Run() {
                                          std::nullopt})
                     .kind == TimerIngressKind::kFailClosed,
             "new arm generation exhaustion fails closed");
+  const auto exhausted_state_with_nonmax_request = IngestTimer(
+      timer, TimerIngressInput{TimerArmRequest{job, TimeoutPhase::kPreparation, 1}, std::nullopt});
+  result |= Check(
+      exhausted_state_with_nonmax_request.kind == TimerIngressKind::kFailClosed &&
+          !exhausted_state_with_nonmax_request.candidate.has_value() &&
+          exhausted_state_with_nonmax_request.effects.size() == 1 &&
+          exhausted_state_with_nonmax_request.effects.front().id == EffectId::kSetReadinessFalse,
+      "active generation exhaustion cannot be bypassed by request generation");
   const auto invalid_arm = IngestTimer(
       timer, TimerIngressInput{TimerArmRequest{job, TimeoutPhase::kInvalid, 1}, std::nullopt});
   result |= Check(invalid_arm.kind == TimerIngressKind::kFailClosed &&
@@ -242,6 +382,38 @@ int Run() {
                       zero_generation_arm.effects.size() == 1 &&
                       zero_generation_arm.effects.front().id == EffectId::kSetReadinessFalse,
                   "zero-generation arm fails closed before a valid notification");
+  const Uuid other_job{"01890f3e-7b00-7abc-8abc-0123456789ac"};
+  const auto mismatched_timer_job =
+      IngestTimer(timer, other_job, TimeoutPhase::kPreparation, timer.preparation_generation);
+  result |= Check(mismatched_timer_job.kind == TimerIngressKind::kFailClosed &&
+                      !mismatched_timer_job.candidate.has_value() &&
+                      mismatched_timer_job.effects.size() == 1 &&
+                      mismatched_timer_job.effects.front().id == EffectId::kSetReadinessFalse,
+                  "timer notification for another Job fails closed");
+  const auto mismatched_arm_job = IngestTimer(
+      timer,
+      TimerIngressInput{TimerArmRequest{other_job, TimeoutPhase::kPreparation, 1}, std::nullopt});
+  result |= Check(mismatched_arm_job.kind == TimerIngressKind::kFailClosed &&
+                      !mismatched_arm_job.candidate.has_value() &&
+                      mismatched_arm_job.effects.size() == 1 &&
+                      mismatched_arm_job.effects.front().id == EffectId::kSetReadinessFalse,
+                  "timer arm for another Job fails closed");
+  const Uuid invalid_job{"not-a-job-id"};
+  const auto invalid_timer_job =
+      IngestTimer(timer, invalid_job, TimeoutPhase::kPreparation, timer.preparation_generation);
+  result |=
+      Check(invalid_timer_job.kind == TimerIngressKind::kFailClosed &&
+                !invalid_timer_job.candidate.has_value() && invalid_timer_job.effects.size() == 1 &&
+                invalid_timer_job.effects.front().id == EffectId::kSetReadinessFalse,
+            "invalid timer notification Job ID fails closed");
+  const auto invalid_arm_job = IngestTimer(
+      timer,
+      TimerIngressInput{TimerArmRequest{invalid_job, TimeoutPhase::kPreparation, 1}, std::nullopt});
+  result |=
+      Check(invalid_arm_job.kind == TimerIngressKind::kFailClosed &&
+                !invalid_arm_job.candidate.has_value() && invalid_arm_job.effects.size() == 1 &&
+                invalid_arm_job.effects.front().id == EffectId::kSetReadinessFalse,
+            "invalid timer arm Job ID fails closed");
   result |= Check(IngestTimer(timer, TimerIngressInput{std::nullopt, std::nullopt}).kind ==
                       TimerIngressKind::kDiscardWithoutCandidate,
                   "null notification does not fail closed");

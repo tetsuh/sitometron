@@ -687,15 +687,25 @@ int RunJobReducerVectorJsonChecks(const Json& vectors, const char* selector) {
   }
   if (selected_selector != "job_closed_state_set" && selected_selector != "job_ordering_vectors")
     result |= Check(selected_cases > 0, "selector consumes a non-empty case subset");
+  if (selected_selector == "job_command_vectors")
+    result |= Check(selected_cases == 24, "command selector consumes all cases");
+  if (selected_selector == "job_state_event_vectors")
+    result |= Check(selected_cases == 300, "event selector consumes all cases");
+  if (selected_selector == "job_timeout_vectors")
+    result |= Check(selected_cases == 30, "timeout selector case count");
+  if (selected_selector == "job_rejected_input_no_append")
+    result |= Check(selected_cases == 218, "rejected-input selector case count");
   if (selected_selector == "job_first_cause_vectors")
     result |= Check(selected_cases == 242, "first-cause selector case count");
   if (selected_selector == "job_finalization_vectors")
     result |= Check(selected_cases == 57, "finalization selector case count");
   if (selected_selector == "job_late_cleanup_vectors")
     result |= Check(selected_cases == 223, "late-cleanup selector case count");
+  std::size_t selected_invalid = 0;
   if (selected_selector == "job_state_event_vectors" ||
       selected_selector == "job_rejected_input_no_append") {
     for (const auto& vector : invalid) {
+      ++selected_invalid;
       const auto& in = vector.at("input");
       const Uuid job = U(in.at("job_id"));
       const std::uint32_t schema_version = in.contains("schema_version")
@@ -709,6 +719,7 @@ int RunJobReducerVectorJsonChecks(const Json& vectors, const char* selector) {
                           RejectionReason::kInvalidEventPayload,
                       vector.at("vector_id").get<std::string>() + " invalid payload");
     }
+    result |= Check(selected_invalid == 39, "selector consumes all invalid-payload vectors");
   }
   std::size_t selected_steps = 0;
   for (const auto& sequence : sequences) {
@@ -821,9 +832,16 @@ int RunJobReducerVectorJsonChecks(const Json& vectors, const char* selector) {
     result |= Check(selected_steps == 22, "finalization selector sequence-step count");
   if (selected_selector == "job_late_cleanup_vectors")
     result |= Check(selected_steps == 23, "late-cleanup selector sequence-step count");
+  if (selected_selector == "job_timeout_vectors")
+    result |= Check(selected_steps == 4, "timeout selector sequence-step count");
+  if (selected_selector == "job_rejected_input_no_append")
+    result |= Check(selected_steps == 4, "rejected-input selector sequence-step count");
+  std::size_t selected_timers = 0;
   for (const auto& vector : timers) {
+    if (selected_selector == "job_timeout_vectors") ++selected_timers;
     if (selected_selector != "job_timeout_vectors") continue;
     TimerState state;
+    state.job_id = Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"};
     const auto active = vector.at("active_generation");
     state.execution_armed = !active.is_null();
     state.execution_generation = active.is_null() ? 0 : active.get<std::uint64_t>();
@@ -857,6 +875,8 @@ int RunJobReducerVectorJsonChecks(const Json& vectors, const char* selector) {
                         expected.at("post_sync_effects").get<std::vector<std::string>>(),
                     vector.at("vector_id").get<std::string>() + " timer ordered effects");
   }
+  if (selected_selector == "job_timeout_vectors")
+    result |= Check(selected_timers == 4, "timeout selector consumes all timer-ingress vectors");
   return result;
 }
 
@@ -987,7 +1007,7 @@ int RunJobReducerParityMutationJsonChecks(const Json& vectors) {
   generation["expected"]["journal_event"]["payload"]["timer_generation"] =
       std::numeric_limits<std::uint64_t>::max();
   result |= mutation_detected(CheckExpected(generation, timeout_before, timeout_decision) != 0,
-                              "uint64 bound");
+                              "timer generation payload parity");
   Json rejection = *rejected;
   rejection["expected"]["rejection_reason"] = "invariant_violation";
   const auto rejection_before =

@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <boost/hash2/sha2.hpp>
-#include <cctype>
 #include <initializer_list>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -29,25 +28,65 @@ bool IsTerminal(JobState state) {
          state == JobState::kCancelled || state == JobState::kTerminated ||
          state == JobState::kTimedOut;
 }
+bool IsAsciiDigit(char value) { return value >= '0' && value <= '9'; }
+bool IsAsciiUpper(char value) { return value >= 'A' && value <= 'Z'; }
+bool IsAsciiLower(char value) { return value >= 'a' && value <= 'z'; }
+bool IsAsciiAlphanumeric(char value) {
+  return IsAsciiDigit(value) || IsAsciiUpper(value) || IsAsciiLower(value);
+}
+bool IsLowerHex(char value) { return IsAsciiDigit(value) || (value >= 'a' && value <= 'f'); }
 bool IsUuid(std::string_view s, char version) {
   if (s.size() != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-') return false;
   for (std::size_t i = 0; i < s.size(); ++i) {
     if (i == 8 || i == 13 || i == 18 || i == 23) continue;
-    if (!std::isxdigit(static_cast<unsigned char>(s[i])) ||
-        std::tolower(static_cast<unsigned char>(s[i])) != s[i])
-      return false;
+    if (!IsLowerHex(s[i])) return false;
   }
   return s[14] == version && (s[19] == '8' || s[19] == '9' || s[19] == 'a' || s[19] == 'b');
 }
 bool IsStable(std::string_view s) {
-  if (s.empty() || s.size() > 128 || !std::isalnum(static_cast<unsigned char>(s.front())))
-    return false;
+  if (s.empty() || s.size() > 128 || !IsAsciiAlphanumeric(s.front())) return false;
   return std::all_of(s.begin(), s.end(), [](char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '_' || c == ':' ||
-           c == '-';
+    return IsAsciiAlphanumeric(c) || c == '.' || c == '_' || c == ':' || c == '-';
   });
 }
-bool IsPrincipal(std::string_view s) { return !s.empty() && s.size() <= 256; }
+bool IsUtf8ScalarString(std::string_view value, std::size_t max_scalars) {
+  if (value.empty()) return false;
+  std::size_t scalars = 0;
+  for (std::size_t index = 0; index < value.size();) {
+    const auto first = static_cast<unsigned char>(value[index]);
+    std::size_t length = 0;
+    unsigned char second_min = 0x80;
+    unsigned char second_max = 0xBF;
+    if (first <= 0x7F) {
+      length = 1;
+    } else if (first >= 0xC2 && first <= 0xDF) {
+      length = 2;
+    } else if (first >= 0xE0 && first <= 0xEF) {
+      length = 3;
+      if (first == 0xE0) second_min = 0xA0;
+      if (first == 0xED) second_max = 0x9F;
+    } else if (first >= 0xF0 && first <= 0xF4) {
+      length = 4;
+      if (first == 0xF0) second_min = 0x90;
+      if (first == 0xF4) second_max = 0x8F;
+    } else {
+      return false;
+    }
+    if (index + length > value.size()) return false;
+    if (length > 1) {
+      const auto second = static_cast<unsigned char>(value[index + 1]);
+      if (second < second_min || second > second_max) return false;
+      for (std::size_t continuation = 2; continuation < length; ++continuation) {
+        const auto byte = static_cast<unsigned char>(value[index + continuation]);
+        if (byte < 0x80 || byte > 0xBF) return false;
+      }
+    }
+    index += length;
+    if (++scalars > max_scalars) return false;
+  }
+  return true;
+}
+bool IsPrincipal(std::string_view s) { return IsUtf8ScalarString(s, 256); }
 bool IsCommandType(CommandType type) {
   return static_cast<int>(type) >= 0 && static_cast<int>(type) <= 1;
 }
@@ -218,11 +257,12 @@ NormalizedCandidate ParseCandidate(const Snapshot& snapshot, const RawCandidateE
             !StringField(p, "operation_id", &operation) || !IsStable(operation) ||
             !p.contains("application") || !p.at("application").is_object() ||
             !StringField(p.at("application"), "application_id", &app) || !IsStable(app) ||
-            !StringField(p.at("application"), "version", &version) || version.empty() ||
-            version.size() > 128 || !StringField(p.at("application"), "bundle_sha256", &bundle) ||
-            !IsDigest(bundle) || !StringField(p, "allocation_id", &allocation) ||
-            !IsStable(allocation) || !StringField(p, "allocation_digest", &digest) ||
-            !IsDigest(digest) || !StringField(p, "worker_id", &worker) || !IsUuid(worker, '4'))
+            !StringField(p.at("application"), "version", &version) ||
+            !IsUtf8ScalarString(version, 128) ||
+            !StringField(p.at("application"), "bundle_sha256", &bundle) || !IsDigest(bundle) ||
+            !StringField(p, "allocation_id", &allocation) || !IsStable(allocation) ||
+            !StringField(p, "allocation_digest", &digest) || !IsDigest(digest) ||
+            !StringField(p, "worker_id", &worker) || !IsUuid(worker, '4'))
           break;
         if (!HasOnly(p.at("application"), {"application_id", "version", "bundle_sha256"})) break;
         return Normalize(
@@ -326,9 +366,9 @@ bool ValidInternalPayload(EventType type, const EventPayload& payload, const Uui
   }
   if (const auto* p = std::get_if<WorkerLaunchIntentPayload>(&payload))
     return IsStable(p->operation_id.value) && IsStable(p->application_id.value) &&
-           !p->application_version.empty() && p->application_version.size() <= 128 &&
-           IsDigest(p->bundle_sha256.value) && IsStable(p->allocation_id.value) &&
-           IsDigest(p->allocation_digest.value) && IsUuid(p->worker_id.value, '4');
+           IsUtf8ScalarString(p->application_version, 128) && IsDigest(p->bundle_sha256.value) &&
+           IsStable(p->allocation_id.value) && IsDigest(p->allocation_digest.value) &&
+           IsUuid(p->worker_id.value, '4');
   if (const auto* p = std::get_if<WorkerLaunchObservedPayload>(&payload))
     return IsStable(p->operation_id.value);
   if (const auto* p = std::get_if<WorkerRunningPayload>(&payload))
@@ -379,6 +419,7 @@ bool ValidSnapshot(const Snapshot& s) {
     return false;
   if (s.resource_status != ResourceStatus::kNone && (!s.allocation_id || !s.allocation_digest))
     return false;
+  if (s.resource_status == ResourceStatus::kReleased && !s.process_exit_confirmed) return false;
   if (s.process_exit_confirmed &&
       (s.process_presence != ProcessPresence::kAbsent || s.pending_worker_event_ack ||
        s.pending_worker_id || s.pending_worker_event_sequence))
@@ -394,6 +435,11 @@ bool ValidSnapshot(const Snapshot& s) {
     return false;
   if (s.pending_worker_event_ack && (!s.pending_worker_id || !s.pending_worker_event_sequence ||
                                      *s.pending_worker_event_sequence == 0))
+    return false;
+  if (s.state == JobState::kAdmitted &&
+      (s.resource_status != ResourceStatus::kNone ||
+       s.worker_launch_status != LaunchStatus::kNotStarted ||
+       s.process_presence != ProcessPresence::kAbsent || s.process_exit_confirmed))
     return false;
   if ((s.state == JobState::kAdmitted || s.state == JobState::kPreparing ||
        s.state == JobState::kRunning || s.state == JobState::kStopping) &&
@@ -664,11 +710,10 @@ Snapshot InitialSnapshot(const Uuid& job_id, const Uuid& session_id) {
 }
 Decision DecideCommand(const Snapshot& s, const Command& command) {
   if (!ValidSnapshot(s)) return Reject(RejectionReason::kInvariantViolation);
-  if (command.schema_version != 1 || command.job_id != s.job_id || !s.entity_exists)
-    return Reject(RejectionReason::kJobNotFound);
-  if (!IsUuid(command.job_id.value, '7') || command.principal_subject.empty() ||
-      command.principal_subject.size() > 256 || !IsCommandType(command.command_type))
+  if (command.schema_version != 1 || !IsUuid(command.job_id.value, '7') ||
+      !IsPrincipal(command.principal_subject) || !IsCommandType(command.command_type))
     return Reject(RejectionReason::kInvalidEventPayload);
+  if (command.job_id != s.job_id || !s.entity_exists) return Reject(RejectionReason::kJobNotFound);
   if (command.command_type == CommandType::kCancel) {
     if (s.state == JobState::kStopping) return Reject(RejectionReason::kStopCauseAlreadyLatched);
     if (s.state != JobState::kAdmitted && s.state != JobState::kPreparing &&
@@ -702,6 +747,10 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
   const Decision decision = DecideInternal(before, event);
   if (std::holds_alternative<Rejection>(decision.value))
     return ApplyResult{before, {}, std::get<Rejection>(decision.value)};
+  const auto& authorized = std::get<PreEnvelopeProposal>(decision.value);
+  if (authorized.schema_version != proposal.schema_version ||
+      authorized.job_id != proposal.job_id || authorized.event_type != proposal.event_type)
+    return ApplyResult{before, {}, Rejection{1, RejectionReason::kInvariantViolation}};
   Snapshot s = before;
   std::vector<Effect> effects;
   const auto add_ack = [&] {
@@ -949,13 +998,26 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
 }
 
 TimerIngressResult IngestTimer(const TimerState& timers, const TimerIngressInput& input) {
+  if (!IsUuid(timers.job_id.value, '7'))
+    return TimerIngressResult{
+        TimerIngressKind::kFailClosed, std::nullopt, {Effect{EffectId::kSetReadinessFalse}}};
   if (input.arm_request) {
     const auto phase = input.arm_request->phase;
     const bool valid_phase =
         phase == TimeoutPhase::kPreparation || phase == TimeoutPhase::kExecution ||
         phase == TimeoutPhase::kCooperativeStop || phase == TimeoutPhase::kProcessExitConfirmation;
-    if (!valid_phase || input.arm_request->generation == 0 ||
-        input.arm_request->generation == UINT64_MAX)
+    std::uint64_t active_generation = 0;
+    if (phase == TimeoutPhase::kPreparation)
+      active_generation = timers.preparation_generation;
+    else if (phase == TimeoutPhase::kExecution)
+      active_generation = timers.execution_generation;
+    else if (phase == TimeoutPhase::kCooperativeStop)
+      active_generation = timers.cooperative_stop_generation;
+    else if (phase == TimeoutPhase::kProcessExitConfirmation)
+      active_generation = timers.process_exit_confirmation_generation;
+    if (!valid_phase || !IsUuid(input.arm_request->job_id.value, '7') ||
+        input.arm_request->job_id != timers.job_id || input.arm_request->generation == 0 ||
+        input.arm_request->generation == UINT64_MAX || active_generation == UINT64_MAX)
       return TimerIngressResult{
           TimerIngressKind::kFailClosed, std::nullopt, {Effect{EffectId::kSetReadinessFalse}}};
   }
@@ -964,6 +1026,10 @@ TimerIngressResult IngestTimer(const TimerState& timers, const TimerIngressInput
              : TimerIngressResult{TimerIngressKind::kDiscardWithoutCandidate, std::nullopt, {}};
 }
 TimerIngressResult IngestTimer(const TimerState& timers, const TimerNotification& notification) {
+  if (!IsUuid(timers.job_id.value, '7') || !IsUuid(notification.job_id.value, '7') ||
+      notification.job_id != timers.job_id)
+    return TimerIngressResult{
+        TimerIngressKind::kFailClosed, std::nullopt, {Effect{EffectId::kSetReadinessFalse}}};
   const auto phase = notification.phase;
   const auto generation = notification.generation;
   if (!IsTimeoutPhase(phase))

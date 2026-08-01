@@ -264,6 +264,7 @@ enum class TimerIngressKind {
   kInvalid
 };
 struct TimerState {
+  Uuid job_id;
   bool preparation_armed = false;
   bool execution_armed = false;
   bool cooperative_stop_armed = false;
