@@ -23,22 +23,53 @@ struct Digest {
   friend bool operator==(const Digest&, const Digest&) = default;
 };
 
-enum class JobState { kAdmitted, kPreparing, kRunning, kStopping, kFinalizing,
-                      kSucceeded, kFailed, kCancelled, kTerminated, kTimedOut };
+enum class JobState {
+  kAdmitted,
+  kPreparing,
+  kRunning,
+  kStopping,
+  kFinalizing,
+  kSucceeded,
+  kFailed,
+  kCancelled,
+  kTerminated,
+  kTimedOut
+};
 enum class CommandType { kCancel, kTerminate };
 enum class TimeoutPhase { kPreparation, kExecution, kCooperativeStop, kProcessExitConfirmation };
 enum class TerminalOutcome { kSucceeded, kFailed, kCancelled, kTerminated, kTimedOut };
-enum class RejectionReason { kJobNotFound, kJobAlreadyExists, kCommandNotAllowedInState,
-  kEventNotAllowedInState, kStopCauseAlreadyLatched, kTimeoutPhaseMismatch,
-  kTerminalOutcomeMismatch, kRequiredFinalizationFactMissing, kInvalidEventPayload,
-  kInvariantViolation };
+enum class RejectionReason {
+  kJobNotFound,
+  kJobAlreadyExists,
+  kCommandNotAllowedInState,
+  kEventNotAllowedInState,
+  kStopCauseAlreadyLatched,
+  kTimeoutPhaseMismatch,
+  kTerminalOutcomeMismatch,
+  kRequiredFinalizationFactMissing,
+  kInvalidEventPayload,
+  kInvariantViolation
+};
 enum class Disposition { kTransition, kAudit, kLateAudit, kReject };
-enum class EffectId { kArmPreparationTimeout, kDisarmPreparationTimeout, kLaunchWorkerOnce,
-  kArmExecutionTimeout, kDisarmExecutionTimeout, kRequestCooperativeStop, kRequestForcedStop,
-  kRetainSessionSameIdentity, kAckTerminalWorkerEventIfPending, kAckLateWorkerEvent,
-  kPublishTerminalResult, kArmProcessExitConfirmationTimeoutIfNeeded, kQuarantineResources,
-  kSetReadinessFalse, kArmCooperativeStopTimeout, kDisarmCooperativeStopTimeout,
-  kDisarmProcessExitConfirmationTimeout };
+enum class EffectId {
+  kArmPreparationTimeout,
+  kDisarmPreparationTimeout,
+  kLaunchWorkerOnce,
+  kArmExecutionTimeout,
+  kDisarmExecutionTimeout,
+  kRequestCooperativeStop,
+  kRequestForcedStop,
+  kRetainSessionSameIdentity,
+  kAckTerminalWorkerEventIfPending,
+  kAckLateWorkerEvent,
+  kPublishTerminalResult,
+  kArmProcessExitConfirmationTimeoutIfNeeded,
+  kQuarantineResources,
+  kSetReadinessFalse,
+  kArmCooperativeStopTimeout,
+  kDisarmCooperativeStopTimeout,
+  kDisarmProcessExitConfirmationTimeout
+};
 
 enum class ResourceStatus { kNone, kCommitted, kReleased };
 enum class LaunchStatus { kNotStarted, kIntentRecorded, kObserved, kFailed };
@@ -49,35 +80,94 @@ enum class CleanupStatus { kPending, kCompleted, kIncomplete };
 enum class CompletionMode { kNone, kCooperative, kForced, kProcessAlreadyExited };
 
 enum class EventType {
-  kJobCreated, kResourcesCommitted, kWorkerLaunchIntent, kWorkerLaunchObserved, kWorkerRunning,
-  kCancelAccepted, kTerminateAccepted, kTimeoutExpired, kWorkerCompleted, kWorkerFailed,
-  kProcessExitConfirmed, kSessionRetainRequested, kSessionRetained, kFinalizationCompleted,
-  kFinalizationFailed, kTerminalOutcomeCommitted, kResourcesReleased, kCleanupStatusRecorded,
+  kJobCreated,
+  kResourcesCommitted,
+  kWorkerLaunchIntent,
+  kWorkerLaunchObserved,
+  kWorkerRunning,
+  kCancelAccepted,
+  kTerminateAccepted,
+  kTimeoutExpired,
+  kWorkerCompleted,
+  kWorkerFailed,
+  kProcessExitConfirmed,
+  kSessionRetainRequested,
+  kSessionRetained,
+  kFinalizationCompleted,
+  kFinalizationFailed,
+  kTerminalOutcomeCommitted,
+  kResourcesReleased,
+  kCleanupStatusRecorded,
   kLateWorkerEvent
 };
 
 struct EmptyPayload {};
-struct JobCreatedPayload { Uuid session_id; };
-struct ResourcesCommittedPayload { StableId allocation_id; Digest allocation_digest;
-  StableId schema_id; std::uint32_t schema_version = 0; std::string payload_utf8; };
-struct WorkerLaunchIntentPayload { StableId operation_id; StableId application_id; std::string application_version;
-  Digest bundle_sha256; StableId allocation_id; Digest allocation_digest; Uuid worker_id; };
-struct WorkerLaunchObservedPayload { StableId operation_id; bool started = false; };
-struct WorkerRunningPayload { Uuid worker_id; };
-struct PrincipalPayload { std::string principal_subject; };
-struct TimeoutExpiredPayload { TimeoutPhase phase; std::uint64_t timer_generation = 0; };
-struct WorkerEventPayload { Uuid worker_id; std::uint64_t event_sequence = 0; };
-struct ProcessExitConfirmedPayload { CompletionMode completion_mode; StableId launch_operation_id; };
-struct SessionPayload { Uuid session_id; };
-struct TerminalOutcomePayload { TerminalOutcome outcome; };
-struct ResourcesReleasedPayload { StableId allocation_id; Digest allocation_digest; };
-struct CleanupStatusPayload { CleanupStatus status; };
-struct LateWorkerEventPayload { EventType original_event_type; Uuid worker_id; std::uint64_t event_sequence = 0; };
+struct JobCreatedPayload {
+  Uuid session_id;
+};
+struct ResourcesCommittedPayload {
+  StableId allocation_id;
+  Digest allocation_digest;
+  StableId schema_id;
+  std::uint32_t schema_version = 0;
+  std::string payload_utf8;
+};
+struct WorkerLaunchIntentPayload {
+  StableId operation_id;
+  StableId application_id;
+  std::string application_version;
+  Digest bundle_sha256;
+  StableId allocation_id;
+  Digest allocation_digest;
+  Uuid worker_id;
+};
+struct WorkerLaunchObservedPayload {
+  StableId operation_id;
+  bool started = false;
+};
+struct WorkerRunningPayload {
+  Uuid worker_id;
+};
+struct PrincipalPayload {
+  std::string principal_subject;
+};
+struct TimeoutExpiredPayload {
+  TimeoutPhase phase;
+  std::uint64_t timer_generation = 0;
+};
+struct WorkerEventPayload {
+  Uuid worker_id;
+  std::uint64_t event_sequence = 0;
+};
+struct ProcessExitConfirmedPayload {
+  CompletionMode completion_mode;
+  StableId launch_operation_id;
+};
+struct SessionPayload {
+  Uuid session_id;
+};
+struct TerminalOutcomePayload {
+  TerminalOutcome outcome;
+};
+struct ResourcesReleasedPayload {
+  StableId allocation_id;
+  Digest allocation_digest;
+};
+struct CleanupStatusPayload {
+  CleanupStatus status;
+};
+struct LateWorkerEventPayload {
+  EventType original_event_type;
+  Uuid worker_id;
+  std::uint64_t event_sequence = 0;
+};
 
-using EventPayload = std::variant<EmptyPayload, JobCreatedPayload, ResourcesCommittedPayload,
-  WorkerLaunchIntentPayload, WorkerLaunchObservedPayload, WorkerRunningPayload, PrincipalPayload,
-  TimeoutExpiredPayload, WorkerEventPayload, ProcessExitConfirmedPayload, SessionPayload,
-  TerminalOutcomePayload, ResourcesReleasedPayload, CleanupStatusPayload, LateWorkerEventPayload>;
+using EventPayload =
+    std::variant<EmptyPayload, JobCreatedPayload, ResourcesCommittedPayload,
+                 WorkerLaunchIntentPayload, WorkerLaunchObservedPayload, WorkerRunningPayload,
+                 PrincipalPayload, TimeoutExpiredPayload, WorkerEventPayload,
+                 ProcessExitConfirmedPayload, SessionPayload, TerminalOutcomePayload,
+                 ResourcesReleasedPayload, CleanupStatusPayload, LateWorkerEventPayload>;
 
 struct Snapshot {
   std::uint32_t schema_version = 1;
@@ -104,18 +194,43 @@ struct Snapshot {
   std::optional<std::uint64_t> pending_worker_event_sequence;
 };
 
-struct Command { std::uint32_t schema_version = 1; CommandType command_type;
-  Uuid job_id; std::string principal_subject; };
-struct RawCandidateEvent { std::uint32_t schema_version = 1; Uuid job_id;
-  std::string event_type; std::string payload_json; };
-struct InternalEvent { std::uint32_t schema_version = 1; Uuid job_id;
-  EventType event_type; EventPayload payload; };
-struct PreEnvelopeProposal { std::uint32_t schema_version = 1; Uuid job_id;
-  EventType event_type; EventPayload payload; };
-struct Rejection { std::uint32_t schema_version = 1; RejectionReason reason; };
-struct Decision { std::variant<Rejection, PreEnvelopeProposal> value; };
-struct NormalizedCandidate { std::variant<Rejection, InternalEvent> value; };
-struct Effect { EffectId id; };
+struct Command {
+  std::uint32_t schema_version = 1;
+  CommandType command_type;
+  Uuid job_id;
+  std::string principal_subject;
+};
+struct RawCandidateEvent {
+  std::uint32_t schema_version = 1;
+  Uuid job_id;
+  std::string event_type;
+  std::string payload_json;
+};
+struct InternalEvent {
+  std::uint32_t schema_version = 1;
+  Uuid job_id;
+  EventType event_type;
+  EventPayload payload;
+};
+struct PreEnvelopeProposal {
+  std::uint32_t schema_version = 1;
+  Uuid job_id;
+  EventType event_type;
+  EventPayload payload;
+};
+struct Rejection {
+  std::uint32_t schema_version = 1;
+  RejectionReason reason;
+};
+struct Decision {
+  std::variant<Rejection, PreEnvelopeProposal> value;
+};
+struct NormalizedCandidate {
+  std::variant<Rejection, InternalEvent> value;
+};
+struct Effect {
+  EffectId id;
+};
 struct ApplyResult {
   Snapshot snapshot;
   std::vector<Effect> effects;
@@ -133,17 +248,29 @@ struct TimerNotification {
 };
 
 enum class TimerIngressKind { kFailClosed, kDiscardWithoutCandidate, kEmitCandidateEvent };
-struct TimerState { bool preparation_armed = false; bool execution_armed = false;
-  bool cooperative_stop_armed = false; bool process_exit_confirmation_armed = false;
-  std::uint64_t preparation_generation = 0; std::uint64_t execution_generation = 0;
-  std::uint64_t cooperative_stop_generation = 0; std::uint64_t process_exit_confirmation_generation = 0; };
-struct TimeoutCandidate { Uuid job_id; TimeoutExpiredPayload payload; };
+struct TimerState {
+  bool preparation_armed = false;
+  bool execution_armed = false;
+  bool cooperative_stop_armed = false;
+  bool process_exit_confirmation_armed = false;
+  std::uint64_t preparation_generation = 0;
+  std::uint64_t execution_generation = 0;
+  std::uint64_t cooperative_stop_generation = 0;
+  std::uint64_t process_exit_confirmation_generation = 0;
+};
+struct TimeoutCandidate {
+  Uuid job_id;
+  TimeoutExpiredPayload payload;
+};
 struct TimerIngressInput {
   TimerArmRequest arm_request;
   std::optional<TimerNotification> notification;
 };
-struct TimerIngressResult { TimerIngressKind kind; std::optional<TimeoutCandidate> candidate;
-  std::vector<Effect> effects; };
+struct TimerIngressResult {
+  TimerIngressKind kind;
+  std::optional<TimeoutCandidate> candidate;
+  std::vector<Effect> effects;
+};
 
 [[nodiscard]] Snapshot InitialSnapshot(const Uuid& job_id, const Uuid& session_id);
 [[nodiscard]] Decision DecideCommand(const Snapshot&, const Command&);
@@ -153,7 +280,7 @@ struct TimerIngressResult { TimerIngressKind kind; std::optional<TimeoutCandidat
 [[nodiscard]] TimerIngressResult IngestTimer(const TimerState&, const TimerIngressInput&);
 [[nodiscard]] TimerIngressResult IngestTimer(const TimerState&, const TimerNotification&);
 [[nodiscard]] TimerIngressResult IngestTimer(const TimerState&, const Uuid&, TimeoutPhase,
-                                              std::uint64_t generation);
+                                             std::uint64_t generation);
 
 [[nodiscard]] std::string_view ToString(JobState) noexcept;
 [[nodiscard]] std::string_view ToString(EventType) noexcept;
