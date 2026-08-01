@@ -1,6 +1,8 @@
 # Core contracts
 
-Accepted ADR-0002 makes the Phase 0A core Job contract normative. Implementation remains Planned.
+Accepted ADR-0002 makes the Phase 0A core Job contract normative. Issue #9 implements the
+dependency-minimal pure reducer; complete Journal envelope construction, single-writer commit
+orchestration, and physical durability remain Planned.
 
 ## 1. Source files
 

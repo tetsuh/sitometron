@@ -45,7 +45,8 @@ writer orders accepted commands and events. Journal and external-side-effect com
 specified before production adapters use them.
 
 Accepted ADR-0002 owns the normative Job state, event, command, rejection, and reducer mechanism.
-Implementation remains Planned.
+Issue #9 implements the dependency-minimal pure reducer. Single-writer commit orchestration,
+complete Journal envelope construction, effect execution, and physical durability remain Planned.
 
 The machine-readable Job transition contract is documented in
 [the core contracts](03_core_contracts.md). Worker HTTP schemas, external REST schemas, physical
