@@ -90,7 +90,10 @@ if(SITOMETRON_BUILD_TESTS)
   add_library(sitometron::test_support ALIAS sitometron_test_support)
   target_include_directories(sitometron_test_support INTERFACE tests/support)
 
-  add_executable(sitometron_core_tests tests/unit/version_test.cpp)
+  add_executable(
+    sitometron_core_tests
+    tests/unit/version_test.cpp
+    tests/unit/job_reducer_test.cpp)
   target_link_libraries(sitometron_core_tests PRIVATE sitometron::core sitometron::test_support)
   sitometron_enable_project_warnings(sitometron_core_tests)
   sitometron_enable_sanitizers(sitometron_core_tests)
