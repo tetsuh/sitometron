@@ -1,8 +1,6 @@
 #include "sitometron/core/job_reducer.hpp"
 
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -12,7 +10,11 @@
 
 namespace sitometron::test {
 int RunJobReducerVectorChecks(const char* path, const char* selector);
+int RunJobReducerVectorTextChecks(std::string_view text, const char* selector);
 int RunJobReducerParityMutationChecks(const char* path);
+int RunJobReducerParityMutationTextChecks(std::string_view text);
+int RunJobReducerTrailingArtifactChecks(const char* path);
+int RunJobReducerClosedEnumArtifactChecks();
 }  // namespace sitometron::test
 
 namespace {
@@ -27,20 +29,10 @@ int Check(bool condition, std::string_view message) {
 }
 
 int RunMalformedArtifactChecks() {
-  const auto path =
-      std::filesystem::temp_directory_path() / "sitometron-job-reducer-malformed-artifact.json";
   int result = 0;
   const auto check_artifact = [&](std::string_view contents, std::string_view label) {
-    {
-      std::ofstream output(path, std::ios::binary | std::ios::trunc);
-      if (!output) return Check(false, std::string(label) + " artifact is writable");
-      output << contents;
-    }
-    const auto normal = sitometron::test::RunJobReducerVectorChecks(path.string().c_str(), "all");
-    const auto mutation =
-        sitometron::test::RunJobReducerParityMutationChecks(path.string().c_str());
-    std::error_code error;
-    std::filesystem::remove(path, error);
+    const auto normal = sitometron::test::RunJobReducerVectorTextChecks(contents, "all");
+    const auto mutation = sitometron::test::RunJobReducerParityMutationTextChecks(contents);
     int checks = 0;
     checks |= Check(normal != 0, std::string(label) + " normal runner rejects artifact");
     checks |= Check(mutation != 0, std::string(label) + " mutation runner rejects artifact");
@@ -48,6 +40,7 @@ int RunMalformedArtifactChecks() {
   };
   result |= check_artifact("{", "syntactically invalid JSON");
   result |= check_artifact(R"({"contract_version":1})", "missing case_vectors");
+  result |= sitometron::test::RunJobReducerClosedEnumArtifactChecks();
   return result;
 }
 
@@ -241,6 +234,14 @@ int Run() {
                       !invalid_arm.candidate.has_value() && invalid_arm.effects.size() == 1 &&
                       invalid_arm.effects.front().id == EffectId::kSetReadinessFalse,
                   "invalid arm phase fails closed with only readiness false");
+  const auto zero_generation_arm =
+      IngestTimer(timer, TimerIngressInput{TimerArmRequest{job, TimeoutPhase::kPreparation, 0},
+                                           TimerNotification{job, TimeoutPhase::kPreparation, 9}});
+  result |= Check(zero_generation_arm.kind == TimerIngressKind::kFailClosed &&
+                      !zero_generation_arm.candidate.has_value() &&
+                      zero_generation_arm.effects.size() == 1 &&
+                      zero_generation_arm.effects.front().id == EffectId::kSetReadinessFalse,
+                  "zero-generation arm fails closed before a valid notification");
   result |= Check(IngestTimer(timer, TimerIngressInput{std::nullopt, std::nullopt}).kind ==
                       TimerIngressKind::kDiscardWithoutCandidate,
                   "null notification does not fail closed");
@@ -254,8 +255,10 @@ int main(int argc, char** argv) {
   if (argc == 1) result |= RunMalformedArtifactChecks();
   if (argc > 1) {
     result |= sitometron::test::RunJobReducerVectorChecks(argv[1], argc > 2 ? argv[2] : "all");
-    if (argc <= 2 || (argc > 2 && std::string_view(argv[2]) == "job_closed_state_set"))
+    if (argc <= 2 || (argc > 2 && std::string_view(argv[2]) == "job_closed_state_set")) {
       result |= sitometron::test::RunJobReducerParityMutationChecks(argv[1]);
+      result |= sitometron::test::RunJobReducerTrailingArtifactChecks(argv[1]);
+    }
   }
   return result;
 }

@@ -2,12 +2,15 @@
 #include <array>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 
 #include "sitometron/core/job_reducer.hpp"
@@ -16,6 +19,7 @@ namespace sitometron::test {
 namespace {
 using Json = nlohmann::json;
 using namespace sitometron::core;
+using namespace std::string_view_literals;
 
 int Check(bool condition, const std::string& message) {
   if (condition) return 0;
@@ -34,25 +38,71 @@ std::optional<Uuid> UuidValue(const Json& j) {
   return j.is_null() ? std::nullopt : std::optional<Uuid>{U(j)};
 }
 
+template <typename Enum, std::size_t Size>
+Enum ClosedEnum(std::string_view value,
+                const std::array<std::pair<std::string_view, Enum>, Size>& values,
+                std::string_view field) {
+  for (const auto& [name, enumeration] : values)
+    if (value == name) return enumeration;
+  throw std::invalid_argument("unknown " + std::string(field) + ": " + std::string(value));
+}
+
 JobState State(std::string_view value) {
-  if (value == "admitted") return JobState::kAdmitted;
-  if (value == "preparing") return JobState::kPreparing;
-  if (value == "running") return JobState::kRunning;
-  if (value == "stopping") return JobState::kStopping;
-  if (value == "finalizing") return JobState::kFinalizing;
-  if (value == "succeeded") return JobState::kSucceeded;
-  if (value == "failed") return JobState::kFailed;
-  if (value == "cancelled") return JobState::kCancelled;
-  if (value == "terminated") return JobState::kTerminated;
-  return JobState::kTimedOut;
+  static constexpr std::array values{std::pair{"admitted"sv, JobState::kAdmitted},
+                                     std::pair{"preparing"sv, JobState::kPreparing},
+                                     std::pair{"running"sv, JobState::kRunning},
+                                     std::pair{"stopping"sv, JobState::kStopping},
+                                     std::pair{"finalizing"sv, JobState::kFinalizing},
+                                     std::pair{"succeeded"sv, JobState::kSucceeded},
+                                     std::pair{"failed"sv, JobState::kFailed},
+                                     std::pair{"cancelled"sv, JobState::kCancelled},
+                                     std::pair{"terminated"sv, JobState::kTerminated},
+                                     std::pair{"timed_out"sv, JobState::kTimedOut}};
+  return ClosedEnum(value, values, "state");
 }
 std::optional<TerminalOutcome> Outcome(const Json& j) {
   if (j.is_null()) return std::nullopt;
-  const auto s = j.get<std::string>();
-  if (s == "failed") return TerminalOutcome::kFailed;
-  if (s == "cancelled") return TerminalOutcome::kCancelled;
-  if (s == "terminated") return TerminalOutcome::kTerminated;
-  return TerminalOutcome::kTimedOut;
+  static constexpr std::array values{std::pair{"failed"sv, TerminalOutcome::kFailed},
+                                     std::pair{"cancelled"sv, TerminalOutcome::kCancelled},
+                                     std::pair{"terminated"sv, TerminalOutcome::kTerminated},
+                                     std::pair{"timed_out"sv, TerminalOutcome::kTimedOut}};
+  return ClosedEnum(j.get<std::string>(), values, "latched_reason");
+}
+CommandType ArtifactCommandType(std::string_view value) {
+  static constexpr std::array values{std::pair{"cancel"sv, CommandType::kCancel},
+                                     std::pair{"terminate"sv, CommandType::kTerminate}};
+  return ClosedEnum(value, values, "command_type");
+}
+enum class ArtifactDisposition { kTransition, kAudit, kLateAudit, kReject };
+ArtifactDisposition Disposition(std::string_view value) {
+  static constexpr std::array values{std::pair{"transition"sv, ArtifactDisposition::kTransition},
+                                     std::pair{"audit"sv, ArtifactDisposition::kAudit},
+                                     std::pair{"late_audit"sv, ArtifactDisposition::kLateAudit},
+                                     std::pair{"reject"sv, ArtifactDisposition::kReject}};
+  return ClosedEnum(value, values, "disposition");
+}
+EventType ArtifactEventType(std::string_view value) {
+  static constexpr std::array values{
+      std::pair{"job_created"sv, EventType::kJobCreated},
+      std::pair{"resources_committed"sv, EventType::kResourcesCommitted},
+      std::pair{"worker_launch_intent"sv, EventType::kWorkerLaunchIntent},
+      std::pair{"worker_launch_observed"sv, EventType::kWorkerLaunchObserved},
+      std::pair{"worker_running"sv, EventType::kWorkerRunning},
+      std::pair{"cancel_accepted"sv, EventType::kCancelAccepted},
+      std::pair{"terminate_accepted"sv, EventType::kTerminateAccepted},
+      std::pair{"timeout_expired"sv, EventType::kTimeoutExpired},
+      std::pair{"worker_completed"sv, EventType::kWorkerCompleted},
+      std::pair{"worker_failed"sv, EventType::kWorkerFailed},
+      std::pair{"process_exit_confirmed"sv, EventType::kProcessExitConfirmed},
+      std::pair{"session_retain_requested"sv, EventType::kSessionRetainRequested},
+      std::pair{"session_retained"sv, EventType::kSessionRetained},
+      std::pair{"finalization_completed"sv, EventType::kFinalizationCompleted},
+      std::pair{"finalization_failed"sv, EventType::kFinalizationFailed},
+      std::pair{"terminal_outcome_committed"sv, EventType::kTerminalOutcomeCommitted},
+      std::pair{"resources_released"sv, EventType::kResourcesReleased},
+      std::pair{"cleanup_status_recorded"sv, EventType::kCleanupStatusRecorded},
+      std::pair{"late_worker_event"sv, EventType::kLateWorkerEvent}};
+  return ClosedEnum(value, values, "event_type");
 }
 Snapshot SnapshotFrom(const Json& j, const Json* absent_input = nullptr) {
   if (j.is_null()) {
@@ -85,42 +135,53 @@ Snapshot SnapshotFrom(const Json& j, const Json* absent_input = nullptr) {
   s.latched_reason = Outcome(j.at("latched_reason"));
   s.completion_candidate = !j.at("completion_candidate").is_null();
   if (!j.at("completion_mode").is_null()) {
-    const auto v = j.at("completion_mode").get<std::string>();
-    s.completion_mode = v == "cooperative" ? CompletionMode::kCooperative
-                        : v == "forced"    ? CompletionMode::kForced
-                                           : CompletionMode::kProcessAlreadyExited;
+    static constexpr std::array values{
+        std::pair{"cooperative"sv, CompletionMode::kCooperative},
+        std::pair{"forced"sv, CompletionMode::kForced},
+        std::pair{"process_already_exited"sv, CompletionMode::kProcessAlreadyExited}};
+    s.completion_mode =
+        ClosedEnum(j.at("completion_mode").get<std::string>(), values, "completion_mode");
   }
-  const auto resource = j.at("resource_status").get<std::string>();
-  s.resource_status = resource == "committed"  ? ResourceStatus::kCommitted
-                      : resource == "released" ? ResourceStatus::kReleased
-                                               : ResourceStatus::kNone;
+  static constexpr std::array resource_values{std::pair{"none"sv, ResourceStatus::kNone},
+                                              std::pair{"committed"sv, ResourceStatus::kCommitted},
+                                              std::pair{"released"sv, ResourceStatus::kReleased}};
+  s.resource_status =
+      ClosedEnum(j.at("resource_status").get<std::string>(), resource_values, "resource_status");
   s.allocation_id = Stable(j.at("allocation_id"));
   s.allocation_digest = DigestValue(j.at("allocation_digest"));
-  const auto launch = j.at("worker_launch_status").get<std::string>();
-  s.worker_launch_status = launch == "intent_recorded" ? LaunchStatus::kIntentRecorded
-                           : launch == "observed"      ? LaunchStatus::kObserved
-                           : launch == "failed"        ? LaunchStatus::kFailed
-                                                       : LaunchStatus::kNotStarted;
+  static constexpr std::array launch_values{
+      std::pair{"not_started"sv, LaunchStatus::kNotStarted},
+      std::pair{"intent_recorded"sv, LaunchStatus::kIntentRecorded},
+      std::pair{"observed"sv, LaunchStatus::kObserved},
+      std::pair{"failed"sv, LaunchStatus::kFailed}};
+  s.worker_launch_status = ClosedEnum(j.at("worker_launch_status").get<std::string>(),
+                                      launch_values, "worker_launch_status");
   s.launch_operation_id = Stable(j.at("launch_operation_id"));
   s.worker_id = UuidValue(j.at("worker_id"));
-  const auto presence = j.at("process_presence").get<std::string>();
-  s.process_presence = presence == "present"   ? ProcessPresence::kPresent
-                       : presence == "unknown" ? ProcessPresence::kUnknown
-                                               : ProcessPresence::kAbsent;
+  static constexpr std::array presence_values{std::pair{"absent"sv, ProcessPresence::kAbsent},
+                                              std::pair{"present"sv, ProcessPresence::kPresent},
+                                              std::pair{"unknown"sv, ProcessPresence::kUnknown}};
+  s.process_presence =
+      ClosedEnum(j.at("process_presence").get<std::string>(), presence_values, "process_presence");
   s.process_exit_confirmed = j.at("process_exit_confirmed").get<bool>();
-  const auto retention = j.at("session_retention_status").get<std::string>();
-  s.session_retention_status = retention == "requested"  ? RetentionStatus::kRequested
-                               : retention == "retained" ? RetentionStatus::kRetained
-                                                         : RetentionStatus::kNotStarted;
-  const auto finalization = j.at("finalization_status").get<std::string>();
-  s.finalization_status = finalization == "pending"     ? FinalizationStatus::kPending
-                          : finalization == "completed" ? FinalizationStatus::kCompleted
-                          : finalization == "failed"    ? FinalizationStatus::kFailed
-                                                        : FinalizationStatus::kNotStarted;
-  const auto cleanup = j.at("cleanup_status").get<std::string>();
-  s.cleanup_status = cleanup == "completed"    ? CleanupStatus::kCompleted
-                     : cleanup == "incomplete" ? CleanupStatus::kIncomplete
-                                               : CleanupStatus::kPending;
+  static constexpr std::array retention_values{
+      std::pair{"not_started"sv, RetentionStatus::kNotStarted},
+      std::pair{"requested"sv, RetentionStatus::kRequested},
+      std::pair{"retained"sv, RetentionStatus::kRetained}};
+  s.session_retention_status = ClosedEnum(j.at("session_retention_status").get<std::string>(),
+                                          retention_values, "session_retention_status");
+  static constexpr std::array finalization_values{
+      std::pair{"not_started"sv, FinalizationStatus::kNotStarted},
+      std::pair{"pending"sv, FinalizationStatus::kPending},
+      std::pair{"completed"sv, FinalizationStatus::kCompleted},
+      std::pair{"failed"sv, FinalizationStatus::kFailed}};
+  s.finalization_status = ClosedEnum(j.at("finalization_status").get<std::string>(),
+                                     finalization_values, "finalization_status");
+  static constexpr std::array cleanup_values{std::pair{"pending"sv, CleanupStatus::kPending},
+                                             std::pair{"completed"sv, CleanupStatus::kCompleted},
+                                             std::pair{"incomplete"sv, CleanupStatus::kIncomplete}};
+  s.cleanup_status =
+      ClosedEnum(j.at("cleanup_status").get<std::string>(), cleanup_values, "cleanup_status");
   s.pending_worker_event_ack = j.at("pending_worker_event_ack").get<bool>();
   s.pending_worker_id = UuidValue(j.at("pending_worker_id"));
   if (!j.at("pending_worker_event_sequence").is_null())
@@ -379,12 +440,14 @@ bool SelectedCase(const Json& vector, std::string_view selector) {
 
 InternalEvent InternalFromInput(const Json& input) {
   const auto type = input.at("event_type").get<std::string>();
+  (void)ArtifactEventType(type);
   const auto job = U(input.at("job_id"));
   const auto& p = input.at("payload");
   if (type == "late_worker_event") {
-    const auto original = p.at("original_event_type").get<std::string>() == "worker_completed"
-                              ? EventType::kWorkerCompleted
-                              : EventType::kWorkerFailed;
+    static constexpr std::array values{std::pair{"worker_completed"sv, EventType::kWorkerCompleted},
+                                       std::pair{"worker_failed"sv, EventType::kWorkerFailed}};
+    const auto original = ClosedEnum(p.at("original_event_type").get<std::string>(), values,
+                                     "late_worker_event.original_event_type");
     return InternalEvent{input.at("schema_version").get<std::uint32_t>(), job,
                          EventType::kLateWorkerEvent,
                          LateWorkerEventPayload{original, U(p.at("worker_id")),
@@ -402,14 +465,16 @@ InternalEvent InternalFromInput(const Json& input) {
 
 Decision DecisionFor(const Json& vector, const Snapshot& before) {
   const auto& in = vector.at("input");
-  if (vector.at("matrix") == "command") {
+  const auto matrix = vector.at("matrix").get<std::string>();
+  if (matrix != "command" && matrix != "event")
+    throw std::invalid_argument("unknown matrix: " + matrix);
+  if (matrix == "command") {
     return DecideCommand(
-        before,
-        Command{in.at("schema_version").get<std::uint32_t>(),
-                in.at("command_type").get<std::string>() == "cancel" ? CommandType::kCancel
-                                                                     : CommandType::kTerminate,
-                U(in.at("job_id")), in.at("principal_subject").get<std::string>()});
+        before, Command{in.at("schema_version").get<std::uint32_t>(),
+                        ArtifactCommandType(in.at("command_type").get<std::string>()),
+                        U(in.at("job_id")), in.at("principal_subject").get<std::string>()});
   }
+  (void)ArtifactEventType(in.at("event_type").get<std::string>());
   if (in.at("event_type") == "late_worker_event") return DecideEvent(before, InternalFromInput(in));
   if (in.at("event_type") == "cancel_accepted" || in.at("event_type") == "terminate_accepted")
     return DecideEvent(before, InternalFromInput(in));
@@ -419,6 +484,21 @@ Decision DecisionFor(const Json& vector, const Snapshot& before) {
   return std::holds_alternative<InternalEvent>(normalized.value)
              ? DecideEvent(before, std::get<InternalEvent>(normalized.value))
              : Decision{std::get<Rejection>(normalized.value)};
+}
+
+ArtifactDisposition ActualDisposition(const Json& input, const Snapshot& before,
+                                      const Decision& decision, bool apply_command = false) {
+  if (std::holds_alternative<Rejection>(decision.value)) return ArtifactDisposition::kReject;
+  if (input.contains("command_type") && !apply_command) return ArtifactDisposition::kAudit;
+  const auto& proposal = std::get<PreEnvelopeProposal>(decision.value);
+  if (proposal.event_type == EventType::kLateWorkerEvent) return ArtifactDisposition::kLateAudit;
+  const auto applied = Apply(before, proposal);
+  if (applied.rejection)
+    throw std::logic_error("accepted proposal rejected while classifying disposition");
+  if (before.entity_exists != applied.snapshot.entity_exists ||
+      before.state != applied.snapshot.state)
+    return ArtifactDisposition::kTransition;
+  return ArtifactDisposition::kAudit;
 }
 
 bool SelectedStep(const Json& step, const Snapshot& current, std::string_view selector) {
@@ -464,7 +544,9 @@ int CheckExpected(const Json& vector, const Snapshot& before, const Decision& de
   };
   result |= Check(has_expected_fields(), id + " expected result shape");
   if (!has_expected_fields()) return result;
-  result |= Check((expected.at("disposition") == "reject") == reject, id + " disposition");
+  const auto expected_disposition = Disposition(expected.at("disposition").get<std::string>());
+  result |= Check(ActualDisposition(vector.at("input"), before, decision) == expected_disposition,
+                  id + " disposition");
   if (reject) {
     const auto actual_reason = ToString(std::get<Rejection>(decision.value).reason);
     const auto& expected_reason_value = expected.at("rejection_reason");
@@ -519,15 +601,7 @@ int CheckExpected(const Json& vector, const Snapshot& before, const Decision& de
 }
 }  // namespace
 
-int RunJobReducerVectorChecksImpl(const char* path, const char* selector) {
-  std::ifstream input(path);
-  if (!input) return Check(false, "normative vector artifact is readable");
-  Json vectors;
-  try {
-    input >> vectors;
-  } catch (const Json::exception& exception) {
-    return Check(false, "normative vectors parse: " + std::string(exception.what()));
-  }
+int RunJobReducerVectorJsonChecks(const Json& vectors, const char* selector) {
   int result = 0;
   result |= Check(vectors.at("contract_version") == 1, "contract version is consumed explicitly");
   const auto& cases = vectors.at("case_vectors");
@@ -544,7 +618,7 @@ int RunJobReducerVectorChecksImpl(const char* path, const char* selector) {
       "job_late_cleanup_vectors", "job_ordering_vectors",     "job_rejected_input_no_append"};
   const std::string_view selected_selector = selector == nullptr ? "" : selector;
   if (selected_selector == "all") {
-    for (const auto name : selectors) result |= RunJobReducerVectorChecksImpl(path, name.data());
+    for (const auto name : selectors) result |= RunJobReducerVectorJsonChecks(vectors, name.data());
     return result;
   }
   result |=
@@ -579,16 +653,18 @@ int RunJobReducerVectorChecksImpl(const char* path, const char* selector) {
     ++selected_cases;
     const auto& in = vector.at("input");
     const Snapshot before = SnapshotFrom(vector.at("initial_snapshot"), &in);
+    const auto matrix = vector.at("matrix").get<std::string>();
+    if (matrix != "command" && matrix != "event")
+      throw std::invalid_argument("unknown matrix: " + matrix);
     Decision decision{Rejection{1, RejectionReason::kInvalidEventPayload}};
-    if (vector.at("matrix") == "command") {
+    if (matrix == "command") {
       const Command command{in.at("schema_version").get<std::uint32_t>(),
-                            in.at("command_type").get<std::string>() == "cancel"
-                                ? CommandType::kCancel
-                                : CommandType::kTerminate,
+                            ArtifactCommandType(in.at("command_type").get<std::string>()),
                             U(in.at("job_id")), in.at("principal_subject").get<std::string>()};
       decision = DecideCommand(before, command);
     } else {
       const auto event_name = in.at("event_type").get<std::string>();
+      (void)ArtifactEventType(event_name);
       if (event_name == "cancel_accepted" || event_name == "terminate_accepted") {
         const auto type = event_name == "cancel_accepted" ? EventType::kCancelAccepted
                                                           : EventType::kTerminateAccepted;
@@ -642,12 +718,11 @@ int RunJobReducerVectorChecksImpl(const char* path, const char* selector) {
       Decision decision{Rejection{1, RejectionReason::kInvalidEventPayload}};
       if (in.contains("command_type")) {
         decision = DecideCommand(
-            current,
-            Command{in.at("schema_version").get<std::uint32_t>(),
-                    in.at("command_type").get<std::string>() == "cancel" ? CommandType::kCancel
-                                                                         : CommandType::kTerminate,
-                    U(in.at("job_id")), in.at("principal_subject").get<std::string>()});
-      } else if (in.at("event_type") == "late_worker_event") {
+            current, Command{in.at("schema_version").get<std::uint32_t>(),
+                             ArtifactCommandType(in.at("command_type").get<std::string>()),
+                             U(in.at("job_id")), in.at("principal_subject").get<std::string>()});
+      } else if ((void)ArtifactEventType(in.at("event_type").get<std::string>()),
+                 in.at("event_type") == "late_worker_event") {
         decision = DecideEvent(current, InternalFromInput(in));
       } else {
         const auto normalized = NormalizeCandidate(
@@ -671,7 +746,9 @@ int RunJobReducerVectorChecksImpl(const char* path, const char* selector) {
       if (selected_step) {
         ++selected_steps;
         const bool rejected = std::holds_alternative<Rejection>(decision.value);
-        result |= Check(rejected == (expected.at("disposition") == "reject"),
+        const auto expected_disposition =
+            Disposition(expected.at("disposition").get<std::string>());
+        result |= Check(ActualDisposition(in, current, decision, true) == expected_disposition,
                         sequence.at("vector_id").get<std::string>() + " step disposition");
         if (rejected) {
           const auto id = sequence.at("vector_id").get<std::string>();
@@ -785,17 +862,76 @@ int RunJobReducerVectorChecksImpl(const char* path, const char* selector) {
 
 int RunJobReducerVectorChecks(const char* path, const char* selector) {
   try {
-    return RunJobReducerVectorChecksImpl(path, selector);
-  } catch (const Json::exception& exception) {
+    std::ifstream input(path);
+    if (!input) return Check(false, "normative vector artifact is readable");
+    const Json vectors = Json::parse(input, nullptr, true, false);
+    return RunJobReducerVectorJsonChecks(vectors, selector);
+  } catch (const std::exception& exception) {
     return Check(false, "normative vectors artifact error: " + std::string(exception.what()));
   }
 }
 
-int RunJobReducerParityMutationChecksImpl(const char* path) {
-  std::ifstream input(path);
-  if (!input) return Check(false, "mutation vectors are readable");
-  Json vectors;
-  input >> vectors;
+int RunJobReducerVectorTextChecks(std::string_view text, const char* selector) {
+  try {
+    const Json vectors = Json::parse(text.begin(), text.end(), nullptr, true, false);
+    return RunJobReducerVectorJsonChecks(vectors, selector);
+  } catch (const std::exception& exception) {
+    return Check(false, "normative vectors text error: " + std::string(exception.what()));
+  }
+}
+
+int RunJobReducerParityMutationTextChecks(std::string_view text);
+
+int RunJobReducerTrailingArtifactChecks(const char* path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) return Check(false, "trailing-data source artifact is readable");
+  std::string contents{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+  contents += "\ntrailing-garbage";
+  int result = 0;
+  result |= Check(RunJobReducerVectorTextChecks(contents, "all") != 0,
+                  "normal runner rejects trailing artifact data");
+  result |= Check(RunJobReducerParityMutationTextChecks(contents) != 0,
+                  "mutation runner rejects trailing artifact data");
+  return result;
+}
+
+int RunJobReducerClosedEnumArtifactChecks() {
+  int result = 0;
+  Json snapshot = SnapshotJson(InitialSnapshot(Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"},
+                                               Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"}));
+  snapshot["state"] = "not_a_state";
+  bool state_rejected = false;
+  try {
+    (void)SnapshotFrom(snapshot);
+  } catch (const std::invalid_argument&) {
+    state_rejected = true;
+  }
+  result |= Check(state_rejected, "unknown snapshot state is rejected as an artifact error");
+  bool command_rejected = false;
+  try {
+    (void)ArtifactCommandType("not_a_command");
+  } catch (const std::invalid_argument&) {
+    command_rejected = true;
+  }
+  result |= Check(command_rejected, "unknown command type is rejected as an artifact error");
+  bool event_rejected = false;
+  try {
+    (void)ArtifactEventType("not_an_event");
+  } catch (const std::invalid_argument&) {
+    event_rejected = true;
+  }
+  result |= Check(event_rejected, "unknown event type is rejected as an artifact error");
+  bool disposition_rejected = false;
+  try {
+    (void)Disposition("not_a_disposition");
+  } catch (const std::invalid_argument&) {
+    disposition_rejected = true;
+  }
+  result |= Check(disposition_rejected, "unknown disposition is rejected as an artifact error");
+  return result;
+}
+
+int RunJobReducerParityMutationJsonChecks(const Json& vectors) {
   const auto& cases = vectors.at("case_vectors");
   const Json* accepted = nullptr;
   const Json* rejected = nullptr;
@@ -827,7 +963,7 @@ int RunJobReducerParityMutationChecksImpl(const char* path) {
            {{"disposition", "disposition"}, {"event payload", "payload"}}}) {
     Json mutated = *accepted;
     if (key == "disposition")
-      mutated["expected"]["disposition"] = "reject";
+      mutated["expected"]["disposition"] = "audit";
     else
       mutated["expected"]["journal_event"]["payload"]["worker_id"] =
           "423e4567-e89b-42d3-a456-426614174000";
@@ -872,9 +1008,21 @@ int RunJobReducerParityMutationChecksImpl(const char* path) {
 
 int RunJobReducerParityMutationChecks(const char* path) {
   try {
-    return RunJobReducerParityMutationChecksImpl(path);
-  } catch (const Json::exception& exception) {
+    std::ifstream input(path);
+    if (!input) return Check(false, "mutation vectors are readable");
+    const Json vectors = Json::parse(input, nullptr, true, false);
+    return RunJobReducerParityMutationJsonChecks(vectors);
+  } catch (const std::exception& exception) {
     return Check(false, "mutation vectors artifact error: " + std::string(exception.what()));
+  }
+}
+
+int RunJobReducerParityMutationTextChecks(std::string_view text) {
+  try {
+    const Json vectors = Json::parse(text.begin(), text.end(), nullptr, true, false);
+    return RunJobReducerParityMutationJsonChecks(vectors);
+  } catch (const std::exception& exception) {
+    return Check(false, "mutation vectors text error: " + std::string(exception.what()));
   }
 }
 }  // namespace sitometron::test

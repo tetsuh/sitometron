@@ -954,7 +954,8 @@ TimerIngressResult IngestTimer(const TimerState& timers, const TimerIngressInput
     const bool valid_phase =
         phase == TimeoutPhase::kPreparation || phase == TimeoutPhase::kExecution ||
         phase == TimeoutPhase::kCooperativeStop || phase == TimeoutPhase::kProcessExitConfirmation;
-    if (!valid_phase || input.arm_request->generation == UINT64_MAX)
+    if (!valid_phase || input.arm_request->generation == 0 ||
+        input.arm_request->generation == UINT64_MAX)
       return TimerIngressResult{
           TimerIngressKind::kFailClosed, std::nullopt, {Effect{EffectId::kSetReadinessFalse}}};
   }
