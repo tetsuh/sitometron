@@ -9,7 +9,8 @@
 
 namespace sitometron::test {
 int RunJobReducerVectorChecks(const char* path, const char* selector);
-}
+int RunJobReducerParityMutationChecks(const char* path);
+}  // namespace sitometron::test
 
 namespace {
 using namespace sitometron::core;
@@ -66,6 +67,36 @@ int Run() {
       std::holds_alternative<Rejection>(invalid_result.value) &&
           std::get<Rejection>(invalid_result.value).reason == RejectionReason::kInvalidEventPayload,
       "unknown payload is rejected before matrix selection");
+  const RawCandidateEvent raw_late{
+      1, job, "late_worker_event",
+      "{\"original_event_type\":\"worker_completed\",\"worker_id\":\"123e4567-e89b-42d3-a456-"
+      "426614174000\",\"event_sequence\":1}"};
+  const auto raw_late_result = NormalizeCandidate(absent, raw_late);
+  result |= Check(std::holds_alternative<Rejection>(raw_late_result.value) &&
+                      std::get<Rejection>(raw_late_result.value).reason ==
+                          RejectionReason::kInvalidEventPayload,
+                  "reducer-owned late event is rejected at raw ingress");
+  result |= Check(
+      std::holds_alternative<Rejection>(
+          DecideEvent(absent, InternalEvent{1, job, static_cast<EventType>(255), EmptyPayload{}})
+              .value),
+      "unknown event enum rejects without undefined behavior");
+  result |= Check(std::holds_alternative<Rejection>(
+                      DecideEvent(absent, InternalEvent{1, job, EventType::kProcessExitConfirmed,
+                                                        ProcessExitConfirmedPayload{
+                                                            CompletionMode::kNone, StableId{"op"}}})
+                          .value),
+                  "completion none rejects where disallowed");
+  const Snapshot forged_before = absent;
+  const ApplyResult forged =
+      Apply(forged_before, PreEnvelopeProposal{1, job, EventType::kWorkerRunning,
+                                               WorkerRunningPayload{Uuid{std::string(kWorker)}}});
+  result |= Check(
+      forged.rejection.has_value() && forged.snapshot.state == forged_before.state &&
+          forged.snapshot.resource_status == forged_before.resource_status &&
+          forged.snapshot.pending_worker_event_ack == forged_before.pending_worker_event_ack &&
+          forged.effects.empty(),
+      "forged proposal cannot bypass decision");
 
   TimerState timer;
   timer.preparation_armed = true;
@@ -78,9 +109,16 @@ int Run() {
                       TimerIngressKind::kDiscardWithoutCandidate,
                   "stale timer is discarded");
   timer.preparation_generation = std::numeric_limits<std::uint64_t>::max();
-  result |= Check(
-      IngestTimer(timer, job, TimeoutPhase::kPreparation, 9).kind == TimerIngressKind::kFailClosed,
-      "generation exhaustion fails closed");
+  result |=
+      Check(IngestTimer(
+                timer, TimerIngressInput{TimerArmRequest{job, TimeoutPhase::kPreparation,
+                                                         std::numeric_limits<std::uint64_t>::max()},
+                                         std::nullopt})
+                    .kind == TimerIngressKind::kFailClosed,
+            "new arm generation exhaustion fails closed");
+  result |= Check(IngestTimer(timer, TimerIngressInput{std::nullopt, std::nullopt}).kind ==
+                      TimerIngressKind::kDiscardWithoutCandidate,
+                  "null notification does not fail closed");
   (void)kWorker;
   return result;
 }
@@ -88,7 +126,9 @@ int Run() {
 
 int main(int argc, char** argv) {
   int result = Run();
-  if (argc > 1)
+  if (argc > 1) {
     result |= sitometron::test::RunJobReducerVectorChecks(argv[1], argc > 2 ? argv[2] : "all");
+    if (argc <= 2) result |= sitometron::test::RunJobReducerParityMutationChecks(argv[1]);
+  }
   return result;
 }

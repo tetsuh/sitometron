@@ -2,6 +2,7 @@
 #include <array>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
@@ -53,10 +54,20 @@ std::optional<TerminalOutcome> Outcome(const Json& j) {
   if (s == "terminated") return TerminalOutcome::kTerminated;
   return TerminalOutcome::kTimedOut;
 }
-Snapshot SnapshotFrom(const Json& j) {
-  if (j.is_null())
-    return InitialSnapshot(Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"},
-                           Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"});
+Snapshot SnapshotFrom(const Json& j, const Json* absent_input = nullptr) {
+  if (j.is_null()) {
+    Uuid job{"01890f3e-7b00-7abc-8abc-0123456789ab"};
+    Uuid session = job;
+    if (absent_input && absent_input->contains("job_id")) {
+      job = U(absent_input->at("job_id"));
+      if (absent_input->contains("payload") && absent_input->at("payload").is_object() &&
+          absent_input->at("payload").contains("session_id"))
+        session = U(absent_input->at("payload").at("session_id"));
+      else
+        session = job;
+    }
+    return InitialSnapshot(job, session);
+  }
   Snapshot s;
   s.entity_exists = true;
   s.schema_version = j.at("schema_version").get<std::uint32_t>();
@@ -267,6 +278,23 @@ std::optional<RejectionReason> RejectionOf(const NormalizedCandidate& d) {
   if (!std::holds_alternative<Rejection>(d.value)) return std::nullopt;
   return std::get<Rejection>(d.value).reason;
 }
+std::vector<std::string> EffectNames(const std::vector<Effect>& effects) {
+  std::vector<std::string> result;
+  for (const auto& effect : effects) result.emplace_back(ToString(effect.id));
+  return result;
+}
+Json ProposalJson(const PreEnvelopeProposal& proposal) {
+  return Json{{"schema_version", proposal.schema_version},
+              {"job_id", proposal.job_id.value},
+              {"event_type", ToString(proposal.event_type)},
+              {"payload", PayloadJson(proposal.event_type, proposal.payload)}};
+}
+Json CandidateJson(const TimeoutCandidate& candidate) {
+  return Json{{"schema_version", 1},
+              {"job_id", candidate.job_id.value},
+              {"event_type", "timeout_expired"},
+              {"payload", PayloadJson(EventType::kTimeoutExpired, candidate.payload)}};
+}
 bool IsEvent(const Json& input, std::initializer_list<const char*> event_types) {
   if (!input.contains("event_type")) return false;
   const auto event_type = input.at("event_type").get<std::string>();
@@ -318,6 +346,50 @@ bool SelectedCase(const Json& vector, std::string_view selector) {
   return false;
 }
 
+InternalEvent InternalFromInput(const Json& input) {
+  const auto type = input.at("event_type").get<std::string>();
+  const auto job = U(input.at("job_id"));
+  const auto& p = input.at("payload");
+  if (type == "late_worker_event") {
+    const auto original = p.at("original_event_type").get<std::string>() == "worker_completed"
+                              ? EventType::kWorkerCompleted
+                              : EventType::kWorkerFailed;
+    return InternalEvent{input.at("schema_version").get<std::uint32_t>(), job,
+                         EventType::kLateWorkerEvent,
+                         LateWorkerEventPayload{original, U(p.at("worker_id")),
+                                                p.at("event_sequence").get<std::uint64_t>()}};
+  }
+  if (type == "cancel_accepted" || type == "terminate_accepted") {
+    return InternalEvent{
+        input.at("schema_version").get<std::uint32_t>(), job,
+        type == "cancel_accepted" ? EventType::kCancelAccepted : EventType::kTerminateAccepted,
+        PrincipalPayload{p.at("principal_subject").get<std::string>()}};
+  }
+  return InternalEvent{input.at("schema_version").get<std::uint32_t>(), job,
+                       EventType::kTimeoutExpired, EmptyPayload{}};
+}
+
+Decision DecisionFor(const Json& vector, const Snapshot& before) {
+  const auto& in = vector.at("input");
+  if (vector.at("matrix") == "command") {
+    return DecideCommand(
+        before,
+        Command{in.at("schema_version").get<std::uint32_t>(),
+                in.at("command_type").get<std::string>() == "cancel" ? CommandType::kCancel
+                                                                     : CommandType::kTerminate,
+                U(in.at("job_id")), in.at("principal_subject").get<std::string>()});
+  }
+  if (in.at("event_type") == "late_worker_event") return DecideEvent(before, InternalFromInput(in));
+  if (in.at("event_type") == "cancel_accepted" || in.at("event_type") == "terminate_accepted")
+    return DecideEvent(before, InternalFromInput(in));
+  const auto normalized = NormalizeCandidate(
+      before, RawCandidateEvent{in.at("schema_version").get<std::uint32_t>(), U(in.at("job_id")),
+                                in.at("event_type").get<std::string>(), in.at("payload").dump()});
+  return std::holds_alternative<InternalEvent>(normalized.value)
+             ? DecideEvent(before, std::get<InternalEvent>(normalized.value))
+             : Decision{std::get<Rejection>(normalized.value)};
+}
+
 bool SelectedStep(const Json& step, std::string_view selector) {
   const auto& input = step.at("input");
   if (selector == "job_ordering_vectors") return true;
@@ -342,38 +414,51 @@ bool SelectedStep(const Json& step, std::string_view selector) {
 
 int CheckExpected(const Json& vector, const Snapshot& before, const Decision& decision) {
   const auto& expected = vector.at("expected");
+  const auto id = vector.at("vector_id").get<std::string>();
   int result = 0;
   const bool reject = std::holds_alternative<Rejection>(decision.value);
-  result |= Check((expected.at("disposition") == "reject") == reject,
-                  vector.at("vector_id").get<std::string>() + " disposition");
-  if (reject && !expected.at("rejection_reason").is_null())
-    result |= Check(ToString(std::get<Rejection>(decision.value).reason) ==
-                        expected.at("rejection_reason").get<std::string>(),
-                    vector.at("vector_id").get<std::string>() + " rejection reason");
-  if (!reject) {
-    const auto& proposal = std::get<PreEnvelopeProposal>(decision.value);
-    if (!expected.at("journal_event").is_null()) {
-      result |= Check(expected.at("journal_event").at("event_type").get<std::string>() ==
-                          std::string(ToString(proposal.event_type)),
-                      vector.at("vector_id").get<std::string>() + " pre-envelope event type");
-      result |= Check(expected.at("journal_event").at("payload") ==
-                          PayloadJson(proposal.event_type, proposal.payload),
-                      vector.at("vector_id").get<std::string>() + " pre-envelope payload");
+  result |= Check((expected.at("disposition") == "reject") == reject, id + " disposition");
+  if (reject) {
+    const auto actual_reason = ToString(std::get<Rejection>(decision.value).reason);
+    const auto expected_reason = expected.at("rejection_reason").is_null()
+                                     ? "null"
+                                     : expected.at("rejection_reason").get<std::string>();
+    result |= Check(actual_reason == expected_reason,
+                    id + " rejection reason (actual=" + std::string(actual_reason) +
+                        ", expected=" + expected_reason + ")");
+    result |=
+        Check(expected.at("journal_event").is_null() && expected.at("post_sync_effects").empty(),
+              id + " rejected input has no append/effects");
+    if (expected.at("next_snapshot").is_null()) {
+      result |= Check(!before.entity_exists, id + " rejected absent input has no snapshot update");
+    } else {
+      result |=
+          Check(SnapshotJson(before) == expected.at("next_snapshot"),
+                id + " rejected input preserves snapshot (actual=" + SnapshotJson(before).dump() +
+                    ", expected=" + expected.at("next_snapshot").dump() + ")");
     }
-    if (vector.at("matrix") == "command") return result;
-
-    const auto applied = Apply(before, proposal);
-    result |= Check(!applied.rejection.has_value(),
-                    vector.at("vector_id").get<std::string>() + " apply accepted");
-    if (!expected.at("next_snapshot").is_null()) {
-      const auto actual = SnapshotJson(applied.snapshot);
-      if (actual != expected.at("next_snapshot"))
-        std::cerr << "snapshot mismatch " << vector.at("vector_id") << " actual=" << actual.dump()
-                  << " expected=" << expected.at("next_snapshot").dump() << '\n';
-      result |= Check(actual == expected.at("next_snapshot"),
-                      vector.at("vector_id").get<std::string>() + " snapshot");
-    }
+    return result;
   }
+  const auto& proposal = std::get<PreEnvelopeProposal>(decision.value);
+  const auto& journal = expected.at("journal_event");
+  const Json expected_proposal{{"schema_version", journal.at("schema_version")},
+                               {"job_id", journal.at("job_id")},
+                               {"event_type", journal.at("event_type")},
+                               {"payload", journal.at("payload")}};
+  result |= Check(!journal.is_null() && ProposalJson(proposal) == expected_proposal,
+                  id + " complete pre-envelope proposal (actual=" + ProposalJson(proposal).dump() +
+                      ", expected=" + expected_proposal.dump() + ")");
+  if (vector.at("matrix") == "command") return result;
+  const auto applied = Apply(before, proposal);
+  result |= Check(!applied.rejection.has_value(), id + " apply accepted");
+  result |= Check(SnapshotJson(applied.snapshot) == expected.at("next_snapshot"),
+                  id + " snapshot (actual=" + SnapshotJson(applied.snapshot).dump() +
+                      ", expected=" + expected.at("next_snapshot").dump() + ")");
+  const auto actual_effects = EffectNames(applied.effects);
+  const auto expected_effects = expected.at("post_sync_effects").get<std::vector<std::string>>();
+  result |= Check(actual_effects == expected_effects,
+                  id + " ordered post-sync effects (actual=" + Json(actual_effects).dump() +
+                      ", expected=" + Json(expected_effects).dump() + ")");
   return result;
 }
 }  // namespace
@@ -402,22 +487,42 @@ int RunJobReducerVectorChecks(const char* path, const char* selector) {
       "job_first_cause_vectors",  "job_finalization_vectors", "job_timeout_vectors",
       "job_late_cleanup_vectors", "job_ordering_vectors",     "job_rejected_input_no_append"};
   const std::string_view selected_selector = selector == nullptr ? "" : selector;
+  if (selected_selector == "all") {
+    for (const auto name : selectors) result |= RunJobReducerVectorChecks(path, name.data());
+    return result;
+  }
   result |=
       Check(std::find(selectors.begin(), selectors.end(), selected_selector) != selectors.end(),
             "selector is addressable");
   if (selected_selector == "job_closed_state_set") {
-    std::set<std::string> states;
-    for (const auto& vector : cases)
-      if (!vector.at("initial_snapshot").is_null())
-        states.insert(vector.at("initial_snapshot").at("state"));
-    result |= Check(states.size() == 10, "all closed states are represented");
+    constexpr std::array<JobState, 10> states{
+        JobState::kAdmitted,   JobState::kPreparing, JobState::kRunning, JobState::kStopping,
+        JobState::kFinalizing, JobState::kSucceeded, JobState::kFailed,  JobState::kCancelled,
+        JobState::kTerminated, JobState::kTimedOut};
+    constexpr std::array<std::string_view, 10> names{
+        "admitted",  "preparing", "running",   "stopping",   "finalizing",
+        "succeeded", "failed",    "cancelled", "terminated", "timed_out"};
+    for (std::size_t i = 0; i < states.size(); ++i) {
+      result |= Check(ToString(states[i]) == names[i], "closed state spelling");
+      result |= Check(IsTerminalState(states[i]) == (i >= 5), "terminal classification");
+    }
+    result |= Check(ToString(static_cast<JobState>(255)) == "invalid" &&
+                        !IsTerminalState(static_cast<JobState>(255)),
+                    "unknown state is safe");
+    Snapshot unknown = InitialSnapshot(Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"},
+                                       Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"});
+    unknown.state = static_cast<JobState>(255);
+    result |= Check(
+        std::holds_alternative<Rejection>(
+            DecideCommand(unknown, Command{1, CommandType::kCancel, unknown.job_id, "x"}).value),
+        "unknown state rejects safely");
   }
   std::size_t selected_cases = 0;
   for (const auto& vector : cases) {
     if (!SelectedCase(vector, selected_selector)) continue;
     ++selected_cases;
-    const Snapshot before = SnapshotFrom(vector.at("initial_snapshot"));
     const auto& in = vector.at("input");
+    const Snapshot before = SnapshotFrom(vector.at("initial_snapshot"), &in);
     Decision decision{Rejection{1, RejectionReason::kInvalidEventPayload}};
     if (vector.at("matrix") == "command") {
       const Command command{in.at("schema_version").get<std::uint32_t>(),
@@ -435,6 +540,8 @@ int RunJobReducerVectorChecks(const char* path, const char* selector) {
             in.at("schema_version").get<std::uint32_t>(), U(in.at("job_id")), type,
             PrincipalPayload{in.at("payload").at("principal_subject").get<std::string>()}};
         decision = DecideEvent(before, internal);
+      } else if (event_name == "late_worker_event") {
+        decision = DecideEvent(before, InternalFromInput(in));
       } else {
         const RawCandidateEvent candidate{in.at("schema_version").get<std::uint32_t>(),
                                           U(in.at("job_id")), event_name, in.at("payload").dump()};
@@ -477,6 +584,8 @@ int RunJobReducerVectorChecks(const char* path, const char* selector) {
                     in.at("command_type").get<std::string>() == "cancel" ? CommandType::kCancel
                                                                          : CommandType::kTerminate,
                     U(in.at("job_id")), in.at("principal_subject").get<std::string>()});
+      } else if (in.at("event_type") == "late_worker_event") {
+        decision = DecideEvent(current, InternalFromInput(in));
       } else {
         const auto normalized = NormalizeCandidate(
             current,
@@ -492,24 +601,59 @@ int RunJobReducerVectorChecks(const char* path, const char* selector) {
         const bool rejected = std::holds_alternative<Rejection>(decision.value);
         result |= Check(rejected == (expected.at("disposition") == "reject"),
                         sequence.at("vector_id").get<std::string>() + " step disposition");
-      }
-      if (std::holds_alternative<PreEnvelopeProposal>(decision.value)) {
-        const auto applied = Apply(current, std::get<PreEnvelopeProposal>(decision.value));
-        if (selected_step)
-          result |= Check(!applied.rejection.has_value(),
-                          sequence.at("vector_id").get<std::string>() + " step applies");
-        current = applied.snapshot;
-        if (selected_step && expected.contains("next_snapshot")) {
-          const auto actual = SnapshotJson(current);
-          if (actual != expected.at("next_snapshot"))
-            std::cerr << "sequence snapshot mismatch " << sequence.at("vector_id")
-                      << " actual=" << actual.dump()
-                      << " expected=" << expected.at("next_snapshot").dump() << '\n';
-          result |= Check(actual == expected.at("next_snapshot"),
-                          sequence.at("vector_id").get<std::string>() + " step snapshot");
+        if (rejected) {
+          const auto id = sequence.at("vector_id").get<std::string>();
+          const auto actual_reason = ToString(std::get<Rejection>(decision.value).reason);
+          const auto expected_reason = expected.at("rejection_reason").get<std::string>();
+          result |= Check(actual_reason == expected_reason,
+                          id + " step rejection (actual=" + std::string(actual_reason) +
+                              ", expected=" + expected_reason + ")");
+          result |= Check(
+              expected.at("journal_event").is_null() && expected.at("post_sync_effects").empty(),
+              id + " rejected step no append/effects");
+          if (expected.contains("next_snapshot") && expected.at("next_snapshot").is_null()) {
+            result |=
+                Check(!current.entity_exists, id + " rejected absent step no snapshot update");
+          } else if (expected.contains("next_snapshot")) {
+            result |= Check(
+                SnapshotJson(current) == expected.at("next_snapshot"),
+                id + " rejected step preserves snapshot (actual=" + SnapshotJson(current).dump() +
+                    ", expected=" + expected.at("next_snapshot").dump() + ")");
+          }
         }
       }
+      if (std::holds_alternative<PreEnvelopeProposal>(decision.value)) {
+        const auto proposal = std::get<PreEnvelopeProposal>(decision.value);
+        const auto applied = Apply(current, proposal);
+        if (selected_step) {
+          const auto& journal = expected.at("journal_event");
+          const Json expected_proposal{{"schema_version", journal.at("schema_version")},
+                                       {"job_id", journal.at("job_id")},
+                                       {"event_type", journal.at("event_type")},
+                                       {"payload", journal.at("payload")}};
+          result |= Check(!journal.is_null() && ProposalJson(proposal) == expected_proposal,
+                          sequence.at("vector_id").get<std::string>() +
+                              " step proposal (actual=" + ProposalJson(proposal).dump() +
+                              ", expected=" + expected_proposal.dump() + ")");
+          result |= Check(!applied.rejection.has_value(),
+                          sequence.at("vector_id").get<std::string>() + " step applies");
+          const auto actual_effects = EffectNames(applied.effects);
+          const auto expected_effects =
+              expected.at("post_sync_effects").get<std::vector<std::string>>();
+          result |= Check(actual_effects == expected_effects,
+                          sequence.at("vector_id").get<std::string>() +
+                              " step effects (actual=" + Json(actual_effects).dump() +
+                              ", expected=" + Json(expected_effects).dump() + ")");
+        }
+        if (!applied.rejection) current = applied.snapshot;
+        if (selected_step && expected.contains("next_snapshot"))
+          result |= Check(SnapshotJson(current) == expected.at("next_snapshot"),
+                          sequence.at("vector_id").get<std::string>() + " step snapshot");
+      }
     }
+    if (selected_selector == "job_ordering_vectors")
+      result |= Check(SnapshotJson(current) == sequence.at("expected_final_snapshot"),
+                      sequence.at("vector_id").get<std::string>() + " final snapshot");
   }
   if (selected_selector == "job_ordering_vectors")
     result |= Check(sequences.size() == 14, "ordering selector consumes all sequences");
@@ -520,10 +664,19 @@ int RunJobReducerVectorChecks(const char* path, const char* selector) {
     state.execution_armed = !active.is_null();
     state.execution_generation = active.is_null() ? 0 : active.get<std::uint64_t>();
     const auto notification = vector.at("notification_generation");
-    const auto ingress = IngestTimer(
-        state,
-        TimerNotification{Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"}, TimeoutPhase::kExecution,
-                          notification.is_null() ? 0 : notification.get<std::uint64_t>()});
+    const auto arm = vector.at("arm_requested");
+    const std::optional<TimerArmRequest> arm_request =
+        arm.get<bool>()
+            ? std::optional<TimerArmRequest>{TimerArmRequest{
+                  Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"}, TimeoutPhase::kExecution,
+                  active.is_null() ? 0 : active.get<std::uint64_t>()}}
+            : std::nullopt;
+    const std::optional<TimerNotification> timer_notification =
+        notification.is_null() ? std::nullopt
+                               : std::optional<TimerNotification>{TimerNotification{
+                                     Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"},
+                                     TimeoutPhase::kExecution, notification.get<std::uint64_t>()}};
+    const auto ingress = IngestTimer(state, TimerIngressInput{arm_request, timer_notification});
     const auto& expected = vector.at("expected");
     const auto kind = ingress.kind == TimerIngressKind::kFailClosed ? "fail_closed"
                       : ingress.kind == TimerIngressKind::kDiscardWithoutCandidate
@@ -533,9 +686,88 @@ int RunJobReducerVectorChecks(const char* path, const char* selector) {
                     vector.at("vector_id").get<std::string>() + " timer disposition");
     result |= Check(ingress.candidate.has_value() == !expected.at("candidate_event").is_null(),
                     vector.at("vector_id").get<std::string>() + " timer candidate");
-    result |= Check(ingress.effects.size() == expected.at("post_sync_effects").size(),
-                    vector.at("vector_id").get<std::string>() + " timer effects");
+    if (ingress.candidate && !expected.at("candidate_event").is_null())
+      result |= Check(CandidateJson(*ingress.candidate) == expected.at("candidate_event"),
+                      vector.at("vector_id").get<std::string>() + " timer typed candidate");
+    result |= Check(EffectNames(ingress.effects) ==
+                        expected.at("post_sync_effects").get<std::vector<std::string>>(),
+                    vector.at("vector_id").get<std::string>() + " timer ordered effects");
   }
+  return result;
+}
+
+int RunJobReducerParityMutationChecks(const char* path) {
+  std::ifstream input(path);
+  if (!input) return Check(false, "mutation vectors are readable");
+  Json vectors;
+  input >> vectors;
+  const auto& cases = vectors.at("case_vectors");
+  const Json* accepted = nullptr;
+  const Json* rejected = nullptr;
+  const Json* timeout = nullptr;
+  const Json* exit_confirmation = nullptr;
+  for (const auto& vector : cases) {
+    if (vector.at("vector_id") == "event__running__worker_completed__success_candidate")
+      accepted = &vector;
+    if (vector.at("vector_id") == "command__absent__cancel__rejected") rejected = &vector;
+    if (!timeout && vector.at("input").contains("event_type") &&
+        vector.at("input").at("event_type") == "timeout_expired" &&
+        vector.at("expected").at("disposition") != "reject")
+      timeout = &vector;
+    if (vector.at("vector_id") == "event__finalizing__process_exit_confirmed__first_confirmation")
+      exit_confirmation = &vector;
+  }
+  int result = 0;
+  result |=
+      Check(accepted && rejected && timeout && exit_confirmation, "mutation probe source vectors");
+  if (!accepted || !rejected || !timeout || !exit_confirmation) return result;
+  const auto before = SnapshotFrom(accepted->at("initial_snapshot"));
+  const auto decision = DecisionFor(*accepted, before);
+  for (const auto& [label, key] : std::array<std::pair<std::string_view, std::string_view>, 2>{
+           {{"disposition", "disposition"}, {"event payload", "payload"}}}) {
+    Json mutated = *accepted;
+    if (key == "disposition")
+      mutated["expected"]["disposition"] = "reject";
+    else
+      mutated["expected"]["journal_event"]["payload"]["worker_id"] =
+          "423e4567-e89b-42d3-a456-426614174000";
+    result |= Check(CheckExpected(mutated, before, decision) != 0,
+                    std::string("mutation detected: ") + std::string(label));
+  }
+  Json identity = *accepted;
+  identity["expected"]["journal_event"]["job_id"] = "01890f3e-7b00-7abc-8abc-0123456789ac";
+  result |=
+      Check(CheckExpected(identity, before, decision) != 0, "mutation detected: identity binding");
+  Json snapshot = *accepted;
+  snapshot["expected"]["next_snapshot"]["pending_worker_event_ack"] = false;
+  result |= Check(CheckExpected(snapshot, before, decision) != 0,
+                  "mutation detected: pending-ACK update");
+  Json effects = *accepted;
+  effects["expected"]["post_sync_effects"] = {"ack_late_worker_event"};
+  result |= Check(CheckExpected(effects, before, decision) != 0,
+                  "mutation detected: ordered post-sync effect");
+
+  const auto timeout_before = SnapshotFrom(timeout->at("initial_snapshot"));
+  const auto timeout_decision = DecisionFor(*timeout, timeout_before);
+  Json generation = *timeout;
+  generation["expected"]["journal_event"]["payload"]["timer_generation"] =
+      std::numeric_limits<std::uint64_t>::max();
+  result |= Check(CheckExpected(generation, timeout_before, timeout_decision) != 0,
+                  "mutation detected: uint64 bound");
+  Json rejection = *rejected;
+  rejection["expected"]["rejection_reason"] = "invariant_violation";
+  const auto rejection_before =
+      SnapshotFrom(rejected->at("initial_snapshot"), &rejected->at("input"));
+  result |= Check(
+      CheckExpected(rejection, rejection_before, DecisionFor(*rejected, rejection_before)) != 0,
+      "mutation detected: rejection");
+
+  const auto exit_before = SnapshotFrom(exit_confirmation->at("initial_snapshot"));
+  const auto exit_decision = DecisionFor(*exit_confirmation, exit_before);
+  Json exit_snapshot = *exit_confirmation;
+  exit_snapshot["expected"]["next_snapshot"]["pending_worker_event_ack"] = true;
+  result |= Check(CheckExpected(exit_snapshot, exit_before, exit_decision) != 0,
+                  "mutation detected: snapshot update");
   return result;
 }
 }  // namespace sitometron::test

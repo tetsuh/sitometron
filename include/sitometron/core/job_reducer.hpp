@@ -263,7 +263,7 @@ struct TimeoutCandidate {
   TimeoutExpiredPayload payload;
 };
 struct TimerIngressInput {
-  TimerArmRequest arm_request;
+  std::optional<TimerArmRequest> arm_request;
   std::optional<TimerNotification> notification;
 };
 struct TimerIngressResult {
@@ -282,6 +282,7 @@ struct TimerIngressResult {
 [[nodiscard]] TimerIngressResult IngestTimer(const TimerState&, const Uuid&, TimeoutPhase,
                                              std::uint64_t generation);
 
+[[nodiscard]] bool IsTerminalState(JobState) noexcept;
 [[nodiscard]] std::string_view ToString(JobState) noexcept;
 [[nodiscard]] std::string_view ToString(EventType) noexcept;
 [[nodiscard]] std::string_view ToString(RejectionReason) noexcept;

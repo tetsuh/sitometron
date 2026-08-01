@@ -47,6 +47,38 @@ bool IsStable(std::string_view s) {
            c == '-';
   });
 }
+bool IsPrincipal(std::string_view s) { return !s.empty() && s.size() <= 256; }
+bool IsEventType(EventType type) {
+  return static_cast<int>(type) >= 0 && static_cast<int>(type) <= 18;
+}
+bool IsTimeoutPhase(TimeoutPhase phase) {
+  return static_cast<int>(phase) >= 0 && static_cast<int>(phase) <= 3;
+}
+bool IsTerminalOutcome(TerminalOutcome outcome) {
+  return static_cast<int>(outcome) >= 0 && static_cast<int>(outcome) <= 4;
+}
+bool IsCompletionMode(CompletionMode mode) {
+  return static_cast<int>(mode) >= 0 && static_cast<int>(mode) <= 3;
+}
+bool IsResourceStatus(ResourceStatus status) {
+  return static_cast<int>(status) >= 0 && static_cast<int>(status) <= 2;
+}
+bool IsLaunchStatus(LaunchStatus status) {
+  return static_cast<int>(status) >= 0 && static_cast<int>(status) <= 3;
+}
+bool IsProcessPresence(ProcessPresence presence) {
+  return static_cast<int>(presence) >= 0 && static_cast<int>(presence) <= 2;
+}
+bool IsRetentionStatus(RetentionStatus status) {
+  return static_cast<int>(status) >= 0 && static_cast<int>(status) <= 2;
+}
+bool IsFinalizationStatus(FinalizationStatus status) {
+  return static_cast<int>(status) >= 0 && static_cast<int>(status) <= 3;
+}
+bool IsCleanupStatus(CleanupStatus status) {
+  return static_cast<int>(status) >= 0 && static_cast<int>(status) <= 2;
+}
+
 bool IsDigest(std::string_view s) {
   if (s.size() != 64) return false;
   return std::all_of(s.begin(), s.end(),
@@ -262,20 +294,9 @@ NormalizedCandidate ParseCandidate(const Snapshot& snapshot, const RawCandidateE
                          CleanupStatusPayload{s == "completed" ? CleanupStatus::kCompleted
                                                                : CleanupStatus::kIncomplete});
       }
-      case EventType::kLateWorkerEvent: {
-        std::string worker;
-        std::uint64_t sequence = 0;
-        const auto original = p.contains("original_event_type")
-                                  ? ParseEvent(p.at("original_event_type").get<std::string>())
-                                  : std::nullopt;
-        if (!HasOnly(p, {"original_event_type", "worker_id", "event_sequence"}) || !original ||
-            (*original != EventType::kWorkerCompleted && *original != EventType::kWorkerFailed) ||
-            !StringField(p, "worker_id", &worker) || !IsUuid(worker, '4') ||
-            !UInt64Field(p, "event_sequence", &sequence))
-          break;
-        return Normalize(snapshot, *type,
-                         LateWorkerEventPayload{*original, Uuid{worker}, sequence});
-      }
+      case EventType::kLateWorkerEvent:
+        // late_worker_event is reducer-owned and can only be produced by DecideEvent.
+        break;
       default:
         break;
     }
@@ -285,20 +306,67 @@ NormalizedCandidate ParseCandidate(const Snapshot& snapshot, const RawCandidateE
   }
 }
 bool PayloadMatches(EventType type, const EventPayload& payload);
+bool ValidInternalPayload(EventType type, const EventPayload& payload, const Uuid& job_id) {
+  if (!IsEventType(type) || !PayloadMatches(type, payload)) return false;
+  if (const auto* p = std::get_if<JobCreatedPayload>(&payload))
+    return IsUuid(p->session_id.value, '7') && p->session_id == job_id;
+  if (const auto* p = std::get_if<ResourcesCommittedPayload>(&payload)) {
+    Json parsed;
+    return IsStable(p->allocation_id.value) && IsDigest(p->allocation_digest.value) &&
+           IsStable(p->schema_id.value) && p->schema_version != 0 &&
+           p->payload_utf8.size() <= 65536 && ParseJson(p->payload_utf8, &parsed) &&
+           Sha256(p->payload_utf8) == p->allocation_digest.value;
+  }
+  if (const auto* p = std::get_if<WorkerLaunchIntentPayload>(&payload))
+    return IsStable(p->operation_id.value) && IsStable(p->application_id.value) &&
+           !p->application_version.empty() && p->application_version.size() <= 128 &&
+           IsDigest(p->bundle_sha256.value) && IsStable(p->allocation_id.value) &&
+           IsDigest(p->allocation_digest.value) && IsUuid(p->worker_id.value, '4');
+  if (const auto* p = std::get_if<WorkerLaunchObservedPayload>(&payload))
+    return IsStable(p->operation_id.value);
+  if (const auto* p = std::get_if<WorkerRunningPayload>(&payload))
+    return IsUuid(p->worker_id.value, '4');
+  if (const auto* p = std::get_if<PrincipalPayload>(&payload))
+    return IsPrincipal(p->principal_subject);
+  if (const auto* p = std::get_if<TimeoutExpiredPayload>(&payload))
+    return IsTimeoutPhase(p->phase) && p->timer_generation != 0;
+  if (const auto* p = std::get_if<WorkerEventPayload>(&payload))
+    return IsUuid(p->worker_id.value, '4') && p->event_sequence != 0;
+  if (const auto* p = std::get_if<ProcessExitConfirmedPayload>(&payload))
+    return IsCompletionMode(p->completion_mode) && p->completion_mode != CompletionMode::kNone &&
+           IsStable(p->launch_operation_id.value);
+  if (const auto* p = std::get_if<SessionPayload>(&payload))
+    return IsUuid(p->session_id.value, '7');
+  if (const auto* p = std::get_if<TerminalOutcomePayload>(&payload))
+    return IsTerminalOutcome(p->outcome);
+  if (const auto* p = std::get_if<ResourcesReleasedPayload>(&payload))
+    return IsStable(p->allocation_id.value) && IsDigest(p->allocation_digest.value);
+  if (const auto* p = std::get_if<CleanupStatusPayload>(&payload))
+    return IsCleanupStatus(p->status) && p->status != CleanupStatus::kPending;
+  if (const auto* p = std::get_if<LateWorkerEventPayload>(&payload))
+    return (p->original_event_type == EventType::kWorkerCompleted ||
+            p->original_event_type == EventType::kWorkerFailed) &&
+           IsUuid(p->worker_id.value, '4') && p->event_sequence != 0;
+  return std::holds_alternative<EmptyPayload>(payload);
+}
 bool ValidSnapshot(const Snapshot& s) {
   if (s.schema_version != 1 || !IsUuid(s.job_id.value, '7') || !IsUuid(s.session_id.value, '7') ||
       s.job_id != s.session_id)
     return false;
   if (static_cast<int>(s.state) < 0 || static_cast<int>(s.state) > 9 ||
-      static_cast<int>(s.completion_mode) < 0 || static_cast<int>(s.completion_mode) > 3 ||
-      static_cast<int>(s.resource_status) < 0 || static_cast<int>(s.resource_status) > 2 ||
-      static_cast<int>(s.worker_launch_status) < 0 ||
-      static_cast<int>(s.worker_launch_status) > 3 || static_cast<int>(s.process_presence) < 0 ||
-      static_cast<int>(s.process_presence) > 2 ||
-      static_cast<int>(s.session_retention_status) < 0 ||
-      static_cast<int>(s.session_retention_status) > 2 ||
-      static_cast<int>(s.finalization_status) < 0 || static_cast<int>(s.finalization_status) > 3 ||
-      static_cast<int>(s.cleanup_status) < 0 || static_cast<int>(s.cleanup_status) > 2)
+      !IsCompletionMode(s.completion_mode) || !IsResourceStatus(s.resource_status) ||
+      !IsLaunchStatus(s.worker_launch_status) || !IsProcessPresence(s.process_presence) ||
+      !IsRetentionStatus(s.session_retention_status) ||
+      !IsFinalizationStatus(s.finalization_status) || !IsCleanupStatus(s.cleanup_status))
+    return false;
+  if ((s.latched_reason && (!IsTerminalOutcome(*s.latched_reason) ||
+                            *s.latched_reason == TerminalOutcome::kSucceeded)) ||
+      (s.allocation_id && !IsStable(s.allocation_id->value)) ||
+      (s.allocation_digest && !IsDigest(s.allocation_digest->value)) ||
+      (s.launch_operation_id && !IsStable(s.launch_operation_id->value)) ||
+      (s.worker_id && !IsUuid(s.worker_id->value, '4')) ||
+      (s.pending_worker_id && !IsUuid(s.pending_worker_id->value, '4')) ||
+      (s.pending_worker_event_sequence && *s.pending_worker_event_sequence == 0))
     return false;
   if (s.resource_status == ResourceStatus::kNone && (s.allocation_id || s.allocation_digest))
     return false;
@@ -333,42 +401,9 @@ bool ValidSnapshot(const Snapshot& s) {
 }
 Decision DecideInternal(const Snapshot& s, const InternalEvent& e) {
   if (!ValidSnapshot(s)) return Reject(RejectionReason::kInvariantViolation);
-  if (e.schema_version != 1 || e.job_id != s.job_id || !PayloadMatches(e.event_type, e.payload))
+  if (e.schema_version != 1 || e.job_id != s.job_id || !IsUuid(e.job_id.value, '7') ||
+      !ValidInternalPayload(e.event_type, e.payload, e.job_id))
     return Reject(RejectionReason::kInvalidEventPayload);
-  if (!IsUuid(e.job_id.value, '7')) return Reject(RejectionReason::kInvalidEventPayload);
-  if (const auto* created = std::get_if<JobCreatedPayload>(&e.payload)) {
-    if (!IsUuid(created->session_id.value, '7') || created->session_id != e.job_id)
-      return Reject(RejectionReason::kInvalidEventPayload);
-  } else if (const auto* worker_event = std::get_if<WorkerEventPayload>(&e.payload)) {
-    if (!IsUuid(worker_event->worker_id.value, '4') || worker_event->event_sequence == 0)
-      return Reject(RejectionReason::kInvalidEventPayload);
-  } else if (const auto* timeout = std::get_if<TimeoutExpiredPayload>(&e.payload)) {
-    if (timeout->timer_generation == 0 || static_cast<int>(timeout->phase) < 0 ||
-        static_cast<int>(timeout->phase) > 3)
-      return Reject(RejectionReason::kInvalidEventPayload);
-  } else if (const auto* process_exit = std::get_if<ProcessExitConfirmedPayload>(&e.payload)) {
-    if (!IsStable(process_exit->launch_operation_id.value) ||
-        static_cast<int>(process_exit->completion_mode) < 0 ||
-        static_cast<int>(process_exit->completion_mode) > 3)
-      return Reject(RejectionReason::kInvalidEventPayload);
-  } else if (const auto* worker_running = std::get_if<WorkerRunningPayload>(&e.payload)) {
-    if (!IsUuid(worker_running->worker_id.value, '4'))
-      return Reject(RejectionReason::kInvalidEventPayload);
-  } else if (const auto* session = std::get_if<SessionPayload>(&e.payload)) {
-    if (!IsUuid(session->session_id.value, '7'))
-      return Reject(RejectionReason::kInvalidEventPayload);
-  } else if (const auto* late_worker = std::get_if<LateWorkerEventPayload>(&e.payload)) {
-    if ((late_worker->original_event_type != EventType::kWorkerCompleted &&
-         late_worker->original_event_type != EventType::kWorkerFailed) ||
-        !IsUuid(late_worker->worker_id.value, '4') || late_worker->event_sequence == 0)
-      return Reject(RejectionReason::kInvalidEventPayload);
-  } else if (const auto* cleanup = std::get_if<CleanupStatusPayload>(&e.payload)) {
-    if (static_cast<int>(cleanup->status) < 0 || static_cast<int>(cleanup->status) > 2)
-      return Reject(RejectionReason::kInvalidEventPayload);
-  } else if (const auto* terminal = std::get_if<TerminalOutcomePayload>(&e.payload)) {
-    if (static_cast<int>(terminal->outcome) < 0 || static_cast<int>(terminal->outcome) > 4)
-      return Reject(RejectionReason::kInvalidEventPayload);
-  }
   const auto reject_state = [&] { return Reject(RejectionReason::kEventNotAllowedInState); };
   if (!s.entity_exists && e.event_type != EventType::kJobCreated)
     return Reject(RejectionReason::kJobNotFound);
@@ -644,9 +679,11 @@ Decision DecideEvent(const Snapshot& s, const InternalEvent& event) {
 ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
   if (!ValidSnapshot(before))
     return ApplyResult{before, {}, Rejection{1, RejectionReason::kInvariantViolation}};
-  if (proposal.schema_version != 1 || proposal.job_id != before.job_id ||
-      !PayloadMatches(proposal.event_type, proposal.payload))
-    return ApplyResult{before, {}, Rejection{1, RejectionReason::kInvalidEventPayload}};
+  const InternalEvent event{proposal.schema_version, proposal.job_id, proposal.event_type,
+                            proposal.payload};
+  const Decision decision = DecideInternal(before, event);
+  if (std::holds_alternative<Rejection>(decision.value))
+    return ApplyResult{before, {}, std::get<Rejection>(decision.value)};
   Snapshot s = before;
   std::vector<Effect> effects;
   const auto add_ack = [&] {
@@ -780,8 +817,9 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
         }
       } else if (p.phase == TimeoutPhase::kExecution && s.state == JobState::kStopping) {
         s.completion_mode = CompletionMode::kForced;
-        Add(&effects, EffectId::kRequestForcedStop);
+        Add(&effects, EffectId::kDisarmExecutionTimeout);
         Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
+        Add(&effects, EffectId::kRequestForcedStop);
         Add(&effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
       } else if (p.phase == TimeoutPhase::kExecution && s.state == JobState::kRunning) {
         s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kTimedOut);
@@ -820,25 +858,28 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
     case EventType::kProcessExitConfirmed: {
       const auto& p = std::get<ProcessExitConfirmedPayload>(proposal.payload);
       const auto old_state = s.state;
+      const bool first_confirmation = !s.process_exit_confirmed;
       s.process_exit_confirmed = true;
       s.process_presence = ProcessPresence::kAbsent;
       s.completion_mode = p.completion_mode;
-      const bool had_ack = s.pending_worker_event_ack;
       s.pending_worker_event_ack = false;
       s.pending_worker_id.reset();
       s.pending_worker_event_sequence.reset();
-      if (old_state == JobState::kPreparing || old_state == JobState::kRunning) {
-        Add(&effects, EffectId::kDisarmPreparationTimeout);
+      if (old_state == JobState::kPreparing) {
+        if (first_confirmation) Add(&effects, EffectId::kDisarmPreparationTimeout);
+        s.completion_mode = CompletionMode::kProcessAlreadyExited;
+        s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kFailed);
+        BeginFinalizing(&s);
+      } else if (old_state == JobState::kRunning) {
         s.completion_mode = CompletionMode::kProcessAlreadyExited;
         s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kFailed);
         BeginFinalizing(&s);
       }
-      if (old_state == JobState::kStopping || old_state == JobState::kFinalizing ||
-          IsTerminal(old_state)) {
+      if (first_confirmation && (old_state == JobState::kStopping ||
+                                 old_state == JobState::kFinalizing || IsTerminal(old_state))) {
         Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
         Add(&effects, EffectId::kDisarmProcessExitConfirmationTimeout);
       }
-      if (had_ack) Add(&effects, EffectId::kAckTerminalWorkerEventIfPending);
       if (old_state == JobState::kStopping) BeginFinalizing(&s);
       break;
     }
@@ -869,7 +910,7 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
                                   ? s.finalization_status
                                   : FinalizationStatus::kCompleted;
       Add(&effects, EffectId::kDisarmExecutionTimeout);
-      if (s.pending_worker_event_ack) Add(&effects, EffectId::kAckTerminalWorkerEventIfPending);
+      Add(&effects, EffectId::kAckTerminalWorkerEventIfPending);
       Add(&effects, EffectId::kPublishTerminalResult);
       Add(&effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
       break;
@@ -888,6 +929,10 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
 }
 
 TimerIngressResult IngestTimer(const TimerState& timers, const TimerIngressInput& input) {
+  if (input.arm_request && IsTimeoutPhase(input.arm_request->phase) &&
+      input.arm_request->generation == UINT64_MAX)
+    return TimerIngressResult{
+        TimerIngressKind::kFailClosed, std::nullopt, {Effect{EffectId::kSetReadinessFalse}}};
   return input.notification
              ? IngestTimer(timers, *input.notification)
              : TimerIngressResult{TimerIngressKind::kDiscardWithoutCandidate, std::nullopt, {}};
@@ -895,31 +940,20 @@ TimerIngressResult IngestTimer(const TimerState& timers, const TimerIngressInput
 TimerIngressResult IngestTimer(const TimerState& timers, const TimerNotification& notification) {
   const auto phase = notification.phase;
   const auto generation = notification.generation;
-  const bool exhausted =
-      (phase == TimeoutPhase::kPreparation && timers.preparation_generation == UINT64_MAX) ||
-      (phase == TimeoutPhase::kExecution && timers.execution_generation == UINT64_MAX) ||
-      (phase == TimeoutPhase::kCooperativeStop &&
-       timers.cooperative_stop_generation == UINT64_MAX) ||
-      (phase == TimeoutPhase::kProcessExitConfirmation &&
-       timers.process_exit_confirmation_generation == UINT64_MAX);
-  if (exhausted)
-    return TimerIngressResult{
-        TimerIngressKind::kFailClosed, std::nullopt, {Effect{EffectId::kSetReadinessFalse}}};
+  if (!IsTimeoutPhase(phase))
+    return TimerIngressResult{TimerIngressKind::kDiscardWithoutCandidate, std::nullopt, {}};
   bool armed = false;
   std::uint64_t active = 0;
   if (phase == TimeoutPhase::kPreparation) {
     armed = timers.preparation_armed;
     active = timers.preparation_generation;
-  }
-  if (phase == TimeoutPhase::kExecution) {
+  } else if (phase == TimeoutPhase::kExecution) {
     armed = timers.execution_armed;
     active = timers.execution_generation;
-  }
-  if (phase == TimeoutPhase::kCooperativeStop) {
+  } else if (phase == TimeoutPhase::kCooperativeStop) {
     armed = timers.cooperative_stop_armed;
     active = timers.cooperative_stop_generation;
-  }
-  if (phase == TimeoutPhase::kProcessExitConfirmation) {
+  } else {
     armed = timers.process_exit_confirmation_armed;
     active = timers.process_exit_confirmation_generation;
   }
@@ -934,6 +968,8 @@ TimerIngressResult IngestTimer(const TimerState& timers, const Uuid& job_id, Tim
                                std::uint64_t generation) {
   return IngestTimer(timers, TimerNotification{job_id, phase, generation});
 }
+
+bool IsTerminalState(JobState state) noexcept { return IsTerminal(state); }
 
 std::string_view ToString(JobState state) noexcept {
   constexpr std::array<std::string_view, 10> names{
