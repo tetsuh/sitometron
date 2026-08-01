@@ -531,9 +531,15 @@ Decision DecideInternal(const Snapshot& s, const InternalEvent& e) {
                    : Reject(RejectionReason::kTimeoutPhaseMismatch);
       }
       if (s.state == JobState::kFinalizing) {
-        return p->phase == TimeoutPhase::kExecution
-                   ? Accept(s, e.event_type, e.payload)
-                   : Reject(RejectionReason::kTimeoutPhaseMismatch);
+        if (p->phase != TimeoutPhase::kExecution)
+          return Reject(RejectionReason::kTimeoutPhaseMismatch);
+        if (!s.latched_reason && s.completion_candidate) return Accept(s, e.event_type, e.payload);
+        if (s.latched_reason == TerminalOutcome::kFailed ||
+            s.latched_reason == TerminalOutcome::kCancelled ||
+            s.latched_reason == TerminalOutcome::kTerminated ||
+            s.latched_reason == TerminalOutcome::kTimedOut)
+          return Accept(s, e.event_type, e.payload);
+        return Reject(RejectionReason::kTimeoutPhaseMismatch);
       }
       if (IsTerminal(s.state)) {
         if (p->phase != TimeoutPhase::kProcessExitConfirmation)
@@ -561,13 +567,12 @@ Decision DecideInternal(const Snapshot& s, const InternalEvent& e) {
                  : Reject(RejectionReason::kInvariantViolation);
     }
     case EventType::kProcessExitConfirmed: {
-      if (s.state == JobState::kAdmitted ||
-          (s.state == JobState::kPreparing && !s.launch_operation_id))
-        return reject_state();
+      if (s.state == JobState::kAdmitted) return reject_state();
       const auto* p = std::get_if<ProcessExitConfirmedPayload>(&e.payload);
       if (!p || !s.launch_operation_id || *s.launch_operation_id != p->launch_operation_id)
         return Reject(RejectionReason::kInvariantViolation);
-      if (s.process_exit_confirmed && s.completion_mode != p->completion_mode)
+      if ((s.state == JobState::kFinalizing || IsTerminal(s.state)) && s.process_exit_confirmed &&
+          s.completion_mode != p->completion_mode)
         return Reject(RejectionReason::kInvariantViolation);
       return Accept(s, e.event_type, e.payload);
     }
@@ -610,10 +615,20 @@ Decision DecideInternal(const Snapshot& s, const InternalEvent& e) {
       const auto* p = std::get_if<TerminalOutcomePayload>(&e.payload);
       if (!p || s.finalization_status == FinalizationStatus::kPending)
         return Reject(RejectionReason::kRequiredFinalizationFactMissing);
-      const auto expected = s.latched_reason.value_or(
-          s.completion_candidate ? TerminalOutcome::kSucceeded : TerminalOutcome::kFailed);
-      return p->outcome == expected ? Accept(s, e.event_type, e.payload)
-                                    : Reject(RejectionReason::kTerminalOutcomeMismatch);
+      const bool succeeded = p->outcome == TerminalOutcome::kSucceeded && !s.latched_reason &&
+                             s.completion_candidate &&
+                             s.finalization_status == FinalizationStatus::kCompleted;
+      const bool failed =
+          p->outcome == TerminalOutcome::kFailed && s.latched_reason == TerminalOutcome::kFailed;
+      const bool cancelled = p->outcome == TerminalOutcome::kCancelled &&
+                             s.latched_reason == TerminalOutcome::kCancelled;
+      const bool terminated = p->outcome == TerminalOutcome::kTerminated &&
+                              s.latched_reason == TerminalOutcome::kTerminated;
+      const bool timed_out = p->outcome == TerminalOutcome::kTimedOut &&
+                             s.latched_reason == TerminalOutcome::kTimedOut;
+      return succeeded || failed || cancelled || terminated || timed_out
+                 ? Accept(s, e.event_type, e.payload)
+                 : Reject(RejectionReason::kTerminalOutcomeMismatch);
     }
     case EventType::kResourcesReleased: {
       if (!IsTerminal(s.state)) return reject_state();
@@ -818,45 +833,58 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
     }
     case EventType::kWorkerRunning:
       s.state = JobState::kRunning;
+      s.process_presence = ProcessPresence::kPresent;
       Add(&effects, EffectId::kDisarmPreparationTimeout);
       Add(&effects, EffectId::kArmExecutionTimeout);
       break;
-    case EventType::kCancelAccepted:
-      s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kCancelled);
-      if (s.process_presence == ProcessPresence::kAbsent) {
+    case EventType::kCancelAccepted: {
+      const auto old_state = s.state;
+      s.latched_reason = TerminalOutcome::kCancelled;
+      if (old_state == JobState::kAdmitted ||
+          (old_state == JobState::kPreparing && s.process_presence == ProcessPresence::kAbsent)) {
         s.completion_mode = CompletionMode::kProcessAlreadyExited;
         s.process_exit_confirmed = true;
-        if (s.state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
+        if (old_state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
         BeginFinalizing(&s);
       } else {
         s.completion_mode = CompletionMode::kCooperative;
-        if (s.state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
+        if (old_state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
         s.state = JobState::kStopping;
         Add(&effects, EffectId::kRequestCooperativeStop);
         Add(&effects, EffectId::kArmCooperativeStopTimeout);
       }
       break;
-    case EventType::kTerminateAccepted:
-      if (!s.completion_candidate)
-        s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kTerminated);
-      if (s.process_presence == ProcessPresence::kAbsent) {
+    }
+    case EventType::kTerminateAccepted: {
+      if (s.state == JobState::kStopping || s.state == JobState::kFinalizing) {
+        s.completion_mode = CompletionMode::kForced;
+        Add(&effects, EffectId::kRequestForcedStop);
+        Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
+        Add(&effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
+        break;
+      }
+      const auto old_state = s.state;
+      s.latched_reason = TerminalOutcome::kTerminated;
+      if (old_state == JobState::kAdmitted ||
+          (old_state == JobState::kPreparing && s.process_presence == ProcessPresence::kAbsent)) {
         s.completion_mode = CompletionMode::kProcessAlreadyExited;
         s.process_exit_confirmed = true;
-        if (s.state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
+        if (old_state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
         BeginFinalizing(&s);
       } else {
         s.completion_mode = CompletionMode::kForced;
-        if (s.state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
-        if (s.state != JobState::kFinalizing) s.state = JobState::kStopping;
+        if (old_state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
+        s.state = JobState::kStopping;
         Add(&effects, EffectId::kRequestForcedStop);
         Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
         Add(&effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
       }
       break;
+    }
     case EventType::kTimeoutExpired: {
       const auto& p = std::get<TimeoutExpiredPayload>(proposal.payload);
       if (p.phase == TimeoutPhase::kPreparation) {
-        s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kTimedOut);
+        s.latched_reason = TerminalOutcome::kTimedOut;
         Add(&effects, EffectId::kDisarmPreparationTimeout);
         if (s.process_presence == ProcessPresence::kAbsent) {
           s.completion_mode = CompletionMode::kProcessAlreadyExited;
@@ -889,7 +917,7 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
         Add(&effects, EffectId::kRequestForcedStop);
         Add(&effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
       } else if (p.phase == TimeoutPhase::kExecution && s.state == JobState::kRunning) {
-        s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kTimedOut);
+        s.latched_reason = TerminalOutcome::kTimedOut;
         s.completion_mode = CompletionMode::kCooperative;
         s.state = JobState::kStopping;
         Add(&effects, EffectId::kRequestCooperativeStop);
@@ -908,16 +936,19 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
       break;
     }
     case EventType::kWorkerCompleted: {
-      s.completion_candidate = !s.latched_reason;
-      if (s.state == JobState::kStopping) Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
+      const auto old_state = s.state;
+      if (old_state == JobState::kRunning) s.completion_candidate = true;
+      if (old_state == JobState::kStopping) Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
       BeginFinalizing(&s);
       add_ack();
       break;
     }
     case EventType::kWorkerFailed: {
-      s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kFailed);
-      if (s.state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
-      if (s.state == JobState::kStopping) Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
+      const auto old_state = s.state;
+      if (old_state == JobState::kPreparing || old_state == JobState::kRunning)
+        s.latched_reason = TerminalOutcome::kFailed;
+      if (old_state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
+      if (old_state == JobState::kStopping) Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
       BeginFinalizing(&s);
       add_ack();
       break;
@@ -926,28 +957,37 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
       const auto& p = std::get<ProcessExitConfirmedPayload>(proposal.payload);
       const auto old_state = s.state;
       const bool first_confirmation = !s.process_exit_confirmed;
+      if (old_state == JobState::kFinalizing || IsTerminal(old_state)) {
+        if (!first_confirmation) break;
+        s.process_exit_confirmed = true;
+        s.process_presence = ProcessPresence::kAbsent;
+        s.completion_mode = p.completion_mode;
+        s.pending_worker_event_ack = false;
+        s.pending_worker_id.reset();
+        s.pending_worker_event_sequence.reset();
+        Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
+        Add(&effects, EffectId::kDisarmProcessExitConfirmationTimeout);
+        break;
+      }
       s.process_exit_confirmed = true;
       s.process_presence = ProcessPresence::kAbsent;
-      s.completion_mode = p.completion_mode;
       s.pending_worker_event_ack = false;
       s.pending_worker_id.reset();
       s.pending_worker_event_sequence.reset();
       if (old_state == JobState::kPreparing) {
-        if (first_confirmation) Add(&effects, EffectId::kDisarmPreparationTimeout);
         s.completion_mode = CompletionMode::kProcessAlreadyExited;
-        s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kFailed);
+        s.latched_reason = TerminalOutcome::kFailed;
+        Add(&effects, EffectId::kDisarmPreparationTimeout);
         BeginFinalizing(&s);
       } else if (old_state == JobState::kRunning) {
         s.completion_mode = CompletionMode::kProcessAlreadyExited;
-        s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kFailed);
+        s.latched_reason = TerminalOutcome::kFailed;
         BeginFinalizing(&s);
-      }
-      if (first_confirmation && (old_state == JobState::kStopping ||
-                                 old_state == JobState::kFinalizing || IsTerminal(old_state))) {
+      } else if (old_state == JobState::kStopping) {
         Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
         Add(&effects, EffectId::kDisarmProcessExitConfirmationTimeout);
+        BeginFinalizing(&s);
       }
-      if (old_state == JobState::kStopping) BeginFinalizing(&s);
       break;
     }
     case EventType::kSessionRetainRequested:
@@ -963,8 +1003,10 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
     case EventType::kFinalizationFailed:
       s.finalization_status = FinalizationStatus::kFailed;
       s.cleanup_status = CleanupStatus::kIncomplete;
-      s.completion_candidate = false;
-      s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kFailed);
+      if (!s.latched_reason && s.completion_candidate) {
+        s.latched_reason = TerminalOutcome::kFailed;
+        s.completion_candidate = false;
+      }
       break;
     case EventType::kTerminalOutcomeCommitted: {
       const auto& p = std::get<TerminalOutcomePayload>(proposal.payload);

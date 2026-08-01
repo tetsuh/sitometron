@@ -330,6 +330,13 @@ int Run() {
   finalizing.worker_id = Uuid{std::string(kWorker)};
   finalizing.process_presence = ProcessPresence::kPresent;
   finalizing.finalization_status = FinalizationStatus::kPending;
+  const auto late_worker_decision =
+      DecideEvent(finalizing, InternalEvent{1, job, EventType::kWorkerCompleted,
+                                            WorkerEventPayload{Uuid{std::string(kWorker)}, 1}});
+  result |= Check(std::holds_alternative<PreEnvelopeProposal>(late_worker_decision.value) &&
+                      std::get<PreEnvelopeProposal>(late_worker_decision.value).event_type ==
+                          EventType::kLateWorkerEvent,
+                  "finalizing snapshot normalizes a late Worker event");
   const auto normalized_forgery =
       Apply(finalizing, PreEnvelopeProposal{1, job, EventType::kWorkerCompleted,
                                             WorkerEventPayload{Uuid{std::string(kWorker)}, 1}});
@@ -340,6 +347,189 @@ int Run() {
                 !normalized_forgery.snapshot.pending_worker_event_ack &&
                 normalized_forgery.effects.empty(),
             "Apply rejects a proposal that requires late-event normalization");
+  const auto empty_finalizing_timeout =
+      DecideEvent(finalizing, InternalEvent{1, job, EventType::kTimeoutExpired,
+                                            TimeoutExpiredPayload{TimeoutPhase::kExecution, 1}});
+  result |= Check(std::holds_alternative<Rejection>(empty_finalizing_timeout.value) &&
+                      std::get<Rejection>(empty_finalizing_timeout.value).reason ==
+                          RejectionReason::kTimeoutPhaseMismatch,
+                  "finalizing execution timeout requires a reason or success candidate");
+  Snapshot finalization_complete = finalizing;
+  finalization_complete.finalization_status = FinalizationStatus::kCompleted;
+  finalization_complete.session_retention_status = RetentionStatus::kRetained;
+  const auto missing_terminal_reason = DecideEvent(
+      finalization_complete, InternalEvent{1, job, EventType::kTerminalOutcomeCommitted,
+                                           TerminalOutcomePayload{TerminalOutcome::kFailed}});
+  result |= Check(std::holds_alternative<Rejection>(missing_terminal_reason.value) &&
+                      std::get<Rejection>(missing_terminal_reason.value).reason ==
+                          RejectionReason::kTerminalOutcomeMismatch,
+                  "terminal failed outcome requires a matching latched reason");
+  Snapshot success_finalizing = finalizing;
+  success_finalizing.completion_candidate = true;
+  const auto terminate_finalizing =
+      DecideEvent(success_finalizing, InternalEvent{1, job, EventType::kTerminateAccepted,
+                                                    PrincipalPayload{"administrator@example"}});
+  result |= Check(std::holds_alternative<PreEnvelopeProposal>(terminate_finalizing.value),
+                  "administrator terminate is accepted for a live finalizing process");
+  if (std::holds_alternative<PreEnvelopeProposal>(terminate_finalizing.value)) {
+    const auto applied_terminate =
+        Apply(success_finalizing, std::get<PreEnvelopeProposal>(terminate_finalizing.value));
+    result |= Check(!applied_terminate.rejection &&
+                        applied_terminate.snapshot.state == JobState::kFinalizing &&
+                        applied_terminate.snapshot.completion_candidate &&
+                        !applied_terminate.snapshot.latched_reason &&
+                        applied_terminate.snapshot.completion_mode == CompletionMode::kForced,
+                    "finalizing terminate preserves the success candidate and reason");
+  }
+  const auto missing_launch_exit = DecideEvent(
+      absent, InternalEvent{1, job, EventType::kProcessExitConfirmed,
+                            ProcessExitConfirmedPayload{CompletionMode::kProcessAlreadyExited,
+                                                        StableId{"launch-op-1"}}});
+  result |= Check(std::holds_alternative<Rejection>(missing_launch_exit.value) &&
+                      std::get<Rejection>(missing_launch_exit.value).reason ==
+                          RejectionReason::kInvariantViolation,
+                  "preparing process exit without launch binding is an identity mismatch");
+
+  Snapshot observed = absent;
+  observed.worker_launch_status = LaunchStatus::kObserved;
+  observed.launch_operation_id = StableId{"launch-op-1"};
+  observed.worker_id = Uuid{std::string(kWorker)};
+  observed.process_presence = ProcessPresence::kUnknown;
+  const auto running_decision =
+      DecideEvent(observed, InternalEvent{1, job, EventType::kWorkerRunning,
+                                          WorkerRunningPayload{Uuid{std::string(kWorker)}}});
+  result |= Check(std::holds_alternative<PreEnvelopeProposal>(running_decision.value),
+                  "observed Worker may enter running");
+  Snapshot running = observed;
+  if (std::holds_alternative<PreEnvelopeProposal>(running_decision.value)) {
+    const auto applied_running =
+        Apply(observed, std::get<PreEnvelopeProposal>(running_decision.value));
+    result |=
+        Check(!applied_running.rejection && applied_running.snapshot.state == JobState::kRunning &&
+                  applied_running.snapshot.process_presence == ProcessPresence::kPresent,
+              "worker_running establishes process presence");
+    running = applied_running.snapshot;
+  }
+  Snapshot preparing_with_reason = absent;
+  preparing_with_reason.latched_reason = TerminalOutcome::kCancelled;
+  const auto preparation_timeout = DecideEvent(
+      preparing_with_reason, InternalEvent{1, job, EventType::kTimeoutExpired,
+                                           TimeoutExpiredPayload{TimeoutPhase::kPreparation, 2}});
+  result |= Check(std::holds_alternative<PreEnvelopeProposal>(preparation_timeout.value),
+                  "preparing timeout remains matrix-valid with a prior reason fact");
+  if (std::holds_alternative<PreEnvelopeProposal>(preparation_timeout.value)) {
+    const auto applied_timeout =
+        Apply(preparing_with_reason, std::get<PreEnvelopeProposal>(preparation_timeout.value));
+    result |= Check(!applied_timeout.rejection &&
+                        applied_timeout.snapshot.latched_reason == TerminalOutcome::kTimedOut,
+                    "first-cause transition applies the contract value unconditionally");
+  }
+  Snapshot running_without_presence = running;
+  running_without_presence.process_presence = ProcessPresence::kAbsent;
+  running_without_presence.latched_reason = TerminalOutcome::kFailed;
+  const auto running_cancel = DecideEvent(
+      running_without_presence,
+      InternalEvent{1, job, EventType::kCancelAccepted, PrincipalPayload{"operator@example"}});
+  result |= Check(std::holds_alternative<PreEnvelopeProposal>(running_cancel.value),
+                  "running cancel is unconditional in the matrix");
+  Snapshot stopping = running_without_presence;
+  if (std::holds_alternative<PreEnvelopeProposal>(running_cancel.value)) {
+    const auto applied_cancel =
+        Apply(running_without_presence, std::get<PreEnvelopeProposal>(running_cancel.value));
+    result |=
+        Check(!applied_cancel.rejection && applied_cancel.snapshot.state == JobState::kStopping &&
+                  applied_cancel.snapshot.latched_reason == TerminalOutcome::kCancelled &&
+                  applied_cancel.snapshot.completion_mode == CompletionMode::kCooperative,
+              "running cancel does not branch on process presence");
+    stopping = applied_cancel.snapshot;
+  }
+  Snapshot running_with_reason = running;
+  running_with_reason.latched_reason = TerminalOutcome::kCancelled;
+  const auto completed_with_reason = DecideEvent(
+      running_with_reason, InternalEvent{1, job, EventType::kWorkerCompleted,
+                                         WorkerEventPayload{Uuid{std::string(kWorker)}, 7}});
+  result |= Check(std::holds_alternative<PreEnvelopeProposal>(completed_with_reason.value),
+                  "matching running Worker completion is accepted");
+  if (std::holds_alternative<PreEnvelopeProposal>(completed_with_reason.value)) {
+    const auto applied_completion =
+        Apply(running_with_reason, std::get<PreEnvelopeProposal>(completed_with_reason.value));
+    result |=
+        Check(!applied_completion.rejection && applied_completion.snapshot.completion_candidate &&
+                  applied_completion.snapshot.latched_reason == TerminalOutcome::kCancelled,
+              "running Worker completion sets the candidate without replacing the reason");
+  }
+  stopping.completion_candidate = true;
+  const auto stopping_failed =
+      DecideEvent(stopping, InternalEvent{1, job, EventType::kWorkerFailed,
+                                          WorkerEventPayload{Uuid{std::string(kWorker)}, 8}});
+  result |= Check(std::holds_alternative<PreEnvelopeProposal>(stopping_failed.value),
+                  "matching stopping Worker failure is accepted");
+  if (std::holds_alternative<PreEnvelopeProposal>(stopping_failed.value)) {
+    const auto applied_failure =
+        Apply(stopping, std::get<PreEnvelopeProposal>(stopping_failed.value));
+    result |= Check(!applied_failure.rejection && applied_failure.snapshot.completion_candidate &&
+                        applied_failure.snapshot.latched_reason == TerminalOutcome::kCancelled,
+                    "stopping Worker failure preserves reason and candidate facts");
+  }
+  Snapshot reasoned_finalizing = finalizing;
+  reasoned_finalizing.latched_reason = TerminalOutcome::kCancelled;
+  reasoned_finalizing.completion_candidate = true;
+  const auto finalization_failure = DecideEvent(
+      reasoned_finalizing, InternalEvent{1, job, EventType::kFinalizationFailed, EmptyPayload{}});
+  result |= Check(std::holds_alternative<PreEnvelopeProposal>(finalization_failure.value),
+                  "finalization failure preserves an existing reason");
+  if (std::holds_alternative<PreEnvelopeProposal>(finalization_failure.value)) {
+    const auto applied_finalization_failure =
+        Apply(reasoned_finalizing, std::get<PreEnvelopeProposal>(finalization_failure.value));
+    result |= Check(
+        !applied_finalization_failure.rejection &&
+            applied_finalization_failure.snapshot.completion_candidate &&
+            applied_finalization_failure.snapshot.latched_reason == TerminalOutcome::kCancelled,
+        "finalization failure preserves candidate and reason in preserve_reason case");
+  }
+  Snapshot duplicate_preparing_exit = observed;
+  duplicate_preparing_exit.process_presence = ProcessPresence::kAbsent;
+  duplicate_preparing_exit.process_exit_confirmed = true;
+  duplicate_preparing_exit.completion_mode = CompletionMode::kForced;
+  const auto repeated_preparing_exit = DecideEvent(
+      duplicate_preparing_exit,
+      InternalEvent{
+          1, job, EventType::kProcessExitConfirmed,
+          ProcessExitConfirmedPayload{CompletionMode::kCooperative, StableId{"launch-op-1"}}});
+  result |= Check(std::holds_alternative<PreEnvelopeProposal>(repeated_preparing_exit.value),
+                  "preparing process exit predicate depends only on launch identity");
+  if (std::holds_alternative<PreEnvelopeProposal>(repeated_preparing_exit.value)) {
+    const auto applied_exit = Apply(duplicate_preparing_exit,
+                                    std::get<PreEnvelopeProposal>(repeated_preparing_exit.value));
+    result |=
+        Check(!applied_exit.rejection &&
+                  applied_exit.snapshot.completion_mode == CompletionMode::kProcessAlreadyExited &&
+                  applied_exit.snapshot.latched_reason == TerminalOutcome::kFailed &&
+                  applied_exit.effects.size() == 1 &&
+                  applied_exit.effects.front().id == EffectId::kDisarmPreparationTimeout,
+              "preparing process exit reapplies unconditional updates and effects");
+  }
+  Snapshot duplicate_stopping_exit = stopping;
+  duplicate_stopping_exit.process_exit_confirmed = true;
+  duplicate_stopping_exit.process_presence = ProcessPresence::kAbsent;
+  duplicate_stopping_exit.completion_mode = CompletionMode::kCooperative;
+  const auto repeated_stopping_exit = DecideEvent(
+      duplicate_stopping_exit,
+      InternalEvent{1, job, EventType::kProcessExitConfirmed,
+                    ProcessExitConfirmedPayload{CompletionMode::kForced, StableId{"launch-op-1"}}});
+  result |= Check(std::holds_alternative<PreEnvelopeProposal>(repeated_stopping_exit.value),
+                  "stopping process exit predicate depends only on launch identity");
+  if (std::holds_alternative<PreEnvelopeProposal>(repeated_stopping_exit.value)) {
+    const auto applied_exit =
+        Apply(duplicate_stopping_exit, std::get<PreEnvelopeProposal>(repeated_stopping_exit.value));
+    result |=
+        Check(!applied_exit.rejection &&
+                  applied_exit.snapshot.completion_mode == CompletionMode::kCooperative &&
+                  applied_exit.effects.size() == 2 &&
+                  applied_exit.effects[0].id == EffectId::kDisarmCooperativeStopTimeout &&
+                  applied_exit.effects[1].id == EffectId::kDisarmProcessExitConfirmationTimeout,
+              "stopping process exit preserves mode and reapplies ordered disarm effects");
+  }
 
   TimerState timer;
   timer.job_id = job;
