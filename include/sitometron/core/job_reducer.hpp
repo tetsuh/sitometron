@@ -33,11 +33,18 @@ enum class JobState {
   kFailed,
   kCancelled,
   kTerminated,
-  kTimedOut
+  kTimedOut,
+  kInvalid
 };
-enum class CommandType { kCancel, kTerminate };
-enum class TimeoutPhase { kPreparation, kExecution, kCooperativeStop, kProcessExitConfirmation };
-enum class TerminalOutcome { kSucceeded, kFailed, kCancelled, kTerminated, kTimedOut };
+enum class CommandType { kCancel, kTerminate, kInvalid };
+enum class TimeoutPhase {
+  kPreparation,
+  kExecution,
+  kCooperativeStop,
+  kProcessExitConfirmation,
+  kInvalid
+};
+enum class TerminalOutcome { kSucceeded, kFailed, kCancelled, kTerminated, kTimedOut, kInvalid };
 enum class RejectionReason {
   kJobNotFound,
   kJobAlreadyExists,
@@ -48,9 +55,10 @@ enum class RejectionReason {
   kTerminalOutcomeMismatch,
   kRequiredFinalizationFactMissing,
   kInvalidEventPayload,
-  kInvariantViolation
+  kInvariantViolation,
+  kInvalid
 };
-enum class Disposition { kTransition, kAudit, kLateAudit, kReject };
+enum class Disposition { kTransition, kAudit, kLateAudit, kReject, kInvalid };
 enum class EffectId {
   kArmPreparationTimeout,
   kDisarmPreparationTimeout,
@@ -68,16 +76,17 @@ enum class EffectId {
   kSetReadinessFalse,
   kArmCooperativeStopTimeout,
   kDisarmCooperativeStopTimeout,
-  kDisarmProcessExitConfirmationTimeout
+  kDisarmProcessExitConfirmationTimeout,
+  kInvalid
 };
 
-enum class ResourceStatus { kNone, kCommitted, kReleased };
-enum class LaunchStatus { kNotStarted, kIntentRecorded, kObserved, kFailed };
-enum class ProcessPresence { kAbsent, kUnknown, kPresent };
-enum class RetentionStatus { kNotStarted, kRequested, kRetained };
-enum class FinalizationStatus { kNotStarted, kPending, kCompleted, kFailed };
-enum class CleanupStatus { kPending, kCompleted, kIncomplete };
-enum class CompletionMode { kNone, kCooperative, kForced, kProcessAlreadyExited };
+enum class ResourceStatus { kNone, kCommitted, kReleased, kInvalid };
+enum class LaunchStatus { kNotStarted, kIntentRecorded, kObserved, kFailed, kInvalid };
+enum class ProcessPresence { kAbsent, kUnknown, kPresent, kInvalid };
+enum class RetentionStatus { kNotStarted, kRequested, kRetained, kInvalid };
+enum class FinalizationStatus { kNotStarted, kPending, kCompleted, kFailed, kInvalid };
+enum class CleanupStatus { kPending, kCompleted, kIncomplete, kInvalid };
+enum class CompletionMode { kNone, kCooperative, kForced, kProcessAlreadyExited, kInvalid };
 
 enum class EventType {
   kJobCreated,
@@ -98,7 +107,8 @@ enum class EventType {
   kTerminalOutcomeCommitted,
   kResourcesReleased,
   kCleanupStatusRecorded,
-  kLateWorkerEvent
+  kLateWorkerEvent,
+  kInvalid
 };
 
 struct EmptyPayload {};
@@ -132,7 +142,7 @@ struct PrincipalPayload {
   std::string principal_subject;
 };
 struct TimeoutExpiredPayload {
-  TimeoutPhase phase;
+  TimeoutPhase phase = TimeoutPhase::kInvalid;
   std::uint64_t timer_generation = 0;
 };
 struct WorkerEventPayload {
@@ -140,24 +150,24 @@ struct WorkerEventPayload {
   std::uint64_t event_sequence = 0;
 };
 struct ProcessExitConfirmedPayload {
-  CompletionMode completion_mode;
+  CompletionMode completion_mode = CompletionMode::kInvalid;
   StableId launch_operation_id;
 };
 struct SessionPayload {
   Uuid session_id;
 };
 struct TerminalOutcomePayload {
-  TerminalOutcome outcome;
+  TerminalOutcome outcome = TerminalOutcome::kInvalid;
 };
 struct ResourcesReleasedPayload {
   StableId allocation_id;
   Digest allocation_digest;
 };
 struct CleanupStatusPayload {
-  CleanupStatus status;
+  CleanupStatus status = CleanupStatus::kInvalid;
 };
 struct LateWorkerEventPayload {
-  EventType original_event_type;
+  EventType original_event_type = EventType::kInvalid;
   Uuid worker_id;
   std::uint64_t event_sequence = 0;
 };
@@ -174,21 +184,21 @@ struct Snapshot {
   Uuid job_id;
   Uuid session_id;
   bool entity_exists = false;
-  JobState state = JobState::kAdmitted;
+  JobState state = JobState::kInvalid;
   std::optional<TerminalOutcome> latched_reason;
   bool completion_candidate = false;
-  CompletionMode completion_mode = CompletionMode::kNone;
-  ResourceStatus resource_status = ResourceStatus::kNone;
+  CompletionMode completion_mode = CompletionMode::kInvalid;
+  ResourceStatus resource_status = ResourceStatus::kInvalid;
   std::optional<StableId> allocation_id;
   std::optional<Digest> allocation_digest;
-  LaunchStatus worker_launch_status = LaunchStatus::kNotStarted;
+  LaunchStatus worker_launch_status = LaunchStatus::kInvalid;
   std::optional<StableId> launch_operation_id;
   std::optional<Uuid> worker_id;
-  ProcessPresence process_presence = ProcessPresence::kAbsent;
+  ProcessPresence process_presence = ProcessPresence::kInvalid;
   bool process_exit_confirmed = false;
-  RetentionStatus session_retention_status = RetentionStatus::kNotStarted;
-  FinalizationStatus finalization_status = FinalizationStatus::kNotStarted;
-  CleanupStatus cleanup_status = CleanupStatus::kPending;
+  RetentionStatus session_retention_status = RetentionStatus::kInvalid;
+  FinalizationStatus finalization_status = FinalizationStatus::kInvalid;
+  CleanupStatus cleanup_status = CleanupStatus::kInvalid;
   bool pending_worker_event_ack = false;
   std::optional<Uuid> pending_worker_id;
   std::optional<std::uint64_t> pending_worker_event_sequence;
@@ -196,7 +206,7 @@ struct Snapshot {
 
 struct Command {
   std::uint32_t schema_version = 1;
-  CommandType command_type;
+  CommandType command_type = CommandType::kInvalid;
   Uuid job_id;
   std::string principal_subject;
 };
@@ -209,18 +219,18 @@ struct RawCandidateEvent {
 struct InternalEvent {
   std::uint32_t schema_version = 1;
   Uuid job_id;
-  EventType event_type;
+  EventType event_type = EventType::kInvalid;
   EventPayload payload;
 };
 struct PreEnvelopeProposal {
   std::uint32_t schema_version = 1;
   Uuid job_id;
-  EventType event_type;
+  EventType event_type = EventType::kInvalid;
   EventPayload payload;
 };
 struct Rejection {
   std::uint32_t schema_version = 1;
-  RejectionReason reason;
+  RejectionReason reason = RejectionReason::kInvalid;
 };
 struct Decision {
   std::variant<Rejection, PreEnvelopeProposal> value;
@@ -229,7 +239,7 @@ struct NormalizedCandidate {
   std::variant<Rejection, InternalEvent> value;
 };
 struct Effect {
-  EffectId id;
+  EffectId id = EffectId::kInvalid;
 };
 struct ApplyResult {
   Snapshot snapshot;
@@ -238,16 +248,21 @@ struct ApplyResult {
 };
 struct TimerArmRequest {
   Uuid job_id;
-  TimeoutPhase phase;
+  TimeoutPhase phase = TimeoutPhase::kInvalid;
   std::uint64_t generation = 0;
 };
 struct TimerNotification {
   Uuid job_id;
-  TimeoutPhase phase;
+  TimeoutPhase phase = TimeoutPhase::kInvalid;
   std::uint64_t generation = 0;
 };
 
-enum class TimerIngressKind { kFailClosed, kDiscardWithoutCandidate, kEmitCandidateEvent };
+enum class TimerIngressKind {
+  kFailClosed,
+  kDiscardWithoutCandidate,
+  kEmitCandidateEvent,
+  kInvalid
+};
 struct TimerState {
   bool preparation_armed = false;
   bool execution_armed = false;
@@ -267,7 +282,7 @@ struct TimerIngressInput {
   std::optional<TimerNotification> notification;
 };
 struct TimerIngressResult {
-  TimerIngressKind kind;
+  TimerIngressKind kind = TimerIngressKind::kInvalid;
   std::optional<TimeoutCandidate> candidate;
   std::vector<Effect> effects;
 };

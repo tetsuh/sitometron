@@ -48,6 +48,9 @@ bool IsStable(std::string_view s) {
   });
 }
 bool IsPrincipal(std::string_view s) { return !s.empty() && s.size() <= 256; }
+bool IsCommandType(CommandType type) {
+  return static_cast<int>(type) >= 0 && static_cast<int>(type) <= 1;
+}
 bool IsEventType(EventType type) {
   return static_cast<int>(type) >= 0 && static_cast<int>(type) <= 18;
 }
@@ -104,13 +107,16 @@ bool UInt64Field(const Json& o, const char* key, std::uint64_t* value) {
   return *value != 0;
 }
 bool ParseJson(std::string_view text, Json* result) {
-  if (text.size() > 65536 || std::find(text.begin(), text.end(), '\0') != text.end()) return false;
+  if (std::find(text.begin(), text.end(), '\0') != text.end()) return false;
   try {
-    *result = Json::parse(text.begin(), text.end(), nullptr, true, true);
+    *result = Json::parse(text.begin(), text.end(), nullptr, true, false);
     return true;
   } catch (const Json::exception&) {
     return false;
   }
+}
+bool ParseResolvedAllocationJson(std::string_view text, Json* result) {
+  return text.size() <= 65536 && ParseJson(text, result);
 }
 std::string Sha256(std::string_view bytes) {
   boost::hash2::sha2_256 hasher;
@@ -191,13 +197,14 @@ NormalizedCandidate ParseCandidate(const Snapshot& snapshot, const RawCandidateE
             !p.contains("resolved_allocation") || !p.at("resolved_allocation").is_object())
           break;
         const auto& a = p.at("resolved_allocation");
+        Json resolved_payload;
         if (!HasOnly(a, {"schema_id", "schema_version", "payload_utf8"}) ||
             !StringField(a, "schema_id", &schema_id) || !IsStable(schema_id) ||
             !a.contains("schema_version") || !a.contains("payload_utf8") ||
             !a.at("schema_version").is_number_unsigned() ||
             (schema_version = a.at("schema_version").get<std::uint64_t>()) == 0 ||
             schema_version > UINT32_MAX || !StringField(a, "payload_utf8", &s) ||
-            s.size() > 65536 || !ParseJson(s, &p) || Sha256(s) != digest)
+            !ParseResolvedAllocationJson(s, &resolved_payload) || Sha256(s) != digest)
           break;
         return Normalize(
             snapshot, *type,
@@ -314,7 +321,7 @@ bool ValidInternalPayload(EventType type, const EventPayload& payload, const Uui
     Json parsed;
     return IsStable(p->allocation_id.value) && IsDigest(p->allocation_digest.value) &&
            IsStable(p->schema_id.value) && p->schema_version != 0 &&
-           p->payload_utf8.size() <= 65536 && ParseJson(p->payload_utf8, &parsed) &&
+           ParseResolvedAllocationJson(p->payload_utf8, &parsed) &&
            Sha256(p->payload_utf8) == p->allocation_digest.value;
   }
   if (const auto* p = std::get_if<WorkerLaunchIntentPayload>(&payload))
@@ -587,6 +594,8 @@ Decision DecideInternal(const Snapshot& s, const InternalEvent& e) {
                  : reject_state();
     case EventType::kJobCreated:
       return Reject(RejectionReason::kJobAlreadyExists);
+    case EventType::kInvalid:
+      return Reject(RejectionReason::kInvalidEventPayload);
   }
   return Reject(RejectionReason::kInvariantViolation);
 }
@@ -631,6 +640,8 @@ bool PayloadMatches(EventType type, const EventPayload& payload) {
       return std::holds_alternative<CleanupStatusPayload>(payload);
     case EventType::kLateWorkerEvent:
       return std::holds_alternative<LateWorkerEventPayload>(payload);
+    case EventType::kInvalid:
+      return false;
   }
   return false;
 }
@@ -641,6 +652,14 @@ Snapshot InitialSnapshot(const Uuid& job_id, const Uuid& session_id) {
   result.job_id = job_id;
   result.session_id = session_id;
   result.entity_exists = false;
+  result.state = JobState::kAdmitted;
+  result.completion_mode = CompletionMode::kNone;
+  result.resource_status = ResourceStatus::kNone;
+  result.worker_launch_status = LaunchStatus::kNotStarted;
+  result.process_presence = ProcessPresence::kAbsent;
+  result.session_retention_status = RetentionStatus::kNotStarted;
+  result.finalization_status = FinalizationStatus::kNotStarted;
+  result.cleanup_status = CleanupStatus::kPending;
   return result;
 }
 Decision DecideCommand(const Snapshot& s, const Command& command) {
@@ -648,8 +667,7 @@ Decision DecideCommand(const Snapshot& s, const Command& command) {
   if (command.schema_version != 1 || command.job_id != s.job_id || !s.entity_exists)
     return Reject(RejectionReason::kJobNotFound);
   if (!IsUuid(command.job_id.value, '7') || command.principal_subject.empty() ||
-      command.principal_subject.size() > 256 || static_cast<int>(command.command_type) < 0 ||
-      static_cast<int>(command.command_type) > 1)
+      command.principal_subject.size() > 256 || !IsCommandType(command.command_type))
     return Reject(RejectionReason::kInvalidEventPayload);
   if (command.command_type == CommandType::kCancel) {
     if (s.state == JobState::kStopping) return Reject(RejectionReason::kStopCauseAlreadyLatched);
@@ -924,15 +942,22 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
     case EventType::kLateWorkerEvent:
       Add(&effects, EffectId::kAckLateWorkerEvent);
       break;
+    case EventType::kInvalid:
+      return ApplyResult{before, {}, Rejection{1, RejectionReason::kInvalidEventPayload}};
   }
   return ApplyResult{std::move(s), std::move(effects), std::nullopt};
 }
 
 TimerIngressResult IngestTimer(const TimerState& timers, const TimerIngressInput& input) {
-  if (input.arm_request && IsTimeoutPhase(input.arm_request->phase) &&
-      input.arm_request->generation == UINT64_MAX)
-    return TimerIngressResult{
-        TimerIngressKind::kFailClosed, std::nullopt, {Effect{EffectId::kSetReadinessFalse}}};
+  if (input.arm_request) {
+    const auto phase = input.arm_request->phase;
+    const bool valid_phase =
+        phase == TimeoutPhase::kPreparation || phase == TimeoutPhase::kExecution ||
+        phase == TimeoutPhase::kCooperativeStop || phase == TimeoutPhase::kProcessExitConfirmation;
+    if (!valid_phase || input.arm_request->generation == UINT64_MAX)
+      return TimerIngressResult{
+          TimerIngressKind::kFailClosed, std::nullopt, {Effect{EffectId::kSetReadinessFalse}}};
+  }
   return input.notification
              ? IngestTimer(timers, *input.notification)
              : TimerIngressResult{TimerIngressKind::kDiscardWithoutCandidate, std::nullopt, {}};

@@ -1,8 +1,11 @@
 #include "sitometron/core/job_reducer.hpp"
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -23,11 +26,82 @@ int Check(bool condition, std::string_view message) {
   return 1;
 }
 
+int RunMalformedArtifactChecks() {
+  const auto path =
+      std::filesystem::temp_directory_path() / "sitometron-job-reducer-malformed-artifact.json";
+  int result = 0;
+  const auto check_artifact = [&](std::string_view contents, std::string_view label) {
+    {
+      std::ofstream output(path, std::ios::binary | std::ios::trunc);
+      if (!output) return Check(false, std::string(label) + " artifact is writable");
+      output << contents;
+    }
+    const auto normal = sitometron::test::RunJobReducerVectorChecks(path.string().c_str(), "all");
+    const auto mutation =
+        sitometron::test::RunJobReducerParityMutationChecks(path.string().c_str());
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    int checks = 0;
+    checks |= Check(normal != 0, std::string(label) + " normal runner rejects artifact");
+    checks |= Check(mutation != 0, std::string(label) + " mutation runner rejects artifact");
+    return checks;
+  };
+  result |= check_artifact("{", "syntactically invalid JSON");
+  result |= check_artifact(R"({"contract_version":1})", "missing case_vectors");
+  return result;
+}
+
 int Run() {
   const Uuid job{std::string(kJob)};
   Snapshot absent = InitialSnapshot(job, job);
   int result = 0;
   result |= Check(!absent.entity_exists, "initial entity position is absent");
+  Command default_command;
+  default_command.job_id = job;
+  default_command.principal_subject = "operator@example";
+  Snapshot present = absent;
+  present.entity_exists = true;
+  result |=
+      Check(std::holds_alternative<Rejection>(DecideCommand(present, default_command).value) &&
+                std::get<Rejection>(DecideCommand(present, default_command).value).reason ==
+                    RejectionReason::kInvalidEventPayload,
+            "default command enum fails closed");
+  InternalEvent default_event;
+  default_event.schema_version = 1;
+  default_event.job_id = job;
+  const auto default_event_decision = DecideEvent(absent, default_event);
+  result |= Check(std::holds_alternative<Rejection>(default_event_decision.value) &&
+                      std::get<Rejection>(default_event_decision.value).reason ==
+                          RejectionReason::kInvalidEventPayload,
+                  "default internal event enum fails closed");
+  const auto default_event_apply =
+      Apply(absent, PreEnvelopeProposal{1, job, EventType::kInvalid, EmptyPayload{}});
+  result |= Check(
+      default_event_apply.rejection.has_value() &&
+          default_event_apply.rejection->reason == RejectionReason::kInvalidEventPayload &&
+          default_event_apply.snapshot.state == absent.state && default_event_apply.effects.empty(),
+      "default invalid event proposal is rejected without mutation");
+  result |= Check(ToString(Rejection{}.reason) == "invalid" && ToString(Effect{}.id) == "invalid",
+                  "default rejection and effect enums stringify safely");
+  result |= Check(TimerIngressResult{}.kind == TimerIngressKind::kInvalid,
+                  "default timer result enum fails closed");
+  const Snapshot default_snapshot;
+  result |= Check(default_snapshot.state == JobState::kInvalid &&
+                      default_snapshot.completion_mode == CompletionMode::kInvalid &&
+                      default_snapshot.resource_status == ResourceStatus::kInvalid &&
+                      default_snapshot.worker_launch_status == LaunchStatus::kInvalid &&
+                      default_snapshot.process_presence == ProcessPresence::kInvalid &&
+                      default_snapshot.session_retention_status == RetentionStatus::kInvalid &&
+                      default_snapshot.finalization_status == FinalizationStatus::kInvalid &&
+                      default_snapshot.cleanup_status == CleanupStatus::kInvalid &&
+                      TimeoutExpiredPayload{}.phase == TimeoutPhase::kInvalid &&
+                      ProcessExitConfirmedPayload{}.completion_mode == CompletionMode::kInvalid &&
+                      TerminalOutcomePayload{}.outcome == TerminalOutcome::kInvalid &&
+                      CleanupStatusPayload{}.status == CleanupStatus::kInvalid &&
+                      LateWorkerEventPayload{}.original_event_type == EventType::kInvalid &&
+                      TimerArmRequest{}.phase == TimeoutPhase::kInvalid &&
+                      TimerNotification{}.phase == TimeoutPhase::kInvalid,
+                  "default snapshot and payload enums fail closed");
   const RawCandidateEvent created{1, job, "job_created",
                                   "{\"session_id\":\"" + std::string(kJob) + "\"}"};
   const auto normalized_created = NormalizeCandidate(absent, created);
@@ -58,6 +132,28 @@ int Run() {
     absent = Apply(absent, std::get<PreEnvelopeProposal>(allocation_decision.value)).snapshot;
     result |= Check(absent.state == JobState::kPreparing, "allocation enters preparing");
   }
+  const auto boundary_candidate = [&](std::size_t payload_size, std::string_view digest) {
+    const std::string payload = "{\"x\":\"" + std::string(payload_size - 8, 'a') + "\"}";
+    const nlohmann::json envelope{
+        {"allocation_id", "allocation-1"},
+        {"allocation_digest", digest},
+        {"resolved_allocation",
+         {{"schema_id", "allocation.v1"}, {"schema_version", 1}, {"payload_utf8", payload}}}};
+    return RawCandidateEvent{1, job, "resources_committed", envelope.dump()};
+  };
+  const auto exact_boundary = NormalizeCandidate(
+      absent, boundary_candidate(
+                  65536, "26dd9ded7a4d8e5dbabcaf19f789b959aac342d54abe35c55e2351e04a6bbac1"));
+  result |= Check(
+      std::holds_alternative<InternalEvent>(exact_boundary.value) &&
+          std::get<ResourcesCommittedPayload>(std::get<InternalEvent>(exact_boundary.value).payload)
+                  .payload_utf8.size() == 65536,
+      "resolved allocation payload accepts exactly 65536 UTF-8 bytes");
+  const auto over_boundary = NormalizeCandidate(
+      absent, boundary_candidate(
+                  65537, "0309821d001f5177926fabb00f494b2803cf3cd07b2a849a0e18d60968580468"));
+  result |= Check(std::holds_alternative<Rejection>(over_boundary.value),
+                  "resolved allocation payload rejects 65537 UTF-8 bytes");
   const Command cancel{1, CommandType::kCancel, job, "operator@example"};
   result |= Check(std::holds_alternative<PreEnvelopeProposal>(DecideCommand(absent, cancel).value),
                   "cancel accepted before worker");
@@ -76,6 +172,29 @@ int Run() {
                       std::get<Rejection>(raw_late_result.value).reason ==
                           RejectionReason::kInvalidEventPayload,
                   "reducer-owned late event is rejected at raw ingress");
+  const auto expect_invalid_payload = [&](std::string_view event_type, std::string_view payload,
+                                          std::string_view label) {
+    const auto normalized = NormalizeCandidate(
+        absent, RawCandidateEvent{1, job, std::string(event_type), std::string(payload)});
+    return Check(
+        std::holds_alternative<Rejection>(normalized.value) &&
+            std::get<Rejection>(normalized.value).reason == RejectionReason::kInvalidEventPayload,
+        label);
+  };
+  result |= expect_invalid_payload(
+      "job_created", R"({"session_id":"01890f3e-7b00-7abc-8abc-0123456789ab"} // comment)",
+      "strict JSON rejects line comments");
+  result |= expect_invalid_payload(
+      "job_created", R"({"session_id":"01890f3e-7b00-7abc-8abc-0123456789ab"} /* comment */)",
+      "strict JSON rejects block comments");
+  result |= expect_invalid_payload(
+      "resources_committed",
+      R"({"allocation_id":"allocation-1","allocation_digest":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","resolved_allocation":{"schema_id":"allocation.v1","schema_version":1,"payload_utf8":"{\"x\":1 // comment\n}"}})",
+      "strict JSON rejects comments in resolved allocation payload");
+  result |= expect_invalid_payload(
+      "resources_committed",
+      R"({"allocation_id":"allocation-1","allocation_digest":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","resolved_allocation":{"schema_id":"allocation.v1","schema_version":1,"payload_utf8":"{\"x\":1 /* comment */}"}})",
+      "strict JSON rejects block comments in nested payload");
   result |= Check(
       std::holds_alternative<Rejection>(
           DecideEvent(absent, InternalEvent{1, job, static_cast<EventType>(255), EmptyPayload{}})
@@ -116,6 +235,12 @@ int Run() {
                                          std::nullopt})
                     .kind == TimerIngressKind::kFailClosed,
             "new arm generation exhaustion fails closed");
+  const auto invalid_arm = IngestTimer(
+      timer, TimerIngressInput{TimerArmRequest{job, TimeoutPhase::kInvalid, 1}, std::nullopt});
+  result |= Check(invalid_arm.kind == TimerIngressKind::kFailClosed &&
+                      !invalid_arm.candidate.has_value() && invalid_arm.effects.size() == 1 &&
+                      invalid_arm.effects.front().id == EffectId::kSetReadinessFalse,
+                  "invalid arm phase fails closed with only readiness false");
   result |= Check(IngestTimer(timer, TimerIngressInput{std::nullopt, std::nullopt}).kind ==
                       TimerIngressKind::kDiscardWithoutCandidate,
                   "null notification does not fail closed");
@@ -126,9 +251,11 @@ int Run() {
 
 int main(int argc, char** argv) {
   int result = Run();
+  if (argc == 1) result |= RunMalformedArtifactChecks();
   if (argc > 1) {
     result |= sitometron::test::RunJobReducerVectorChecks(argv[1], argc > 2 ? argv[2] : "all");
-    if (argc <= 2) result |= sitometron::test::RunJobReducerParityMutationChecks(argv[1]);
+    if (argc <= 2 || (argc > 2 && std::string_view(argv[2]) == "job_closed_state_set"))
+      result |= sitometron::test::RunJobReducerParityMutationChecks(argv[1]);
   }
   return result;
 }
