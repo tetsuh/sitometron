@@ -278,7 +278,7 @@ bool IsEvent(const Json& input, std::initializer_list<const char*> event_types) 
 bool HasFinalizationFact(const Json& vector) {
   const auto& initial = vector.at("initial_snapshot");
   const auto& expected = vector.at("expected");
-  return initial.at("state") == "finalizing" ||
+  return (!initial.is_null() && initial.at("state") == "finalizing") ||
          IsEvent(vector.at("input"), {"session_retain_requested", "session_retained",
                                       "finalization_completed", "finalization_failed"}) ||
          (!expected.at("next_snapshot").is_null() &&
@@ -286,20 +286,19 @@ bool HasFinalizationFact(const Json& vector) {
 }
 
 bool HasCleanupFact(const Json& vector) {
+  const auto& initial = vector.at("initial_snapshot");
   return IsEvent(vector.at("input"), {"process_exit_confirmed", "resources_released",
                                       "cleanup_status_recorded", "late_worker_event"}) ||
-         vector.at("initial_snapshot").at("state") == "finalizing" ||
-         vector.at("initial_snapshot").at("state") == "succeeded" ||
-         vector.at("initial_snapshot").at("state") == "failed" ||
-         vector.at("initial_snapshot").at("state") == "cancelled" ||
-         vector.at("initial_snapshot").at("state") == "terminated" ||
-         vector.at("initial_snapshot").at("state") == "timed_out";
+         (!initial.is_null() &&
+          (initial.at("state") == "finalizing" || initial.at("state") == "succeeded" ||
+           initial.at("state") == "failed" || initial.at("state") == "cancelled" ||
+           initial.at("state") == "terminated" || initial.at("state") == "timed_out"));
 }
 
 bool HasFirstCauseFact(const Json& vector) {
   const auto& initial = vector.at("initial_snapshot");
   const auto& expected = vector.at("expected");
-  return !initial.at("latched_reason").is_null() ||
+  return (!initial.is_null() && !initial.at("latched_reason").is_null()) ||
          IsEvent(vector.at("input"), {"cancel_accepted", "terminate_accepted", "worker_failed",
                                       "timeout_expired", "terminal_outcome_committed"}) ||
          (!expected.at("next_snapshot").is_null() &&
@@ -366,9 +365,14 @@ int CheckExpected(const Json& vector, const Snapshot& before, const Decision& de
     const auto applied = Apply(before, proposal);
     result |= Check(!applied.rejection.has_value(),
                     vector.at("vector_id").get<std::string>() + " apply accepted");
-    if (!expected.at("next_snapshot").is_null())
-      result |= Check(SnapshotJson(applied.snapshot) == expected.at("next_snapshot"),
+    if (!expected.at("next_snapshot").is_null()) {
+      const auto actual = SnapshotJson(applied.snapshot);
+      if (actual != expected.at("next_snapshot"))
+        std::cerr << "snapshot mismatch " << vector.at("vector_id") << " actual=" << actual.dump()
+                  << " expected=" << expected.at("next_snapshot").dump() << '\n';
+      result |= Check(actual == expected.at("next_snapshot"),
                       vector.at("vector_id").get<std::string>() + " snapshot");
+    }
   }
   return result;
 }
@@ -403,7 +407,9 @@ int RunJobReducerVectorChecks(const char* path, const char* selector) {
             "selector is addressable");
   if (selected_selector == "job_closed_state_set") {
     std::set<std::string> states;
-    for (const auto& vector : cases) states.insert(vector.at("initial_snapshot").at("state"));
+    for (const auto& vector : cases)
+      if (!vector.at("initial_snapshot").is_null())
+        states.insert(vector.at("initial_snapshot").at("state"));
     result |= Check(states.size() == 10, "all closed states are represented");
   }
   std::size_t selected_cases = 0;
@@ -493,9 +499,15 @@ int RunJobReducerVectorChecks(const char* path, const char* selector) {
           result |= Check(!applied.rejection.has_value(),
                           sequence.at("vector_id").get<std::string>() + " step applies");
         current = applied.snapshot;
-        if (selected_step && expected.contains("next_snapshot"))
-          result |= Check(SnapshotJson(current) == expected.at("next_snapshot"),
+        if (selected_step && expected.contains("next_snapshot")) {
+          const auto actual = SnapshotJson(current);
+          if (actual != expected.at("next_snapshot"))
+            std::cerr << "sequence snapshot mismatch " << sequence.at("vector_id")
+                      << " actual=" << actual.dump()
+                      << " expected=" << expected.at("next_snapshot").dump() << '\n';
+          result |= Check(actual == expected.at("next_snapshot"),
                           sequence.at("vector_id").get<std::string>() + " step snapshot");
+        }
       }
     }
   }
@@ -505,7 +517,7 @@ int RunJobReducerVectorChecks(const char* path, const char* selector) {
     if (selected_selector != "job_timeout_vectors") continue;
     TimerState state;
     const auto active = vector.at("active_generation");
-    state.execution_armed = vector.at("arm_requested").get<bool>();
+    state.execution_armed = !active.is_null();
     state.execution_generation = active.is_null() ? 0 : active.get<std::uint64_t>();
     const auto notification = vector.at("notification_generation");
     const auto ingress = IngestTimer(

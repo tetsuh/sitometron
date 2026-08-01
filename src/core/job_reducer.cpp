@@ -137,8 +137,7 @@ NormalizedCandidate ParseCandidate(const Snapshot& snapshot, const RawCandidateE
         !IsUuid(candidate.job_id.value, '7'))
       return RejectCandidate(RejectionReason::kInvariantViolation);
     const auto type = ParseEvent(candidate.event_type);
-    if (!type || *type == EventType::kCancelAccepted || *type == EventType::kTerminateAccepted ||
-        *type == EventType::kLateWorkerEvent)
+    if (!type || *type == EventType::kCancelAccepted || *type == EventType::kTerminateAccepted)
       return RejectCandidate(RejectionReason::kInvalidEventPayload);
     Json p;
     if (!ParseJson(candidate.payload_json, &p))
@@ -262,6 +261,20 @@ NormalizedCandidate ParseCandidate(const Snapshot& snapshot, const RawCandidateE
         return Normalize(snapshot, *type,
                          CleanupStatusPayload{s == "completed" ? CleanupStatus::kCompleted
                                                                : CleanupStatus::kIncomplete});
+      }
+      case EventType::kLateWorkerEvent: {
+        std::string worker;
+        std::uint64_t sequence = 0;
+        const auto original = p.contains("original_event_type")
+                                  ? ParseEvent(p.at("original_event_type").get<std::string>())
+                                  : std::nullopt;
+        if (!HasOnly(p, {"original_event_type", "worker_id", "event_sequence"}) || !original ||
+            (*original != EventType::kWorkerCompleted && *original != EventType::kWorkerFailed) ||
+            !StringField(p, "worker_id", &worker) || !IsUuid(worker, '4') ||
+            !UInt64Field(p, "event_sequence", &sequence))
+          break;
+        return Normalize(snapshot, *type,
+                         LateWorkerEventPayload{*original, Uuid{worker}, sequence});
       }
       default:
         break;
@@ -394,6 +407,8 @@ Decision DecideInternal(const Snapshot& s, const InternalEvent& e) {
     }
     case EventType::kCancelAccepted:
       if (s.state == JobState::kStopping) return Reject(RejectionReason::kStopCauseAlreadyLatched);
+      if (s.state == JobState::kFinalizing || IsTerminal(s.state))
+        return Reject(RejectionReason::kCommandNotAllowedInState);
       return (s.state == JobState::kAdmitted || s.state == JobState::kPreparing ||
               s.state == JobState::kRunning)
                  ? Accept(s, e.event_type, e.payload)
@@ -403,6 +418,7 @@ Decision DecideInternal(const Snapshot& s, const InternalEvent& e) {
         return !s.process_exit_confirmed ? Accept(s, e.event_type, e.payload)
                                          : Reject(RejectionReason::kCommandNotAllowedInState);
       }
+      if (IsTerminal(s.state)) return Reject(RejectionReason::kCommandNotAllowedInState);
       return (s.state == JobState::kAdmitted || s.state == JobState::kPreparing ||
               s.state == JobState::kRunning)
                  ? Accept(s, e.event_type, e.payload)
@@ -511,6 +527,7 @@ Decision DecideInternal(const Snapshot& s, const InternalEvent& e) {
     }
     case EventType::kResourcesReleased: {
       if (!IsTerminal(s.state)) return reject_state();
+      if (!s.process_exit_confirmed) return Reject(RejectionReason::kInvariantViolation);
       const auto* p = std::get_if<ResourcesReleasedPayload>(&e.payload);
       if (!p || !s.allocation_id || !s.allocation_digest || p->allocation_id != *s.allocation_id ||
           p->allocation_digest != *s.allocation_digest)
@@ -528,7 +545,9 @@ Decision DecideInternal(const Snapshot& s, const InternalEvent& e) {
                  : Reject(RejectionReason::kInvariantViolation);
     }
     case EventType::kLateWorkerEvent:
-      return IsTerminal(s.state) ? Accept(s, e.event_type, e.payload) : reject_state();
+      return (IsTerminal(s.state) || s.state == JobState::kFinalizing)
+                 ? Accept(s, e.event_type, e.payload)
+                 : reject_state();
     case EventType::kJobCreated:
       return Reject(RejectionReason::kJobAlreadyExists);
   }
@@ -747,21 +766,24 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
           s.latched_reason = TerminalOutcome::kTimedOut;
           s.completion_candidate = false;
         }
-        if (s.process_exit_confirmed)
-          s.completion_mode = CompletionMode::kProcessAlreadyExited;
-        else {
+        if (!s.process_exit_confirmed) {
           s.completion_mode = CompletionMode::kForced;
           Add(&effects, EffectId::kRequestForcedStop);
           Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
           Add(&effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
         }
-      } else if (p.phase == TimeoutPhase::kExecution && s.state == JobState::kRunning) {
+      } else if (p.phase == TimeoutPhase::kExecution && s.state == JobState::kStopping) {
+        s.completion_mode = CompletionMode::kForced;
+        Add(&effects, EffectId::kRequestForcedStop);
+        Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
+        Add(&effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
         s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kTimedOut);
         s.completion_mode = CompletionMode::kCooperative;
         s.state = JobState::kStopping;
         Add(&effects, EffectId::kRequestCooperativeStop);
         Add(&effects, EffectId::kArmCooperativeStopTimeout);
       } else if (p.phase == TimeoutPhase::kCooperativeStop) {
+        s.completion_mode = CompletionMode::kForced;
         Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
         Add(&effects, EffectId::kRequestForcedStop);
         Add(&effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
@@ -800,6 +822,7 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
       s.pending_worker_event_sequence.reset();
       if (old_state == JobState::kPreparing || old_state == JobState::kRunning) {
         Add(&effects, EffectId::kDisarmPreparationTimeout);
+        s.completion_mode = CompletionMode::kProcessAlreadyExited;
         s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kFailed);
         BeginFinalizing(&s);
       }
