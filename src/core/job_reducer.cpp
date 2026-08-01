@@ -512,9 +512,11 @@ Decision DecideInternal(const Snapshot& s, const InternalEvent& e) {
                  : Reject(RejectionReason::kInvariantViolation);
     case EventType::kFinalizationFailed:
       return s.state != JobState::kFinalizing ? reject_state()
-             : s.finalization_status == FinalizationStatus::kPending
-                 ? Accept(s, e.event_type, e.payload)
-                 : Reject(RejectionReason::kInvariantViolation);
+             : s.finalization_status != FinalizationStatus::kPending
+                 ? Reject(RejectionReason::kInvariantViolation)
+             : !s.latched_reason && !s.completion_candidate
+                 ? Reject(RejectionReason::kInvariantViolation)
+                 : Accept(s, e.event_type, e.payload);
     case EventType::kTerminalOutcomeCommitted: {
       if (s.state != JobState::kFinalizing) return reject_state();
       const auto* p = std::get_if<TerminalOutcomePayload>(&e.payload);
@@ -731,7 +733,8 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
       }
       break;
     case EventType::kTerminateAccepted:
-      s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kTerminated);
+      if (!s.completion_candidate)
+        s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kTerminated);
       if (s.process_presence == ProcessPresence::kAbsent) {
         s.completion_mode = CompletionMode::kProcessAlreadyExited;
         s.process_exit_confirmed = true;
@@ -740,7 +743,7 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
       } else {
         s.completion_mode = CompletionMode::kForced;
         if (s.state == JobState::kPreparing) Add(&effects, EffectId::kDisarmPreparationTimeout);
-        s.state = JobState::kStopping;
+        if (s.state != JobState::kFinalizing) s.state = JobState::kStopping;
         Add(&effects, EffectId::kRequestForcedStop);
         Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
         Add(&effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
@@ -762,11 +765,14 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
           Add(&effects, EffectId::kArmCooperativeStopTimeout);
         }
       } else if (p.phase == TimeoutPhase::kExecution && s.state == JobState::kFinalizing) {
-        if (!s.latched_reason && s.completion_candidate) {
+        const bool had_success_candidate = !s.latched_reason && s.completion_candidate;
+        if (had_success_candidate) {
           s.latched_reason = TerminalOutcome::kTimedOut;
           s.completion_candidate = false;
         }
-        if (!s.process_exit_confirmed) {
+        if (s.process_exit_confirmed && had_success_candidate)
+          s.completion_mode = CompletionMode::kProcessAlreadyExited;
+        else if (!s.process_exit_confirmed) {
           s.completion_mode = CompletionMode::kForced;
           Add(&effects, EffectId::kRequestForcedStop);
           Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
@@ -777,6 +783,7 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
         Add(&effects, EffectId::kRequestForcedStop);
         Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
         Add(&effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
+      } else if (p.phase == TimeoutPhase::kExecution && s.state == JobState::kRunning) {
         s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kTimedOut);
         s.completion_mode = CompletionMode::kCooperative;
         s.state = JobState::kStopping;
@@ -796,7 +803,7 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
       break;
     }
     case EventType::kWorkerCompleted: {
-      s.completion_candidate = true;
+      s.completion_candidate = !s.latched_reason;
       if (s.state == JobState::kStopping) Add(&effects, EffectId::kDisarmCooperativeStopTimeout);
       BeginFinalizing(&s);
       add_ack();
@@ -847,6 +854,7 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
       break;
     case EventType::kFinalizationFailed:
       s.finalization_status = FinalizationStatus::kFailed;
+      s.cleanup_status = CleanupStatus::kIncomplete;
       s.completion_candidate = false;
       s.latched_reason = s.latched_reason.value_or(TerminalOutcome::kFailed);
       break;
