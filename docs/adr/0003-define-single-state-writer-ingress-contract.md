@@ -336,8 +336,10 @@ ACK code. This is a count-bounded shutdown contract, not a production wall-clock
 
 ### Dependency boundary for later implementation
 
-Under ADR-0004 and `NFR-005`, the later implementation may add only these standard headers to the
-reviewed core-header allowlist:
+Under ADR-0004 and `NFR-005`, synchronization is implemented privately in the existing
+`sitometron_core` target. The later implementation may add only these four newly reviewed standard
+headers to the reviewed core-header allowlist; they are private-implementation-only and are not
+permitted in installed/public headers by this ADR:
 
 ```text
 <condition_variable>
@@ -346,9 +348,11 @@ reviewed core-header allowlist:
 <thread>
 ```
 
-It may link `Threads::Threads` privately. Public APIs remain Sitometron-owned and no third-party
-dependency is added. The implementation Issue must mechanically extend the approved-header and
-private-link-target checks with exactly this authority. If that exact list is insufficient or
+The exact dependency linkage is semantically `target_link_libraries(sitometron_core PRIVATE
+Threads::Threads)`. Sitometron public APIs remain Sitometron-owned, expose no concurrency-owned or
+dependency-owned types, and no third-party dependency is added. The later implementation must
+extend the exact mechanical source/header/link/public-API checks accordingly, including the
+approved-header, private-link-target, and public-API checks. If that exact list is insufficient or
 conflicts with the accepted dependency boundary, implementation stops for a new decision rather
 than expanding it implicitly.
 
