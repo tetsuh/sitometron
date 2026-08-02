@@ -169,10 +169,14 @@ delivery identity and never coalesces merely because its payload is equal.
 
 After a process-exit, release, or cleanup gate retires, a matching fact submitted later is a new
 reducer input so ADR-0002's auditable idempotent duplicates remain Journaled. An exact Worker event
-sequence is different: the Worker-protocol boundary retains it against its ACK obligation and routes
-an exact retransmission to that deduplication/ACK state without a new ingress sequence, reducer
-decision, or Journal record. A pending or previously authorized ACK may be retried by that protocol
-state; `coalesced_pending` itself never authorizes an ACK.
+sequence is different: the Worker stop-and-wait gate retains at most one unacknowledged event
+sequence and its exact semantic payload against its ACK obligation. An exact same-sequence
+retransmission coalesces only while that ACK obligation is retained and receives no new ingress
+sequence, reducer turn, Journal record, or ACK authorization. A pending or previously authorized ACK
+may be retried by that protocol state; `coalesced_pending` itself never authorizes an ACK. After
+successful ACK or confirmed process exit retires the Worker gate and identity, a distinct
+post-terminal sequence may acquire the gate and reaches ADR-0002 as a Journaled and acknowledged
+`late_worker_event`.
 
 Every additional non-coalescible submission, different delivery identity, or different payload
 presented while its gate is occupied receives `already_pending`. It is not an invariant violation and
@@ -184,7 +188,7 @@ late-event handling, and stable rejection.
 |---|---|---|---|---:|---|
 | Administrator terminate | One preallocated gate for every provisional or resident Job in every lifecycle position from provisional `absent` through all terminal states; an unknown Job uses normal admission; command caller retains a non-admitted request | Gate key is Job ID plus terminate class; commands never coalesce because no retry identity exists; every additional command gets `already_pending` | Writer turn finishes or failure disposal releases the caller | 1 per Job | `job_ingress_capacity_and_reserve` |
 | Active timeout | Timer owner acquires the phase gate before arming: preparation in `preparing`, execution from `running` through terminal commit, cooperative-stop in `stopping`, and process-exit-confirmation after terminal commit until exit confirmation; prior phase callbacks may remain queued or in flight across later positions | Job ID, one of the four ADR-0002 phases, generation, and exact notification payload; an exact same-generation delivery may coalesce; a different generation or payload at the occupied phase gate gets `already_pending` | Matching callback and writer turn finish, or disarm plus callback quiescence makes submission impossible; a replacement in the same phase waits for retirement | 4 per Job | `job_ingress_capacity_and_reserve` |
-| Terminal/late Worker fact | After the launch binding exists but before the effect starts the producer, the gate is registered for the resident Job; it remains valid through `preparing`, `running`, `stopping`, `finalizing`, terminal state, and confirmed process exit; Worker delivery owner retains an unadmitted identity and receives no new ACK authorization | Job ID, Worker ID, event sequence, kind, and exact payload; the exact sequence coalesces against the retained delivery/ACK state; a distinct sequence or payload gets `already_pending` | Only after confirmed process exit, Worker producer quiescence, and impossibility of another callback; writer-turn completion alone does not retire the gate or identity | 1 per Job | `job_ingress_coalescing` |
+| Terminal/late Worker fact | After the launch binding exists but before the effect starts the producer, the gate is registered for the resident Job; it holds at most one unacknowledged Worker event sequence and its exact semantic payload across `preparing`, `running`, `stopping`, `finalizing`, terminal state, and confirmed process exit | Job ID, Worker ID, event sequence, kind, and exact payload; an exact same-sequence retransmission coalesces only while its ACK obligation is retained and receives no new ingress sequence, reducer turn, Journal record, or ACK authorization; a distinct sequence or payload while occupied gets `already_pending` and the source retains it | Successful ACK or confirmed process exit retires the Worker gate and identity; ACK success does not require process exit; only after retirement may a distinct sequence be admitted, and a distinct post-terminal sequence reaches ADR-0002 as a Journaled and acknowledged `late_worker_event` | 1 per Job | `job_ingress_coalescing` |
 | Process exit | After the launch binding exists but before process start exposes a callback, the watcher gate is registered; it remains valid from launch observation through terminal state and watcher quiescence | Job ID, launch operation ID, and payload identify the fact but not a delivery retry; every additional observation gets `already_pending` | Writer turn finishes or watcher quiesces; a later matching audit uses a newly acquired gate | 1 per Job | `job_ingress_coalescing` |
 | Resource release | After allocation commit but before a release operation can expose a callback, its gate is registered and may remain valid through every later lifecycle position | Job ID, allocation ID, digest, and payload identify the fact but not a delivery retry; every additional fact gets `already_pending` | Writer turn finishes or release source quiesces; a later matching audit uses a newly acquired gate | 1 per Job | `job_ingress_capacity_and_reserve` |
 | Cleanup status | After terminal commit but before cleanup can expose a callback, its gate is registered and remains valid through later terminal cleanup positions | Job ID, cleanup status, and payload identify the fact but not a delivery retry; every additional fact or status gets `already_pending` | Writer turn finishes or cleanup source quiesces; a later matching audit uses a newly acquired gate | 1 per Job | `job_ingress_capacity_and_reserve` |
@@ -209,10 +213,12 @@ per resident Job        9
 This bound covers a retained preparation callback while execution and cooperative-stop timers are
 armed, later process-exit-confirmation overlap, terminal cleanup before exit, and permits retained
 across queued transitions. The four phase gates each allow only one generation at a time; reuse of a
-phase gate waits for its prior callback to quiesce. ACK retry and quarantine retain the resident slot
-but add no critical input beyond the single Worker gate. At most `J` resident Jobs therefore require
-`9 * J` permits. Shutdown requires one global permit, so `R = 9 * J + 1`. This is the smallest bound
-derivable from the declared independent gates without adding an unaccepted cross-phase exclusion.
+phase gate waits for its prior callback to quiesce. The Worker stop-and-wait gate contributes one
+per-Job bound: ACK success or confirmed process exit retires its identity, and ACK retry retains no
+additional gate. No ACK window, deduplication collection, or additional reserve is added. At most `J`
+resident Jobs therefore require `9 * J` permits, preserving the single per-Job Worker bound.
+Shutdown requires one global permit, so `R = 9 * J + 1`. This is the smallest bound derivable from
+the declared independent gates without adding an unaccepted cross-phase exclusion.
 
 The obsolete `M * 4 + 3` is rejected because it excludes terminal residents, conflates Journal and
 readiness failure with queue entries, and has no source-gate or permit-lifetime proof.
@@ -367,10 +373,15 @@ test specification:
   admits the global shutdown marker; it also covers malformed-first/valid-second and
   valid-first/duplicate provisional reservations, terminal terminate after producer quiescence, the
   `resident_limit` precedence when both limits are exhausted, and startup arithmetic boundaries;
-- `job_ingress_coalescing` covers an exact Worker event-sequence retry both while queued and after the
-  writer turn, proving no new ingress sequence, reducer decision, Journal record, or new ACK
-  authorization; it separately proves that later process-exit, release, and cleanup duplicates are
-  admitted and audited after their prior gates retire;
+- `job_ingress_coalescing` covers the Worker stop-and-wait gate holding at most one unacknowledged
+  event sequence and exact payload: an exact same-sequence retry both while queued and after the
+  writer turn coalesces only while its ACK obligation is retained, proving no new ingress sequence,
+  reducer turn, Journal record, or ACK authorization; a distinct sequence or payload while occupied
+  returns `already_pending` and remains with its source; successful ACK retires the gate without
+  requiring process exit, and confirmed process exit also retires it; a distinct post-terminal
+  sequence admitted after retirement reaches ADR-0002 as a Journaled and acknowledged
+  `late_worker_event`; it separately proves that later process-exit, release, and cleanup duplicates
+  are admitted and audited after their prior gates retire;
 - `job_ingress_source_classification` covers unknown-Job terminate through normal admission,
   provisional/resident terminate through critical admission, no ingress lifecycle filtering after a
   valid permit, and ADR-0002 `invariant_violation` for a well-formed payload-binding conflict; and
