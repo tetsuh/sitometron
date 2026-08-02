@@ -40,7 +40,13 @@ through ingress.
 The ingress mutex owns only service mode, resident-slot reservations, FIFO/ring bookkeeping, critical
 source gates and permits, callback registrations, and the non-persistent `ingress_sequence`. It is
 never held while calling a Journal port, effect executor, response adapter, producer cancellation or
-join, or external callback.
+join, or external callback. Each preallocated callback registration permits at most one active
+callback invocation; its producer or adapter serializes that registration. A concurrent invocation
+on one registration is impossible under the producer contract and is treated as internal accounting
+corruption if observed, setting `failure_latched` and following the fail-closed path. The finite
+callback-registration and active-lease inventory is preallocated and checked for overflow at startup
+as a lifetime/shutdown bound separate from FIFO reserve `R`; shutdown waits only for that finite
+active-lease population.
 
 Three stages remain distinct:
 
@@ -61,12 +67,22 @@ For each dequeued input, the writer performs exactly this order:
 
 ```text
 validate and decide
-  -> on accepted input, allocate durable sequence and construct logical envelope
+  -> on accepted input, materialize every potentially-failing transition artifact purely and privately
+  -> allocate durable sequence and construct logical envelope
   -> request logical commit
-  -> only logical-commit success permits apply
+  -> only logical-commit success permits no-fail snapshot installation and ownership handoff
   -> dispatch every reducer effect in its declared order
   -> release a command response
 ```
+
+All potentially-failing transition materialization completes before logical commit while remaining
+pure and unpublished. Before commit, no mutable snapshot is published, effect is dispatched, response
+is released, or ACK is authorized. A precommit materialization failure follows the fail-closed source
+disposition path: it sets `failure_latched`, creates no Journal event, and performs none of those
+forbidden actions. After successful logical commit, snapshot installation is no-fail and the writer
+performs only non-throwing ownership handoffs to the effect executor and response adapter. An
+operational failure reported after a successful handoff becomes a later typed ingress fact; an effect
+already handed off is never implicitly replayed.
 
 An ADR-0002 ACK effect is itself ACK authorization at its declared effect-list position; there is no
 second ACK-authorization step after effect dispatch. A coalesced Worker retransmission authorizes no
@@ -178,6 +194,14 @@ successful ACK or confirmed process exit retires the Worker gate and identity, a
 post-terminal sequence may acquire the gate and reaches ADR-0002 as a Journaled and acknowledged
 `late_worker_event`.
 
+A preallocated source gate begins in `registered_empty` before delivery. Under the ingress mutex,
+the first successful FIFO insertion atomically assigns the next `ingress_sequence`, transfers the
+queued ownership, and changes that gate to `pending(sequence, identity, payload)`. Only a pending gate
+with an existing sequence may return `coalesced_pending(existing_ingress_sequence)`. Gate acquisition,
+sequence assignment, FIFO insertion, and ownership transfer therefore have one linearization point;
+a retry racing between registration and first insertion cannot observe a coalesced result without an
+existing sequence.
+
 Every additional non-coalescible submission, different delivery identity, or different payload
 presented while its gate is occupied receives `already_pending`. It is not an invariant violation and
 remains owned by its source. Once a valid source registration and permit exist, ingress performs no
@@ -242,16 +266,17 @@ acceptance, a response to the eventual command, or Worker ACK authorization.
 
 | Submission and service condition | Result and ownership |
 |---|---|
-| New normal input in `running`, within `N` and `T` | `admitted`; ingress owns the queued input |
-| New critical input with a valid free gate and capacity | `admitted`; ingress owns the queued input and permit |
+| New normal input in `running`, within `N` and `T` | `admitted`; successful insertion atomically transfers exclusive queued-payload and FIFO-slot ownership to ingress |
+| New critical input with a valid free gate and capacity | `admitted`; successful insertion atomically transfers exclusive queued-payload, FIFO-slot, and applicable gate/permit/claim ownership to ingress |
 | Exact retry with an authoritative delivery identity while its gate is pending, or repeat call for the same pending shutdown operation | `coalesced_pending`; original source/result relationship remains authoritative |
 | Additional administrator command, or a different identity or payload at the same occupied source gate | `already_pending`; submitting source retains it |
 | Terminate for an unknown Job | Use bounded normal admission; ADR-0002 later returns `job_not_found` |
 | New Job with no resident slot, including simultaneous normal-capacity exhaustion | `resident_limit`; caller retains it; resident capacity is checked first |
 | Normal input at `N` or total capacity, with any required resident slot available | `normal_full`; submitting source retains it |
-| Any new admission in `quiescing`, `draining`, `sealed`, or `stopped` except registered critical completions allowed by the shutdown rule | `admission_closed`; source retains it |
-| Any admission after the sticky failure latch, including after writer state reaches `stopped` | `service_failed`; source retains it; this result takes precedence over `admission_closed` |
-| Critical admission cannot obtain its proof-required permit or FIFO slot under otherwise valid configuration | `service_failed`, atomically set the failure latch; source retains the obligation |
+| Any new admission in `quiescing`, `draining`, `sealed`, or `stopped` except registered critical completions allowed by the shutdown rule | `admission_closed`; source retains it because no ownership transferred |
+| Any admission after the sticky failure latch, including after writer state reaches `stopped` | `service_failed`; source retains it because no ownership transferred; this result takes precedence over `admission_closed` |
+| Critical admission cannot obtain its proof-required permit or FIFO slot under otherwise valid configuration | `service_failed`, atomically set the failure latch; source retains the non-admitted obligation |
+| An already admitted queued input is disposed after commit/readiness failure | ingress performs the exactly-once failure-disposal operation: removes the entry, destroys its ingress-owned payload, releases every applicable FIFO slot, resident claim, gate, permit, callback/completion registration, and completes the source relationship with `service_failed` |
 
 Malformed command/candidate payload validation remains writer/reducer input handling under ADR-0002;
 it is not silently converted to queue pressure. A well-formed admitted candidate whose operation,
@@ -260,6 +285,14 @@ ADR-0002 reducer, returns `invariant_violation`, and creates no Journal record o
 failure. `service_failed` is reserved here for impossible internal corruption such as a registration
 token referring to the wrong preallocated gate, a lease/permit ownership mismatch, or broken
 accounting. That internal failure is not synthesized from an external candidate payload.
+
+Successful FIFO insertion transfers exclusive ownership of the admitted queued object and every
+applicable bounded resource to ingress; the source retains only its external delivery/response
+obligation and authoritative retry identity. Non-admission transfers nothing. The single
+failure-disposal operation is exactly-once: ingress removes the queued entry, destroys its payload,
+releases each applicable slot, resident claim, source gate, permit, and callback/completion
+registration, then completes the source relationship with `service_failed`. No source may reclaim or
+dispose an admitted queued object after that transfer.
 
 ### Readiness and persistence failure
 
@@ -324,8 +357,11 @@ no turn is in flight. It then retires the global shutdown gate atomically with e
 Callbacks hold a lifetime-safe ingress handle rather than a raw writer or controller pointer. They
 may perform only non-blocking validation and admission. They never call reducer apply, dispatch an
 effect, or wait for their own entry. The handle refuses new access after closure and remains alive
-until every admitted callback lease has returned. A detached producer receives only a closed handle
-that has no path to writer-owned state.
+until every admitted callback lease has returned. Each registration has at most one active lease, so
+producer/adapter serialization makes the active lease population finite and preallocated; an
+observed concurrent invocation is internal corruption and follows fail-closed handling. A detached
+producer receives only a closed handle that has no path to writer-owned state. Shutdown waits only
+for this finite active-lease population, then destroys the registrations.
 
 Shutdown proceeds through these ordered conditions:
 
@@ -368,6 +404,9 @@ The later implementation uses deterministic fakes, explicit turn barriers, and c
 uses no scheduler timing or real sleeps. In addition to the stable names registered in the build and
 test specification:
 
+- `job_ingress_linearization_order` drives `ingress_sequence` to its checked maximum and proves
+  deterministic no-wrap/no-reuse behavior; registration-to-first-insertion races prove that only a
+  `pending` gate with an existing sequence can return `coalesced_pending(existing_ingress_sequence)`.
 - `job_ingress_capacity_and_reserve` fills normal capacity, retains all four timer-phase permits
   across lifecycle transitions, occupies the other five per-Job gates for every resident slot, then
   admits the global shutdown marker; it also covers malformed-first/valid-second and
@@ -386,8 +425,9 @@ test specification:
   provisional/resident terminate through critical admission, no ingress lifecycle filtering after a
   valid permit, and ADR-0002 `invariant_violation` for a well-formed payload-binding conflict; and
 - `job_ingress_fail_closed` distinguishes impossible internal registration/lease/gate/permit
-  corruption from reducer rejection and proves bounded source disposition after the sticky failure
-  latch.
+  corruption from reducer rejection, proves sticky `service_failed` after ingress-sequence exhaustion,
+  verifies the exactly-once disposal of every queued source and bounded resource after the latch, and
+  proves the precommit materialization failure path has no Journal event or forbidden action.
 
 ## Consequences
 
