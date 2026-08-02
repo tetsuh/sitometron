@@ -9,7 +9,18 @@ else()
 endif()
 
 set(ALLOWED_STANDARD_HEADERS
-  string_view)
+  algorithm
+  array
+  cctype
+  cstdint
+  initializer_list
+  limits
+  optional
+  string
+  string_view
+  utility
+  variant
+  vector)
 set(ALLOWED_DEPENDENCY_HEADERS
   nlohmann/json.hpp
   boost/uuid/uuid.hpp

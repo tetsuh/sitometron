@@ -25,7 +25,7 @@ bool ParseExactJson(const char* first, const char* last, nlohmann::json* value) 
     return false;
   }
   try {
-    *value = nlohmann::json::parse(first, last, nullptr, true, true);
+    *value = nlohmann::json::parse(first, last, nullptr, true, false);
     return true;
   } catch (const nlohmann::json::parse_error&) {
     return false;

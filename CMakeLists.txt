@@ -50,7 +50,7 @@ endfunction()
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Boost CONFIG REQUIRED COMPONENTS uuid hash2)
 
-add_library(sitometron_core STATIC src/core/version.cpp)
+add_library(sitometron_core STATIC src/core/version.cpp src/core/job_reducer.cpp)
 add_library(sitometron::core ALIAS sitometron_core)
 target_include_directories(
   sitometron_core
@@ -90,11 +90,41 @@ if(SITOMETRON_BUILD_TESTS)
   add_library(sitometron::test_support ALIAS sitometron_test_support)
   target_include_directories(sitometron_test_support INTERFACE tests/support)
 
-  add_executable(sitometron_core_tests tests/unit/version_test.cpp)
-  target_link_libraries(sitometron_core_tests PRIVATE sitometron::core sitometron::test_support)
+  add_executable(sitometron_version_test tests/unit/version_test.cpp)
+  target_link_libraries(sitometron_version_test PRIVATE sitometron::core sitometron::test_support)
+  sitometron_enable_project_warnings(sitometron_version_test)
+  sitometron_enable_sanitizers(sitometron_version_test)
+  add_test(NAME sitometron_version_test COMMAND sitometron_version_test)
+
+  add_executable(
+    sitometron_core_tests
+    tests/unit/job_reducer_test.cpp
+    tests/unit/job_reducer_vectors_test.cpp)
+  target_link_libraries(
+    sitometron_core_tests
+    PRIVATE
+      sitometron::core
+      sitometron::test_support
+      nlohmann_json::nlohmann_json)
   sitometron_enable_project_warnings(sitometron_core_tests)
   sitometron_enable_sanitizers(sitometron_core_tests)
   add_test(NAME sitometron_core_tests COMMAND sitometron_core_tests)
+  foreach(_job_reducer_check IN ITEMS
+      job_closed_state_set
+      job_state_event_vectors
+      job_command_vectors
+      job_first_cause_vectors
+      job_finalization_vectors
+      job_timeout_vectors
+      job_late_cleanup_vectors
+      job_ordering_vectors
+      job_rejected_input_no_append)
+    add_test(
+      NAME ${_job_reducer_check}
+      COMMAND sitometron_core_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/schemas/core/v1/job-reducer-vectors.json
+        ${_job_reducer_check})
+  endforeach()
 
   add_test(
     NAME core_job_contract

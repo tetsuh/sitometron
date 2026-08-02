@@ -69,16 +69,16 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `NFR-003` | CI jobs `linux`, `windows`; CTest `in_source_build_rejected` | CI active; rejection test planned before the Phase 0A Gate closes |
 | `NFR-004` | CTest `sitometron_core_tests`; policy check `unit_tests_reject_real_sleep` | Core test active; policy check planned before the Phase 0A Gate closes |
 | `NFR-005` | CTests `core_dependency_allowlist` (including the reviewed standard-header allowlist), `core_dependency_rejects_unapproved_target`, `core_dependency_rejects_unapproved_private_include`, `core_public_api_dependency_isolation`, `core_dependency_api_smoke`; CI jobs `linux`, `windows` | Normative under Accepted ADR-0004; implemented by Issue #17 |
-| `JOB-001` | CTest `core_job_contract`; C++ test `job_closed_state_set` | Contract check active; C++ test planned for reducer implementation |
-| `JOB-002` | CTest `core_job_contract`; C++ tests `job_state_event_vectors`, `job_command_vectors` | Contract check active; C++ tests planned for reducer implementation |
-| `JOB-003` | C++ test `job_first_cause_vectors` | Planned for reducer implementation |
-| `JOB-004` | C++ test `job_finalization_vectors` | Planned for reducer implementation |
-| `JOB-005` | C++ test `job_timeout_vectors` | Planned for reducer implementation |
-| `JOB-006` | C++ test `job_late_cleanup_vectors` | Planned for reducer implementation |
-| `JOB-007` | C++ test `job_ordering_vectors` | Planned for reducer implementation |
+| `JOB-001` | CTest `core_job_contract`; C++ test `job_closed_state_set` | Active |
+| `JOB-002` | CTest `core_job_contract`; C++ tests `job_state_event_vectors`, `job_command_vectors` | Active |
+| `JOB-003` | C++ test `job_first_cause_vectors` | Active |
+| `JOB-004` | C++ test `job_finalization_vectors` | Active |
+| `JOB-005` | C++ test `job_timeout_vectors` | Active |
+| `JOB-006` | C++ test `job_late_cleanup_vectors` | Active |
+| `JOB-007` | C++ test `job_ordering_vectors` | Active |
 | `JRN-001` | CTest `core_job_contract`; C++ test `job_journal_envelope_vectors` | Contract check active; C++ test planned in Phase 0B |
 | `JRN-002` | C++ test `job_journal_commit_order` | Planned in Phase 0B |
-| `JRN-003` | C++ tests `job_rejected_input_no_append`, `job_journal_failure_fail_closed` | Planned for reducer implementation and Phase 0B respectively |
+| `JRN-003` | C++ tests `job_rejected_input_no_append`, `job_journal_failure_fail_closed` | Reducer check active; Phase 0B check planned |
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even
