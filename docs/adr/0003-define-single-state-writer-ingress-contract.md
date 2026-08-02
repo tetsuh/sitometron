@@ -199,8 +199,9 @@ post-terminal sequence may acquire the gate and reaches ADR-0002 as a Journaled 
 A preallocated source gate begins in `registered_empty` before delivery. Under the ingress mutex,
 the first successful FIFO insertion atomically assigns the next `ingress_sequence`, transfers the
 queued ownership, and changes that gate to `pending(sequence, identity, payload)`. Only a pending gate
-with an existing sequence may return `coalesced_pending(existing_ingress_sequence)`. Gate acquisition,
-sequence assignment, FIFO insertion, and ownership transfer therefore have one linearization point;
+with an existing sequence may return `coalesced_pending(existing_ingress_sequence)`. The
+`registered_empty`-to-`pending` transition, sequence assignment, FIFO insertion, and ownership
+transfer therefore have one linearization point;
 a retry racing between registration and first insertion cannot observe a coalesced result without an
 existing sequence.
 
@@ -326,7 +327,9 @@ logical commit, after commit success, during apply, and during effect dispatch.
 A logical commit failure is writer-local. It sets `failure_latched`, applies no proposal, dispatches
 no ordinary reducer effect, and releases no success response or ACK. No later normal Journal sequence
 is allocated in that process. Queued but unprocessed sources receive `service_failed` and retain
-ownership; no queued input is treated as accepted or replayed.
+only their external delivery/response obligation and authoritative retry identity; ingress performs
+the already-defined exactly-once failure-disposal operation. No queued input is treated as accepted
+or replayed.
 
 After failure, the writer finishes the already-dequeued turn only under the rule above, releases
 every other queued source without reducer decision, cancels producer registration, closes callback
