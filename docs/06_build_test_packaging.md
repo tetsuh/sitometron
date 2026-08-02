@@ -76,9 +76,11 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `JOB-005` | C++ test `job_timeout_vectors` | Active |
 | `JOB-006` | C++ test `job_late_cleanup_vectors` | Active |
 | `JOB-007` | C++ test `job_ordering_vectors` | Active |
-| `JRN-001` | CTest `core_job_contract`; C++ test `job_journal_envelope_vectors` | Contract check active; C++ test planned in Phase 0B |
-| `JRN-002` | C++ test `job_journal_commit_order` | Planned in Phase 0B |
-| `JRN-003` | C++ tests `job_rejected_input_no_append`, `job_journal_failure_fail_closed` | Reducer check active; Phase 0B check planned |
+| `JOB-008` | C++ tests `job_ingress_linearization_order`, `job_ingress_single_writer`, `job_ingress_source_classification`, `job_ingress_capacity_and_reserve`, `job_ingress_coalescing`, `job_ingress_fail_closed` | Planned under Proposed ADR-0003; implementation blocked pending acceptance |
+| `OPS-001` | C++ tests `job_ingress_shutdown_quiescence`, `job_ingress_callback_lifetime`, `job_ingress_readiness_failure` | Planned under Proposed ADR-0003; implementation blocked pending acceptance |
+| `JRN-001` | CTest `core_job_contract`; C++ tests `job_journal_envelope_vectors`, `job_logical_sequence_exhaustion_fail_closed` | Contract check active; logical-envelope and sequence-boundary checks planned in Phase 0A |
+| `JRN-002` | C++ test `job_logical_commit_order`; C++ test `job_physical_disk_sync_order` | Logical ordering check planned in Phase 0A under Proposed ADR-0003 and does not claim disk sync; physical check planned in Phase 0B |
+| `JRN-003` | C++ tests `job_rejected_input_no_append`, `job_logical_commit_failure_fail_closed`, `job_physical_commit_failure_fail_closed` | Reducer check active; logical failure check planned in Phase 0A under Proposed ADR-0003; physical check planned in Phase 0B |
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even
