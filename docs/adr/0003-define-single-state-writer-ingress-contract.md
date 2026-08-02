@@ -63,7 +63,7 @@ A coalesced retransmission and every not-admitted submission receive no new `ing
 reducer decision, or Journal record. Ingress-level results are not new ADR-0002 rejection reasons.
 A coalesced result may identify the existing pending `ingress_sequence` for correlation only.
 
-For each dequeued input, the writer performs exactly this order:
+For each dequeued reducer/Job input, the writer performs exactly this order:
 
 ```text
 validate and decide
@@ -74,6 +74,8 @@ validate and decide
   -> dispatch every reducer effect in its declared order
   -> release a command response
 ```
+
+The global shutdown marker is not a reducer/Job input and instead follows the service-control transition defined in the shutdown section, without a reducer decision, logical envelope, Journal sequence, or Journal event.
 
 All potentially-failing transition materialization completes before logical commit while remaining
 pure and unpublished. Before commit, no mutable snapshot is published, effect is dispatched, response
