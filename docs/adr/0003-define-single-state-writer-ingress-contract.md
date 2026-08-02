@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-08-02
+Accepted — 2026-08-03
 
 ## Context
 
@@ -482,9 +482,9 @@ test specification:
 
 - Issue #10
 - Gate #1
-- Requirements: `JOB-007`, `JRN-001` through `JRN-003`, `NFR-004`, `NFR-005`; proposed `JOB-008`,
-  proposed `OPS-001`
-- Contract Registry: proposed `Single-state-writer ingress and critical reserve`; affected `Core Job
+- Requirements: `JOB-007`, `JRN-001` through `JRN-003`, `NFR-004`, `NFR-005`, `JOB-008`, and
+  `OPS-001`
+- Contract Registry: Normative `Single-state-writer ingress and critical reserve`; affected `Core Job
   states and transitions`, `Core commands and rejection reasons`, `JobJournal envelope and event
   schemas`, and `Approved core dependency boundary and allowlist`
 - Related ADRs: [ADR-0002](0002-define-core-job-reducer-contract.md),

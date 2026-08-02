@@ -63,15 +63,14 @@ Accepted ADR-0002 makes these requirements binding on implementation.
 | `JRN-002` | MUST | Append and disk-sync each accepted event before reducer apply, response, acknowledgment, or external post-sync effect. | [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
 | `JRN-003` | MUST | Append no rejected input and fail closed without inferring a state transition when append or sync fails or has unknown outcome. | [ADR-0002](adr/0002-define-core-job-reducer-contract.md) |
 
-## 6. Planned Phase 0A ingress requirements
+## 6. Normative Phase 0A ingress requirements
 
-> **Planned, not yet normative:** Proposed ADR-0003 under Issue #10 owns these requirements.
-> Implementers must not treat this outline as a finalized contract.
+Accepted ADR-0003 under Issue #10 makes these requirements binding on implementation.
 
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
-| `JOB-008` | MUST | Bound ingress through one single-writer FIFO with explicit admission linearization, a fixed resident Job population, critical-reserve isolation, delivery-identity-safe coalescing, and fail-closed capacity invariants; retain each successfully created Phase 0A Job snapshot until separate Normative deletion/retention authority exists. | Proposed [ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) under [Issue #10](https://github.com/tetsuh/sitometron/issues/10) |
-| `OPS-001` | MUST | Close admission, latch persistence/readiness failure, quiesce producers and callbacks, and destroy writer state only in the bounded ingress/shutdown order defined for Phase 0A. | Proposed [ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) under [Issue #10](https://github.com/tetsuh/sitometron/issues/10) |
+| `JOB-008` | MUST | Bound ingress through one single-writer FIFO with explicit admission linearization, a fixed resident Job population, critical-reserve isolation, delivery-identity-safe coalescing, and fail-closed capacity invariants; retain each successfully created Phase 0A Job snapshot until separate Normative deletion/retention authority exists. | Accepted [ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) under [Issue #10](https://github.com/tetsuh/sitometron/issues/10) |
+| `OPS-001` | MUST | Close admission, latch persistence/readiness failure, quiesce producers and callbacks, and destroy writer state only in the bounded ingress/shutdown order defined for Phase 0A. | Accepted [ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) under [Issue #10](https://github.com/tetsuh/sitometron/issues/10) |
 
 ## 7. Planned domains
 
