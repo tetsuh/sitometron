@@ -120,15 +120,15 @@ class JobJournalPort {
 class ApplicationRunnerPort {
  public:
   virtual ~ApplicationRunnerPort() = default;
-  virtual void HandoffLaunch(ApplicationLaunchRequest request) noexcept = 0;
-  virtual void HandoffCooperativeStop(ApplicationStopRequest request) noexcept = 0;
-  virtual void HandoffForcedStop(ApplicationStopRequest request) noexcept = 0;
+  virtual void HandoffLaunch(ApplicationLaunchRequest&& request) noexcept = 0;
+  virtual void HandoffCooperativeStop(ApplicationStopRequest&& request) noexcept = 0;
+  virtual void HandoffForcedStop(ApplicationStopRequest&& request) noexcept = 0;
 };
 
 class SessionRetainerPort {
  public:
   virtual ~SessionRetainerPort() = default;
-  virtual void HandoffRetainSameIdentity(SessionRetainRequest request) noexcept = 0;
+  virtual void HandoffRetainSameIdentity(SessionRetainRequest&& request) noexcept = 0;
 };
 
 class IdentitySourcePort {
@@ -228,22 +228,26 @@ payload. It does not add executable paths, commands, environment variables, cred
 APIs, resolved-allocation interpretation, or proprietary Application data. Stop requests contain
 only the three existing bound identities. Cooperative and forced stop remain separate operations.
 
-The by-value `noexcept` calls consume pre-materialized owned requests after commit. Entry into a
-handoff is the non-throwing ownership-transfer boundary required by ADR-0003; the caller passes a
-moved value and does not retain an alias. Before commit, Issue #12 composition must establish the
-bounded destination capacity that the handoff will consume. After call entry, the implementation may
-only move into that already prepared storage and must catch no exception because it performs no
-potentially throwing copy, allocation, or synchronous external operation. The `noexcept` declaration
-alone is not evidence that these conditions hold. The port performs no synchronous operational
-result, callback, ingress submission, retry, deduplication, once-only decision, or Worker
-stop-and-wait logic. Launch observations and process-exit outcomes return later as independently
-admitted raw candidates.
+The rvalue-reference `noexcept` calls consume pre-materialized owned requests after commit. Entry
+into a handoff is the non-throwing ownership-transfer boundary required by ADR-0003; Issue #12 must
+invoke every handoff with an rvalue, and the caller does not retain an alias. Before commit, Issue #12
+composition must establish the bounded destination capacity that the handoff will consume. After call
+entry, the implementation may only move into that already prepared storage and must catch no
+exception because it performs no potentially throwing copy, allocation, or synchronous external
+operation. The `noexcept` declaration alone is not evidence that these conditions hold. Issue #11
+test/support code must assert that `ApplicationLaunchRequest`, `ApplicationStopRequest`, and
+`SessionRetainRequest` are nothrow move constructible; this test-only assertion does not authorize
+`<type_traits>` or expand the production-header allowlist. The port performs no synchronous
+operational result, callback, ingress submission, retry, deduplication, once-only decision, or
+Worker stop-and-wait logic. Launch observations and process-exit outcomes return later as
+independently admitted raw candidates.
 
 ### Session-retention boundary
 
 `SessionRetainRequest` contains the routing Job ID and bound Session ID. In v0.1 the two UUIDv7 values
-must be equal under ADR-0002. `HandoffRetainSameIdentity()` is the same by-value, non-throwing,
-postcommit ownership transfer as the Application handoffs and returns no synchronous result.
+must be equal under ADR-0002. `HandoffRetainSameIdentity()` is the same rvalue-reference,
+non-throwing, postcommit ownership transfer as the Application handoffs and returns no synchronous
+result.
 
 The only candidate an Issue #11 Session fake may stage is matching `session_retained`.
 `session_retain_requested`, `finalization_completed`, and `finalization_failed` remain explicit
@@ -312,7 +316,7 @@ contract.
 ### Port-object ownership and reentrancy
 
 Issue #12 composition owns every port object, fixes each binding before writer startup, and keeps the
-objects alive and unrebound until the writer is stopped and no port call can remain in flight. A port
+objects alive and never rebound until the writer is stopped and no port call can remain in flight. A port
 may retain its own adapter state but never a writer, ingress, reducer, snapshot, response, ACK, or
 effect-dispatch pointer or reference.
 
