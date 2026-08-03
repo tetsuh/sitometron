@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-08-03
+Accepted — 2026-08-03
 
 ## Context
 
@@ -349,7 +349,7 @@ support, not new product behavior.
 - Logical-surface constraints: `JRN-001` through `JRN-003`.
 - Not implemented by this ADR or Issue #11: `JOB-004` through `JOB-008` and `OPS-001`.
 
-The ADR-only PR registers these names as Planned; Issue #11 later adds the CTest targets:
+This ADR registers these names as Planned; Issue #11 later adds the CTest targets:
 
 | Stable check | Requirement mapping and limit |
 |---|---|
@@ -373,24 +373,26 @@ for the later Issue #12 implementation and may not appear in this public port su
 
 ### Contract Registry and implementation ownership
 
-While this ADR is Proposed, the Registry adds:
+With this ADR Accepted, the Registry records:
 
 ```text
-Core lifecycle capability ports | Planned | Planned | Proposed ADR-0005 under Issue #26 | Phase 0A
+Core lifecycle capability ports | Normative | Planned | Accepted ADR-0005 under Issue #26 | Phase 0A
 ```
 
-The affected existing rows do not transition in this ADR-only draft:
+The affected existing rows do not transition in this ADR-only acceptance publication:
 
 - `Approved core dependency boundary and allowlist`: `Normative | Implemented`;
 - `JobJournal envelope and event schemas`: `Normative | Planned`; and
 - `Single-state-writer ingress and critical reserve`: `Normative | Planned`.
 
-After the owner accepts the exact reviewed draft head, and before any merge of that head, ADR-0005
-changes from Proposed to Accepted and the new row changes from `Planned | Planned` to
-`Normative | Planned`. Merge authorization is a separate owner decision. Acceptance alone does not
-implement a port.
+The owner accepted the exact reviewed draft head
+`04e42ec180353790708cc3a74f70ef5109d1fdaa` in the
+[PR #27 acceptance record](https://github.com/tetsuh/sitometron/pull/27#issuecomment-5172327903).
+This publication changes ADR-0005 from Proposed to Accepted and the new row from
+`Planned | Planned` to `Normative | Planned`. Merge authorization is a separate owner decision.
+Acceptance alone does not implement a port.
 
-After that merge, Issue #11 may implement the new row and transition it to
+After this ADR merges, Issue #11 may implement the new row and transition it to
 `Normative | Implemented`. Issue #11 may transition the JobJournal envelope implementation to
 `Normative | In progress` after the owned C++ envelope and logical fake exist. Issue #12 alone owns
 the complete logical-envelope `Normative | Implemented` transition after writer construction,
@@ -413,8 +415,8 @@ sequence allocation, and logical ordering are proved. Physical Journal durabilit
   changing these Phase 0A ownership rules.
 - Neutral: `sitometron_core` has no ABI-stability promise in v0.1, but semantic changes still require
   contract review.
-- Neutral: This ADR neither implements nor accepts the ports; its Proposed status is not production
-  authority.
+- Neutral: This ADR accepts the port contracts but does not implement them; its Accepted status is
+  contract authority, not implementation evidence.
 
 ## Options considered
 
