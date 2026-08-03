@@ -8,6 +8,7 @@ ADRs use four-digit sequence numbers and lowercase hyphenated names.
 | [0002](0002-define-core-job-reducer-contract.md) | Accepted | Define the core Job reducer contract |
 | [0003](0003-define-single-state-writer-ingress-contract.md) | Accepted | Define the single-state-writer ingress contract |
 | [0004](0004-allow-explicit-core-dependencies.md) | Accepted | Allow explicit dependencies in the C++20 core |
+| [0005](0005-define-phase-0a-core-capability-port-contracts.md) | Proposed | Define Phase 0A core capability port contracts |
 
 Use [the ADR template](template.md). See [the ADR process](../10_adr_process.md) and
 [the development workflow](../development_workflow.md) for status, review, and merge rules.

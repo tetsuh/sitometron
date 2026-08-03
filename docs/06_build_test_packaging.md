@@ -67,7 +67,7 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `NFR-001` | CI jobs `linux`, `windows` | Active |
 | `NFR-002` | Legacy check names retired by Issue #17; standard-header enforcement continues under `NFR-005` | Requirement Superseded |
 | `NFR-003` | CI jobs `linux`, `windows`; CTest `in_source_build_rejected` | CI active; rejection test planned before the Phase 0A Gate closes |
-| `NFR-004` | CTest `sitometron_core_tests`; policy check `unit_tests_reject_real_sleep` | Core test active; policy check planned before the Phase 0A Gate closes |
+| `NFR-004` | CTest `sitometron_core_tests`; planned CTests `core_port_fake_contracts`, `job_fake_effect_observation`; policy check `unit_tests_reject_real_sleep` | Core test active; port/fake support checks planned under Proposed ADR-0005 and Issue #11; policy check planned before the Phase 0A Gate closes |
 | `NFR-005` | CTests `core_dependency_allowlist` (including the reviewed standard-header allowlist), `core_dependency_rejects_unapproved_target`, `core_dependency_rejects_unapproved_private_include`, `core_public_api_dependency_isolation`, `core_dependency_api_smoke`; CI jobs `linux`, `windows` | Normative under Accepted ADR-0004; implemented by Issue #17 |
 | `JOB-001` | CTest `core_job_contract`; C++ test `job_closed_state_set` | Active |
 | `JOB-002` | CTest `core_job_contract`; C++ tests `job_state_event_vectors`, `job_command_vectors` | Active |
@@ -78,9 +78,9 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `JOB-007` | C++ test `job_ordering_vectors` | Active |
 | `JOB-008` | C++ tests `job_ingress_linearization_order`, `job_ingress_single_writer`, `job_ingress_source_classification`, `job_ingress_capacity_and_reserve`, `job_ingress_coalescing`, `job_ingress_fail_closed` | Normative under Accepted ADR-0003; implementation checks planned under Issue #12 |
 | `OPS-001` | C++ tests `job_ingress_shutdown_quiescence`, `job_ingress_callback_lifetime`, `job_ingress_readiness_failure` | Normative under Accepted ADR-0003; implementation checks planned under Issue #12 |
-| `JRN-001` | CTest `core_job_contract`; C++ tests `job_journal_envelope_vectors`, `job_logical_sequence_exhaustion_fail_closed` | Contract check active; logical-envelope and sequence-boundary checks planned in Phase 0A |
-| `JRN-002` | C++ test `job_logical_commit_order`; C++ test `job_physical_disk_sync_order` | Logical ordering check planned in Phase 0A under Accepted ADR-0003 and does not claim disk sync; physical check planned in Phase 0B |
-| `JRN-003` | C++ tests `job_rejected_input_no_append`, `job_logical_commit_failure_fail_closed`, `job_physical_commit_failure_fail_closed` | Reducer check active; logical failure check planned in Phase 0A under Accepted ADR-0003; physical check planned in Phase 0B |
+| `JRN-001` | CTest `core_job_contract`; C++ tests `job_journal_envelope_vectors`, `job_logical_sequence_exhaustion_fail_closed`; planned CTest `job_fake_logical_commit_results` | Contract check active; logical-envelope and sequence-boundary checks planned in Phase 0A; fake result support planned under Proposed ADR-0005 and Issue #11 |
+| `JRN-002` | C++ test `job_logical_commit_order`; planned CTest `job_fake_effect_observation`; C++ test `job_physical_disk_sync_order` | Logical ordering check planned in Phase 0A under Accepted ADR-0003; passive observation support planned under Proposed ADR-0005 and Issue #11 and does not prove ordering; physical check planned in Phase 0B |
+| `JRN-003` | C++ tests `job_rejected_input_no_append`, `job_logical_commit_failure_fail_closed`, `job_physical_commit_failure_fail_closed`; planned CTest `job_fake_logical_commit_results` | Reducer check active; logical failure reaction planned in Phase 0A under Accepted ADR-0003; fake result support planned under Proposed ADR-0005 and Issue #11; physical check planned in Phase 0B |
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even
