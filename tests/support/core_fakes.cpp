@@ -248,6 +248,53 @@ bool IsLogicalCommitResult(core::LogicalCommitResult result) {
          result == core::LogicalCommitResult::kOutcomeUnknown;
 }
 
+bool IsValidLogicalJobEvent(const core::LogicalJobEvent& event) {
+  if (event.schema_version != 1 || event.sequence == 0 || !IsRfc3339(event.recorded_at.rfc3339) ||
+      !IsUuidVersion(event.job_id.value, '7')) {
+    return false;
+  }
+
+  switch (event.event_type) {
+    case core::EventType::kJobCreated:
+      return std::holds_alternative<core::JobCreatedPayload>(event.payload);
+    case core::EventType::kResourcesCommitted:
+      return std::holds_alternative<core::ResourcesCommittedPayload>(event.payload);
+    case core::EventType::kWorkerLaunchIntent:
+      return std::holds_alternative<core::WorkerLaunchIntentPayload>(event.payload);
+    case core::EventType::kWorkerLaunchObserved:
+      return std::holds_alternative<core::WorkerLaunchObservedPayload>(event.payload);
+    case core::EventType::kWorkerRunning:
+      return std::holds_alternative<core::WorkerRunningPayload>(event.payload);
+    case core::EventType::kCancelAccepted:
+    case core::EventType::kTerminateAccepted:
+      return std::holds_alternative<core::PrincipalPayload>(event.payload);
+    case core::EventType::kTimeoutExpired:
+      return std::holds_alternative<core::TimeoutExpiredPayload>(event.payload);
+    case core::EventType::kWorkerCompleted:
+    case core::EventType::kWorkerFailed:
+      return std::holds_alternative<core::WorkerEventPayload>(event.payload);
+    case core::EventType::kProcessExitConfirmed:
+      return std::holds_alternative<core::ProcessExitConfirmedPayload>(event.payload);
+    case core::EventType::kSessionRetainRequested:
+    case core::EventType::kSessionRetained:
+      return std::holds_alternative<core::SessionPayload>(event.payload);
+    case core::EventType::kFinalizationCompleted:
+    case core::EventType::kFinalizationFailed:
+      return std::holds_alternative<core::EmptyPayload>(event.payload);
+    case core::EventType::kTerminalOutcomeCommitted:
+      return std::holds_alternative<core::TerminalOutcomePayload>(event.payload);
+    case core::EventType::kResourcesReleased:
+      return std::holds_alternative<core::ResourcesReleasedPayload>(event.payload);
+    case core::EventType::kCleanupStatusRecorded:
+      return std::holds_alternative<core::CleanupStatusPayload>(event.payload);
+    case core::EventType::kLateWorkerEvent:
+      return std::holds_alternative<core::LateWorkerEventPayload>(event.payload);
+    case core::EventType::kInvalid:
+      return false;
+  }
+  return false;
+}
+
 template <typename Request>
 void ConsumeTransferredRequest(Request&& request) noexcept {
   using Value = std::decay_t<Request>;
@@ -423,9 +470,11 @@ bool FakeClock::verification_failed() const noexcept { return verification_faile
 
 FakeJobJournal::FakeJobJournal(std::vector<JournalExpectation> expectations)
     : expectations_(std::move(expectations)), observations_(expectations_.size()) {
-  verification_failed_ = !std::all_of(
-      expectations_.begin(), expectations_.end(),
-      [](const auto& expectation) { return IsLogicalCommitResult(expectation.result); });
+  verification_failed_ =
+      !std::all_of(expectations_.begin(), expectations_.end(), [](const auto& expectation) {
+        return IsLogicalCommitResult(expectation.result) &&
+               IsValidLogicalJobEvent(expectation.event);
+      });
 }
 
 core::LogicalCommitResult FakeJobJournal::Commit(const core::LogicalJobEvent& event) noexcept {

@@ -357,6 +357,39 @@ int CheckLogicalCommitResults() {
   result |= Check(invalid_result.Commit(committed_event) == LogicalCommitResult::kOutcomeUnknown,
                   "invalid Journal setup can return only outcome unknown");
 
+  const auto check_malformed_setup = [&](LogicalJobEvent malformed_event,
+                                         std::string_view description) {
+    FakeJobJournal malformed(
+        {JournalExpectation{malformed_event, LogicalCommitResult::kCommitted}});
+    int malformed_result = 0;
+    malformed_result |= Check(malformed.verification_failed(),
+                              std::string(description) + " is rejected during setup");
+    malformed_result |=
+        Check(malformed.Commit(malformed_event) == LogicalCommitResult::kOutcomeUnknown,
+              std::string(description) + " returns outcome unknown");
+    malformed_result |= Check(malformed.CopyObservations().empty(),
+                              std::string(description) + " records no observation");
+    malformed_result |= Check(malformed.remaining_expectations() == 1,
+                              std::string(description) + " consumes no expectation");
+    return malformed_result;
+  };
+
+  auto schema_version_zero = committed_event;
+  schema_version_zero.schema_version = 0;
+  result |= check_malformed_setup(std::move(schema_version_zero), "schema_version zero");
+  auto sequence_zero = committed_event;
+  sequence_zero.sequence = 0;
+  result |= check_malformed_setup(std::move(sequence_zero), "sequence zero");
+  auto invalid_timestamp = committed_event;
+  invalid_timestamp.recorded_at = DiagnosticTimestamp{"2026-02-30T00:00:00Z"};
+  result |= check_malformed_setup(std::move(invalid_timestamp), "invalid timestamp");
+  auto invalid_job_id = committed_event;
+  invalid_job_id.job_id = Uuid{std::string(kWorkerId)};
+  result |= check_malformed_setup(std::move(invalid_job_id), "invalid Job identity");
+  auto mismatched_payload = committed_event;
+  mismatched_payload.event_type = EventType::kTerminalOutcomeCommitted;
+  result |= check_malformed_setup(std::move(mismatched_payload), "EventType/payload mismatch");
+
   FakeJobJournal unused({JournalExpectation{committed_event, LogicalCommitResult::kCommitted}});
   result |= Check(!unused.Verify() && unused.verification_failed(),
                   "unused Journal expectation latches verification failure");
