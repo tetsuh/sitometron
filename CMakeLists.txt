@@ -126,6 +126,23 @@ if(SITOMETRON_BUILD_TESTS)
         ${_job_reducer_check})
   endforeach()
 
+  add_executable(sitometron_core_ports_fakes_test tests/unit/core_ports_fakes_test.cpp)
+  target_link_libraries(
+    sitometron_core_ports_fakes_test
+    PRIVATE
+      sitometron::core
+      sitometron::test_support)
+  sitometron_enable_project_warnings(sitometron_core_ports_fakes_test)
+  sitometron_enable_sanitizers(sitometron_core_ports_fakes_test)
+  foreach(_core_port_fake_check IN ITEMS
+      core_port_fake_contracts
+      job_fake_logical_commit_results
+      job_fake_effect_observation)
+    add_test(
+      NAME ${_core_port_fake_check}
+      COMMAND sitometron_core_ports_fakes_test ${_core_port_fake_check})
+  endforeach()
+
   add_test(
     NAME core_job_contract
     COMMAND
