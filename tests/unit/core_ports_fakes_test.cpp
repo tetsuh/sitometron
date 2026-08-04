@@ -56,6 +56,37 @@ constexpr std::string_view kJobId = "01890f30-7b54-7cc3-98c4-dc0c0c07398f";
 constexpr std::string_view kOtherV7Id = "01890f30-7b54-7cc3-98c4-dc0c0c073990";
 constexpr std::string_view kWorkerId = "550e8400-e29b-41d4-a716-446655440000";
 constexpr std::string_view kLaunchOperationId = "launch-op-1";
+constexpr std::string_view kEmptyObjectDigest =
+    "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+constexpr std::string_view kMaxResourceDigest =
+    "e1f2b8fa362bf7b7574e009b741da16f4ac6961bb1e2a594dbf19c5a7f5a2ad0";
+constexpr std::string_view kOversizeResourceDigest =
+    "4677f55af78bbd6788ee548feb1b932cc7a41f890dc9bd121f2f339c588a8f5d";
+constexpr std::string_view kInvalidUtf8Digest =
+    "4df51a863599ce9b7e9cac29d2144a68d0509897aa26626ded17edb0c761bd52";
+constexpr std::string_view kInvalidJsonDigest =
+    "7ccfa1fbf3940e6f0c0375d87c0f9235a50514e14cb427bdfaf5077987b26ccf";
+
+std::string RepeatUtf8(std::string_view scalar, std::size_t count) {
+  std::string result;
+  result.reserve(scalar.size() * count);
+  for (std::size_t index = 0; index < count; ++index) {
+    result += scalar;
+  }
+  return result;
+}
+
+std::string MakeMaxResourceJson() {
+  std::string result = "[";
+  result.reserve(65536);
+  for (int index = 0; index < 13105; ++index) {
+    result += "null,";
+  }
+  result += "null";
+  result.append(5, ' ');
+  result += "]";
+  return result;
+}
 
 int Check(bool condition, std::string_view description) {
   if (condition) {
@@ -75,6 +106,76 @@ LogicalJobEvent MakeEvent(std::uint64_t sequence, EventType event_type) {
     event.payload = WorkerLaunchObservedPayload{StableId{std::string(kLaunchOperationId)}, true};
   } else {
     event.payload = TerminalOutcomePayload{TerminalOutcome::kSucceeded};
+  }
+  return event;
+}
+
+LogicalJobEvent MakeValidEvent(EventType event_type) {
+  auto event = MakeEvent(1, event_type);
+  using namespace sitometron::core;
+  switch (event_type) {
+    case EventType::kJobCreated:
+      event.payload = JobCreatedPayload{Uuid{std::string(kJobId)}};
+      break;
+    case EventType::kResourcesCommitted:
+      event.payload = ResourcesCommittedPayload{StableId{"allocation-1"},
+                                                Digest{std::string(kEmptyObjectDigest)},
+                                                StableId{"allocation-schema"}, 1, "{}"};
+      break;
+    case EventType::kWorkerLaunchIntent:
+      event.payload = WorkerLaunchIntentPayload{StableId{std::string(kLaunchOperationId)},
+                                                StableId{"application-1"},
+                                                RepeatUtf8("\xC3\xA9", 128),
+                                                Digest{std::string(64, 'a')},
+                                                StableId{"allocation-1"},
+                                                Digest{std::string(64, 'b')},
+                                                Uuid{std::string(kWorkerId)}};
+      break;
+    case EventType::kWorkerLaunchObserved:
+      event.payload = WorkerLaunchObservedPayload{StableId{std::string(kLaunchOperationId)}, true};
+      break;
+    case EventType::kWorkerRunning:
+      event.payload = WorkerRunningPayload{Uuid{std::string(kWorkerId)}};
+      break;
+    case EventType::kCancelAccepted:
+    case EventType::kTerminateAccepted:
+      event.payload = PrincipalPayload{RepeatUtf8("\xC3\xA9", 256)};
+      break;
+    case EventType::kTimeoutExpired:
+      event.payload = TimeoutExpiredPayload{TimeoutPhase::kExecution, 1};
+      break;
+    case EventType::kWorkerCompleted:
+    case EventType::kWorkerFailed:
+      event.payload = WorkerEventPayload{Uuid{std::string(kWorkerId)}, 1};
+      break;
+    case EventType::kProcessExitConfirmed:
+      event.payload = ProcessExitConfirmedPayload{CompletionMode::kCooperative,
+                                                  StableId{std::string(kLaunchOperationId)}};
+      break;
+    case EventType::kSessionRetainRequested:
+    case EventType::kSessionRetained:
+      event.payload = SessionPayload{Uuid{std::string(kJobId)}};
+      break;
+    case EventType::kFinalizationCompleted:
+    case EventType::kFinalizationFailed:
+      event.payload = EmptyPayload{};
+      break;
+    case EventType::kTerminalOutcomeCommitted:
+      event.payload = TerminalOutcomePayload{TerminalOutcome::kSucceeded};
+      break;
+    case EventType::kResourcesReleased:
+      event.payload =
+          ResourcesReleasedPayload{StableId{"allocation-1"}, Digest{std::string(64, 'a')}};
+      break;
+    case EventType::kCleanupStatusRecorded:
+      event.payload = CleanupStatusPayload{CleanupStatus::kCompleted};
+      break;
+    case EventType::kLateWorkerEvent:
+      event.payload =
+          LateWorkerEventPayload{EventType::kWorkerCompleted, Uuid{std::string(kWorkerId)}, 1};
+      break;
+    case EventType::kInvalid:
+      break;
   }
   return event;
 }
@@ -374,21 +475,254 @@ int CheckLogicalCommitResults() {
     return malformed_result;
   };
 
-  auto schema_version_zero = committed_event;
-  schema_version_zero.schema_version = 0;
-  result |= check_malformed_setup(std::move(schema_version_zero), "schema_version zero");
-  auto sequence_zero = committed_event;
-  sequence_zero.sequence = 0;
-  result |= check_malformed_setup(std::move(sequence_zero), "sequence zero");
-  auto invalid_timestamp = committed_event;
-  invalid_timestamp.recorded_at = DiagnosticTimestamp{"2026-02-30T00:00:00Z"};
-  result |= check_malformed_setup(std::move(invalid_timestamp), "invalid timestamp");
-  auto invalid_job_id = committed_event;
-  invalid_job_id.job_id = Uuid{std::string(kWorkerId)};
-  result |= check_malformed_setup(std::move(invalid_job_id), "invalid Job identity");
-  auto mismatched_payload = committed_event;
-  mismatched_payload.event_type = EventType::kTerminalOutcomeCommitted;
-  result |= check_malformed_setup(std::move(mismatched_payload), "EventType/payload mismatch");
+  const std::vector<EventType> all_event_types = {
+      EventType::kJobCreated,           EventType::kResourcesCommitted,
+      EventType::kWorkerLaunchIntent,   EventType::kWorkerLaunchObserved,
+      EventType::kWorkerRunning,        EventType::kCancelAccepted,
+      EventType::kTerminateAccepted,    EventType::kTimeoutExpired,
+      EventType::kWorkerCompleted,      EventType::kWorkerFailed,
+      EventType::kProcessExitConfirmed, EventType::kSessionRetainRequested,
+      EventType::kSessionRetained,      EventType::kFinalizationCompleted,
+      EventType::kFinalizationFailed,   EventType::kTerminalOutcomeCommitted,
+      EventType::kResourcesReleased,    EventType::kCleanupStatusRecorded,
+      EventType::kLateWorkerEvent};
+  for (const auto event_type : all_event_types) {
+    const auto valid_event = MakeValidEvent(event_type);
+    FakeJobJournal valid_mapping(
+        {JournalExpectation{valid_event, LogicalCommitResult::kCommitted}});
+    result |= Check(valid_mapping.Commit(valid_event) == LogicalCommitResult::kCommitted &&
+                        valid_mapping.Verify() && valid_mapping.CopyObservations().size() == 1,
+                    "every EventType accepts its exact schema payload mapping");
+  }
+  auto boundary_event = MakeValidEvent(EventType::kResourcesCommitted);
+  boundary_event.sequence = std::numeric_limits<std::uint64_t>::max();
+  auto& boundary_payload =
+      std::get<sitometron::core::ResourcesCommittedPayload>(boundary_event.payload);
+  boundary_payload.schema_version = std::numeric_limits<std::uint32_t>::max();
+  boundary_payload.payload_utf8 = MakeMaxResourceJson();
+  boundary_payload.allocation_digest = sitometron::core::Digest{std::string(kMaxResourceDigest)};
+  result |= Check(boundary_payload.payload_utf8.size() == 65536,
+                  "resource boundary fixture is exactly 65536 bytes");
+  FakeJobJournal boundary_journal(
+      {JournalExpectation{boundary_event, LogicalCommitResult::kCommitted}});
+  result |= Check(boundary_journal.Commit(boundary_event) == LogicalCommitResult::kCommitted &&
+                      boundary_journal.Verify(),
+                  "schema maximum sequence, resource version, and valid JSON bytes remain valid");
+
+  using MalformedMutation = void (*)(LogicalJobEvent&);
+  struct MalformedCase {
+    std::string_view description;
+    EventType event_type;
+    MalformedMutation mutate;
+  };
+  const std::vector<MalformedCase> malformed_cases = {
+      {"unknown EventType", EventType::kJobCreated,
+       [](LogicalJobEvent& event) { event.event_type = static_cast<EventType>(99); }},
+      {"schema version zero", EventType::kJobCreated,
+       [](LogicalJobEvent& event) { event.schema_version = 0; }},
+      {"sequence zero", EventType::kJobCreated, [](LogicalJobEvent& event) { event.sequence = 0; }},
+      {"invalid timestamp", EventType::kJobCreated,
+       [](LogicalJobEvent& event) {
+         event.recorded_at = DiagnosticTimestamp{"2026-02-30T00:00:00Z"};
+       }},
+      {"invalid Job identity", EventType::kJobCreated,
+       [](LogicalJobEvent& event) { event.job_id = Uuid{std::string(kWorkerId)}; }},
+      {"EventType/payload mismatch", EventType::kWorkerLaunchObserved,
+       [](LogicalJobEvent& event) { event.event_type = EventType::kTerminalOutcomeCommitted; }},
+      {"JobCreated UUID", EventType::kJobCreated,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::JobCreatedPayload>(event.payload).session_id =
+             Uuid{std::string(kWorkerId)};
+       }},
+      {"ResourcesCommitted allocation StableId", EventType::kResourcesCommitted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::ResourcesCommittedPayload>(event.payload).allocation_id =
+             StableId{"bad id"};
+       }},
+      {"ResourcesCommitted allocation digest", EventType::kResourcesCommitted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::ResourcesCommittedPayload>(event.payload)
+             .allocation_digest.value = "not-a-digest";
+       }},
+      {"ResourcesCommitted schema StableId", EventType::kResourcesCommitted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::ResourcesCommittedPayload>(event.payload).schema_id =
+             StableId{"bad id"};
+       }},
+      {"ResourcesCommitted schema version", EventType::kResourcesCommitted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::ResourcesCommittedPayload>(event.payload).schema_version = 0;
+       }},
+      {"ResourcesCommitted payload UTF-8", EventType::kResourcesCommitted,
+       [](LogicalJobEvent& event) {
+         auto& payload = std::get<sitometron::core::ResourcesCommittedPayload>(event.payload);
+         payload.payload_utf8 = std::string("\xC0\x80", 2);
+         payload.allocation_digest = sitometron::core::Digest{std::string(kInvalidUtf8Digest)};
+       }},
+      {"ResourcesCommitted payload byte bound", EventType::kResourcesCommitted,
+       [](LogicalJobEvent& event) {
+         auto& payload = std::get<sitometron::core::ResourcesCommittedPayload>(event.payload);
+         payload.payload_utf8 = MakeMaxResourceJson();
+         payload.payload_utf8.push_back(' ');
+         payload.allocation_digest = sitometron::core::Digest{std::string(kOversizeResourceDigest)};
+       }},
+      {"ResourcesCommitted invalid JSON", EventType::kResourcesCommitted,
+       [](LogicalJobEvent& event) {
+         auto& payload = std::get<sitometron::core::ResourcesCommittedPayload>(event.payload);
+         payload.payload_utf8 = "not json";
+         payload.allocation_digest = sitometron::core::Digest{std::string(kInvalidJsonDigest)};
+       }},
+      {"ResourcesCommitted digest mismatch", EventType::kResourcesCommitted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::ResourcesCommittedPayload>(event.payload)
+             .allocation_digest.value = std::string(64, '0');
+       }},
+      {"WorkerLaunchIntent operation StableId", EventType::kWorkerLaunchIntent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerLaunchIntentPayload>(event.payload).operation_id =
+             StableId{"bad id"};
+       }},
+      {"WorkerLaunchIntent application StableId", EventType::kWorkerLaunchIntent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerLaunchIntentPayload>(event.payload).application_id =
+             StableId{"bad id"};
+       }},
+      {"WorkerLaunchIntent application version required", EventType::kWorkerLaunchIntent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerLaunchIntentPayload>(event.payload)
+             .application_version.clear();
+       }},
+      {"WorkerLaunchIntent application version UTF-8", EventType::kWorkerLaunchIntent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerLaunchIntentPayload>(event.payload).application_version =
+             std::string("\xC0\x80", 2);
+       }},
+      {"WorkerLaunchIntent application version bound", EventType::kWorkerLaunchIntent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerLaunchIntentPayload>(event.payload).application_version =
+             RepeatUtf8("\xC3\xA9", 129);
+       }},
+      {"WorkerLaunchIntent bundle digest", EventType::kWorkerLaunchIntent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerLaunchIntentPayload>(event.payload).bundle_sha256.value =
+             "not-a-digest";
+       }},
+      {"WorkerLaunchIntent allocation StableId", EventType::kWorkerLaunchIntent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerLaunchIntentPayload>(event.payload).allocation_id =
+             StableId{"bad id"};
+       }},
+      {"WorkerLaunchIntent allocation digest", EventType::kWorkerLaunchIntent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerLaunchIntentPayload>(event.payload)
+             .allocation_digest.value = "not-a-digest";
+       }},
+      {"WorkerLaunchIntent Worker UUID", EventType::kWorkerLaunchIntent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerLaunchIntentPayload>(event.payload).worker_id =
+             Uuid{std::string(kJobId)};
+       }},
+      {"WorkerLaunchObserved operation StableId", EventType::kWorkerLaunchObserved,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerLaunchObservedPayload>(event.payload).operation_id =
+             StableId{"bad id"};
+       }},
+      {"WorkerRunning Worker UUID", EventType::kWorkerRunning,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerRunningPayload>(event.payload).worker_id =
+             Uuid{std::string(kJobId)};
+       }},
+      {"Principal required text", EventType::kCancelAccepted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::PrincipalPayload>(event.payload).principal_subject.clear();
+       }},
+      {"Principal UTF-8", EventType::kCancelAccepted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::PrincipalPayload>(event.payload).principal_subject =
+             std::string("\xC0\x80", 2);
+       }},
+      {"Principal text bound", EventType::kCancelAccepted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::PrincipalPayload>(event.payload).principal_subject =
+             RepeatUtf8("\xC3\xA9", 257);
+       }},
+      {"Timeout phase enum", EventType::kTimeoutExpired,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::TimeoutExpiredPayload>(event.payload).phase =
+             static_cast<sitometron::core::TimeoutPhase>(99);
+       }},
+      {"Timeout generation", EventType::kTimeoutExpired,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::TimeoutExpiredPayload>(event.payload).timer_generation = 0;
+       }},
+      {"Worker event Worker UUID", EventType::kWorkerCompleted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerEventPayload>(event.payload).worker_id =
+             Uuid{std::string(kJobId)};
+       }},
+      {"Worker event sequence", EventType::kWorkerCompleted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::WorkerEventPayload>(event.payload).event_sequence = 0;
+       }},
+      {"Process exit completion enum", EventType::kProcessExitConfirmed,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::ProcessExitConfirmedPayload>(event.payload).completion_mode =
+             static_cast<sitometron::core::CompletionMode>(99);
+       }},
+      {"Process exit operation StableId", EventType::kProcessExitConfirmed,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::ProcessExitConfirmedPayload>(event.payload)
+             .launch_operation_id = StableId{"bad id"};
+       }},
+      {"Session UUID", EventType::kSessionRetained,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::SessionPayload>(event.payload).session_id =
+             Uuid{std::string(kWorkerId)};
+       }},
+      {"Session identity mismatch", EventType::kSessionRetained,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::SessionPayload>(event.payload).session_id =
+             Uuid{std::string(kOtherV7Id)};
+       }},
+      {"Terminal outcome enum", EventType::kTerminalOutcomeCommitted,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::TerminalOutcomePayload>(event.payload).outcome =
+             static_cast<sitometron::core::TerminalOutcome>(99);
+       }},
+      {"ResourcesReleased allocation StableId", EventType::kResourcesReleased,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::ResourcesReleasedPayload>(event.payload).allocation_id =
+             StableId{"bad id"};
+       }},
+      {"ResourcesReleased allocation digest", EventType::kResourcesReleased,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::ResourcesReleasedPayload>(event.payload)
+             .allocation_digest.value = "not-a-digest";
+       }},
+      {"Cleanup status enum", EventType::kCleanupStatusRecorded,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::CleanupStatusPayload>(event.payload).status =
+             static_cast<sitometron::core::CleanupStatus>(99);
+       }},
+      {"Late event original type enum", EventType::kLateWorkerEvent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::LateWorkerEventPayload>(event.payload).original_event_type =
+             EventType::kWorkerRunning;
+       }},
+      {"Late event Worker UUID", EventType::kLateWorkerEvent,
+       [](LogicalJobEvent& event) {
+         std::get<sitometron::core::LateWorkerEventPayload>(event.payload).worker_id =
+             Uuid{std::string(kJobId)};
+       }},
+      {"Late event sequence", EventType::kLateWorkerEvent, [](LogicalJobEvent& event) {
+         std::get<sitometron::core::LateWorkerEventPayload>(event.payload).event_sequence = 0;
+       }}};
+  result |= Check(malformed_cases.size() == 44, "malformed case table has exactly 44 rows");
+  for (const auto& malformed_case : malformed_cases) {
+    auto malformed_event = MakeValidEvent(malformed_case.event_type);
+    malformed_case.mutate(malformed_event);
+    result |= check_malformed_setup(std::move(malformed_event), malformed_case.description);
+  }
 
   FakeJobJournal unused({JournalExpectation{committed_event, LogicalCommitResult::kCommitted}});
   result |= Check(!unused.Verify() && unused.verification_failed(),

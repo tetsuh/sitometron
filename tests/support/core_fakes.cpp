@@ -1,7 +1,9 @@
 #include "core_fakes.hpp"
 
 #include <algorithm>
+#include <boost/hash2/sha2.hpp>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -248,6 +250,68 @@ bool IsLogicalCommitResult(core::LogicalCommitResult result) {
          result == core::LogicalCommitResult::kOutcomeUnknown;
 }
 
+bool IsValidTimeoutPhase(core::TimeoutPhase phase) {
+  switch (phase) {
+    case core::TimeoutPhase::kPreparation:
+    case core::TimeoutPhase::kExecution:
+    case core::TimeoutPhase::kCooperativeStop:
+    case core::TimeoutPhase::kProcessExitConfirmation:
+      return true;
+    case core::TimeoutPhase::kInvalid:
+      return false;
+  }
+  return false;
+}
+
+bool IsValidCompletionMode(core::CompletionMode mode) {
+  switch (mode) {
+    case core::CompletionMode::kCooperative:
+    case core::CompletionMode::kForced:
+    case core::CompletionMode::kProcessAlreadyExited:
+      return true;
+    case core::CompletionMode::kNone:
+    case core::CompletionMode::kInvalid:
+      return false;
+  }
+  return false;
+}
+
+bool IsValidTerminalOutcome(core::TerminalOutcome outcome) {
+  switch (outcome) {
+    case core::TerminalOutcome::kSucceeded:
+    case core::TerminalOutcome::kFailed:
+    case core::TerminalOutcome::kCancelled:
+    case core::TerminalOutcome::kTerminated:
+    case core::TerminalOutcome::kTimedOut:
+      return true;
+    case core::TerminalOutcome::kInvalid:
+      return false;
+  }
+  return false;
+}
+
+bool IsValidCleanupStatus(core::CleanupStatus status) {
+  return status == core::CleanupStatus::kCompleted || status == core::CleanupStatus::kIncomplete;
+}
+
+bool ParseResolvedAllocationJson(std::string_view text, nlohmann::json* result) {
+  if (text.size() > 65536 || std::find(text.begin(), text.end(), '\0') != text.end()) {
+    return false;
+  }
+  try {
+    *result = nlohmann::json::parse(text.begin(), text.end(), nullptr, true, false);
+    return true;
+  } catch (const nlohmann::json::exception&) {
+    return false;
+  }
+}
+
+std::string Sha256(std::string_view bytes) {
+  boost::hash2::sha2_256 hasher;
+  hasher.update(bytes.data(), bytes.size());
+  return boost::hash2::to_string(hasher.result());
+}
+
 bool IsValidLogicalJobEvent(const core::LogicalJobEvent& event) {
   if (event.schema_version != 1 || event.sequence == 0 || !IsRfc3339(event.recorded_at.rfc3339) ||
       !IsUuidVersion(event.job_id.value, '7')) {
@@ -255,40 +319,87 @@ bool IsValidLogicalJobEvent(const core::LogicalJobEvent& event) {
   }
 
   switch (event.event_type) {
-    case core::EventType::kJobCreated:
-      return std::holds_alternative<core::JobCreatedPayload>(event.payload);
-    case core::EventType::kResourcesCommitted:
-      return std::holds_alternative<core::ResourcesCommittedPayload>(event.payload);
-    case core::EventType::kWorkerLaunchIntent:
-      return std::holds_alternative<core::WorkerLaunchIntentPayload>(event.payload);
-    case core::EventType::kWorkerLaunchObserved:
-      return std::holds_alternative<core::WorkerLaunchObservedPayload>(event.payload);
-    case core::EventType::kWorkerRunning:
-      return std::holds_alternative<core::WorkerRunningPayload>(event.payload);
+    case core::EventType::kJobCreated: {
+      const auto* payload = std::get_if<core::JobCreatedPayload>(&event.payload);
+      return payload != nullptr && IsUuidVersion(payload->session_id.value, '7') &&
+             payload->session_id == event.job_id;
+    }
+    case core::EventType::kResourcesCommitted: {
+      const auto* payload = std::get_if<core::ResourcesCommittedPayload>(&event.payload);
+      nlohmann::json parsed;
+      return payload != nullptr && IsStableId(payload->allocation_id.value) &&
+             IsDigest(payload->allocation_digest.value) && IsStableId(payload->schema_id.value) &&
+             payload->schema_version != 0 &&
+             ParseResolvedAllocationJson(payload->payload_utf8, &parsed) &&
+             Sha256(payload->payload_utf8) == payload->allocation_digest.value;
+    }
+    case core::EventType::kWorkerLaunchIntent: {
+      const auto* payload = std::get_if<core::WorkerLaunchIntentPayload>(&event.payload);
+      return payload != nullptr && IsStableId(payload->operation_id.value) &&
+             IsStableId(payload->application_id.value) &&
+             IsUtf8ScalarString(payload->application_version, 128) &&
+             IsDigest(payload->bundle_sha256.value) && IsStableId(payload->allocation_id.value) &&
+             IsDigest(payload->allocation_digest.value) &&
+             IsUuidVersion(payload->worker_id.value, '4');
+    }
+    case core::EventType::kWorkerLaunchObserved: {
+      const auto* payload = std::get_if<core::WorkerLaunchObservedPayload>(&event.payload);
+      return payload != nullptr && IsStableId(payload->operation_id.value);
+    }
+    case core::EventType::kWorkerRunning: {
+      const auto* payload = std::get_if<core::WorkerRunningPayload>(&event.payload);
+      return payload != nullptr && IsUuidVersion(payload->worker_id.value, '4');
+    }
     case core::EventType::kCancelAccepted:
-    case core::EventType::kTerminateAccepted:
-      return std::holds_alternative<core::PrincipalPayload>(event.payload);
-    case core::EventType::kTimeoutExpired:
-      return std::holds_alternative<core::TimeoutExpiredPayload>(event.payload);
+    case core::EventType::kTerminateAccepted: {
+      const auto* payload = std::get_if<core::PrincipalPayload>(&event.payload);
+      return payload != nullptr && IsUtf8ScalarString(payload->principal_subject, 256);
+    }
+    case core::EventType::kTimeoutExpired: {
+      const auto* payload = std::get_if<core::TimeoutExpiredPayload>(&event.payload);
+      return payload != nullptr && IsValidTimeoutPhase(payload->phase) &&
+             payload->timer_generation != 0;
+    }
     case core::EventType::kWorkerCompleted:
-    case core::EventType::kWorkerFailed:
-      return std::holds_alternative<core::WorkerEventPayload>(event.payload);
-    case core::EventType::kProcessExitConfirmed:
-      return std::holds_alternative<core::ProcessExitConfirmedPayload>(event.payload);
+    case core::EventType::kWorkerFailed: {
+      const auto* payload = std::get_if<core::WorkerEventPayload>(&event.payload);
+      return payload != nullptr && IsUuidVersion(payload->worker_id.value, '4') &&
+             payload->event_sequence != 0;
+    }
+    case core::EventType::kProcessExitConfirmed: {
+      const auto* payload = std::get_if<core::ProcessExitConfirmedPayload>(&event.payload);
+      return payload != nullptr && IsValidCompletionMode(payload->completion_mode) &&
+             IsStableId(payload->launch_operation_id.value);
+    }
     case core::EventType::kSessionRetainRequested:
-    case core::EventType::kSessionRetained:
-      return std::holds_alternative<core::SessionPayload>(event.payload);
+    case core::EventType::kSessionRetained: {
+      const auto* payload = std::get_if<core::SessionPayload>(&event.payload);
+      return payload != nullptr && IsUuidVersion(payload->session_id.value, '7') &&
+             payload->session_id == event.job_id;
+    }
     case core::EventType::kFinalizationCompleted:
     case core::EventType::kFinalizationFailed:
       return std::holds_alternative<core::EmptyPayload>(event.payload);
-    case core::EventType::kTerminalOutcomeCommitted:
-      return std::holds_alternative<core::TerminalOutcomePayload>(event.payload);
-    case core::EventType::kResourcesReleased:
-      return std::holds_alternative<core::ResourcesReleasedPayload>(event.payload);
-    case core::EventType::kCleanupStatusRecorded:
-      return std::holds_alternative<core::CleanupStatusPayload>(event.payload);
-    case core::EventType::kLateWorkerEvent:
-      return std::holds_alternative<core::LateWorkerEventPayload>(event.payload);
+    case core::EventType::kTerminalOutcomeCommitted: {
+      const auto* payload = std::get_if<core::TerminalOutcomePayload>(&event.payload);
+      return payload != nullptr && IsValidTerminalOutcome(payload->outcome);
+    }
+    case core::EventType::kResourcesReleased: {
+      const auto* payload = std::get_if<core::ResourcesReleasedPayload>(&event.payload);
+      return payload != nullptr && IsStableId(payload->allocation_id.value) &&
+             IsDigest(payload->allocation_digest.value);
+    }
+    case core::EventType::kCleanupStatusRecorded: {
+      const auto* payload = std::get_if<core::CleanupStatusPayload>(&event.payload);
+      return payload != nullptr && IsValidCleanupStatus(payload->status);
+    }
+    case core::EventType::kLateWorkerEvent: {
+      const auto* payload = std::get_if<core::LateWorkerEventPayload>(&event.payload);
+      return payload != nullptr &&
+             (payload->original_event_type == core::EventType::kWorkerCompleted ||
+              payload->original_event_type == core::EventType::kWorkerFailed) &&
+             IsUuidVersion(payload->worker_id.value, '4') && payload->event_sequence != 0;
+    }
     case core::EventType::kInvalid:
       return false;
   }
@@ -470,11 +581,15 @@ bool FakeClock::verification_failed() const noexcept { return verification_faile
 
 FakeJobJournal::FakeJobJournal(std::vector<JournalExpectation> expectations)
     : expectations_(std::move(expectations)), observations_(expectations_.size()) {
-  verification_failed_ =
-      !std::all_of(expectations_.begin(), expectations_.end(), [](const auto& expectation) {
-        return IsLogicalCommitResult(expectation.result) &&
-               IsValidLogicalJobEvent(expectation.event);
-      });
+  try {
+    verification_failed_ =
+        !std::all_of(expectations_.begin(), expectations_.end(), [](const auto& expectation) {
+          return IsLogicalCommitResult(expectation.result) &&
+                 IsValidLogicalJobEvent(expectation.event);
+        });
+  } catch (const nlohmann::json::exception&) {
+    verification_failed_ = true;
+  }
 }
 
 core::LogicalCommitResult FakeJobJournal::Commit(const core::LogicalJobEvent& event) noexcept {

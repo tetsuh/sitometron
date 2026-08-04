@@ -92,7 +92,12 @@ if(SITOMETRON_BUILD_TESTS)
 
   add_library(sitometron_core_fake_support STATIC tests/support/core_fakes.cpp)
   target_include_directories(sitometron_core_fake_support PUBLIC tests/support)
-  target_link_libraries(sitometron_core_fake_support PRIVATE sitometron::core)
+  target_link_libraries(
+    sitometron_core_fake_support
+    PRIVATE
+      sitometron::core
+      nlohmann_json::nlohmann_json
+      Boost::hash2)
   sitometron_enable_project_warnings(sitometron_core_fake_support)
   sitometron_enable_sanitizers(sitometron_core_fake_support)
 
