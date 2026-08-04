@@ -25,8 +25,8 @@ values are `Planned`, `In progress`, `Implemented`, and `Removed`.
 | Core Job states and transitions | Normative | Implemented | Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) under [Issue #3](https://github.com/tetsuh/sitometron/issues/3) | Phase 0A |
 | Core commands and rejection reasons | Normative | Implemented | Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) under [Issue #3](https://github.com/tetsuh/sitometron/issues/3) | Phase 0A |
 | Single-state-writer ingress and critical reserve | Normative | Planned | Accepted [ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) under [Issue #10](https://github.com/tetsuh/sitometron/issues/10) | Phase 0A |
-| Core lifecycle capability ports | Normative | Planned | Accepted [ADR-0005](adr/0005-define-phase-0a-core-capability-port-contracts.md) under [Issue #26](https://github.com/tetsuh/sitometron/issues/26); Issue #11 implementation pending | Phase 0A |
-| JobJournal envelope and event schemas | Normative | Planned | Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) for the logical contract; Phase 0B ADR pending for physical durability | Phase 0A / 0B |
+| Core lifecycle capability ports | Normative | Implemented | Accepted [ADR-0005](adr/0005-define-phase-0a-core-capability-port-contracts.md) under [Issue #26](https://github.com/tetsuh/sitometron/issues/26); implemented by [Issue #11](https://github.com/tetsuh/sitometron/issues/11) | Phase 0A |
+| JobJournal envelope and event schemas | Normative | In progress | Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) for the logical contract; Issue #11 implements the owned C++ envelope and logical fake; Issue #12 owns writer construction, sequence allocation, and logical ordering; Phase 0B ADR pending for physical durability | Phase 0A / 0B |
 | External REST v1 | Planned | Planned | Pending Phase 1 Issue and ADR | Phase 1 |
 | Application Registry schema | Planned | Planned | Pending Phase 1 Issue and ADR | Phase 1 |
 | Worker HTTP v1 routes and JSON schemas | Planned | Planned | Pending Phase 2 Issue and ADR | Phase 2 |

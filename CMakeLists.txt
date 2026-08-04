@@ -90,6 +90,12 @@ if(SITOMETRON_BUILD_TESTS)
   add_library(sitometron::test_support ALIAS sitometron_test_support)
   target_include_directories(sitometron_test_support INTERFACE tests/support)
 
+  add_library(sitometron_core_fake_support STATIC tests/support/core_fakes.cpp)
+  target_include_directories(sitometron_core_fake_support PUBLIC tests/support)
+  target_link_libraries(sitometron_core_fake_support PRIVATE sitometron::core)
+  sitometron_enable_project_warnings(sitometron_core_fake_support)
+  sitometron_enable_sanitizers(sitometron_core_fake_support)
+
   add_executable(sitometron_version_test tests/unit/version_test.cpp)
   target_link_libraries(sitometron_version_test PRIVATE sitometron::core sitometron::test_support)
   sitometron_enable_project_warnings(sitometron_version_test)
@@ -131,7 +137,8 @@ if(SITOMETRON_BUILD_TESTS)
     sitometron_core_ports_fakes_test
     PRIVATE
       sitometron::core
-      sitometron::test_support)
+      sitometron::test_support
+      sitometron_core_fake_support)
   sitometron_enable_project_warnings(sitometron_core_ports_fakes_test)
   sitometron_enable_sanitizers(sitometron_core_ports_fakes_test)
   foreach(_core_port_fake_check IN ITEMS
