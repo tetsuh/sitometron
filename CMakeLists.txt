@@ -90,6 +90,17 @@ if(SITOMETRON_BUILD_TESTS)
   add_library(sitometron::test_support ALIAS sitometron_test_support)
   target_include_directories(sitometron_test_support INTERFACE tests/support)
 
+  add_library(sitometron_core_fake_support STATIC tests/support/core_fakes.cpp)
+  target_include_directories(sitometron_core_fake_support PUBLIC tests/support)
+  target_link_libraries(
+    sitometron_core_fake_support
+    PRIVATE
+      sitometron::core
+      nlohmann_json::nlohmann_json
+      Boost::hash2)
+  sitometron_enable_project_warnings(sitometron_core_fake_support)
+  sitometron_enable_sanitizers(sitometron_core_fake_support)
+
   add_executable(sitometron_version_test tests/unit/version_test.cpp)
   target_link_libraries(sitometron_version_test PRIVATE sitometron::core sitometron::test_support)
   sitometron_enable_project_warnings(sitometron_version_test)
@@ -124,6 +135,24 @@ if(SITOMETRON_BUILD_TESTS)
       COMMAND sitometron_core_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/schemas/core/v1/job-reducer-vectors.json
         ${_job_reducer_check})
+  endforeach()
+
+  add_executable(sitometron_core_ports_fakes_test tests/unit/core_ports_fakes_test.cpp)
+  target_link_libraries(
+    sitometron_core_ports_fakes_test
+    PRIVATE
+      sitometron::core
+      sitometron::test_support
+      sitometron_core_fake_support)
+  sitometron_enable_project_warnings(sitometron_core_ports_fakes_test)
+  sitometron_enable_sanitizers(sitometron_core_ports_fakes_test)
+  foreach(_core_port_fake_check IN ITEMS
+      core_port_fake_contracts
+      job_fake_logical_commit_results
+      job_fake_effect_observation)
+    add_test(
+      NAME ${_core_port_fake_check}
+      COMMAND sitometron_core_ports_fakes_test ${_core_port_fake_check})
   endforeach()
 
   add_test(
