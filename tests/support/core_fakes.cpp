@@ -207,7 +207,7 @@ bool IsRfc3339(std::string_view value) {
   const int minute = ParseDigits(value, 14, 2);
   const int second = ParseDigits(value, 17, 2);
   constexpr int kDaysByMonth[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if (year <= 0 || month < 1 || month > 12 || hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
+  if (year < 0 || month < 1 || month > 12 || hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
       second < 0 || second > 60) {
     return false;
   }

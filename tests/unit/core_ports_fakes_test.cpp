@@ -429,6 +429,36 @@ int CheckLogicalCommitResults() {
   result |= Check(observations.at(0).recorded_at.rfc3339 == "2026-08-04T00:00:00Z",
                   "Journal fake preserves writer-assigned recorded_at");
   const auto& launch_payload = std::get<WorkerLaunchObservedPayload>(observations.at(0).payload);
+
+  auto year_zero_event = MakeEvent(4, EventType::kWorkerLaunchObserved);
+  year_zero_event.recorded_at = DiagnosticTimestamp{"0000-01-01T00:00:00Z"};
+  FakeJobJournal year_zero_journal(
+      {JournalExpectation{year_zero_event, LogicalCommitResult::kCommitted}});
+  result |= Check(!year_zero_journal.verification_failed(),
+                  "Journal accepts schema-valid year-zero setup");
+  result |= Check(year_zero_journal.Commit(year_zero_event) == LogicalCommitResult::kCommitted,
+                  "Journal commits schema-valid year-zero event");
+  const auto year_zero_observations = year_zero_journal.CopyObservations();
+  bool year_zero_observation_matches = false;
+  if (year_zero_observations.size() == 1) {
+    const auto& observed = year_zero_observations.at(0);
+    const auto* observed_payload = std::get_if<WorkerLaunchObservedPayload>(&observed.payload);
+    const auto* expected_payload =
+        std::get_if<WorkerLaunchObservedPayload>(&year_zero_event.payload);
+    year_zero_observation_matches =
+        observed.schema_version == year_zero_event.schema_version &&
+        observed.sequence == year_zero_event.sequence &&
+        observed.recorded_at == year_zero_event.recorded_at &&
+        observed.job_id == year_zero_event.job_id &&
+        observed.event_type == year_zero_event.event_type && observed_payload != nullptr &&
+        expected_payload != nullptr &&
+        observed_payload->operation_id == expected_payload->operation_id &&
+        observed_payload->started == expected_payload->started;
+  }
+  result |= Check(year_zero_observation_matches,
+                  "Journal observes the exact schema-valid year-zero event once");
+  result |= Check(year_zero_journal.remaining_expectations() == 0 && year_zero_journal.Verify(),
+                  "Journal consumes the year-zero expectation and verifies successfully");
   result |= Check(launch_payload.operation_id.value == kLaunchOperationId && launch_payload.started,
                   "Journal fake preserves the complete payload");
 
@@ -521,9 +551,9 @@ int CheckLogicalCommitResults() {
       {"schema version zero", EventType::kJobCreated,
        [](LogicalJobEvent& event) { event.schema_version = 0; }},
       {"sequence zero", EventType::kJobCreated, [](LogicalJobEvent& event) { event.sequence = 0; }},
-      {"invalid timestamp", EventType::kJobCreated,
+      {"timestamp nonnumeric year", EventType::kJobCreated,
        [](LogicalJobEvent& event) {
-         event.recorded_at = DiagnosticTimestamp{"2026-02-30T00:00:00Z"};
+         event.recorded_at = DiagnosticTimestamp{"abcd-01-01T00:00:00Z"};
        }},
       {"invalid Job identity", EventType::kJobCreated,
        [](LogicalJobEvent& event) { event.job_id = Uuid{std::string(kWorkerId)}; }},
