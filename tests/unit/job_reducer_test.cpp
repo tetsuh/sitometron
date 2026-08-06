@@ -1,5 +1,6 @@
 #include "sitometron/core/job_reducer.hpp"
 
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -8,6 +9,7 @@
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace sitometron::test {
 int RunJobReducerVectorChecks(const char* path, const char* selector);
@@ -29,6 +31,343 @@ int Check(bool condition, std::string_view message) {
   return 1;
 }
 
+bool SameSnapshot(const Snapshot& lhs, const Snapshot& rhs) {
+  return lhs.schema_version == rhs.schema_version && lhs.job_id == rhs.job_id &&
+         lhs.session_id == rhs.session_id && lhs.entity_exists == rhs.entity_exists &&
+         lhs.state == rhs.state && lhs.latched_reason == rhs.latched_reason &&
+         lhs.completion_candidate == rhs.completion_candidate &&
+         lhs.completion_mode == rhs.completion_mode && lhs.resource_status == rhs.resource_status &&
+         lhs.allocation_id == rhs.allocation_id && lhs.allocation_digest == rhs.allocation_digest &&
+         lhs.worker_launch_status == rhs.worker_launch_status &&
+         lhs.launch_operation_id == rhs.launch_operation_id && lhs.worker_id == rhs.worker_id &&
+         lhs.process_presence == rhs.process_presence &&
+         lhs.process_exit_confirmed == rhs.process_exit_confirmed &&
+         lhs.session_retention_status == rhs.session_retention_status &&
+         lhs.finalization_status == rhs.finalization_status &&
+         lhs.cleanup_status == rhs.cleanup_status &&
+         lhs.pending_worker_event_ack == rhs.pending_worker_event_ack &&
+         lhs.pending_worker_id == rhs.pending_worker_id &&
+         lhs.pending_worker_event_sequence == rhs.pending_worker_event_sequence;
+}
+
+bool IsRejection(const Decision& decision, RejectionReason reason) {
+  return std::holds_alternative<Rejection>(decision.value) &&
+         std::get<Rejection>(decision.value).reason == reason;
+}
+
+int RunUtf8ScalarBoundaryMatrix() {
+  struct Utf8Case {
+    std::string_view label;
+    std::string_view value;
+    bool valid;
+  };
+  constexpr std::array<Utf8Case, 28> kCases{{
+      {"ASCII scalar", std::string_view{"A", 1}, true},
+      {"two-byte scalar", std::string_view{"\xC2\xA2", 2}, true},
+      {"three-byte scalar", std::string_view{"\xE3\x81\x82", 3}, true},
+      {"four-byte scalar", std::string_view{"\xF0\x9F\x98\x80", 4}, true},
+      {"lowest three-byte scalar", std::string_view{"\xE0\xA0\x80", 3}, true},
+      {"scalar before surrogate range", std::string_view{"\xED\x9F\xBF", 3}, true},
+      {"lowest four-byte scalar", std::string_view{"\xF0\x90\x80\x80", 4}, true},
+      {"maximum Unicode scalar", std::string_view{"\xF4\x8F\xBF\xBF", 4}, true},
+      {"embedded NUL scalar", std::string_view{"A\0B", 3}, true},
+      {"empty string", std::string_view{}, false},
+      {"overlong two-byte scalar", std::string_view{"\xC0\xAF", 2}, false},
+      {"overlong three-byte scalar", std::string_view{"\xE0\x80\xAF", 3}, false},
+      {"overlong four-byte scalar", std::string_view{"\xF0\x80\x80\xAF", 4}, false},
+      {"isolated continuation", std::string_view{"\x80", 1}, false},
+      {"truncated two-byte scalar", std::string_view{"\xC2", 1}, false},
+      {"truncated three-byte scalar", std::string_view{"\xE3\x81", 2}, false},
+      {"truncated four-byte scalar", std::string_view{"\xF0\x9F\x98", 3}, false},
+      {"invalid two-byte continuation", std::string_view{"\xC2\x41", 2}, false},
+      {"invalid three-byte second byte", std::string_view{"\xE3\x41\x82", 3}, false},
+      {"invalid three-byte later byte", std::string_view{"\xE3\x81\x41", 3}, false},
+      {"invalid four-byte second byte", std::string_view{"\xF0\x41\x98\x80", 4}, false},
+      {"invalid four-byte third byte", std::string_view{"\xF0\x9F\x41\x80", 4}, false},
+      {"invalid four-byte fourth byte", std::string_view{"\xF0\x9F\x98\x41", 4}, false},
+      {"UTF-8 encoded surrogate", std::string_view{"\xED\xA0\x80", 3}, false},
+      {"code point above U+10FFFF", std::string_view{"\xF4\x90\x80\x80", 4}, false},
+      {"invalid F5 lead byte", std::string_view{"\xF5\x80\x80\x80", 4}, false},
+      {"invalid FF lead byte", std::string_view{"\xFF", 1}, false},
+      {"isolated maximum continuation", std::string_view{"\xBF", 1}, false},
+  }};
+
+  const Uuid job{std::string(kJob)};
+  Snapshot admitted = InitialSnapshot(job, job);
+  admitted.entity_exists = true;
+  Snapshot preparing = admitted;
+  preparing.state = JobState::kPreparing;
+  preparing.resource_status = ResourceStatus::kCommitted;
+  preparing.allocation_id = StableId{"allocation-1"};
+  preparing.allocation_digest =
+      Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"};
+
+  const auto principal_decision = [&](std::string value) {
+    return DecideCommand(admitted, Command{1, CommandType::kCancel, job, std::move(value)});
+  };
+  const auto version_decision = [&](std::string value) {
+    return DecideEvent(
+        preparing,
+        InternalEvent{
+            1, job, EventType::kWorkerLaunchIntent,
+            WorkerLaunchIntentPayload{
+                StableId{"launch-op-1"}, StableId{"application-1"}, std::move(value),
+                Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
+                StableId{"allocation-1"},
+                Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
+                Uuid{std::string(kWorker)}}});
+  };
+
+  int result = 0;
+  for (const auto& test : kCases) {
+    const auto principal = principal_decision(std::string(test.value));
+    const auto version = version_decision(std::string(test.value));
+    const bool principal_valid = std::holds_alternative<PreEnvelopeProposal>(principal.value);
+    const bool version_valid = std::holds_alternative<PreEnvelopeProposal>(version.value);
+    result |=
+        Check(principal_valid == test.valid, std::string(test.label) + " principal UTF-8 boundary");
+    result |= Check(version_valid == test.valid,
+                    std::string(test.label) + " application-version UTF-8 boundary");
+    if (!test.valid) {
+      result |= Check(IsRejection(principal, RejectionReason::kInvalidEventPayload),
+                      std::string(test.label) + " principal rejection reason");
+      result |= Check(IsRejection(version, RejectionReason::kInvalidEventPayload),
+                      std::string(test.label) + " application-version rejection reason");
+    }
+  }
+
+  struct ScalarLimitCase {
+    std::size_t count;
+    bool principal_valid;
+    bool version_valid;
+  };
+  constexpr std::array<ScalarLimitCase, 4> kLimits{{
+      {128, true, true},
+      {129, true, false},
+      {256, true, false},
+      {257, false, false},
+  }};
+  for (const auto& test : kLimits) {
+    std::string value;
+    value.reserve(test.count * 2);
+    for (std::size_t index = 0; index < test.count; ++index) value += "\xC2\xA2";
+    const bool principal_valid =
+        std::holds_alternative<PreEnvelopeProposal>(principal_decision(value).value);
+    const bool version_valid =
+        std::holds_alternative<PreEnvelopeProposal>(version_decision(value).value);
+    result |=
+        Check(principal_valid == test.principal_valid, "principal Unicode scalar-count boundary");
+    result |= Check(version_valid == test.version_valid,
+                    "application-version Unicode scalar-count boundary");
+  }
+  return result;
+}
+
+int RunSnapshotInvariantFailClosedMatrix() {
+  const Uuid job{std::string(kJob)};
+  const auto admitted = [&] {
+    Snapshot snapshot = InitialSnapshot(job, job);
+    snapshot.entity_exists = true;
+    return snapshot;
+  };
+  const auto preparing = [&] {
+    Snapshot snapshot = admitted();
+    snapshot.state = JobState::kPreparing;
+    snapshot.resource_status = ResourceStatus::kCommitted;
+    snapshot.allocation_id = StableId{"allocation-1"};
+    snapshot.allocation_digest =
+        Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"};
+    snapshot.worker_launch_status = LaunchStatus::kIntentRecorded;
+    snapshot.launch_operation_id = StableId{"launch-op-1"};
+    snapshot.worker_id = Uuid{std::string(kWorker)};
+    snapshot.process_presence = ProcessPresence::kUnknown;
+    return snapshot;
+  };
+  const auto running = [&] {
+    Snapshot snapshot = preparing();
+    snapshot.state = JobState::kRunning;
+    snapshot.worker_launch_status = LaunchStatus::kObserved;
+    snapshot.process_presence = ProcessPresence::kPresent;
+    return snapshot;
+  };
+  const auto finalizing = [&] {
+    Snapshot snapshot = running();
+    snapshot.state = JobState::kFinalizing;
+    snapshot.finalization_status = FinalizationStatus::kPending;
+    return snapshot;
+  };
+  const auto terminal = [&] {
+    Snapshot snapshot = finalizing();
+    snapshot.state = JobState::kFailed;
+    snapshot.latched_reason = TerminalOutcome::kFailed;
+    snapshot.finalization_status = FinalizationStatus::kCompleted;
+    return snapshot;
+  };
+
+  struct SnapshotCase {
+    std::string_view label;
+    Snapshot snapshot;
+  };
+  std::vector<SnapshotCase> cases;
+  cases.reserve(48);
+  const auto add = [&](std::string_view label, Snapshot snapshot, const auto& mutate) {
+    mutate(snapshot);
+    cases.push_back(SnapshotCase{label, std::move(snapshot)});
+  };
+
+  add("schema version", admitted(), [](Snapshot& s) { s.schema_version = 0; });
+  add("Job UUID", admitted(), [](Snapshot& s) { s.job_id = Uuid{"not-a-uuid"}; });
+  add("Session UUID", admitted(), [](Snapshot& s) { s.session_id = Uuid{"not-a-uuid"}; });
+  add("Job and Session identity", admitted(),
+      [](Snapshot& s) { s.session_id = Uuid{"01890f3e-7b00-7abc-8abc-0123456789ac"}; });
+  add("Job state enum", admitted(), [](Snapshot& s) { s.state = static_cast<JobState>(255); });
+  add("completion mode enum", admitted(),
+      [](Snapshot& s) { s.completion_mode = static_cast<CompletionMode>(255); });
+  add("resource status enum", admitted(),
+      [](Snapshot& s) { s.resource_status = static_cast<ResourceStatus>(255); });
+  add("launch status enum", admitted(),
+      [](Snapshot& s) { s.worker_launch_status = static_cast<LaunchStatus>(255); });
+  add("process presence enum", admitted(),
+      [](Snapshot& s) { s.process_presence = static_cast<ProcessPresence>(255); });
+  add("retention status enum", admitted(),
+      [](Snapshot& s) { s.session_retention_status = static_cast<RetentionStatus>(255); });
+  add("finalization status enum", admitted(),
+      [](Snapshot& s) { s.finalization_status = static_cast<FinalizationStatus>(255); });
+  add("cleanup status enum", admitted(),
+      [](Snapshot& s) { s.cleanup_status = static_cast<CleanupStatus>(255); });
+  add("successful latched reason", admitted(),
+      [](Snapshot& s) { s.latched_reason = TerminalOutcome::kSucceeded; });
+  add("invalid latched reason", admitted(),
+      [](Snapshot& s) { s.latched_reason = TerminalOutcome::kInvalid; });
+  add("allocation ID domain", preparing(),
+      [](Snapshot& s) { s.allocation_id = StableId{"invalid allocation"}; });
+  add("allocation digest domain", preparing(),
+      [](Snapshot& s) { s.allocation_digest = Digest{"invalid"}; });
+  add("launch operation ID domain", preparing(),
+      [](Snapshot& s) { s.launch_operation_id = StableId{"invalid operation"}; });
+  add("Worker UUID domain", preparing(),
+      [](Snapshot& s) { s.worker_id = Uuid{"not-a-worker-uuid"}; });
+  add("pending Worker UUID domain", finalizing(), [](Snapshot& s) {
+    s.pending_worker_event_ack = true;
+    s.pending_worker_id = Uuid{"not-a-worker-uuid"};
+    s.pending_worker_event_sequence = 1;
+  });
+  add("pending Worker sequence domain", finalizing(), [](Snapshot& s) {
+    s.pending_worker_event_ack = true;
+    s.pending_worker_id = Uuid{std::string(kWorker)};
+    s.pending_worker_event_sequence = 0;
+  });
+  add("resource none with allocation", admitted(), [](Snapshot& s) {
+    s.allocation_id = StableId{"allocation-1"};
+    s.allocation_digest =
+        Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"};
+  });
+  add("committed resource without allocation ID", preparing(),
+      [](Snapshot& s) { s.allocation_id.reset(); });
+  add("committed resource without allocation digest", preparing(),
+      [](Snapshot& s) { s.allocation_digest.reset(); });
+  add("released resource without confirmed exit", preparing(),
+      [](Snapshot& s) { s.resource_status = ResourceStatus::kReleased; });
+  add("confirmed exit with live process", finalizing(), [](Snapshot& s) {
+    s.process_exit_confirmed = true;
+    s.completion_mode = CompletionMode::kForced;
+  });
+  add("confirmed exit with pending ACK", finalizing(), [](Snapshot& s) {
+    s.process_exit_confirmed = true;
+    s.process_presence = ProcessPresence::kAbsent;
+    s.completion_mode = CompletionMode::kForced;
+    s.pending_worker_event_ack = true;
+    s.pending_worker_id = Uuid{std::string(kWorker)};
+    s.pending_worker_event_sequence = 1;
+  });
+  add("already-exited completion without confirmed exit", finalizing(),
+      [](Snapshot& s) { s.completion_mode = CompletionMode::kProcessAlreadyExited; });
+  add("not-started launch with bindings", preparing(),
+      [](Snapshot& s) { s.worker_launch_status = LaunchStatus::kNotStarted; });
+  add("started launch without operation", preparing(),
+      [](Snapshot& s) { s.launch_operation_id.reset(); });
+  add("started launch without Worker", preparing(), [](Snapshot& s) { s.worker_id.reset(); });
+  add("pending identity without ACK", finalizing(),
+      [](Snapshot& s) { s.pending_worker_id = Uuid{std::string(kWorker)}; });
+  add("pending sequence without ACK", finalizing(),
+      [](Snapshot& s) { s.pending_worker_event_sequence = 1; });
+  add("ACK without pending identity", finalizing(), [](Snapshot& s) {
+    s.pending_worker_event_ack = true;
+    s.pending_worker_event_sequence = 1;
+  });
+  add("ACK without pending sequence", finalizing(), [](Snapshot& s) {
+    s.pending_worker_event_ack = true;
+    s.pending_worker_id = Uuid{std::string(kWorker)};
+  });
+  add("admitted resources", admitted(), [](Snapshot& s) {
+    s.resource_status = ResourceStatus::kCommitted;
+    s.allocation_id = StableId{"allocation-1"};
+    s.allocation_digest =
+        Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"};
+  });
+  add("admitted launch", admitted(), [](Snapshot& s) {
+    s.worker_launch_status = LaunchStatus::kIntentRecorded;
+    s.launch_operation_id = StableId{"launch-op-1"};
+    s.worker_id = Uuid{std::string(kWorker)};
+  });
+  add("admitted process", admitted(),
+      [](Snapshot& s) { s.process_presence = ProcessPresence::kPresent; });
+  add("admitted confirmed exit", admitted(), [](Snapshot& s) {
+    s.process_exit_confirmed = true;
+    s.completion_mode = CompletionMode::kForced;
+  });
+  add("admitted finalization", admitted(),
+      [](Snapshot& s) { s.finalization_status = FinalizationStatus::kPending; });
+  add("preparing finalization", preparing(),
+      [](Snapshot& s) { s.finalization_status = FinalizationStatus::kPending; });
+  add("running finalization", running(),
+      [](Snapshot& s) { s.finalization_status = FinalizationStatus::kPending; });
+  add("stopping finalization", running(), [](Snapshot& s) {
+    s.state = JobState::kStopping;
+    s.finalization_status = FinalizationStatus::kPending;
+  });
+  add("finalizing without finalization fact", finalizing(),
+      [](Snapshot& s) { s.finalization_status = FinalizationStatus::kNotStarted; });
+  add("terminal without completed finalization", terminal(),
+      [](Snapshot& s) { s.finalization_status = FinalizationStatus::kPending; });
+
+  const Command command{1, CommandType::kCancel, job, "operator@example"};
+  const PreEnvelopeProposal proposal{1, job, EventType::kCancelAccepted,
+                                     PrincipalPayload{"operator@example"}};
+  struct ValidSnapshotCase {
+    std::string_view label;
+    Snapshot snapshot;
+  };
+  const std::array<ValidSnapshotCase, 5> valid_fixtures{{
+      {"admitted", admitted()},
+      {"preparing", preparing()},
+      {"running", running()},
+      {"finalizing", finalizing()},
+      {"terminal", terminal()},
+  }};
+  int result = 0;
+  for (const auto& fixture : valid_fixtures) {
+    result |= Check(!IsRejection(DecideCommand(fixture.snapshot, command),
+                                 RejectionReason::kInvariantViolation),
+                    std::string(fixture.label) + " Snapshot fixture is valid for decisions");
+    const auto applied = Apply(fixture.snapshot, proposal);
+    result |= Check(!applied.rejection.has_value() ||
+                        applied.rejection->reason != RejectionReason::kInvariantViolation,
+                    std::string(fixture.label) + " Snapshot fixture is valid for apply");
+  }
+  for (const auto& test : cases) {
+    result |= Check(
+        IsRejection(DecideCommand(test.snapshot, command), RejectionReason::kInvariantViolation),
+        std::string(test.label) + " command fails closed");
+    const auto applied = Apply(test.snapshot, proposal);
+    result |= Check(applied.rejection.has_value() &&
+                        applied.rejection->reason == RejectionReason::kInvariantViolation &&
+                        applied.effects.empty() && SameSnapshot(applied.snapshot, test.snapshot),
+                    std::string(test.label) + " apply fails closed without mutation");
+  }
+  return result;
+}
+
 int RunMalformedArtifactChecks() {
   int result = 0;
   const auto check_artifact = [&](std::string_view contents, std::string_view label) {
@@ -46,9 +385,10 @@ int RunMalformedArtifactChecks() {
 }
 
 int Run() {
+  int result = RunUtf8ScalarBoundaryMatrix();
+  result |= RunSnapshotInvariantFailClosedMatrix();
   const Uuid job{std::string(kJob)};
   Snapshot absent = InitialSnapshot(job, job);
-  int result = 0;
   result |= Check(!absent.entity_exists, "initial entity position is absent");
   Command default_command;
   default_command.job_id = job;
