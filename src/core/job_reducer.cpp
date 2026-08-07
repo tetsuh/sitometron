@@ -69,10 +69,11 @@ bool HasValidUtf8Continuation(std::string_view value, std::size_t index,
                               const Utf8Sequence& sequence) {
   if (index + sequence.length > value.size()) return false;
   if (sequence.length == 1) return true;
-  const auto second = static_cast<unsigned char>(value[index + 1]);
-  if (second < sequence.second_min || second > sequence.second_max) return false;
   const auto continuation = value.substr(index + 2, sequence.length - 2);
-  return std::all_of(continuation.begin(), continuation.end(), [](char byte) {
+  if (const auto second = static_cast<unsigned char>(value[index + 1]);
+      second < sequence.second_min || second > sequence.second_max)
+    return false;
+  return std::ranges::all_of(continuation, [](char byte) {
     const auto value = static_cast<unsigned char>(byte);
     return value >= 0x80 && value <= 0xBF;
   });
@@ -238,9 +239,11 @@ std::optional<EventPayload> ParseResourcesCommittedPayload(const Json& payload) 
   if (!HasOnly(resolved, {"schema_id", "schema_version", "payload_utf8"}) ||
       !StringField(resolved, "schema_id", &schema_id) || !IsStable(schema_id) ||
       !resolved.contains("schema_version") || !resolved.contains("payload_utf8") ||
-      !resolved.at("schema_version").is_number_unsigned() ||
-      (schema_version = resolved.at("schema_version").get<std::uint64_t>()) == 0 ||
-      schema_version > UINT32_MAX || !StringField(resolved, "payload_utf8", &payload_utf8) ||
+      !resolved.at("schema_version").is_number_unsigned())
+    return std::nullopt;
+  schema_version = resolved.at("schema_version").get<std::uint64_t>();
+  if (schema_version == 0 || schema_version > UINT32_MAX ||
+      !StringField(resolved, "payload_utf8", &payload_utf8) ||
       !ParseResolvedAllocationJson(payload_utf8, &parsed_payload) ||
       Sha256(payload_utf8) != allocation_digest)
     return std::nullopt;
@@ -264,8 +267,8 @@ std::optional<EventPayload> ParseWorkerLaunchIntentPayload(const Json& payload) 
       !payload.contains("application") || !payload.at("application").is_object())
     return std::nullopt;
 
-  const auto& application = payload.at("application");
-  if (!HasOnly(application, {"application_id", "version", "bundle_sha256"}) ||
+  if (const auto& application = payload.at("application");
+      !HasOnly(application, {"application_id", "version", "bundle_sha256"}) ||
       !StringField(application, "application_id", &application_id) || !IsStable(application_id) ||
       !StringField(application, "version", &application_version) ||
       !IsUtf8ScalarString(application_version, 128) ||
@@ -417,21 +420,22 @@ std::optional<EventPayload> ParseCandidatePayload(EventType type, const Json& pa
 }
 
 NormalizedCandidate ParseCandidate(const Snapshot& snapshot, const RawCandidateEvent& candidate) {
+  using enum RejectionReason;
+
   try {
     if (candidate.schema_version != 1 || candidate.job_id != snapshot.job_id ||
         !IsUuid(candidate.job_id.value, '7'))
-      return RejectCandidate(RejectionReason::kInvariantViolation);
+      return RejectCandidate(kInvariantViolation);
     const auto type = ParseEvent(candidate.event_type);
     if (!type || *type == EventType::kCancelAccepted || *type == EventType::kTerminateAccepted)
-      return RejectCandidate(RejectionReason::kInvalidEventPayload);
+      return RejectCandidate(kInvalidEventPayload);
     Json payload;
-    if (!ParseJson(candidate.payload_json, &payload))
-      return RejectCandidate(RejectionReason::kInvalidEventPayload);
+    if (!ParseJson(candidate.payload_json, &payload)) return RejectCandidate(kInvalidEventPayload);
     auto parsed = ParseCandidatePayload(*type, payload, candidate.job_id);
     return parsed ? Normalize(snapshot, *type, std::move(*parsed))
-                  : RejectCandidate(RejectionReason::kInvalidEventPayload);
+                  : RejectCandidate(kInvalidEventPayload);
   } catch (const Json::exception&) {
-    return RejectCandidate(RejectionReason::kInvalidEventPayload);
+    return RejectCandidate(kInvalidEventPayload);
   }
 }
 bool PayloadMatches(EventType type, const EventPayload& payload);
@@ -494,15 +498,20 @@ bool HasValidSnapshotEnums(const Snapshot& snapshot) {
 }
 
 bool HasValidSnapshotOptionalDomains(const Snapshot& snapshot) {
-  if (snapshot.latched_reason && (!IsTerminalOutcome(*snapshot.latched_reason) ||
-                                  *snapshot.latched_reason == TerminalOutcome::kSucceeded))
+  if (snapshot.latched_reason.has_value() &&
+      (!IsTerminalOutcome(*snapshot.latched_reason) ||
+       *snapshot.latched_reason == TerminalOutcome::kSucceeded))
     return false;
-  if (snapshot.allocation_id && !IsStable(snapshot.allocation_id->value)) return false;
-  if (snapshot.allocation_digest && !IsDigest(snapshot.allocation_digest->value)) return false;
-  if (snapshot.launch_operation_id && !IsStable(snapshot.launch_operation_id->value)) return false;
-  if (snapshot.worker_id && !IsUuid(snapshot.worker_id->value, '4')) return false;
-  if (snapshot.pending_worker_id && !IsUuid(snapshot.pending_worker_id->value, '4')) return false;
-  return !snapshot.pending_worker_event_sequence || *snapshot.pending_worker_event_sequence != 0;
+  if (snapshot.allocation_id.has_value() && !IsStable(snapshot.allocation_id->value)) return false;
+  if (snapshot.allocation_digest.has_value() && !IsDigest(snapshot.allocation_digest->value))
+    return false;
+  if (snapshot.launch_operation_id.has_value() && !IsStable(snapshot.launch_operation_id->value))
+    return false;
+  if (snapshot.worker_id.has_value() && !IsUuid(snapshot.worker_id->value, '4')) return false;
+  if (snapshot.pending_worker_id.has_value() && !IsUuid(snapshot.pending_worker_id->value, '4'))
+    return false;
+  return !snapshot.pending_worker_event_sequence.has_value() ||
+         *snapshot.pending_worker_event_sequence != 0;
 }
 
 bool HasValidResourceFacts(const Snapshot& snapshot) {
@@ -515,7 +524,8 @@ bool HasValidResourceFacts(const Snapshot& snapshot) {
 bool HasValidExitFacts(const Snapshot& snapshot) {
   if (snapshot.process_exit_confirmed &&
       (snapshot.process_presence != ProcessPresence::kAbsent || snapshot.pending_worker_event_ack ||
-       snapshot.pending_worker_id || snapshot.pending_worker_event_sequence))
+       snapshot.pending_worker_id.has_value() ||
+       snapshot.pending_worker_event_sequence.has_value()))
     return false;
   return snapshot.completion_mode != CompletionMode::kProcessAlreadyExited ||
          snapshot.process_exit_confirmed;
@@ -530,8 +540,10 @@ bool HasValidLaunchFacts(const Snapshot& snapshot) {
 
 bool HasValidPendingAckFacts(const Snapshot& snapshot) {
   if (!snapshot.pending_worker_event_ack)
-    return !snapshot.pending_worker_id && !snapshot.pending_worker_event_sequence;
-  return snapshot.pending_worker_id && snapshot.pending_worker_event_sequence &&
+    return !snapshot.pending_worker_id.has_value() &&
+           !snapshot.pending_worker_event_sequence.has_value();
+  return snapshot.pending_worker_id.has_value() &&
+         snapshot.pending_worker_event_sequence.has_value() &&
          *snapshot.pending_worker_event_sequence != 0;
 }
 
@@ -579,8 +591,8 @@ Decision DecideWorkerLaunchIntent(const Snapshot& snapshot, const InternalEvent&
 
 Decision DecideWorkerLaunchObserved(const Snapshot& snapshot, const InternalEvent& event) {
   if (snapshot.state != JobState::kPreparing) return RejectState();
-  const auto* payload = std::get_if<WorkerLaunchObservedPayload>(&event.payload);
-  if (!payload || !snapshot.launch_operation_id ||
+  if (const auto* payload = std::get_if<WorkerLaunchObservedPayload>(&event.payload);
+      payload == nullptr || !snapshot.launch_operation_id ||
       *snapshot.launch_operation_id != payload->operation_id ||
       snapshot.worker_launch_status != LaunchStatus::kIntentRecorded)
     return Reject(RejectionReason::kInvariantViolation);
@@ -597,83 +609,92 @@ Decision DecideWorkerRunning(const Snapshot& snapshot, const InternalEvent& even
 }
 
 Decision DecideCancelAccepted(const Snapshot& snapshot, const InternalEvent& event) {
-  if (snapshot.state == JobState::kStopping)
-    return Reject(RejectionReason::kStopCauseAlreadyLatched);
-  if (snapshot.state == JobState::kFinalizing || IsTerminal(snapshot.state))
+  using enum JobState;
+
+  if (snapshot.state == kStopping) return Reject(RejectionReason::kStopCauseAlreadyLatched);
+  if (snapshot.state == kFinalizing || IsTerminal(snapshot.state))
     return Reject(RejectionReason::kCommandNotAllowedInState);
-  return snapshot.state == JobState::kAdmitted || snapshot.state == JobState::kPreparing ||
-                 snapshot.state == JobState::kRunning
+  return snapshot.state == kAdmitted || snapshot.state == kPreparing || snapshot.state == kRunning
              ? Accept(snapshot, event.event_type, event.payload)
              : RejectState();
 }
 
 Decision DecideTerminateAccepted(const Snapshot& snapshot, const InternalEvent& event) {
-  if (snapshot.state == JobState::kStopping || snapshot.state == JobState::kFinalizing) {
+  using enum JobState;
+
+  if (snapshot.state == kStopping || snapshot.state == kFinalizing) {
     return !snapshot.process_exit_confirmed ? Accept(snapshot, event.event_type, event.payload)
                                             : Reject(RejectionReason::kCommandNotAllowedInState);
   }
   if (IsTerminal(snapshot.state)) return Reject(RejectionReason::kCommandNotAllowedInState);
-  return snapshot.state == JobState::kAdmitted || snapshot.state == JobState::kPreparing ||
-                 snapshot.state == JobState::kRunning
+  return snapshot.state == kAdmitted || snapshot.state == kPreparing || snapshot.state == kRunning
              ? Accept(snapshot, event.event_type, event.payload)
              : RejectState();
 }
 
 Decision DecideFinalizingTimeout(const Snapshot& snapshot, const InternalEvent& event,
                                  const TimeoutExpiredPayload& payload) {
+  using enum TerminalOutcome;
+
   if (payload.phase != TimeoutPhase::kExecution)
     return Reject(RejectionReason::kTimeoutPhaseMismatch);
   if (!snapshot.latched_reason && snapshot.completion_candidate)
     return Accept(snapshot, event.event_type, event.payload);
-  if (snapshot.latched_reason == TerminalOutcome::kFailed ||
-      snapshot.latched_reason == TerminalOutcome::kCancelled ||
-      snapshot.latched_reason == TerminalOutcome::kTerminated ||
-      snapshot.latched_reason == TerminalOutcome::kTimedOut)
+  if (snapshot.latched_reason == kFailed || snapshot.latched_reason == kCancelled ||
+      snapshot.latched_reason == kTerminated || snapshot.latched_reason == kTimedOut)
     return Accept(snapshot, event.event_type, event.payload);
   return Reject(RejectionReason::kTimeoutPhaseMismatch);
 }
 
 Decision DecideTimeoutExpired(const Snapshot& snapshot, const InternalEvent& event) {
-  const auto* payload = std::get_if<TimeoutExpiredPayload>(&event.payload);
-  if (!payload) return Reject(RejectionReason::kInvalidEventPayload);
-  if (snapshot.state == JobState::kPreparing)
-    return payload->phase == TimeoutPhase::kPreparation
-               ? Accept(snapshot, event.event_type, event.payload)
-               : Reject(RejectionReason::kTimeoutPhaseMismatch);
-  if (snapshot.state == JobState::kRunning)
-    return payload->phase == TimeoutPhase::kExecution
-               ? Accept(snapshot, event.event_type, event.payload)
-               : Reject(RejectionReason::kTimeoutPhaseMismatch);
-  if (snapshot.state == JobState::kStopping)
-    return payload->phase == TimeoutPhase::kExecution ||
-                   payload->phase == TimeoutPhase::kCooperativeStop
-               ? Accept(snapshot, event.event_type, event.payload)
-               : Reject(RejectionReason::kTimeoutPhaseMismatch);
-  if (snapshot.state == JobState::kFinalizing)
-    return DecideFinalizingTimeout(snapshot, event, *payload);
-  if (!IsTerminal(snapshot.state)) return RejectState();
-  if (payload->phase != TimeoutPhase::kProcessExitConfirmation)
-    return Reject(RejectionReason::kTimeoutPhaseMismatch);
-  return snapshot.process_exit_confirmed ? Reject(RejectionReason::kInvariantViolation)
-                                         : Accept(snapshot, event.event_type, event.payload);
+  using enum JobState;
+  {
+    using enum RejectionReason;
+    {
+      using enum TimeoutPhase;
+
+      const auto* payload = std::get_if<TimeoutExpiredPayload>(&event.payload);
+      if (!payload) return Reject(kInvalidEventPayload);
+      if (snapshot.state == kPreparing)
+        return payload->phase == kPreparation ? Accept(snapshot, event.event_type, event.payload)
+                                              : Reject(kTimeoutPhaseMismatch);
+      if (snapshot.state == kRunning)
+        return payload->phase == kExecution ? Accept(snapshot, event.event_type, event.payload)
+                                            : Reject(kTimeoutPhaseMismatch);
+      if (snapshot.state == kStopping)
+        return payload->phase == kExecution || payload->phase == kCooperativeStop
+                   ? Accept(snapshot, event.event_type, event.payload)
+                   : Reject(kTimeoutPhaseMismatch);
+      if (snapshot.state == kFinalizing) return DecideFinalizingTimeout(snapshot, event, *payload);
+      if (!IsTerminal(snapshot.state)) return RejectState();
+      if (payload->phase != kProcessExitConfirmation) return Reject(kTimeoutPhaseMismatch);
+      return snapshot.process_exit_confirmed ? Reject(kInvariantViolation)
+                                             : Accept(snapshot, event.event_type, event.payload);
+    }
+  }
 }
 
 Decision DecideWorkerOutcome(const Snapshot& snapshot, const InternalEvent& event) {
-  const auto* payload = std::get_if<WorkerEventPayload>(&event.payload);
-  if (!payload) return Reject(RejectionReason::kInvalidEventPayload);
-  if (IsTerminal(snapshot.state) || snapshot.state == JobState::kFinalizing) {
+  using enum JobState;
+  {
+    using enum RejectionReason;
+
+    const auto* payload = std::get_if<WorkerEventPayload>(&event.payload);
+    if (!payload) return Reject(kInvalidEventPayload);
+    if (IsTerminal(snapshot.state) || snapshot.state == kFinalizing) {
+      return snapshot.worker_id && *snapshot.worker_id == payload->worker_id
+                 ? Accept(snapshot, EventType::kLateWorkerEvent,
+                          LateWorkerEventPayload{event.event_type, payload->worker_id,
+                                                 payload->event_sequence})
+                 : Reject(kInvariantViolation);
+    }
+    if (snapshot.state != kRunning && snapshot.state != kStopping &&
+        !(snapshot.state == kPreparing && event.event_type == EventType::kWorkerFailed))
+      return RejectState();
     return snapshot.worker_id && *snapshot.worker_id == payload->worker_id
-               ? Accept(snapshot, EventType::kLateWorkerEvent,
-                        LateWorkerEventPayload{event.event_type, payload->worker_id,
-                                               payload->event_sequence})
-               : Reject(RejectionReason::kInvariantViolation);
+               ? Accept(snapshot, event.event_type, event.payload)
+               : Reject(kInvariantViolation);
   }
-  if (snapshot.state != JobState::kRunning && snapshot.state != JobState::kStopping &&
-      !(snapshot.state == JobState::kPreparing && event.event_type == EventType::kWorkerFailed))
-    return RejectState();
-  return snapshot.worker_id && *snapshot.worker_id == payload->worker_id
-             ? Accept(snapshot, event.event_type, event.payload)
-             : Reject(RejectionReason::kInvariantViolation);
 }
 
 Decision DecideProcessExitConfirmed(const Snapshot& snapshot, const InternalEvent& event) {
@@ -716,38 +737,38 @@ Decision DecideFinalizationFailed(const Snapshot& snapshot, const InternalEvent&
 }
 
 Decision DecideTerminalOutcomeCommitted(const Snapshot& snapshot, const InternalEvent& event) {
+  using enum TerminalOutcome;
+
   if (snapshot.state != JobState::kFinalizing) return RejectState();
   const auto* payload = std::get_if<TerminalOutcomePayload>(&event.payload);
   if (!payload || snapshot.finalization_status == FinalizationStatus::kPending)
     return Reject(RejectionReason::kRequiredFinalizationFactMissing);
-  const bool succeeded = payload->outcome == TerminalOutcome::kSucceeded &&
-                         !snapshot.latched_reason && snapshot.completion_candidate &&
+  const bool succeeded = payload->outcome == kSucceeded && !snapshot.latched_reason &&
+                         snapshot.completion_candidate &&
                          snapshot.finalization_status == FinalizationStatus::kCompleted;
-  const bool failed = payload->outcome == TerminalOutcome::kFailed &&
-                      snapshot.latched_reason == TerminalOutcome::kFailed;
-  const bool cancelled = payload->outcome == TerminalOutcome::kCancelled &&
-                         snapshot.latched_reason == TerminalOutcome::kCancelled;
-  const bool terminated = payload->outcome == TerminalOutcome::kTerminated &&
-                          snapshot.latched_reason == TerminalOutcome::kTerminated;
-  const bool timed_out = payload->outcome == TerminalOutcome::kTimedOut &&
-                         snapshot.latched_reason == TerminalOutcome::kTimedOut;
+  const bool failed = payload->outcome == kFailed && snapshot.latched_reason == kFailed;
+  const bool cancelled = payload->outcome == kCancelled && snapshot.latched_reason == kCancelled;
+  const bool terminated = payload->outcome == kTerminated && snapshot.latched_reason == kTerminated;
+  const bool timed_out = payload->outcome == kTimedOut && snapshot.latched_reason == kTimedOut;
   return succeeded || failed || cancelled || terminated || timed_out
              ? Accept(snapshot, event.event_type, event.payload)
              : Reject(RejectionReason::kTerminalOutcomeMismatch);
 }
 
 Decision DecideResourcesReleased(const Snapshot& snapshot, const InternalEvent& event) {
+  using enum RejectionReason;
+
   if (!IsTerminal(snapshot.state)) return RejectState();
-  if (!snapshot.process_exit_confirmed) return Reject(RejectionReason::kInvariantViolation);
-  const auto* payload = std::get_if<ResourcesReleasedPayload>(&event.payload);
-  if (!payload || !snapshot.allocation_id || !snapshot.allocation_digest ||
+  if (!snapshot.process_exit_confirmed) return Reject(kInvariantViolation);
+  if (const auto* payload = std::get_if<ResourcesReleasedPayload>(&event.payload);
+      payload == nullptr || !snapshot.allocation_id || !snapshot.allocation_digest ||
       payload->allocation_id != *snapshot.allocation_id ||
       payload->allocation_digest != *snapshot.allocation_digest)
-    return Reject(RejectionReason::kInvariantViolation);
+    return Reject(kInvariantViolation);
   return snapshot.resource_status == ResourceStatus::kCommitted ||
                  snapshot.resource_status == ResourceStatus::kReleased
              ? Accept(snapshot, event.event_type, event.payload)
-             : Reject(RejectionReason::kInvariantViolation);
+             : Reject(kInvariantViolation);
 }
 
 Decision DecideCleanupStatusRecorded(const Snapshot& snapshot, const InternalEvent& event) {
@@ -760,58 +781,60 @@ Decision DecideCleanupStatusRecorded(const Snapshot& snapshot, const InternalEve
 }
 
 Decision DecideInternal(const Snapshot& snapshot, const InternalEvent& event) {
+  using enum EventType;
+
   if (!ValidSnapshot(snapshot)) return Reject(RejectionReason::kInvariantViolation);
   if (event.schema_version != 1 || event.job_id != snapshot.job_id ||
       !IsUuid(event.job_id.value, '7') ||
       !ValidInternalPayload(event.event_type, event.payload, event.job_id))
     return Reject(RejectionReason::kInvalidEventPayload);
-  if (!snapshot.entity_exists && event.event_type != EventType::kJobCreated)
+  if (!snapshot.entity_exists && event.event_type != kJobCreated)
     return Reject(RejectionReason::kJobNotFound);
-  if (event.event_type == EventType::kJobCreated)
+  if (event.event_type == kJobCreated)
     return snapshot.entity_exists ? Reject(RejectionReason::kJobAlreadyExists)
                                   : Accept(snapshot, event.event_type, event.payload);
 
   switch (event.event_type) {
-    case EventType::kResourcesCommitted:
+    case kResourcesCommitted:
       return DecideResourcesCommitted(snapshot, event);
-    case EventType::kWorkerLaunchIntent:
+    case kWorkerLaunchIntent:
       return DecideWorkerLaunchIntent(snapshot, event);
-    case EventType::kWorkerLaunchObserved:
+    case kWorkerLaunchObserved:
       return DecideWorkerLaunchObserved(snapshot, event);
-    case EventType::kWorkerRunning:
+    case kWorkerRunning:
       return DecideWorkerRunning(snapshot, event);
-    case EventType::kCancelAccepted:
+    case kCancelAccepted:
       return DecideCancelAccepted(snapshot, event);
-    case EventType::kTerminateAccepted:
+    case kTerminateAccepted:
       return DecideTerminateAccepted(snapshot, event);
-    case EventType::kTimeoutExpired:
+    case kTimeoutExpired:
       return DecideTimeoutExpired(snapshot, event);
-    case EventType::kWorkerCompleted:
-    case EventType::kWorkerFailed:
+    case kWorkerCompleted:
+    case kWorkerFailed:
       return DecideWorkerOutcome(snapshot, event);
-    case EventType::kProcessExitConfirmed:
+    case kProcessExitConfirmed:
       return DecideProcessExitConfirmed(snapshot, event);
-    case EventType::kSessionRetainRequested:
+    case kSessionRetainRequested:
       return DecideSessionRetain(snapshot, event, RetentionStatus::kNotStarted);
-    case EventType::kSessionRetained:
+    case kSessionRetained:
       return DecideSessionRetain(snapshot, event, RetentionStatus::kRequested);
-    case EventType::kFinalizationCompleted:
+    case kFinalizationCompleted:
       return DecideFinalizationCompleted(snapshot, event);
-    case EventType::kFinalizationFailed:
+    case kFinalizationFailed:
       return DecideFinalizationFailed(snapshot, event);
-    case EventType::kTerminalOutcomeCommitted:
+    case kTerminalOutcomeCommitted:
       return DecideTerminalOutcomeCommitted(snapshot, event);
-    case EventType::kResourcesReleased:
+    case kResourcesReleased:
       return DecideResourcesReleased(snapshot, event);
-    case EventType::kCleanupStatusRecorded:
+    case kCleanupStatusRecorded:
       return DecideCleanupStatusRecorded(snapshot, event);
-    case EventType::kLateWorkerEvent:
+    case kLateWorkerEvent:
       return IsTerminal(snapshot.state) || snapshot.state == JobState::kFinalizing
                  ? Accept(snapshot, event.event_type, event.payload)
                  : RejectState();
-    case EventType::kJobCreated:
+    case kJobCreated:
       return Reject(RejectionReason::kJobAlreadyExists);
-    case EventType::kInvalid:
+    case kInvalid:
       return Reject(RejectionReason::kInvalidEventPayload);
   }
   return Reject(RejectionReason::kInvariantViolation);
@@ -974,6 +997,8 @@ void ApplyWorkerRunning(Snapshot* snapshot, std::vector<Effect>* effects) {
 }
 
 void ApplyCancelAccepted(Snapshot* snapshot, std::vector<Effect>* effects) {
+  using enum EffectId;
+
   const auto old_state = snapshot->state;
   snapshot->latched_reason = TerminalOutcome::kCancelled;
   if (old_state == JobState::kAdmitted ||
@@ -981,23 +1006,25 @@ void ApplyCancelAccepted(Snapshot* snapshot, std::vector<Effect>* effects) {
        snapshot->process_presence == ProcessPresence::kAbsent)) {
     snapshot->completion_mode = CompletionMode::kProcessAlreadyExited;
     snapshot->process_exit_confirmed = true;
-    if (old_state == JobState::kPreparing) Add(effects, EffectId::kDisarmPreparationTimeout);
+    if (old_state == JobState::kPreparing) Add(effects, kDisarmPreparationTimeout);
     BeginFinalizing(snapshot);
     return;
   }
   snapshot->completion_mode = CompletionMode::kCooperative;
-  if (old_state == JobState::kPreparing) Add(effects, EffectId::kDisarmPreparationTimeout);
+  if (old_state == JobState::kPreparing) Add(effects, kDisarmPreparationTimeout);
   snapshot->state = JobState::kStopping;
-  Add(effects, EffectId::kRequestCooperativeStop);
-  Add(effects, EffectId::kArmCooperativeStopTimeout);
+  Add(effects, kRequestCooperativeStop);
+  Add(effects, kArmCooperativeStopTimeout);
 }
 
 void ApplyTerminateAccepted(Snapshot* snapshot, std::vector<Effect>* effects) {
+  using enum EffectId;
+
   if (snapshot->state == JobState::kStopping || snapshot->state == JobState::kFinalizing) {
     snapshot->completion_mode = CompletionMode::kForced;
-    Add(effects, EffectId::kRequestForcedStop);
-    Add(effects, EffectId::kDisarmCooperativeStopTimeout);
-    Add(effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
+    Add(effects, kRequestForcedStop);
+    Add(effects, kDisarmCooperativeStopTimeout);
+    Add(effects, kArmProcessExitConfirmationTimeoutIfNeeded);
     return;
   }
   const auto old_state = snapshot->state;
@@ -1007,21 +1034,23 @@ void ApplyTerminateAccepted(Snapshot* snapshot, std::vector<Effect>* effects) {
        snapshot->process_presence == ProcessPresence::kAbsent)) {
     snapshot->completion_mode = CompletionMode::kProcessAlreadyExited;
     snapshot->process_exit_confirmed = true;
-    if (old_state == JobState::kPreparing) Add(effects, EffectId::kDisarmPreparationTimeout);
+    if (old_state == JobState::kPreparing) Add(effects, kDisarmPreparationTimeout);
     BeginFinalizing(snapshot);
     return;
   }
   snapshot->completion_mode = CompletionMode::kForced;
-  if (old_state == JobState::kPreparing) Add(effects, EffectId::kDisarmPreparationTimeout);
+  if (old_state == JobState::kPreparing) Add(effects, kDisarmPreparationTimeout);
   snapshot->state = JobState::kStopping;
-  Add(effects, EffectId::kRequestForcedStop);
-  Add(effects, EffectId::kDisarmCooperativeStopTimeout);
-  Add(effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
+  Add(effects, kRequestForcedStop);
+  Add(effects, kDisarmCooperativeStopTimeout);
+  Add(effects, kArmProcessExitConfirmationTimeoutIfNeeded);
 }
 
 void ApplyPreparationTimeout(Snapshot* snapshot, std::vector<Effect>* effects) {
+  using enum EffectId;
+
   snapshot->latched_reason = TerminalOutcome::kTimedOut;
-  Add(effects, EffectId::kDisarmPreparationTimeout);
+  Add(effects, kDisarmPreparationTimeout);
   if (snapshot->process_presence == ProcessPresence::kAbsent) {
     snapshot->completion_mode = CompletionMode::kProcessAlreadyExited;
     snapshot->process_exit_confirmed = true;
@@ -1030,11 +1059,13 @@ void ApplyPreparationTimeout(Snapshot* snapshot, std::vector<Effect>* effects) {
   }
   snapshot->completion_mode = CompletionMode::kCooperative;
   snapshot->state = JobState::kStopping;
-  Add(effects, EffectId::kRequestCooperativeStop);
-  Add(effects, EffectId::kArmCooperativeStopTimeout);
+  Add(effects, kRequestCooperativeStop);
+  Add(effects, kArmCooperativeStopTimeout);
 }
 
 void ApplyFinalizingExecutionTimeout(Snapshot* snapshot, std::vector<Effect>* effects) {
+  using enum EffectId;
+
   const bool had_success_candidate = !snapshot->latched_reason && snapshot->completion_candidate;
   if (had_success_candidate) {
     snapshot->latched_reason = TerminalOutcome::kTimedOut;
@@ -1046,17 +1077,19 @@ void ApplyFinalizingExecutionTimeout(Snapshot* snapshot, std::vector<Effect>* ef
   }
   if (snapshot->process_exit_confirmed) return;
   snapshot->completion_mode = CompletionMode::kForced;
-  Add(effects, EffectId::kRequestForcedStop);
-  Add(effects, EffectId::kDisarmCooperativeStopTimeout);
-  Add(effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
+  Add(effects, kRequestForcedStop);
+  Add(effects, kDisarmCooperativeStopTimeout);
+  Add(effects, kArmProcessExitConfirmationTimeoutIfNeeded);
 }
 
 void ApplyStoppingExecutionTimeout(Snapshot* snapshot, std::vector<Effect>* effects) {
+  using enum EffectId;
+
   snapshot->completion_mode = CompletionMode::kForced;
-  Add(effects, EffectId::kDisarmExecutionTimeout);
-  Add(effects, EffectId::kDisarmCooperativeStopTimeout);
-  Add(effects, EffectId::kRequestForcedStop);
-  Add(effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
+  Add(effects, kDisarmExecutionTimeout);
+  Add(effects, kDisarmCooperativeStopTimeout);
+  Add(effects, kRequestForcedStop);
+  Add(effects, kArmProcessExitConfirmationTimeoutIfNeeded);
 }
 
 void ApplyRunningExecutionTimeout(Snapshot* snapshot, std::vector<Effect>* effects) {
@@ -1068,47 +1101,55 @@ void ApplyRunningExecutionTimeout(Snapshot* snapshot, std::vector<Effect>* effec
 }
 
 void ApplyExecutionTimeout(Snapshot* snapshot, std::vector<Effect>* effects) {
-  if (snapshot->state == JobState::kFinalizing) {
+  using enum JobState;
+
+  if (snapshot->state == kFinalizing) {
     ApplyFinalizingExecutionTimeout(snapshot, effects);
     return;
   }
-  if (snapshot->state == JobState::kStopping) {
+  if (snapshot->state == kStopping) {
     ApplyStoppingExecutionTimeout(snapshot, effects);
     return;
   }
-  if (snapshot->state == JobState::kRunning) ApplyRunningExecutionTimeout(snapshot, effects);
+  if (snapshot->state == kRunning) ApplyRunningExecutionTimeout(snapshot, effects);
 }
 
 void ApplyCooperativeStopTimeout(Snapshot* snapshot, std::vector<Effect>* effects) {
+  using enum EffectId;
+
   snapshot->completion_mode = CompletionMode::kForced;
-  Add(effects, EffectId::kDisarmCooperativeStopTimeout);
-  Add(effects, EffectId::kRequestForcedStop);
-  Add(effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
+  Add(effects, kDisarmCooperativeStopTimeout);
+  Add(effects, kRequestForcedStop);
+  Add(effects, kArmProcessExitConfirmationTimeoutIfNeeded);
 }
 
 void ApplyProcessExitConfirmationTimeout(Snapshot* snapshot, std::vector<Effect>* effects) {
+  using enum EffectId;
+
   snapshot->cleanup_status = CleanupStatus::kIncomplete;
-  Add(effects, EffectId::kRequestForcedStop);
-  Add(effects, EffectId::kQuarantineResources);
-  Add(effects, EffectId::kSetReadinessFalse);
+  Add(effects, kRequestForcedStop);
+  Add(effects, kQuarantineResources);
+  Add(effects, kSetReadinessFalse);
 }
 
 void ApplyTimeoutExpired(Snapshot* snapshot, std::vector<Effect>* effects,
                          const TimeoutExpiredPayload& payload) {
+  using enum TimeoutPhase;
+
   switch (payload.phase) {
-    case TimeoutPhase::kPreparation:
+    case kPreparation:
       ApplyPreparationTimeout(snapshot, effects);
       return;
-    case TimeoutPhase::kExecution:
+    case kExecution:
       ApplyExecutionTimeout(snapshot, effects);
       return;
-    case TimeoutPhase::kCooperativeStop:
+    case kCooperativeStop:
       ApplyCooperativeStopTimeout(snapshot, effects);
       return;
-    case TimeoutPhase::kProcessExitConfirmation:
+    case kProcessExitConfirmation:
       ApplyProcessExitConfirmationTimeout(snapshot, effects);
       return;
-    case TimeoutPhase::kInvalid:
+    case kInvalid:
       return;
   }
 }
@@ -1206,82 +1247,86 @@ JobState JobStateForOutcome(TerminalOutcome outcome) {
 
 void ApplyTerminalOutcomeCommitted(Snapshot* snapshot, std::vector<Effect>* effects,
                                    const TerminalOutcomePayload& payload) {
+  using enum EffectId;
+
   snapshot->state = JobStateForOutcome(payload.outcome);
   if (snapshot->finalization_status != FinalizationStatus::kFailed)
     snapshot->finalization_status = FinalizationStatus::kCompleted;
-  Add(effects, EffectId::kDisarmExecutionTimeout);
-  Add(effects, EffectId::kAckTerminalWorkerEventIfPending);
-  Add(effects, EffectId::kPublishTerminalResult);
-  Add(effects, EffectId::kArmProcessExitConfirmationTimeoutIfNeeded);
+  Add(effects, kDisarmExecutionTimeout);
+  Add(effects, kAckTerminalWorkerEventIfPending);
+  Add(effects, kPublishTerminalResult);
+  Add(effects, kArmProcessExitConfirmationTimeoutIfNeeded);
 }
 
 bool ApplyAuthorizedEvent(Snapshot* snapshot, std::vector<Effect>* effects,
                           const PreEnvelopeProposal& proposal) {
+  using enum EventType;
+
   switch (proposal.event_type) {
-    case EventType::kJobCreated:
+    case kJobCreated:
       ApplyJobCreated(snapshot, std::get<JobCreatedPayload>(proposal.payload));
       return true;
-    case EventType::kResourcesCommitted:
+    case kResourcesCommitted:
       ApplyResourcesCommitted(snapshot, effects,
                               std::get<ResourcesCommittedPayload>(proposal.payload));
       return true;
-    case EventType::kWorkerLaunchIntent:
+    case kWorkerLaunchIntent:
       ApplyWorkerLaunchIntent(snapshot, effects,
                               std::get<WorkerLaunchIntentPayload>(proposal.payload));
       return true;
-    case EventType::kWorkerLaunchObserved:
+    case kWorkerLaunchObserved:
       ApplyWorkerLaunchObserved(snapshot, effects,
                                 std::get<WorkerLaunchObservedPayload>(proposal.payload));
       return true;
-    case EventType::kWorkerRunning:
+    case kWorkerRunning:
       ApplyWorkerRunning(snapshot, effects);
       return true;
-    case EventType::kCancelAccepted:
+    case kCancelAccepted:
       ApplyCancelAccepted(snapshot, effects);
       return true;
-    case EventType::kTerminateAccepted:
+    case kTerminateAccepted:
       ApplyTerminateAccepted(snapshot, effects);
       return true;
-    case EventType::kTimeoutExpired:
+    case kTimeoutExpired:
       ApplyTimeoutExpired(snapshot, effects, std::get<TimeoutExpiredPayload>(proposal.payload));
       return true;
-    case EventType::kWorkerCompleted:
+    case kWorkerCompleted:
       ApplyWorkerCompleted(snapshot, effects, std::get<WorkerEventPayload>(proposal.payload));
       return true;
-    case EventType::kWorkerFailed:
+    case kWorkerFailed:
       ApplyWorkerFailed(snapshot, effects, std::get<WorkerEventPayload>(proposal.payload));
       return true;
-    case EventType::kProcessExitConfirmed:
+    case kProcessExitConfirmed:
       ApplyProcessExitConfirmed(snapshot, effects,
                                 std::get<ProcessExitConfirmedPayload>(proposal.payload));
       return true;
-    case EventType::kSessionRetainRequested:
+    case kSessionRetainRequested:
       snapshot->session_retention_status = RetentionStatus::kRequested;
       Add(effects, EffectId::kRetainSessionSameIdentity);
       return true;
-    case EventType::kSessionRetained:
+    case kSessionRetained:
       snapshot->session_retention_status = RetentionStatus::kRetained;
       return true;
-    case EventType::kFinalizationCompleted:
+    case kFinalizationCompleted:
       snapshot->finalization_status = FinalizationStatus::kCompleted;
       return true;
-    case EventType::kFinalizationFailed:
+    case kFinalizationFailed:
       ApplyFinalizationFailed(snapshot);
       return true;
-    case EventType::kTerminalOutcomeCommitted:
+    case kTerminalOutcomeCommitted:
       ApplyTerminalOutcomeCommitted(snapshot, effects,
                                     std::get<TerminalOutcomePayload>(proposal.payload));
       return true;
-    case EventType::kResourcesReleased:
+    case kResourcesReleased:
       snapshot->resource_status = ResourceStatus::kReleased;
       return true;
-    case EventType::kCleanupStatusRecorded:
+    case kCleanupStatusRecorded:
       snapshot->cleanup_status = std::get<CleanupStatusPayload>(proposal.payload).status;
       return true;
-    case EventType::kLateWorkerEvent:
+    case kLateWorkerEvent:
       Add(effects, EffectId::kAckLateWorkerEvent);
       return true;
-    case EventType::kInvalid:
+    case kInvalid:
       return false;
   }
   return false;
@@ -1289,8 +1334,9 @@ bool ApplyAuthorizedEvent(Snapshot* snapshot, std::vector<Effect>* effects,
 }  // namespace
 
 ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
-  if (!ValidSnapshot(before))
-    return ApplyResult{before, {}, Rejection{1, RejectionReason::kInvariantViolation}};
+  using enum RejectionReason;
+
+  if (!ValidSnapshot(before)) return ApplyResult{before, {}, Rejection{1, kInvariantViolation}};
   const InternalEvent event{proposal.schema_version, proposal.job_id, proposal.event_type,
                             proposal.payload};
   const Decision decision = DecideInternal(before, event);
@@ -1299,11 +1345,11 @@ ApplyResult Apply(const Snapshot& before, const PreEnvelopeProposal& proposal) {
   const auto& authorized = std::get<PreEnvelopeProposal>(decision.value);
   if (authorized.schema_version != proposal.schema_version ||
       authorized.job_id != proposal.job_id || authorized.event_type != proposal.event_type)
-    return ApplyResult{before, {}, Rejection{1, RejectionReason::kInvariantViolation}};
+    return ApplyResult{before, {}, Rejection{1, kInvariantViolation}};
   Snapshot snapshot = before;
   std::vector<Effect> effects;
   if (!ApplyAuthorizedEvent(&snapshot, &effects, proposal))
-    return ApplyResult{before, {}, Rejection{1, RejectionReason::kInvalidEventPayload}};
+    return ApplyResult{before, {}, Rejection{1, kInvalidEventPayload}};
   return ApplyResult{std::move(snapshot), std::move(effects), std::nullopt};
 }
 
