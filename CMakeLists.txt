@@ -49,8 +49,9 @@ endfunction()
 
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Boost CONFIG REQUIRED COMPONENTS uuid hash2)
+find_package(Threads REQUIRED)
 
-add_library(sitometron_core STATIC src/core/version.cpp src/core/job_reducer.cpp)
+add_library(sitometron_core STATIC src/core/version.cpp src/core/job_reducer.cpp src/core/job_orchestrator.cpp)
 add_library(sitometron::core ALIAS sitometron_core)
 target_include_directories(
   sitometron_core
@@ -63,7 +64,8 @@ target_link_libraries(
   PRIVATE
     nlohmann_json::nlohmann_json
     Boost::uuid
-    Boost::hash2)
+    Boost::hash2
+    Threads::Threads)
 sitometron_enable_project_warnings(sitometron_core)
 sitometron_enable_sanitizers(sitometron_core)
 
