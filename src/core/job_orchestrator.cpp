@@ -8,7 +8,6 @@
 #include <utility>
 
 namespace sitometron::core::internal {
-namespace {}
 
 struct CallbackHandle::Control {
   mutable std::mutex mutex;
@@ -116,7 +115,7 @@ struct JobOrchestrator::Impl {
   };
   struct Resident {
     ::sitometron::core::Uuid id;
-    ApplyResult banks[2];
+    std::array<ApplyResult, 2> banks;
     // Both banks own startup-reserved turn/effect storage. A turn only resets
     // the inactive bank before commit; no postcommit vector operation is needed.
     std::array<std::vector<PreparedEffect>, 2> prepared_effects;
@@ -138,7 +137,7 @@ struct JobOrchestrator::Impl {
     std::array<Gate, static_cast<std::size_t>(GateKind::kCount)> gates{};
   };
 
-  explicit Impl(Config value) : config(std::move(value)), mutex() {
+  explicit Impl(Config value) : config(std::move(value)) {
     if (config.max_jobs == 0 || config.normal_capacity == 0 || config.critical_reserve() == 0 ||
         config.total_capacity() == 0 || config.trace_capacity == 0 ||
         config.completion_capacity < config.total_capacity() ||
@@ -281,15 +280,17 @@ struct JobOrchestrator::Impl {
     for (std::size_t i = 0; i != value.size(); ++i) {
       const bool hyphen = i == 8 || i == 13 || i == 18 || i == 23;
       const char c = value[i];
-      const bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-      if ((hyphen && c != '-') || (!hyphen && !hex)) return false;
+      if (const bool hex =
+              (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+          (hyphen && c != '-') || (!hyphen && !hex))
+        return false;
       out[i] = c;
     }
     return true;
   }
   static bool IsUuidVersion(std::string_view value, char version) noexcept {
-    std::array<char, 36> ignored{};
-    if (!CopyCanonicalUuid(value, ignored) || value[14] != version ||
+    if (std::array<char, 36> ignored{};
+        !CopyCanonicalUuid(value, ignored) || value[14] != version ||
         (value[19] != '8' && value[19] != '9' && value[19] != 'a' && value[19] != 'b'))
       return false;
     for (std::size_t i = 0; i != value.size(); ++i)
@@ -374,8 +375,8 @@ struct JobOrchestrator::Impl {
         const auto& worker = payload.at("worker_id");
         const auto& sequence = payload.at("event_sequence");
         if (!worker.is_string() || !sequence.is_number_unsigned()) return false;
-        const auto worker_value = worker.get<std::string>();
-        if (!IsUuidVersion(worker_value, '4') || !CopyCanonicalUuid(worker_value, result.worker_id))
+        if (const auto worker_value = worker.get<std::string>();
+            !IsUuidVersion(worker_value, '4') || !CopyCanonicalUuid(worker_value, result.worker_id))
           return false;
         result.event_sequence = sequence.get<std::uint64_t>();
         if (result.event_sequence == 0) return false;
@@ -385,10 +386,11 @@ struct JobOrchestrator::Impl {
       result.event_kind = event.event_type == "worker_completed" ? 1 : 2;
     } else if (kind >= GateKind::kPreparationTimer && kind <= GateKind::kProcessExitTimer) {
       const auto phase = JsonString(event.payload_json, "phase");
-      constexpr std::string_view phases[] = {"preparation", "execution", "cooperative_stop",
-                                             "process_exit_confirmation"};
+      constexpr std::array<std::string_view, 4> phases = {
+          "preparation", "execution", "cooperative_stop", "process_exit_confirmation"};
       std::size_t index = 0;
-      for (; index != std::size(phases) && phase != phases[index]; ++index) {
+      for (; index != phases.size() && phase != phases[index]; ++index) {
+        // Search the closed timer-phase vocabulary without mutating state.
       }
       if (index == std::size(phases) ||
           !JsonUint(event.payload_json, "timer_generation", result.timer_generation))
@@ -489,7 +491,7 @@ struct JobOrchestrator::Impl {
       ++critical_count;
     }
   }
-  void ReleaseGateLocked(Entry& entry, bool successful) {
+  void ReleaseGateLocked(const Entry& entry, bool successful) {
     if (!entry.critical) {
       if (normal_count != 0) --normal_count;
       return;
@@ -576,13 +578,13 @@ struct JobOrchestrator::Impl {
       if (critical_count != 0) --critical_count;
     }
   }
-  void ReleaseCreationClaimLocked(Entry& entry) {
+  void ReleaseCreationClaimLocked(const Entry& entry) {
     if (entry.kind == Entry::Kind::kCandidate && entry.candidate.event_type == "job_created" &&
         entry.resident_index != kNoResident && entry.resident_index < residents.size()) {
       auto& resident = residents[entry.resident_index];
       if (resident.claims != 0) --resident.claims;
       if (!resident.exists && resident.claims == 0) {
-        for (auto& gate : resident.gates) {
+        for (const auto& gate : resident.gates) {
           if (gate.permit && critical_count != 0) --critical_count;
         }
         // Preserve startup-reserved bank storage across provisional-claim rollback.
@@ -672,8 +674,8 @@ struct JobOrchestrator::Impl {
     if (prepared.capacity() < config.trace_capacity) ++postcommit_allocation_count;
     prepared.clear();
     auto add = [&](TraceKind kind, EffectId effect = EffectId::kInvalid, std::string action = {}) {
-      prepared.push_back(
-          {0, kind, journal_sequence, event.event_type, effect, std::move(action), false, true});
+      prepared.emplace_back(0, kind, journal_sequence, event.event_type, effect, std::move(action),
+                            false, true);
     };
     add(TraceKind::kJournalAttempt);
     add(TraceKind::kJournalCommitted);
@@ -731,7 +733,7 @@ struct JobOrchestrator::Impl {
   }
   IngressResult Enqueue(Entry entry, bool /*ignored_normal*/, bool /*ignored_reserve_job*/ = false,
                         std::unique_lock<std::mutex>* held_lock = nullptr) {
-    std::unique_lock<std::mutex> local_lock(mutex, std::defer_lock);
+    std::unique_lock local_lock(mutex, std::defer_lock);
     const bool critical_candidate =
         entry.kind == Entry::Kind::kCandidate && IsCriticalCandidate(entry.candidate);
     const auto identity_gate = critical_candidate ? GateFor(entry) : GateKind::kCount;
@@ -747,15 +749,19 @@ struct JobOrchestrator::Impl {
     if (held_lock == nullptr) local_lock.lock();
     auto& lock = held_lock == nullptr ? local_lock : *held_lock;
     struct AdmissionInsertionWindow {
-      Impl& impl;
-      bool owns_window = false;
+      explicit AdmissionInsertionWindow(Impl& value) : impl(value) {}
+      AdmissionInsertionWindow(const AdmissionInsertionWindow&) = delete;
+      AdmissionInsertionWindow& operator=(const AdmissionInsertionWindow&) = delete;
       ~AdmissionInsertionWindow() {
         if (owns_window) {
           impl.admission_inserting = false;
           impl.cv.notify_all();
         }
       }
-    } admission_window{*this};
+      Impl& impl;
+      bool owns_window = false;
+    };
+    AdmissionInsertionWindow admission_window{*this};
     ++admission_attempts;
     cv.notify_all();
     if (admission_pause && critical_candidate && !admission_reached) {
@@ -763,10 +769,10 @@ struct JobOrchestrator::Impl {
       admission_inserting = true;
       admission_window.owns_window = true;
       cv.notify_all();
-      cv.wait(lock, [&] { return !admission_pause; });
+      cv.wait(lock, [this] { return !admission_pause; });
     } else if (admission_inserting && critical_candidate) {
       cv.notify_all();
-      cv.wait(lock, [&] { return !admission_inserting; });
+      cv.wait(lock, [this] { return !admission_inserting; });
     }
     (void)identity_ready;
     if (failed) return ResultLocked(IngressCode::kServiceFailed);
@@ -776,11 +782,12 @@ struct JobOrchestrator::Impl {
     const auto job_id =
         entry.kind == Entry::Kind::kCommand ? entry.command.job_id : entry.candidate.job_id;
     const bool known = Find(job_id) != nullptr;
-    const bool normal = entry.kind == Entry::Kind::kCandidate
-                            ? !IsCriticalCandidate(entry.candidate)
-                        : entry.kind == Entry::Kind::kCommand
-                            ? !(entry.command.command_type == CommandType::kTerminate && known)
-                            : false;
+    bool normal = false;
+    if (entry.kind == Entry::Kind::kCandidate) {
+      normal = !IsCriticalCandidate(entry.candidate);
+    } else if (entry.kind == Entry::Kind::kCommand) {
+      normal = !(entry.command.command_type == CommandType::kTerminate && known);
+    }
     const bool reserve_job =
         entry.kind == Entry::Kind::kCandidate && entry.candidate.event_type == "job_created";
     entry.critical = !normal;
@@ -915,10 +922,10 @@ struct JobOrchestrator::Impl {
   bool Dequeue(Entry& out) {
     std::unique_lock lock(mutex);
     if (fifo_count == 0) return false;
-    const auto sequence = fifo[fifo_head].sequence;
     // This is the true pre-removal barrier. Once released, the entry is
     // atomically transferred to the writer's authorized in-flight state.
-    if (barrier_armed && barrier == WriterPhase::kBeforeDequeue &&
+    if (const auto sequence = fifo[fifo_head].sequence;
+        barrier_armed && barrier == WriterPhase::kBeforeDequeue &&
         (barrier_sequence == 0 || barrier_sequence == sequence)) {
       barrier_sequence = sequence;
       barrier_reached = true;
@@ -1024,10 +1031,9 @@ struct JobOrchestrator::Impl {
       ++postcommit_allocation_count;
       return false;
     }
-    const auto valid_effects = static_cast<std::size_t>(
-        std::count_if(applied.effects.begin(), applied.effects.end(),
-                      [](const Effect& effect) { return effect.id != EffectId::kInvalid; }));
-    if (valid_effects > kMaxPreparedEffects || valid_effects > kMaxMappedDestinations ||
+    if (const auto valid_effects = static_cast<std::size_t>(std::ranges::count_if(
+            applied.effects, [](const Effect& effect) { return effect.id != EffectId::kInvalid; }));
+        valid_effects > kMaxPreparedEffects || valid_effects > kMaxMappedDestinations ||
         valid_effects > config.handoff_capacity)
       return false;
     prepared.clear();
@@ -1337,7 +1343,7 @@ struct JobOrchestrator::Impl {
       FailTurn(entry);
       return;
     }
-    const auto proposal = std::get<PreEnvelopeProposal>(decision.value);
+    const auto& proposal = std::get<PreEnvelopeProposal>(decision.value);
     {
       std::lock_guard lock(mutex);
       ++destination_capacity_checks;
@@ -1392,8 +1398,8 @@ struct JobOrchestrator::Impl {
     Checkpoint(entry.sequence, WriterPhase::kBeforeCommit);
     std::size_t trace_cursor = 0;
     PublishPrepared(*resident, inactive, trace_cursor);  // JournalAttempt, before Commit().
-    const auto commit = config.ports.journal->Commit(event);
-    if (commit != LogicalCommitResult::kCommitted) {
+    if (const auto commit = config.ports.journal->Commit(event);
+        commit != LogicalCommitResult::kCommitted) {
       FailTurn(entry);
       return;
     }
@@ -1414,15 +1420,15 @@ struct JobOrchestrator::Impl {
     }
     PublishPrepared(*resident, inactive, trace_cursor);  // SnapshotActivated.
     Checkpoint(entry.sequence, WriterPhase::kAfterApply);
-    const std::size_t trace_source_count =
-        event.event_type == EventType::kResourcesCommitted ||
-                event.event_type == EventType::kWorkerLaunchIntent ||
-                event.event_type == EventType::kTerminalOutcomeCommitted
-            ? 2
-        : event.event_type == EventType::kCancelAccepted ||
-                event.event_type == EventType::kTerminateAccepted
-            ? 1
-            : 0;
+    std::size_t trace_source_count = 0;
+    if (event.event_type == EventType::kResourcesCommitted ||
+        event.event_type == EventType::kWorkerLaunchIntent ||
+        event.event_type == EventType::kTerminalOutcomeCommitted) {
+      trace_source_count = 2;
+    } else if (event.event_type == EventType::kCancelAccepted ||
+               event.event_type == EventType::kTerminateAccepted) {
+      trace_source_count = 1;
+    }
     for (std::size_t source = 0; source != trace_source_count; ++source)
       PublishPrepared(*resident, inactive, trace_cursor);
     if (event.event_type == EventType::kWorkerCompleted ||
@@ -1521,7 +1527,7 @@ void JobOrchestrator::Stop() noexcept {
   for (const auto& control : impl_->callbacks) {
     std::unique_lock control_lock(control->mutex);
     control->sealed = true;
-    control->cv.wait(control_lock, [&] { return control->invocations == 0; });
+    control->cv.wait(control_lock, [&control] { return control->invocations == 0; });
     control->target = nullptr;
   }
   {
@@ -1606,9 +1612,11 @@ IngressResult CallbackHandle::Invoke(RawCandidateEvent&& event) const noexcept {
     }
   }
   struct InvocationGuard {
-    CallbackHandle::Control& control;
-    JobOrchestrator* target;
-    bool active;
+    InvocationGuard(CallbackHandle::Control& control_value, JobOrchestrator* target_value,
+                    bool active_value)
+        : control(control_value), target(target_value), active(active_value) {}
+    InvocationGuard(const InvocationGuard&) = delete;
+    InvocationGuard& operator=(const InvocationGuard&) = delete;
     ~InvocationGuard() {
       // Clear active first but retain the invocation reference across the
       // sealing attempt: Stop cannot sever target until this returns.
@@ -1625,7 +1633,11 @@ IngressResult CallbackHandle::Invoke(RawCandidateEvent&& event) const noexcept {
         control.cv.notify_all();
       }
     }
-  } guard{*control_, target, !concurrent};
+    CallbackHandle::Control& control;
+    JobOrchestrator* target;
+    bool active;
+  };
+  InvocationGuard guard{*control_, target, !concurrent};
   if (concurrent) {
     target->LatchFailureFromCallback();
     return {IngressCode::kServiceFailed, 0, 0};
@@ -1731,7 +1743,7 @@ IngressResult JobOrchestrator::Create() {
       std::get<GeneratedLaunchOperationIdentity>(launch_result).value};
   IngressResult result;
   try {
-    result = impl_->Candidate({1, id, "job_created", "{\"session_id\":\"" + id.value + "\"}"},
+    result = impl_->Candidate({1, id, "job_created", R"({"session_id":")" + id.value + R"("})"},
                               std::move(identities));
   } catch (...) {
     {
@@ -1824,19 +1836,19 @@ JobOrchestrator::TimerSubmitResult JobOrchestrator::SubmitTimeout(
       std::unique_lock lock(impl_->mutex);
       if (impl_->failed)
         return TimerSubmitResult{false, impl_->ResultLocked(IngressCode::kServiceFailed)};
-      auto* resident = impl_->Find(notification.job_id);
+      const auto* resident = impl_->Find(notification.job_id);
       if (resident == nullptr) {
         TimerState unknown;
         unknown.job_id = notification.job_id;
-        const auto ingress = IngestTimer(unknown, notification);
-        if (ingress.kind == TimerIngressKind::kFailClosed) {
+        if (const auto ingress = IngestTimer(unknown, notification);
+            ingress.kind == TimerIngressKind::kFailClosed) {
           lock.unlock();
           LatchReadinessFailure();
           return TimerSubmitResult{false, impl_->Result(IngressCode::kServiceFailed)};
         }
         return TimerSubmitResult{true, {}};
       }
-      const auto ingress = IngestTimer(snapshot_state(*resident), notification);
+      auto ingress = IngestTimer(snapshot_state(*resident), notification);
       if (ingress.kind == TimerIngressKind::kDiscardWithoutCandidate)
         return TimerSubmitResult{true, {}};
       if (ingress.kind != TimerIngressKind::kEmitCandidateEvent || !ingress.candidate) {
@@ -1867,13 +1879,13 @@ JobOrchestrator::TimerSubmitResult JobOrchestrator::SubmitTimeout(
         return TimerSubmitResult{false, impl_->Result(IngressCode::kServiceFailed)};
     }
     RawCandidateEvent candidate{1, emitted.job_id, "timeout_expired",
-                                "{\"phase\":\"" + phase + "\",\"timer_generation\":" +
+                                R"({"phase":")" + phase + R"(","timer_generation":)" +
                                     std::to_string(emitted.payload.timer_generation) + "}"};
 
     std::unique_lock lock(impl_->mutex);
     if (impl_->failed)
       return TimerSubmitResult{false, impl_->ResultLocked(IngressCode::kServiceFailed)};
-    auto* resident = impl_->Find(notification.job_id);
+    const auto* resident = impl_->Find(notification.job_id);
     if (resident == nullptr) return TimerSubmitResult{true, {}};
     // Re-run the pure ingress decision under the insertion lock. A disarm or generation change
     // during text construction therefore discards rather than failing or entering the reducer.
@@ -2059,7 +2071,7 @@ bool JobOrchestrator::FinishShutdown() {
     std::unique_lock control_lock(control->mutex);
     control->sealed = true;
     if (control->active || control->invocations != 0) {
-      control->cv.wait(control_lock, [&] { return control->invocations == 0; });
+      control->cv.wait(control_lock, [&control] { return control->invocations == 0; });
     }
     // Leases are an external completion obligation. Keep the target alive and let the owner
     // release the lease before retrying final shutdown; sealed controls still permit release.
@@ -2069,9 +2081,9 @@ bool JobOrchestrator::FinishShutdown() {
   {
     std::lock_guard ingress_lock(impl_->mutex);
     failure = impl_->failed;
-    const bool mode_ready =
-        failure || (impl_->marker_processed && impl_->mode == Impl::Mode::kDraining);
-    if (!mode_ready || impl_->fifo_count != 0 || impl_->in_flight || impl_->normal_count != 0) {
+    if (const bool mode_ready =
+            failure || (impl_->marker_processed && impl_->mode == Impl::Mode::kDraining);
+        !mode_ready || impl_->fifo_count != 0 || impl_->in_flight || impl_->normal_count != 0) {
       // A callback that was active before closure may have admitted work. The writer remains
       // responsible for draining it, and a later FinishShutdown call retries the protocol.
       if (impl_->fifo_count != 0 || impl_->in_flight) wake_.notify_one();
@@ -2155,15 +2167,17 @@ bool JobOrchestrator::WaitUntil(std::uint64_t seq, WriterPhase phase) {
       });
       return impl_->barrier_reached && impl_->barrier == phase && impl_->barrier_sequence == seq;
     }
-    for (const auto& completion : impl_->completions)
-      if (completion.reserved && completion.completed && completion.sequence == seq) return true;
+    if (std::ranges::any_of(impl_->completions, [seq](const auto& completion) {
+          return completion.reserved && completion.completed && completion.sequence == seq;
+        }))
+      return true;
   }
   std::unique_lock lock(mutex_);
   idle_.wait(lock, [this] { return pending_ == 0 && active_ == 0; });
   std::lock_guard ingress_lock(impl_->mutex);
-  for (const auto& completion : impl_->completions)
-    if (completion.reserved && completion.completed && completion.sequence == seq) return true;
-  return false;
+  return std::ranges::any_of(impl_->completions, [seq](const auto& completion) {
+    return completion.reserved && completion.completed && completion.sequence == seq;
+  });
 }
 bool JobOrchestrator::Release(std::uint64_t seq, WriterPhase phase) {
   {
@@ -2297,7 +2311,7 @@ std::size_t JobOrchestrator::total_occupancy() const noexcept {
 }
 std::size_t JobOrchestrator::creation_claim_count(const Uuid& id) const noexcept {
   std::lock_guard lock(impl_->mutex);
-  if (auto* r = impl_->Find(id)) return r->claims;
+  if (const auto* r = impl_->Find(id)) return r->claims;
   return 0;
 }
 std::optional<Completion> JobOrchestrator::TakeCompletion(std::uint64_t s) {
@@ -2335,8 +2349,8 @@ std::vector<ApplicationLaunchRequest> JobOrchestrator::CopyLaunchRequests() cons
 std::vector<SessionRetainRequest> JobOrchestrator::CopySessionRequests() const { return {}; }
 std::optional<RawCandidateEvent> JobOrchestrator::TakeRunnerCandidate() { return {}; }
 std::optional<RawCandidateEvent> JobOrchestrator::TakeSessionCandidate() { return {}; }
-bool JobOrchestrator::CancelRunnerCandidate() { return false; }
-bool JobOrchestrator::CancelSessionCandidate() { return false; }
+bool JobOrchestrator::CancelRunnerCandidate() const { return false; }
+bool JobOrchestrator::CancelSessionCandidate() const { return false; }
 bool JobOrchestrator::VerifyFakes() const noexcept {
   std::lock_guard lock(impl_->mutex);
   return !impl_->failed && impl_->postcommit_construction_count == 0 &&

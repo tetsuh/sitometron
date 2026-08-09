@@ -778,6 +778,8 @@ int JobIngressCapacityAndReserve() {
   zero_normal.normal_capacity = 0;
   Config overflow_jobs = PositiveConfig();
   overflow_jobs.max_jobs = std::numeric_limits<std::size_t>::max();
+  result |= Check(overflow_jobs.critical_reserve() == 0 && overflow_jobs.total_capacity() == 0,
+                  "critical-reserve overflow sentinel propagates to total capacity");
   Config overflow_total = PositiveConfig();
   overflow_total.max_jobs = 1;
   overflow_total.normal_capacity = std::numeric_limits<std::size_t>::max();

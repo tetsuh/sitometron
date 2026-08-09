@@ -107,6 +107,7 @@ struct Config {
   }
   [[nodiscard]] constexpr std::size_t total_capacity() const noexcept {
     const auto reserve = critical_reserve();
+    if (reserve == 0U) return 0U;
     return reserve > std::numeric_limits<std::size_t>::max() - normal_capacity
                ? 0U
                : normal_capacity + reserve;

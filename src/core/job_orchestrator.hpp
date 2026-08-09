@@ -87,9 +87,15 @@ struct Completion {
 class CallbackHandle;
 
 struct Config {
-  std::size_t max_jobs = 0, normal_capacity = 0, trace_capacity = 0, completion_capacity = 0;
-  std::size_t handoff_capacity = 0, ack_capacity = 0, callback_registration_capacity = 0;
-  std::uint64_t initial_ingress_sequence = 1, initial_journal_sequence = 1;
+  std::size_t max_jobs = 0;
+  std::size_t normal_capacity = 0;
+  std::size_t trace_capacity = 0;
+  std::size_t completion_capacity = 0;
+  std::size_t handoff_capacity = 0;
+  std::size_t ack_capacity = 0;
+  std::size_t callback_registration_capacity = 0;
+  std::uint64_t initial_ingress_sequence = 1;
+  std::uint64_t initial_journal_sequence = 1;
   LogicalCommitResult commit_result = LogicalCommitResult::kCommitted;
   Ports ports{};
   constexpr std::size_t critical_reserve() const noexcept {
@@ -97,8 +103,11 @@ struct Config {
     return max_jobs > (m - 1U) / 9U ? 0U : 9U * max_jobs + 1U;
   }
   constexpr std::size_t total_capacity() const noexcept {
-    auto r = critical_reserve();
-    return r > std::numeric_limits<std::size_t>::max() - normal_capacity ? 0U : normal_capacity + r;
+    const auto reserve = critical_reserve();
+    if (reserve == 0U) return 0U;
+    return reserve > std::numeric_limits<std::size_t>::max() - normal_capacity
+               ? 0U
+               : normal_capacity + reserve;
   }
 };
 
@@ -177,8 +186,8 @@ class JobOrchestrator final {
   std::vector<SessionRetainRequest> CopySessionRequests() const;
   std::optional<RawCandidateEvent> TakeRunnerCandidate();
   std::optional<RawCandidateEvent> TakeSessionCandidate();
-  bool CancelRunnerCandidate();
-  bool CancelSessionCandidate();
+  bool CancelRunnerCandidate() const;
+  bool CancelSessionCandidate() const;
   bool VerifyFakes() const noexcept;
   bool NoForbiddenPostcommitActions() const noexcept;
   bool NoPostcommitAllocationOrCopy() const noexcept;
@@ -202,9 +211,12 @@ class JobOrchestrator final {
   void TrySealFailure(bool allow_one_invocation = false) noexcept;
   std::unique_ptr<Impl> impl_;
   mutable std::mutex mutex_;
-  std::condition_variable wake_, idle_;
-  bool started_ = false, stopping_ = false;
-  std::size_t pending_ = 0, active_ = 0;
+  std::condition_variable wake_;
+  std::condition_variable idle_;
+  bool started_ = false;
+  bool stopping_ = false;
+  std::size_t pending_ = 0;
+  std::size_t active_ = 0;
   std::thread::id writer_id_{};
   std::thread writer_;
 };
