@@ -1,8 +1,9 @@
 # Core contracts
 
 Accepted ADR-0002 makes the Phase 0A core Job contract normative. Issue #9 implements the
-dependency-minimal pure reducer; complete Journal envelope construction, single-writer commit
-orchestration, and physical durability remain Planned.
+dependency-minimal pure reducer, and Issue #12 implements complete logical Journal envelope
+construction plus the ADR-0003 single-writer logical-commit orchestration. Physical serialization,
+append/flush/disk-sync durability, replay, recovery, and pruning remain Planned for Phase 0B.
 
 ## 1. Source files
 
@@ -75,11 +76,14 @@ only the command table or reducer normalization may create those internal event 
 input
   -> pure decision
       -> reject(reason), with no Journal record
-      -> accepted Journal event
-          -> append and disk sync
-          -> pure reducer apply
-          -> typed post-sync effects
+      -> accepted logical Journal event
+          -> logical commit (Phase 0A fake-driven boundary)
+          -> no-fail snapshot activation
+          -> typed postcommit effects in reducer-declared order
 ```
+
+Phase 0B separately implements physical serialization, append, flush, and disk sync without changing
+the logical commit-before-activation/effect contract.
 
 The four exhaustive dispositions are `transition`, `audit`, `late_audit`, and `reject`. A reject case
 cannot emit, update, request an effect, or normalize to another event kind. Cases use a closed

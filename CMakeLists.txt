@@ -49,8 +49,9 @@ endfunction()
 
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Boost CONFIG REQUIRED COMPONENTS uuid hash2)
+find_package(Threads REQUIRED)
 
-add_library(sitometron_core STATIC src/core/version.cpp src/core/job_reducer.cpp)
+add_library(sitometron_core STATIC src/core/version.cpp src/core/job_reducer.cpp src/core/job_orchestrator.cpp)
 add_library(sitometron::core ALIAS sitometron_core)
 target_include_directories(
   sitometron_core
@@ -63,7 +64,8 @@ target_link_libraries(
   PRIVATE
     nlohmann_json::nlohmann_json
     Boost::uuid
-    Boost::hash2)
+    Boost::hash2
+    Threads::Threads)
 sitometron_enable_project_warnings(sitometron_core)
 sitometron_enable_sanitizers(sitometron_core)
 
@@ -153,6 +155,43 @@ if(SITOMETRON_BUILD_TESTS)
     add_test(
       NAME ${_core_port_fake_check}
       COMMAND sitometron_core_ports_fakes_test ${_core_port_fake_check})
+  endforeach()
+
+  add_executable(
+    sitometron_job_orchestration_tests
+    tests/support/job_orchestrator_harness.cpp
+    tests/unit/job_orchestrator_test.cpp)
+  target_include_directories(
+    sitometron_job_orchestration_tests
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/support)
+  target_link_libraries(
+    sitometron_job_orchestration_tests
+    PRIVATE
+      sitometron::core
+      sitometron::test_support
+      sitometron_core_fake_support)
+  sitometron_enable_project_warnings(sitometron_job_orchestration_tests)
+  sitometron_enable_sanitizers(sitometron_job_orchestration_tests)
+  foreach(_job_orchestration_check IN ITEMS
+      job_ingress_linearization_order
+      job_ingress_single_writer
+      job_ingress_source_classification
+      job_ingress_capacity_and_reserve
+      job_ingress_coalescing
+      job_ingress_fail_closed
+      job_ingress_shutdown_quiescence
+      job_ingress_callback_lifetime
+      job_ingress_readiness_failure
+      job_journal_envelope_vectors
+      job_logical_sequence_exhaustion_fail_closed
+      job_logical_commit_order
+      job_logical_commit_failure_fail_closed
+      job_successful_lifecycle_slice)
+    add_test(
+      NAME ${_job_orchestration_check}
+      COMMAND sitometron_job_orchestration_tests ${_job_orchestration_check})
   endforeach()
 
   add_test(

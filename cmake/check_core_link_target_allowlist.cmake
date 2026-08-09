@@ -8,7 +8,8 @@ endif()
 set(_expected_targets
   nlohmann_json::nlohmann_json
   Boost::uuid
-  Boost::hash2)
+  Boost::hash2
+  Threads::Threads)
 
 function(require_exact_targets _label _require_link_only)
   set(_actual_targets)

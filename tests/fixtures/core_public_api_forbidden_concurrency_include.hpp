@@ -1,0 +1,9 @@
+#ifndef SITOMETRON_TESTS_FIXTURES_CORE_PUBLIC_API_FORBIDDEN_CONCURRENCY_INCLUDE_HPP_
+#define SITOMETRON_TESTS_FIXTURES_CORE_PUBLIC_API_FORBIDDEN_CONCURRENCY_INCLUDE_HPP_
+#include <atomic>
+#include <condition_variable>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <thread>
+#endif

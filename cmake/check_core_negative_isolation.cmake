@@ -57,6 +57,20 @@ elseif(CORE_NEGATIVE_MODE STREQUAL "public")
     message(FATAL_ERROR
       "public dependency type did not report the type violation: ${RUN_CHECK_OUTPUT}")
   endif()
+  run_check(
+    "public concurrency include" 1
+    check_core_public_api_isolation.cmake
+    "-DSITOMETRON_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/core_public_api_forbidden_concurrency_include.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "private-only public include")
+    message(FATAL_ERROR "public concurrency include did not report the violation: ${RUN_CHECK_OUTPUT}")
+  endif()
+  run_check(
+    "public concurrency type" 1
+    check_core_public_api_isolation.cmake
+    "-DSITOMETRON_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/core_public_api_forbidden_concurrency_type.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "private-only public type")
+    message(FATAL_ERROR "public concurrency type did not report the violation: ${RUN_CHECK_OUTPUT}")
+  endif()
 elseif(CORE_NEGATIVE_MODE STREQUAL "target")
   if(NOT DEFINED SITOMETRON_NEGATIVE_SCRATCH_DIR OR
      "${SITOMETRON_NEGATIVE_SCRATCH_DIR}" STREQUAL "")
@@ -75,9 +89,10 @@ project(core_target_probe NONE)
 add_library(nlohmann_json::nlohmann_json INTERFACE IMPORTED)
 add_library(Boost::uuid INTERFACE IMPORTED)
 add_library(Boost::hash2 INTERFACE IMPORTED)
+add_library(Threads::Threads INTERFACE IMPORTED)
 add_library(sitometron_local_forbidden INTERFACE)
 set(SITOMETRON_CORE_LINK_TARGETS
-  nlohmann_json::nlohmann_json Boost::uuid Boost::hash2)
+  nlohmann_json::nlohmann_json Boost::uuid Boost::hash2 Threads::Threads)
 if(@INTERFACE_MODE@)
   set(SITOMETRON_CORE_INTERFACE_LINK_TARGETS @TARGETS@)
 else()
@@ -104,17 +119,17 @@ include("@HELPER@")
 
   run_target_probe(
     "approved target control" 0 FALSE
-    nlohmann_json::nlohmann_json Boost::uuid Boost::hash2)
+    nlohmann_json::nlohmann_json Boost::uuid Boost::hash2 Threads::Threads)
   run_target_probe(
     "unapproved target" 1 FALSE
-    nlohmann_json::nlohmann_json Boost::uuid sitometron_local_forbidden)
+    nlohmann_json::nlohmann_json Boost::uuid Threads::Threads sitometron_local_forbidden)
   if(NOT RUN_CHECK_OUTPUT MATCHES "unapproved core link target")
     message(FATAL_ERROR
       "unapproved target did not report the target violation: ${RUN_CHECK_OUTPUT}")
   endif()
   run_target_probe(
     "missing approved target" 1 FALSE
-    nlohmann_json::nlohmann_json Boost::uuid)
+    nlohmann_json::nlohmann_json Boost::uuid Threads::Threads)
   if(NOT RUN_CHECK_OUTPUT MATCHES "exact target set mismatch")
     message(FATAL_ERROR
       "missing target did not report the exact-set violation: ${RUN_CHECK_OUTPUT}")
@@ -123,10 +138,11 @@ include("@HELPER@")
     "LINK_ONLY target control" 0 TRUE
     "\\$<LINK_ONLY:nlohmann_json::nlohmann_json>"
     "\\$<LINK_ONLY:Boost::uuid>"
-    "\\$<LINK_ONLY:Boost::hash2>")
+    "\\$<LINK_ONLY:Boost::hash2>"
+    "\\$<LINK_ONLY:Threads::Threads>")
   run_target_probe(
     "public target leakage" 1 TRUE
-    nlohmann_json::nlohmann_json Boost::uuid Boost::hash2)
+    nlohmann_json::nlohmann_json Boost::uuid Boost::hash2 Threads::Threads)
   if(NOT RUN_CHECK_OUTPUT MATCHES "public dependency leakage")
     message(FATAL_ERROR
       "public target did not report the interface violation: ${RUN_CHECK_OUTPUT}")

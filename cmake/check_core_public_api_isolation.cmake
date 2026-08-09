@@ -21,5 +21,13 @@ foreach(_file IN LISTS _files)
     message(FATAL_ERROR
       "CorePublicApiIsolation dependency-owned public type: ${_file}")
   endif()
+  file(STRINGS "${_file}" _private_include_lines
+    REGEX "^[ \t]*#[ \t]*include[ \t]*<(atomic|condition_variable|future|memory|mutex|thread)>")
+  if(_private_include_lines)
+    message(FATAL_ERROR "CorePublicApiIsolation private-only public include: ${_file}")
+  endif()
+  if(_contents MATCHES "(^|[^A-Za-z0-9_])std::(atomic|future|thread|mutex|condition_variable|(unique|shared|weak)_ptr)")
+    message(FATAL_ERROR "CorePublicApiIsolation private-only public type: ${_file}")
+  endif()
 endforeach()
 message(STATUS "CorePublicApiIsolation public header boundary passed")

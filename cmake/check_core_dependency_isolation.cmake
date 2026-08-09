@@ -5,7 +5,8 @@ if(DEFINED SITOMETRON_CORE_SCAN_FILES)
 else()
   file(GLOB_RECURSE CORE_FILES
     "${CMAKE_CURRENT_LIST_DIR}/../include/sitometron/core/*.hpp"
-    "${CMAKE_CURRENT_LIST_DIR}/../src/core/*.cpp")
+    "${CMAKE_CURRENT_LIST_DIR}/../src/core/*.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/core/*.hpp")
 endif()
 
 set(ALLOWED_STANDARD_HEADERS
@@ -13,6 +14,10 @@ set(ALLOWED_STANDARD_HEADERS
   array
   cctype
   cstdint
+  condition_variable
+  memory
+  mutex
+  thread
   initializer_list
   limits
   optional
@@ -47,7 +52,7 @@ foreach(FILE_PATH IN LISTS CORE_FILES)
       message(FATAL_ERROR
         "CoreDependencyAllowlist unapproved core include: ${FILE_PATH}: ${INCLUDE_LINE}")
     endif()
-    if(INCLUDE_LINE MATCHES "#include[ \\t]*\"sitometron/core/[A-Za-z0-9_./-]+\"")
+    if(INCLUDE_LINE MATCHES "#include[ \\t]*\"(sitometron/core/[A-Za-z0-9_./-]+|job_orchestrator.hpp)\"")
       continue()
     endif()
     message(FATAL_ERROR
