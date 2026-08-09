@@ -227,6 +227,7 @@ struct JobOrchestrator::Impl {
   bool admission_reached = false;
   bool admission_inserting = false;
   std::size_t admission_attempts = 0;
+  std::size_t wait_until_attempts = 0;
   WriterPhase barrier = WriterPhase::kTurnFinished;
   bool barrier_armed = false;
   bool barrier_reached = false;
@@ -745,11 +746,22 @@ struct JobOrchestrator::Impl {
     if (entry.identity_ready) entry.identity = std::move(prepared_identity);
     if (held_lock == nullptr) local_lock.lock();
     auto& lock = held_lock == nullptr ? local_lock : *held_lock;
+    struct AdmissionInsertionWindow {
+      Impl& impl;
+      bool owns_window = false;
+      ~AdmissionInsertionWindow() {
+        if (owns_window) {
+          impl.admission_inserting = false;
+          impl.cv.notify_all();
+        }
+      }
+    } admission_window{*this};
     ++admission_attempts;
     cv.notify_all();
     if (admission_pause && critical_candidate && !admission_reached) {
       admission_reached = true;
       admission_inserting = true;
+      admission_window.owns_window = true;
       cv.notify_all();
       cv.wait(lock, [&] { return !admission_pause; });
     } else if (admission_inserting && critical_candidate) {
@@ -898,10 +910,6 @@ struct JobOrchestrator::Impl {
     ++fifo_count;
     ++outstanding;
     ingress[ingress_count++] = sequence;
-    if (admission_inserting) {
-      admission_inserting = false;
-      cv.notify_all();
-    }
     return {IngressCode::kAdmitted, sequence, completion_before};
   }
   bool Dequeue(Entry& out) {
@@ -1101,10 +1109,10 @@ struct JobOrchestrator::Impl {
           break;
         case EffectId::kAckLateWorkerEvent: {
           auto worker_sequence = resident.worker_sequence;
-          if (const auto* payload = std::get_if<WorkerEventPayload>(&event.payload))
-            worker_sequence = payload->event_sequence;
-          else if (const auto* payload = std::get_if<LateWorkerEventPayload>(&event.payload))
-            worker_sequence = payload->event_sequence;
+          if (const auto* worker_payload = std::get_if<WorkerEventPayload>(&event.payload))
+            worker_sequence = worker_payload->event_sequence;
+          else if (const auto* late_payload = std::get_if<LateWorkerEventPayload>(&event.payload))
+            worker_sequence = late_payload->event_sequence;
           operation.action = "ack:late:" + std::to_string(worker_sequence);
           break;
         }
@@ -1231,6 +1239,7 @@ struct JobOrchestrator::Impl {
       CancelGatesLocked();
       DisposeQueuedLocked();
     }
+    cv.notify_all();
     Checkpoint(entry.sequence, WriterPhase::kFailureDisposed);
   }
   void ProcessOne() noexcept {
@@ -2042,6 +2051,7 @@ bool JobOrchestrator::BeginShutdown() {
 }
 bool JobOrchestrator::FinishShutdown() {
   bool failure = false;
+  bool accounting_failure = false;
   // Close callback registration first. An invocation which won the control lock before this
   // transition is allowed to finish and may schedule a final FIFO turn; it is never raced by
   // the final ingress check below.
@@ -2071,8 +2081,17 @@ bool JobOrchestrator::FinishShutdown() {
     // held until the same mutex-protected sealed transition.
     impl_->CancelGatesLocked();
     impl_->RetireShutdownGateLocked();
-    if (impl_->critical_count != 0) return false;
-    impl_->mode = Impl::Mode::kSealed;
+    if (impl_->critical_count != 0) {
+      impl_->FailLocked();
+      failure = true;
+      accounting_failure = true;
+    } else {
+      impl_->mode = Impl::Mode::kSealed;
+    }
+  }
+  if (accounting_failure) {
+    TrySealFailure();
+    return false;
   }
 
   // Targets are severed only after the sealed transition and after every invocation reference
@@ -2110,6 +2129,11 @@ bool JobOrchestrator::WaitForAdmissionAttempts(std::size_t c) {
   impl_->cv.wait(lock, [this, c] { return impl_->admission_attempts >= c; });
   return true;
 }
+bool JobOrchestrator::WaitForWaitUntilAttempts(std::size_t c) {
+  std::unique_lock lock(impl_->mutex);
+  impl_->cv.wait(lock, [this, c] { return impl_->wait_until_attempts >= c; });
+  return true;
+}
 bool JobOrchestrator::ReleaseAdmissionPause() {
   {
     std::lock_guard lock(impl_->mutex);
@@ -2122,6 +2146,8 @@ bool JobOrchestrator::WaitUntil(std::uint64_t seq, WriterPhase phase) {
   {
     std::unique_lock lock(impl_->mutex);
     if (impl_->barrier_armed && impl_->barrier == phase) {
+      ++impl_->wait_until_attempts;
+      impl_->cv.notify_all();
       impl_->cv.wait(lock, [this, seq, phase] {
         return (impl_->barrier_reached && impl_->barrier == phase &&
                 impl_->barrier_sequence == seq) ||
@@ -2337,6 +2363,10 @@ void JobOrchestrator::InjectAccountingCorruption() {
   std::lock_guard lock(impl_->mutex);
   impl_->accounting_failure = true;
   impl_->FailLocked();
+}
+void JobOrchestrator::InjectResidualCriticalPermit() {
+  std::lock_guard lock(impl_->mutex);
+  impl_->critical_count = 1;
 }
 void JobOrchestrator::SetNextCommitResult(LogicalCommitResult r) {
   void (*setter)(void*, LogicalCommitResult) noexcept = nullptr;

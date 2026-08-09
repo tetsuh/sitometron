@@ -333,6 +333,7 @@ class JobOrchestratorHarness final {
   [[nodiscard]] bool ArmAdmissionPause();
   [[nodiscard]] bool WaitForAdmissionPause();
   [[nodiscard]] bool WaitForAdmissionAttempts(std::size_t count);
+  [[nodiscard]] bool WaitForWaitUntilAttempts(std::size_t count);
   [[nodiscard]] bool ReleaseAdmissionPause();
   [[nodiscard]] bool WaitUntil(std::uint64_t ingress_sequence, WriterPhase);
   [[nodiscard]] bool Release(std::uint64_t ingress_sequence, WriterPhase);
@@ -376,6 +377,7 @@ class JobOrchestratorHarness final {
   void InjectPrecommitMaterializationFailure();
   void InjectClockReadFailure() noexcept;
   void InjectAccountingCorruption();
+  void InjectResidualCriticalPermit();
   void SetNextCommitResult(core::LogicalCommitResult);
   void SetDestinationCapacity(std::size_t);
 

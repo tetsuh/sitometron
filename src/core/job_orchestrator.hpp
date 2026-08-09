@@ -141,6 +141,7 @@ class JobOrchestrator final {
   bool ArmAdmissionPause();
   bool WaitForAdmissionPause();
   bool WaitForAdmissionAttempts(std::size_t);
+  bool WaitForWaitUntilAttempts(std::size_t);
   bool ReleaseAdmissionPause();
   bool WaitUntil(std::uint64_t, WriterPhase);
   bool Release(std::uint64_t, WriterPhase);
@@ -184,6 +185,7 @@ class JobOrchestrator final {
   bool DestinationCapacityCheckedBeforeCommit() const noexcept;
   void InjectPrecommitMaterializationFailure();
   void InjectAccountingCorruption();
+  void InjectResidualCriticalPermit();
   void SetNextCommitResult(LogicalCommitResult);
   void SetDestinationCapacity(std::size_t);
   bool IsWriterThread() const noexcept;

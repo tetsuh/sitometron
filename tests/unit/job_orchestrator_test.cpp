@@ -376,6 +376,52 @@ int JobIngressLinearizationOrder() {
                       retry_worker->ingress_sequence == first_worker->ingress_sequence,
                   "two-thread retry coalesces only to the first assigned sequence");
 
+  JobOrchestratorHarness coalesced_window(PositiveConfig());
+  result |= DriveToRunning(coalesced_window, ids, allocation);
+  result |= Check(coalesced_window.ArmPause(WriterPhase::kBeforeDequeue) &&
+                      coalesced_window.ArmBarrier(WriterPhase::kBeforeDequeue),
+                  "coalesced-window regression pauses the first Worker delivery");
+  const auto pending_worker =
+      coalesced_window.SubmitWorker(MakeWorkerCompleted(ids.primary_job, ids.worker, 1));
+  result |= Check(pending_worker.code == IngressCode::kAdmitted,
+                  "coalesced-window regression retains the first Worker delivery");
+  result |=
+      Check(coalesced_window.ArmAdmissionPause(), "coalesced-window admission pause is armed");
+  std::optional<IngressResult> coalesced_retry;
+  std::optional<TimerSubmitResult> competing_timer;
+  std::thread retry_again([&] {
+    coalesced_retry =
+        coalesced_window.SubmitWorker(MakeWorkerCompleted(ids.primary_job, ids.worker, 1));
+  });
+  result |= Check(coalesced_window.WaitForAdmissionPause(),
+                  "exact Worker retry owns the paused insertion window");
+  std::thread competing([&] {
+    competing_timer = coalesced_window.SubmitTimeout(
+        TimerNotification{ids.primary_job, TimeoutPhase::kExecution, 1});
+  });
+  result |= Check(coalesced_window.WaitForAdmissionAttempts(2),
+                  "second critical producer reaches admission while retry is paused");
+  result |= Check(coalesced_window.ReleaseAdmissionPause(),
+                  "coalesced retry insertion window is released");
+  retry_again.join();
+  competing.join();
+  result |= Check(coalesced_retry && coalesced_retry->code == IngressCode::kCoalescedPending &&
+                      competing_timer && !competing_timer->discarded &&
+                      competing_timer->admitted.code == IngressCode::kAdmitted,
+                  "coalesced retry clears its insertion window for the next critical producer");
+  result |=
+      Check(coalesced_window.Release(pending_worker.ingress_sequence, WriterPhase::kBeforeDequeue),
+            "coalesced-window queued Worker is released");
+  result |= ConsumeCompletion(coalesced_window, pending_worker, Completion::Code::kSuccess);
+  result |=
+      ConsumeCompletion(coalesced_window, competing_timer->admitted, Completion::Code::kSuccess);
+  const auto coalesced_marker = coalesced_window.SubmitShutdown();
+  result |= Check(coalesced_marker.code == IngressCode::kAdmitted &&
+                      coalesced_window.WaitUntil(coalesced_marker.ingress_sequence,
+                                                 WriterPhase::kShutdownMarker) &&
+                      coalesced_window.BeginShutdown() && coalesced_window.sealed(),
+                  "coalesced-window shutdown remains bounded after both producers finish");
+
   Config boundary = PositiveConfig();
   boundary.initial_ingress_sequence = std::numeric_limits<std::uint64_t>::max();
   JobOrchestratorHarness exhausted(boundary);
@@ -929,6 +975,47 @@ int JobIngressFailClosed() {
   corruption.InjectAccountingCorruption();
   result |= Check(corruption.Create().code == IngressCode::kServiceFailed && corruption.failed(),
                   "internal gate/permit corruption latches sticky service_failed");
+  JobOrchestratorHarness failure_waiter(PositiveConfig());
+  result |= DriveToRunning(failure_waiter, ids, allocation);
+  const auto prior_failure_sequences = failure_waiter.CopyIngressSequences();
+  const auto failure_sequence = prior_failure_sequences.back() + 1;
+  failure_waiter.InjectPrecommitMaterializationFailure();
+  result |= Check(
+      failure_waiter.ArmAdmissionPause() && failure_waiter.ArmBarrier(WriterPhase::kTurnFinished),
+      "failure waiter arms admission and turn-finished barriers");
+  std::optional<IngressResult> failed_turn;
+  std::thread failing_producer([&] {
+    failed_turn = failure_waiter.SubmitWorker(MakeWorkerCompleted(ids.primary_job, ids.worker, 1));
+  });
+  result |= Check(failure_waiter.WaitForAdmissionPause(),
+                  "failure waiter holds the admitted input before writer processing");
+  std::barrier waiter_ready(2);
+  bool waiter_result = true;
+  std::thread terminal_waiter([&] {
+    waiter_ready.arrive_and_wait();
+    waiter_result = failure_waiter.WaitUntil(failure_sequence, WriterPhase::kTurnFinished);
+  });
+  waiter_ready.arrive_and_wait();
+  result |= Check(failure_waiter.WaitForWaitUntilAttempts(1),
+                  "turn-finished waiter blocks before the injected failure is released");
+  result |= Check(failure_waiter.ReleaseAdmissionPause(),
+                  "failure waiter releases the input into injected failure");
+  failing_producer.join();
+  terminal_waiter.join();
+  result |= Check(failed_turn && failed_turn->code == IngressCode::kAdmitted && !waiter_result,
+                  "failure disposal wakes an armed turn-finished waiter for fallback handling");
+  if (failed_turn)
+    result |= ConsumeCompletion(failure_waiter, *failed_turn, Completion::Code::kServiceFailed);
+  JobOrchestratorHarness residual_permit(PositiveConfig());
+  residual_permit.InjectResidualCriticalPermit();
+  const auto residual_marker = residual_permit.SubmitShutdown();
+  result |= Check(
+      residual_marker.code == IngressCode::kAdmitted &&
+          residual_permit.WaitUntil(residual_marker.ingress_sequence, WriterPhase::kShutdownMarker),
+      "residual permit shutdown marker reaches its control barrier");
+  result |= Check(
+      !residual_permit.BeginShutdown() && residual_permit.failed() && residual_permit.sealed(),
+      "residual critical permit accounting seals through sticky failure");
   JobOrchestratorHarness capacity(PositiveConfig());
   capacity.SetDestinationCapacity(0);
   result |= Check(capacity.Create().code == IngressCode::kServiceFailed &&

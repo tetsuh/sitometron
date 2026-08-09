@@ -595,6 +595,9 @@ bool JobOrchestratorHarness::WaitForAdmissionPause() {
 bool JobOrchestratorHarness::WaitForAdmissionAttempts(std::size_t c) {
   return impl_->orchestrator.WaitForAdmissionAttempts(c);
 }
+bool JobOrchestratorHarness::WaitForWaitUntilAttempts(std::size_t c) {
+  return impl_->orchestrator.WaitForWaitUntilAttempts(c);
+}
 bool JobOrchestratorHarness::ReleaseAdmissionPause() {
   return impl_->orchestrator.ReleaseAdmissionPause();
 }
@@ -736,6 +739,9 @@ void JobOrchestratorHarness::InjectPrecommitMaterializationFailure() {
 void JobOrchestratorHarness::InjectClockReadFailure() noexcept { impl_->ports.clock.ThrowOnRead(); }
 void JobOrchestratorHarness::InjectAccountingCorruption() {
   impl_->orchestrator.InjectAccountingCorruption();
+}
+void JobOrchestratorHarness::InjectResidualCriticalPermit() {
+  impl_->orchestrator.InjectResidualCriticalPermit();
 }
 void JobOrchestratorHarness::SetNextCommitResult(core::LogicalCommitResult r) {
   impl_->orchestrator.SetNextCommitResult(r);
