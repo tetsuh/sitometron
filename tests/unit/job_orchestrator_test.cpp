@@ -405,16 +405,18 @@ int JobIngressLinearizationOrder() {
                   "coalesced retry insertion window is released");
   retry_again.join();
   competing.join();
+  const auto competing_timer_admitted = competing_timer && !competing_timer->discarded &&
+                                        competing_timer->admitted.code == IngressCode::kAdmitted;
   result |= Check(coalesced_retry && coalesced_retry->code == IngressCode::kCoalescedPending &&
-                      competing_timer && !competing_timer->discarded &&
-                      competing_timer->admitted.code == IngressCode::kAdmitted,
+                      competing_timer_admitted,
                   "coalesced retry clears its insertion window for the next critical producer");
   result |=
       Check(coalesced_window.Release(pending_worker.ingress_sequence, WriterPhase::kBeforeDequeue),
             "coalesced-window queued Worker is released");
   result |= ConsumeCompletion(coalesced_window, pending_worker, Completion::Code::kSuccess);
-  result |=
-      ConsumeCompletion(coalesced_window, competing_timer->admitted, Completion::Code::kSuccess);
+  if (competing_timer_admitted)
+    result |=
+        ConsumeCompletion(coalesced_window, competing_timer->admitted, Completion::Code::kSuccess);
   const auto coalesced_marker = coalesced_window.SubmitShutdown();
   result |= Check(coalesced_marker.code == IngressCode::kAdmitted &&
                       coalesced_window.WaitUntil(coalesced_marker.ingress_sequence,
