@@ -1232,7 +1232,7 @@ struct JobOrchestrator::Impl {
       PublishPrepared(resident, bank, trace_cursor);  // Explicit mapped action.
     }
   }
-  void FailTurn(Entry& entry) {
+  void FailTurn(const Entry& entry) {
     {
       std::lock_guard lock(mutex);
       FailLocked();
