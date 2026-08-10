@@ -143,12 +143,14 @@ class JobOrchestrator final {
   bool RetainCleanupLease(const Uuid&);
   bool RetireWorkerAck(const RawCandidateEvent&);
   bool LatchReadinessFailure();
+  bool WaitForWriterIdle();
   bool BeginShutdown();
   bool FinishShutdown();
   bool ArmPause(WriterPhase);
   bool ArmBarrier(WriterPhase);
   bool ArmAdmissionPause();
   bool WaitForAdmissionPause();
+  std::size_t admission_attempt_count() const noexcept;
   bool WaitForAdmissionAttempts(std::size_t);
   bool WaitForWaitUntilAttempts(std::size_t);
   bool ReleaseAdmissionPause();
@@ -173,6 +175,7 @@ class JobOrchestrator final {
   std::size_t effect_count() const noexcept;
   std::size_t response_count() const noexcept;
   std::size_t resident_count() const noexcept;
+  std::size_t live_critical_permit_count() const noexcept;
   std::size_t critical_occupancy() const noexcept;
   std::size_t normal_occupancy() const noexcept;
   std::size_t total_occupancy() const noexcept;

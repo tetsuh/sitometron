@@ -168,6 +168,7 @@ class JournalAdapter final : public core::JobJournalPort {
     bounded_.reserve(capacity_);
   }
   core::LogicalCommitResult Commit(const core::LogicalJobEvent& event) noexcept override {
+    std::lock_guard lock(mutex_);
     if (!fallback_ && result_ == core::LogicalCommitResult::kCommitted &&
         real_next_ < expected_.size() && EqualEvent(event, expected_[real_next_].event)) {
       const auto result = journal_.Commit(event);
@@ -191,14 +192,22 @@ class JournalAdapter final : public core::JobJournalPort {
       return core::LogicalCommitResult::kOutcomeUnknown;
     }
   }
-  void SetResult(core::LogicalCommitResult result) noexcept { result_ = result; }
+  void SetResult(core::LogicalCommitResult result) noexcept {
+    std::lock_guard lock(mutex_);
+    result_ = result;
+  }
   std::vector<core::LogicalJobEvent> observations() const {
+    std::lock_guard lock(mutex_);
     auto result = journal_.CopyObservations();
     result.insert(result.end(), bounded_.begin(), bounded_.end());
     return result;
   }
-  std::size_t count() const noexcept { return real_next_ + bounded_.size(); }
+  std::size_t count() const noexcept {
+    std::lock_guard lock(mutex_);
+    return real_next_ + bounded_.size();
+  }
   bool Verify() noexcept {
+    std::lock_guard lock(mutex_);
     if (!fallback_) {
       if (real_next_ == expected_.size()) return journal_.Verify() && !verification_failed_;
       return !journal_.verification_failed() && !verification_failed_;
@@ -215,6 +224,7 @@ class JournalAdapter final : public core::JobJournalPort {
   std::size_t real_next_ = 0;
   bool fallback_ = false;
   bool verification_failed_ = false;
+  mutable std::mutex mutex_;
 };
 
 struct RunnerSlot {
@@ -526,6 +536,7 @@ CANDIDATE_METHOD(SubmitWorkerRunning)
 CANDIDATE_METHOD(SubmitSessionRetainRequested)
 CANDIDATE_METHOD(SubmitSessionRetained)
 CANDIDATE_METHOD(SubmitFinalizationCompleted)
+CANDIDATE_METHOD(SubmitFinalizationFailed)
 CANDIDATE_METHOD(SubmitTerminalOutcome)
 #undef CANDIDATE_METHOD
 IngressResult JobOrchestratorHarness::SubmitCancel(const core::Command& c) {
@@ -575,12 +586,16 @@ bool JobOrchestratorHarness::RetainResourcesReleasedLease(const core::Uuid& id) 
 bool JobOrchestratorHarness::RetainCleanupLease(const core::Uuid& id) {
   return impl_->orchestrator.RetainCleanupLease(id);
 }
+bool JobOrchestratorHarness::RetireWorkerAck(const core::RawCandidateEvent& event) {
+  return impl_->orchestrator.RetireWorkerAck(event);
+}
 bool JobOrchestratorHarness::RetireWorkerAck(const core::Uuid& id, std::uint64_t s) {
-  return impl_->orchestrator.RetireWorkerAck(MakeWorkerCompleted(id, Ids().worker, s));
+  return RetireWorkerAck(MakeWorkerCompleted(id, Ids().worker, s));
 }
 bool JobOrchestratorHarness::LatchReadinessFailure() {
   return impl_->orchestrator.LatchReadinessFailure();
 }
+bool JobOrchestratorHarness::WaitForWriterIdle() { return impl_->orchestrator.WaitForWriterIdle(); }
 bool JobOrchestratorHarness::BeginShutdown() { return impl_->orchestrator.BeginShutdown(); }
 bool JobOrchestratorHarness::ArmPause(WriterPhase p) {
   return impl_->orchestrator.ArmPause(static_cast<core::internal::WriterPhase>(p));
@@ -591,6 +606,9 @@ bool JobOrchestratorHarness::ArmBarrier(WriterPhase p) {
 bool JobOrchestratorHarness::ArmAdmissionPause() { return impl_->orchestrator.ArmAdmissionPause(); }
 bool JobOrchestratorHarness::WaitForAdmissionPause() {
   return impl_->orchestrator.WaitForAdmissionPause();
+}
+std::size_t JobOrchestratorHarness::admission_attempt_count() const noexcept {
+  return impl_->orchestrator.admission_attempt_count();
 }
 bool JobOrchestratorHarness::WaitForAdmissionAttempts(std::size_t c) {
   return impl_->orchestrator.WaitForAdmissionAttempts(c);
@@ -673,6 +691,9 @@ std::size_t JobOrchestratorHarness::response_count() const noexcept {
 std::size_t JobOrchestratorHarness::resident_count() const noexcept {
   return impl_->orchestrator.resident_count();
 }
+std::size_t JobOrchestratorHarness::live_critical_permit_count() const noexcept {
+  return impl_->orchestrator.live_critical_permit_count();
+}
 std::size_t JobOrchestratorHarness::critical_occupancy() const noexcept {
   return impl_->orchestrator.critical_occupancy();
 }
@@ -701,7 +722,6 @@ std::vector<core::LogicalJobEvent> JobOrchestratorHarness::CopyJournalAttempts()
 std::vector<std::uint64_t> JobOrchestratorHarness::CopyIngressSequences() const {
   return impl_->orchestrator.CopyIngressSequences();
 }
-std::vector<ExpectedEnvelope> JobOrchestratorHarness::CopyExpectedEnvelopes() const { return {}; }
 std::vector<core::ApplicationLaunchRequest> JobOrchestratorHarness::CopyLaunchRequests() const {
   std::vector<core::ApplicationLaunchRequest> result;
   for (const auto& observation : impl_->ports.runner.observations()) {
