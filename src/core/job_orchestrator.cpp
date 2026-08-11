@@ -64,6 +64,7 @@ struct JobOrchestrator::Impl {
     bool registered = false;
     bool pending = false;
     bool retained = false;
+    bool ack_authorized = false;
     bool permit = false;
     bool callback_lease = false;
     std::uint64_t ingress_sequence = 0;
@@ -521,6 +522,7 @@ struct JobOrchestrator::Impl {
           residents[entry.resident_index].gates[static_cast<std::size_t>(GateKind::kWorker)];
       worker.pending = false;
       worker.retained = false;
+      worker.ack_authorized = false;
       worker.callback_lease = false;
       residents[entry.resident_index].identity_slots[IdentitySlot(GateKind::kWorker)] = {};
       worker.ingress_sequence = 0;
@@ -550,6 +552,7 @@ struct JobOrchestrator::Impl {
       for (auto& gate : resident.gates) {
         gate.pending = false;
         gate.retained = false;
+        gate.ack_authorized = false;
         gate.callback_lease = false;
         gate.identity_slot = kNoIdentitySlot;
         gate.ingress_sequence = 0;
@@ -905,6 +908,7 @@ struct JobOrchestrator::Impl {
       ++critical_count;
     } else {
       gate->pending = true;
+      if (entry.gate == GateKind::kWorker) gate->ack_authorized = false;
       gate->ingress_sequence = sequence;
       if (entry.identity_ready) {
         gate->identity_slot = static_cast<std::uint8_t>(IdentitySlot(entry.gate));
@@ -1218,6 +1222,8 @@ struct JobOrchestrator::Impl {
         case EffectId::kAckLateWorkerEvent: {
           std::lock_guard lock(mutex);
           ++acks;
+          auto& worker = resident.gates[static_cast<std::size_t>(GateKind::kWorker)];
+          worker.ack_authorized = true;
           break;
         }
         case EffectId::kRequestCooperativeStop:
@@ -1989,12 +1995,13 @@ bool JobOrchestrator::RetireWorkerAck(const RawCandidateEvent& acked) {
   auto& gate = resident->gates[static_cast<std::size_t>(Impl::GateKind::kWorker)];
   // The authoritative retry identity includes Job, Worker payload/event
   // sequence, and event discriminator: no sequence-only ACK can retire it.
-  if (!gate.retained || gate.ingress_sequence == 0 ||
+  if (!gate.retained || !gate.ack_authorized || gate.ingress_sequence == 0 ||
       !Impl::SameIdentity(resident->identity_slots[Impl::IdentitySlot(Impl::GateKind::kWorker)],
                           ack_identity))
     return false;
   gate.pending = false;
   gate.retained = false;
+  gate.ack_authorized = false;
   gate.callback_lease = false;
   gate.identity_slot = Impl::kNoIdentitySlot;
   resident->identity_slots[Impl::IdentitySlot(Impl::GateKind::kWorker)] = {};
@@ -2049,6 +2056,11 @@ bool JobOrchestrator::LatchReadinessFailure() {
   }
   wake_.notify_one();
   TrySealFailure();
+  return true;
+}
+bool JobOrchestrator::WaitForWriterIdle() {
+  std::unique_lock lock(mutex_);
+  idle_.wait(lock, [this] { return pending_ == 0 && active_ == 0; });
   return true;
 }
 bool JobOrchestrator::BeginShutdown() {
@@ -2135,6 +2147,10 @@ bool JobOrchestrator::WaitForAdmissionPause() {
   std::unique_lock lock(impl_->mutex);
   impl_->cv.wait(lock, [this] { return impl_->admission_reached; });
   return true;
+}
+std::size_t JobOrchestrator::admission_attempt_count() const noexcept {
+  std::lock_guard lock(impl_->mutex);
+  return impl_->admission_attempts;
 }
 bool JobOrchestrator::WaitForAdmissionAttempts(std::size_t c) {
   std::unique_lock lock(impl_->mutex);
@@ -2275,6 +2291,10 @@ std::size_t JobOrchestrator::response_count() const noexcept {
 std::size_t JobOrchestrator::resident_count() const noexcept {
   std::lock_guard lock(impl_->mutex);
   return impl_->ResidentCount();
+}
+std::size_t JobOrchestrator::live_critical_permit_count() const noexcept {
+  std::lock_guard lock(impl_->mutex);
+  return impl_->critical_count;
 }
 std::size_t JobOrchestrator::critical_occupancy() const noexcept {
   std::lock_guard lock(impl_->mutex);

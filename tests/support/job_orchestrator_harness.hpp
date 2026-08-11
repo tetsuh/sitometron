@@ -185,6 +185,9 @@ inline core::RawCandidateEvent MakeSessionRetained(const core::Uuid& job) {
 inline core::RawCandidateEvent MakeFinalizationCompleted(const core::Uuid& job) {
   return {1, job, "finalization_completed", "{}"};
 }
+inline core::RawCandidateEvent MakeFinalizationFailed(const core::Uuid& job) {
+  return {1, job, "finalization_failed", "{}"};
+}
 inline core::RawCandidateEvent MakeTerminalOutcome(const core::Uuid& job,
                                                    core::TerminalOutcome outcome) {
   const std::string_view value = outcome == core::TerminalOutcome::kSucceeded    ? "succeeded"
@@ -307,6 +310,7 @@ class JobOrchestratorHarness final {
   [[nodiscard]] IngressResult SubmitSessionRetainRequested(const core::RawCandidateEvent&);
   [[nodiscard]] IngressResult SubmitSessionRetained(const core::RawCandidateEvent&);
   [[nodiscard]] IngressResult SubmitFinalizationCompleted(const core::RawCandidateEvent&);
+  [[nodiscard]] IngressResult SubmitFinalizationFailed(const core::RawCandidateEvent&);
   [[nodiscard]] IngressResult SubmitTerminalOutcome(const core::RawCandidateEvent&);
   [[nodiscard]] IngressResult SubmitCancel(const core::Command&);
   [[nodiscard]] IngressResult SubmitTerminate(const core::Command&);
@@ -325,14 +329,17 @@ class JobOrchestratorHarness final {
   [[nodiscard]] bool RetainProcessExitLease(const core::Uuid&);
   [[nodiscard]] bool RetainResourcesReleasedLease(const core::Uuid&);
   [[nodiscard]] bool RetainCleanupLease(const core::Uuid&);
+  [[nodiscard]] bool RetireWorkerAck(const core::RawCandidateEvent&);
   [[nodiscard]] bool RetireWorkerAck(const core::Uuid&, std::uint64_t);
   [[nodiscard]] bool LatchReadinessFailure();
+  [[nodiscard]] bool WaitForWriterIdle();
   [[nodiscard]] bool BeginShutdown();
   [[nodiscard]] bool ArmPause(WriterPhase);
   [[nodiscard]] bool ArmBarrier(WriterPhase);
   // Admission-stage pause holds the registration-to-first-insertion linearization point.
   [[nodiscard]] bool ArmAdmissionPause();
   [[nodiscard]] bool WaitForAdmissionPause();
+  [[nodiscard]] std::size_t admission_attempt_count() const noexcept;
   [[nodiscard]] bool WaitForAdmissionAttempts(std::size_t count);
   [[nodiscard]] bool WaitForWaitUntilAttempts(std::size_t count);
   [[nodiscard]] bool ReleaseAdmissionPause();
@@ -356,6 +363,7 @@ class JobOrchestratorHarness final {
   [[nodiscard]] std::size_t effect_count() const noexcept;
   [[nodiscard]] std::size_t response_count() const noexcept;
   [[nodiscard]] std::size_t resident_count() const noexcept;
+  [[nodiscard]] std::size_t live_critical_permit_count() const noexcept;
   [[nodiscard]] std::size_t critical_occupancy() const noexcept;
   [[nodiscard]] std::size_t normal_occupancy() const noexcept;
   [[nodiscard]] std::size_t total_occupancy() const noexcept;
@@ -364,7 +372,6 @@ class JobOrchestratorHarness final {
   [[nodiscard]] std::vector<TraceRecord> CopyTrace() const;
   [[nodiscard]] std::vector<core::LogicalJobEvent> CopyJournalAttempts() const;
   [[nodiscard]] std::vector<std::uint64_t> CopyIngressSequences() const;
-  [[nodiscard]] std::vector<ExpectedEnvelope> CopyExpectedEnvelopes() const;
   [[nodiscard]] std::vector<core::ApplicationLaunchRequest> CopyLaunchRequests() const;
   [[nodiscard]] std::vector<core::SessionRetainRequest> CopySessionRequests() const;
   [[nodiscard]] std::optional<core::RawCandidateEvent> TakeRunnerCandidate();
