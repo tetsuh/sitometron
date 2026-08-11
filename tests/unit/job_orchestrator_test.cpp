@@ -244,6 +244,16 @@ int CheckTraceMetadata(const std::vector<TraceRecord>& trace) {
   return result;
 }
 
+int CheckExactTurnTrace(const std::vector<TraceRecord>& trace, std::uint64_t sequence,
+                        const ExpectedTrace& expected) {
+  std::vector<TraceRecord> actual;
+  for (const auto& record : trace)
+    if (record.journal_sequence == sequence) actual.push_back(record);
+  for (std::size_t index = 0; index < actual.size(); ++index) actual[index].ordinal = index + 1;
+  return Check(actual == expected.records,
+               "focused turn trace matches exact commit/effect/source order");
+}
+
 struct OrderedPair {
   IngressResult first;
   IngressResult second;
@@ -554,6 +564,8 @@ int CheckExactEnvelopes(const std::vector<LogicalJobEvent>& actual,
   return result;
 }
 
+int OrderedRaceQualification();
+
 int JobIngressLinearizationOrder() {
   JobOrchestratorHarness harness(PositiveConfig());
   const auto ids = Ids();
@@ -672,6 +684,7 @@ int JobIngressLinearizationOrder() {
       Check(exhausted.SubmitResourcesCommitted(MakeResourcesCommitted(ids.primary_job, allocation))
                     .code == IngressCode::kServiceFailed,
             "ingress sequence never wraps, reuses, or returns zero");
+  result |= OrderedRaceQualification();
   return result;
 }
 
@@ -1153,8 +1166,7 @@ int JobIngressCapacityAndReserve() {
   secondary.launch_operation = secondary_generated->launch_operation_id;
   const bool primary_retired =
       population.RetireWorkerAck(MakeWorkerCompleted(primary.primary_job, primary.worker, 1));
-  const bool secondary_retired =
-      population.RetireWorkerAck(MakeWorkerCompleted(secondary.primary_job, secondary.worker, 1));
+  const bool secondary_retired = population.RetireWorkerAck(secondary.primary_job, 1);
   result |=
       Check(primary_retired && secondary_retired && population.live_critical_permit_count() == 16,
             "authorized terminal ACKs free both Worker permits before pressure epoch");
@@ -2009,6 +2021,85 @@ bool Axes(const JobOrchestratorHarness& h, const Uuid& job, JobState state,
          s->pending_worker_event_ack == ack;
 }
 int JobLogicalCommitOrder() {
+  const auto ids = Ids();
+  int result = 0;
+  {
+    JobOrchestratorHarness cooperative(PositiveConfig());
+    result |= DriveToRunning(cooperative, ids, EmptyAllocation());
+    const auto cancel = cooperative.SubmitCancel(Cancel(ids.primary_job));
+    result |= ExpectCommitted(cooperative, cancel, EventType::kCancelAccepted);
+    result |= Check(cooperative.RetainTimerLease(ids.primary_job, TimeoutPhase::kCooperativeStop),
+                    "cooperative-stop timer lease is retained after cancel arm");
+    const auto stop_candidate = cooperative.TakeRunnerCandidate();
+    result |= Check(stop_candidate.has_value(), "cooperative stop candidate is explicitly taken");
+    result |= CheckExactTurnTrace(cooperative.CopyTrace(), 6, [] {
+      ExpectedTrace expected;
+      expected.Turn(6, EventType::kCancelAccepted,
+                    {{EffectId::kRequestCooperativeStop, "handoff:cooperative-stop"},
+                     {EffectId::kArmCooperativeStopTimeout, "timer:arm:cooperative_stop:1"}},
+                    {"source:timer:cooperative_stop"});
+      return expected;
+    }());
+    result |= Check(cooperative.VerifyFakes(),
+                    "cooperative runner candidate is consumed and fake verifies");
+  }
+  {
+    JobOrchestratorHarness forced(PositiveConfig());
+    result |= DriveToRunning(forced, ids, EmptyAllocation());
+    const auto cancel = forced.SubmitCancel(Cancel(ids.primary_job));
+    result |= ExpectCommitted(forced, cancel, EventType::kCancelAccepted);
+    result |= Check(forced.CancelRunnerCandidate(),
+                    "cooperative candidate is explicitly cancelled before escalation");
+    const auto terminate = forced.SubmitTerminate(Terminate(ids.primary_job));
+    result |= ExpectCommitted(forced, terminate, EventType::kTerminateAccepted);
+    result |= Check(forced.TakeRunnerCandidate().has_value(),
+                    "forced stop candidate is explicitly taken after escalation");
+    result |= CheckExactTurnTrace(forced.CopyTrace(), 7, [] {
+      ExpectedTrace expected;
+      expected.Turn(7, EventType::kTerminateAccepted,
+                    {{EffectId::kRequestForcedStop, "handoff:forced-stop"},
+                     {EffectId::kDisarmCooperativeStopTimeout, "timer:disarm:cooperative_stop:1"},
+                     {EffectId::kArmProcessExitConfirmationTimeoutIfNeeded,
+                      "timer:arm:process_exit_confirmation:1"}},
+                    {"source:timer:process_exit_confirmation"});
+      return expected;
+    }());
+    result |= Check(forced.VerifyFakes(), "forced runner candidate cancellation is verified");
+  }
+  {
+    JobOrchestratorHarness timeout(PositiveConfig());
+    result |= DriveToFinalizing(timeout, ids, EmptyAllocation());
+    result |= ExpectCommitted(timeout,
+                              timeout.SubmitTerminalOutcome(MakeTerminalOutcome(
+                                  ids.primary_job, TerminalOutcome::kSucceeded)),
+                              EventType::kTerminalOutcomeCommitted);
+    result |=
+        Check(timeout.RetainTimerLease(ids.primary_job, TimeoutPhase::kProcessExitConfirmation),
+              "process-exit-confirmation timer permit is retained before source delivery");
+    const auto notification = timeout.SubmitTimeout(
+        TimerNotification{ids.primary_job, TimeoutPhase::kProcessExitConfirmation, 1});
+    result |= Check(!notification.discarded, "armed timer notification emits a typed candidate");
+    result |= ExpectCommitted(timeout, notification.admitted, EventType::kTimeoutExpired);
+    result |= Check(timeout.TakeRunnerCandidate().has_value(),
+                    "process-exit timeout forced-stop candidate is explicitly taken");
+    result |= CheckExactTurnTrace(timeout.CopyTrace(), 11, [] {
+      ExpectedTrace expected;
+      expected.Turn(11, EventType::kTimeoutExpired,
+                    {{EffectId::kRequestForcedStop, "handoff:forced-stop"},
+                     {EffectId::kQuarantineResources, "safety:quarantine"},
+                     {EffectId::kSetReadinessFalse, "safety:set_readiness_false"}});
+      return expected;
+    }());
+    result |= Check(!timeout.failed(),
+                    "set_readiness_false remains a safety observation before explicit latch");
+    result |= Check(timeout.LatchReadinessFailure() && timeout.failed(),
+                    "service failure follows only the later explicit readiness latch");
+    result |= Check(timeout.VerifyFakes(), "process-exit timeout fake observations verify");
+  }
+  return result;
+}
+
+int OrderedRaceQualification() {
   const auto ids = Ids();
   int result = 0;
   const auto turn = [](EventType event, std::vector<std::string> registrations,

@@ -590,7 +590,9 @@ bool JobOrchestratorHarness::RetireWorkerAck(const core::RawCandidateEvent& even
   return impl_->orchestrator.RetireWorkerAck(event);
 }
 bool JobOrchestratorHarness::RetireWorkerAck(const core::Uuid& id, std::uint64_t s) {
-  return RetireWorkerAck(MakeWorkerCompleted(id, Ids().worker, s));
+  const auto worker = impl_->orchestrator.GeneratedWorker(id);
+  if (!worker) return false;
+  return RetireWorkerAck(MakeWorkerCompleted(id, *worker, s));
 }
 bool JobOrchestratorHarness::LatchReadinessFailure() {
   return impl_->orchestrator.LatchReadinessFailure();
