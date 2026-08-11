@@ -44,7 +44,7 @@ A Planned Requirement cannot authorize production implementation by itself.
 
 | ID | Former level | Requirement | Supersession |
 |---|---|---|---|
-| `NFR-002` | MUST | Keep `sitometron_core` limited to the C++ standard library. | Superseded by `NFR-005` and [ADR-0004](adr/0004-allow-explicit-core-dependencies.md); the legacy implementation guard remains active until [Issue #17](https://github.com/tetsuh/sitometron/issues/17). |
+| `NFR-002` | MUST | Keep `sitometron_core` limited to the C++ standard library. | Superseded by `NFR-005` and [ADR-0004](adr/0004-allow-explicit-core-dependencies.md); Issue #17 retired the legacy reject-all-third-party guard when it activated the `NFR-005` checks. |
 
 ## 5. Normative Phase 0A Job requirements
 

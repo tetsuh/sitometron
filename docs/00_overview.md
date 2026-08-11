@@ -27,14 +27,13 @@ input payloads through its Worker-control protocol, or execute application algor
 Trusted Applications run in separate Worker processes.
 
 `sitometron_core` is a C++20 dependency-minimal domain library under Accepted
-[ADR-0004](adr/0004-allow-explicit-core-dependencies.md). Its closed direct allowlist permits only
-nlohmann/json, Boost.UUID, and Boost.Hash2 behind Sitometron-owned public types. HTTP, persistence,
-process, hardware-topology, Sitos, Zenoh, Python, logging, and other I/O/framework dependencies
-remain in adapters composed by `sitometrond`.
-
-The current implementation remains standard-library-only until
-[dependency-integration Issue #17](https://github.com/tetsuh/sitometron/issues/17) activates the
-Accepted boundary and its Linux/Windows checks.
+[ADR-0004](adr/0004-allow-explicit-core-dependencies.md). The implemented closed direct allowlist
+permits only nlohmann/json, Boost.UUID, and Boost.Hash2 behind Sitometron-owned public types. The
+private synchronization facilities approved by
+[ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) remain inside the core
+implementation and do not leak into public APIs. The active Linux and Windows `NFR-005` checks
+mechanically enforce these boundaries. HTTP, persistence, process, hardware-topology, Sitos, Zenoh,
+Python, logging, and other I/O/framework dependencies remain in adapters composed by `sitometrond`.
 
 See [the architecture](02_architecture.md) and
 [the detailed dependency boundaries](architecture/boundaries.md).
@@ -56,6 +55,9 @@ Every Phase has one Gate Issue. See [the Issue breakdown](07_issue_breakdown.md)
 
 ## 5. Current status
 
-Phase 0A is active. The bootstrap build and repository workflow exist, but no production API or
-compatibility guarantee exists. Runtime contracts remain Planned until their owning Issue and ADR
-make them normative in the [Contract Registry](08_contract_registry.md).
+Phase 0A is active. The dependency boundary, pure Job reducer, lifecycle capability ports and
+fakes, bounded private single writer, complete logical JobJournal envelope and ordering, and the
+fake-driven lifecycle and adverse/race qualification are implemented. Gate #1 remains open for the
+remaining documentation, bootstrap, and CI/policy evidence. Physical JobJournal durability and
+production adapters remain Planned under later owners in the
+[Contract Registry](08_contract_registry.md). No production API or compatibility guarantee exists.

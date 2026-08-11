@@ -18,11 +18,13 @@ Dependency-owned types remain out of public core headers, and baseline-resolved 
 are opaque build prerequisites rather than direct source-level authorization. Adapter targets own
 all other third-party, platform, I/O, and framework dependencies.
 
-Issue #17 activates the allowlist. Production core source may include only `<string_view>` and
-`<nlohmann/json.hpp>`, `<boost/uuid/uuid.hpp>`, `<boost/uuid/string_generator.hpp>`,
-`<boost/uuid/uuid_io.hpp>`, and `<boost/hash2/sha2.hpp>`. UUID generator headers and all
-baseline-resolved transitive headers remain rejected. The five stable `NFR-005` checks mechanically
-enforce this boundary and reject direct target, private include, and public API leakage.
+Issue #17 implemented the allowlist and activated all five stable `NFR-005` checks on Linux and
+Windows. Accepted ADR-0003 and Issue #12 later authorized only the private synchronization headers
+and private `Threads::Threads` linkage required by the single writer, without adding a manifest
+dependency or public concurrency type. The exact reviewed standard-header, direct-target/include,
+private-link, and public-API rules are encoded in the mechanical dependency checks rather than
+repeated as a partial list here. UUID generator headers, unapproved Boost components, transitive
+headers, dependency-owned public types, and concurrency-owned public types remain rejected.
 
 Sitos remains outside the Sitometron vcpkg manifest. Phase 4 builds and installs one pinned Sitos
 release or commit separately, verifies provenance and required contracts, and consumes it as an
@@ -39,6 +41,13 @@ does not make Python a dependency of `sitometron_core`, `sitometrond`, a Worker,
 package. Runtime or product-build use requires a separately reviewed decision.
 
 ## CI and caches
+
+Pending Issue #25's canonical developer-bootstrap task, developers manually mirror the same
+explicit pre-provisioning boundary: verify the official vcpkg checkout at the reviewed pin, install the root
+manifest outside project CMake into a platform/worktree-specific tree, then configure with the
+vcpkg toolchain, selected triplet, installed directory, `VCPKG_MANIFEST_INSTALL=OFF`, and
+`VCPKG_APPLOCAL_DEPS=OFF`. Linux/WSL and native Windows never share configured build or installed
+dependency trees.
 
 CI independently checks out official vcpkg at `40f3c709db80acf154ac4b17a1f83c564ebd022e`, the same
 value used as `builtin-baseline`, and provisions `x64-linux` or `x64-windows` outside project CMake.
