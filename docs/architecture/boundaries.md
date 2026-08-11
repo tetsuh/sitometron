@@ -2,13 +2,15 @@
 
 ## Core
 
-`sitometron_core` owns domain identifiers, commands, events, reducers, lifecycle rules, admission,
-and scheduling policy. It must remain deterministic and dependency-minimal under Accepted
-[ADR-0004](../adr/0004-allow-explicit-core-dependencies.md). The reviewed standard-header allowlist
-is preserved, and only nlohmann/json, Boost.UUID, and Boost.Hash2 are permitted behind
-Sitometron-owned public types. The current implementation remains standard-library-only until
-[dependency-integration Issue #17](https://github.com/tetsuh/sitometron/issues/17) activates the
-Accepted boundary. The adapter ownership below does not change.
+`sitometron_core` owns domain identifiers, commands, events, reducers, lifecycle rules, capability
+ports, admission, and private single-writer orchestration. It remains deterministic and
+dependency-minimal under Accepted
+[ADR-0004](../adr/0004-allow-explicit-core-dependencies.md). Issue #17 implemented the reviewed
+direct dependency allowlist for nlohmann/json, Boost.UUID, and Boost.Hash2, and Issue #12 added only
+the private synchronization facilities authorized by
+[ADR-0003](../adr/0003-define-single-state-writer-ingress-contract.md). The active `NFR-005`
+checks enforce approved headers, targets, includes, private links, and Sitometron-owned public types
+on Linux and Windows. The adapter ownership below does not change.
 
 The core must not include:
 

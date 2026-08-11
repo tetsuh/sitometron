@@ -22,8 +22,8 @@ I/O/framework ownership. Only `sitometrond` composes concrete adapters.
 
 | Target | Responsibility | Dependency policy |
 |---|---|---|
-| `sitometron_core` | Domain state, commands, reducer, admission, scheduling policy | Accepted closed allowlist; current implementation remains standard-library-only pending [Issue #17](https://github.com/tetsuh/sitometron/issues/17) |
-| `sitometron_test_support` | Deterministic fakes and test helpers | Tests only |
+| `sitometron_core` | Domain state, commands, pure reducer, lifecycle ports, and private single-writer orchestration | Implemented ADR-0004/`NFR-005` closed allowlist; Sitometron-owned public types only |
+| `sitometron_test_support` and private fake-support targets | Deterministic fakes, barriers, and test helpers | Tests only |
 | `sitometrond` | Composition root and daemon entry point | Core initially; adapters by Phase |
 
 Later adapter targets are introduced only by their owning Issues:
@@ -44,9 +44,13 @@ The core owns deterministic policy. Adapters own I/O and external side effects. 
 writer orders accepted commands and events. Journal and external-side-effect commit protocols are
 specified before production adapters use them.
 
-Accepted ADR-0002 owns the normative Job state, event, command, rejection, and reducer mechanism.
-Issue #9 implements the dependency-minimal pure reducer. Single-writer commit orchestration,
-complete Journal envelope construction, effect execution, and physical durability remain Planned.
+Accepted ADR-0002 owns the normative Job state, event, command, rejection, reducer, and logical
+JobJournal mechanism. Issue #9 implements the dependency-minimal pure reducer, and Issue #22
+preserves its behavior while reducing structural complexity. Accepted ADR-0005 and Issue #11
+implement the lifecycle capability ports and deterministic fakes. Accepted ADR-0003 and Issue #12
+implement the bounded private single writer, complete logical envelope construction, commit ordering,
+and no-fail postcommit dispatch; Issue #13 completes deterministic adverse/race qualification.
+Physical Journal durability and production effect adapters remain Planned under later owners.
 
 The machine-readable Job transition contract is documented in
 [the core contracts](03_core_contracts.md). Worker HTTP schemas, external REST schemas, physical
