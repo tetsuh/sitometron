@@ -70,6 +70,7 @@ if [[ ${1:-} == clone ]]; then
 #!/usr/bin/env bash
 printf 'bootstrap-vcpkg\n' >>"${FAKE_LOG:?}"
 [[ ${FAKE_FAIL_STAGE:-} == bootstrap ]] && exit 97
+[[ -d ${VCPKG_DOWNLOADS:?} ]] || exit 98
 cat >"$(dirname -- "$0")/vcpkg" <<'VCPKG'
 #!/usr/bin/env bash
 printf 'vcpkg %s\n' "$*" >>"${FAKE_LOG:?}"

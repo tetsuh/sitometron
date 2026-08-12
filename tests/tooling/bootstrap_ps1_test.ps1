@@ -1,6 +1,9 @@
 # Deterministic, network-free contract driver for bootstrap.ps1.
 # This is a black-box driver: no production test hook, network, or real sleep is used.
 $ErrorActionPreference = 'Stop'
+# Negative contract cases intentionally inspect native exit codes instead of promoting them to
+# NativeCommandExitException, even when the invoking CI scope enables that preference.
+$PSNativeCommandUseErrorActionPreference = $false
 $TestRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $PowerShellExe = (Get-Process -Id $PID).Path
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ('sitometron bootstrap ps1 test.' + [guid]::NewGuid())
@@ -50,6 +53,7 @@ try {
       '>>"%DEST%\fake-vcpkg.c" echo int main(int argc,char**argv){FILE*f=fopen(getenv("FAKE_LOG"),"a");if(f){fprintf(f,"vcpkg %%s\n",argc^>1?argv[1]:"");fclose(f);}if(argc^>1^&^&strcmp(argv[1],"version")==0){printf("vcpkg package management program version fixture\n");}return(getenv("FAKE_FAIL_STAGE")^&^&strcmp(getenv("FAKE_FAIL_STAGE"),"install")==0)^?97:0;}',
       '>"%DEST%\bootstrap-vcpkg.bat" echo @echo off',
       '>>"%DEST%\bootstrap-vcpkg.bat" echo echo bootstrap-vcpkg^>^>"%%FAKE_LOG%%"',
+      '>>"%DEST%\bootstrap-vcpkg.bat" echo if not exist "%%VCPKG_DOWNLOADS%%\" exit /b 98',
       '>>"%DEST%\bootstrap-vcpkg.bat" echo if "%%FAKE_FAIL_STAGE%%"=="bootstrap" exit /b 97',
       ('>>"%DEST%\bootstrap-vcpkg.bat" echo "' + $RealCl + '" /nologo /Fe:"%%~dp0vcpkg.exe" "%%~dp0fake-vcpkg.c" ^>nul'),
       '>>"%DEST%\bootstrap-vcpkg.bat" echo exit /b %%ERRORLEVEL%%', 'exit /b 0'

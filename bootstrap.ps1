@@ -104,6 +104,8 @@ try {
   if ((Invoke-Git @('-C',$Checkout,'rev-parse','HEAD')) -ne $Pin) { Stop-Bootstrap "checkout HEAD is not the repository-owned pin: $Checkout" }
   if (-not [string]::IsNullOrWhiteSpace((Invoke-Git @('-C',$Checkout,'status','--porcelain','--untracked-files=no'))) ) { Stop-Bootstrap "checkout has tracked/index dirtiness: $Checkout" }
   $Toolchain = Join-Path $Checkout 'scripts/buildsystems/vcpkg.cmake'; if (-not (Test-Path -LiteralPath $Toolchain -PathType Leaf)) { Stop-Bootstrap "vcpkg checkout is incomplete (toolchain missing): $Toolchain" }
+  Test-ManagedPath $env:VCPKG_DOWNLOADS
+  New-Item -ItemType Directory -Path $env:VCPKG_DOWNLOADS -Force | Out-Null
 
   Set-Stage 'vcpkg bootstrap'; $Vcpkg = Join-Path $Checkout 'vcpkg.exe'
   if (-not (Test-Path -LiteralPath $Vcpkg -PathType Leaf)) { if (-not (Test-Path -LiteralPath (Join-Path $Checkout 'bootstrap-vcpkg.bat'))) { Stop-Bootstrap 'vcpkg bootstrap script is missing' }; Invoke-Checked 'vcpkg bootstrap' { & (Join-Path $Checkout 'bootstrap-vcpkg.bat') -disableMetrics } }

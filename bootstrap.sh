@@ -126,6 +126,8 @@ fi
 [[ -z "$(git -C "$CHECKOUT" status --porcelain --untracked-files=no)" ]] || die "checkout has tracked/index dirtiness: $CHECKOUT"
 TOOLCHAIN="$CHECKOUT/scripts/buildsystems/vcpkg.cmake"
 [[ -f "$TOOLCHAIN" && ! -L "$TOOLCHAIN" ]] || die "vcpkg checkout is incomplete (toolchain missing): $TOOLCHAIN"
+managed_path_check "$VCPKG_DOWNLOADS"
+mkdir -p -- "$VCPKG_DOWNLOADS"
 
 set_stage 'vcpkg bootstrap'
 VCPKG="$CHECKOUT/vcpkg"
