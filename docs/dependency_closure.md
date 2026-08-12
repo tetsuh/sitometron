@@ -11,10 +11,10 @@ installed trees, downloads, caches, and build artifacts are not committed.
 |---|---|---|
 | Manifest SHA-256 | `08970af2a59151c3c4c292b0e7f4b401f290d9a9e9d55b3760ce9f8247084ac8` | same manifest |
 | vcpkg builtin baseline | `40f3c709db80acf154ac4b17a1f83c564ebd022e` | same |
-| vcpkg tool checkout | `40f3c709db80acf154ac4b17a1f83c564ebd022e` (checked independently) | same |
+| vcpkg tool checkout | repository-owned `tools/vcpkg-tool-commit.txt` pin (`40f3c709db80acf154ac4b17a1f83c564ebd022e`, checked independently) | same independent tool pin |
 | Runner / architecture | `ubuntu-24.04` / x64 | `windows-latest` / x64 |
 | Triplet | `x64-linux` | `x64-windows` |
-| Provisioning command | `vcpkg install --triplet=x64-linux --x-manifest-root=$GITHUB_WORKSPACE --x-install-root=$GITHUB_WORKSPACE/build/vcpkg-installed` | `vcpkg install --triplet=x64-windows --x-manifest-root=$GITHUB_WORKSPACE --x-install-root=$GITHUB_WORKSPACE/build/vcpkg-installed` |
+| Provisioning command | `vcpkg install --triplet=x64-linux --x-manifest-root=$GITHUB_WORKSPACE --x-install-root=$GITHUB_WORKSPACE/build/vcpkg-installed/x64-linux` | `vcpkg install --triplet=x64-windows --x-manifest-root=$GITHUB_WORKSPACE --x-install-root=$GITHUB_WORKSPACE/build/vcpkg-installed/x64-windows` |
 | Configure boundary | pre-provisioned tree, `VCPKG_MANIFEST_INSTALL=OFF` | pre-provisioned tree, `VCPKG_MANIFEST_INSTALL=OFF` |
 
 CI records runner image identity, compiler, CMake, Ninja, and vcpkg versions in each job log.

@@ -3,9 +3,10 @@
 ## C++ dependencies
 
 Sitometron uses vcpkg manifest mode for third-party C++ dependencies. `vcpkg.json` pins builtin
-baseline `40f3c709db80acf154ac4b17a1f83c564ebd022e`; CI provisioning uses a separately pinned tool
-commit when dependencies are introduced. Developers and CI pre-provision `VCPKG_ROOT`; project
-CMake never clones, bootstraps, updates, or invokes a package manager.
+baseline `40f3c709db80acf154ac4b17a1f83c564ebd022e`; the repository-owned tool pin independently
+authorizes the vcpkg tool checkout. The canonical wrappers own `VCPKG_ROOT`, `VCPKG_DOWNLOADS`,
+and `VCPKG_DISABLE_METRICS` for each invocation. Project CMake never clones, bootstraps, updates,
+or invokes a package manager.
 
 Conan and general dependency acquisition through CMake `FetchContent` are not used. Runtime code
 does not download dependencies. Dependency updates use dedicated pull requests with Linux and
@@ -42,15 +43,18 @@ package. Runtime or product-build use requires a separately reviewed decision.
 
 ## CI and caches
 
-Pending Issue #25's canonical developer-bootstrap task, developers manually mirror the same
-explicit pre-provisioning boundary: verify the official vcpkg checkout at the reviewed pin, install the root
-manifest outside project CMake into a platform/worktree-specific tree, then configure with the
-vcpkg toolchain, selected triplet, installed directory, `VCPKG_MANIFEST_INSTALL=OFF`, and
-`VCPKG_APPLOCAL_DEPS=OFF`. Linux/WSL and native Windows never share configured build or installed
-dependency trees.
+Issue #25 supplies `./bootstrap.sh` and `.\bootstrap.ps1` as the canonical one-command boundary.
+Both read the independent lowercase tool pin from `tools/vcpkg-tool-commit.txt`; this tool-checkout
+authority is distinct from `vcpkg.json`'s `builtin-baseline` manifest authority. The wrappers use
+only the official vcpkg origin, validate exact HEAD/origin/clean tracked state, provision the root
+manifest on every run, and pass the five explicit CMake boundary values: `CMAKE_TOOLCHAIN_FILE`,
+`VCPKG_TARGET_TRIPLET`, `VCPKG_INSTALLED_DIR`, `VCPKG_MANIFEST_INSTALL=OFF`, and
+`VCPKG_APPLOCAL_DEPS=OFF`. Linux/WSL and native Windows never share checkout, installed, configured,
+or lock paths. Existing incompatible artifacts fail closed without repair, and lock contention or
+stale locks require manual inspection/remediation.
 
-CI independently checks out official vcpkg at `40f3c709db80acf154ac4b17a1f83c564ebd022e`, the same
-value used as `builtin-baseline`, and provisions `x64-linux` or `x64-windows` outside project CMake.
+CI reads and validates the repository-owned tool pin, independently provisions official vcpkg at
+that exact revision, and provisions `x64-linux` or `x64-windows` outside project CMake.
 Normal configure uses the pre-provisioned tree with `VCPKG_MANIFEST_INSTALL=OFF`. Under Accepted
 ADR-0004 and Issue #17, Sitometron independently owns a filesystem binary-cache policy whose key
 shape is intentionally compatible with the model documented by Sitos ADR-0031. SHA-pinned
