@@ -73,7 +73,10 @@ try {
   Write-Output "INFO: CMake $cmakeVersion"; Write-Output "INFO: Ninja $(& ninja --version)"
   Write-Output "INFO: MSVC $((& cl 2>&1 | Select-Object -First 1))"
   if ([string]::IsNullOrWhiteSpace($env:VSCMD_ARG_TGT_ARCH) -or $env:VSCMD_ARG_TGT_ARCH -ne 'x64') { Stop-Bootstrap 'an initialized x64 MSVC Developer PowerShell is required (VSCMD_ARG_TGT_ARCH=x64)' }
-  foreach ($name in @('VCPKG_ROOT','VCPKG_OVERLAY_PORTS','VCPKG_OVERLAY_TRIPLETS','VCPKG_CHAINLOAD_TOOLCHAIN_FILE','VCPKG_DEFAULT_TRIPLET','VCPKG_DEFAULT_HOST_TRIPLET','VCPKG_FEATURE_FLAGS')) { if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { Stop-Bootstrap "selection environment $name is set; unset it before retrying" } }
+  # An initialized MSVC Developer PowerShell may set VCPKG_ROOT to Visual Studio's bundled
+  # checkout. This wrapper owns and later restores VCPKG_ROOT, so only other selection inputs
+  # remain forbidden.
+  foreach ($name in @('VCPKG_OVERLAY_PORTS','VCPKG_OVERLAY_TRIPLETS','VCPKG_CHAINLOAD_TOOLCHAIN_FILE','VCPKG_DEFAULT_TRIPLET','VCPKG_DEFAULT_HOST_TRIPLET','VCPKG_FEATURE_FLAGS')) { if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { Stop-Bootstrap "selection environment $name is set; unset it before retrying" } }
   foreach ($name in @('GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES','GIT_COMMON_DIR','GIT_NAMESPACE')) { if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { Stop-Bootstrap "unsafe Git repository environment $name is set; unset it before retrying" } }
   foreach ($name in @('VCPKG_BINARY_SOURCES','VCPKG_ASSET_SOURCES','HTTPS_PROXY','HTTP_PROXY','ALL_PROXY')) { if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { Write-Output "INFO: optional cache/transport override $name is active (value hidden)" } }
 
@@ -138,9 +141,12 @@ try {
   Set-Stage 'test'; Invoke-Checked 'CTest' { ctest --preset $Preset }
   Write-Output "SUCCESS: bootstrap completed for $Triplet at $Root"
 } catch { Write-Error $_.Exception.Message; throw } finally {
-  if ($LockHeld -and (Test-Path -LiteralPath $Lock) -and ((Get-Content -LiteralPath $Lock -Raw) -ceq "$LockToken`r`n" -or (Get-Content -LiteralPath $Lock -Raw) -ceq $LockToken)) { Remove-Item -LiteralPath $Lock -Force }
-  foreach ($name in $OwnedEnvironment.Keys) {
-    if ($null -eq $OwnedEnvironment[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
-    else { Set-Item "Env:$name" $OwnedEnvironment[$name] }
+  try {
+    if ($LockHeld -and (Test-Path -LiteralPath $Lock) -and ((Get-Content -LiteralPath $Lock -Raw) -ceq "$LockToken`r`n" -or (Get-Content -LiteralPath $Lock -Raw) -ceq $LockToken)) { Remove-Item -LiteralPath $Lock -Force }
+  } finally {
+    foreach ($name in $OwnedEnvironment.Keys) {
+      if ($null -eq $OwnedEnvironment[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+      else { Set-Item "Env:$name" $OwnedEnvironment[$name] }
+    }
   }
 }
