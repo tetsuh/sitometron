@@ -2,7 +2,8 @@
 # Canonical deterministic developer bootstrap for Linux/WSL.
 set -Eeuo pipefail
 
-readonly ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly ROOT
 readonly OFFICIAL_ORIGIN='https://github.com/microsoft/vcpkg.git'
 readonly TRIPLET='x64-linux'
 readonly PRESET='dev-linux'
@@ -65,7 +66,7 @@ esac
 
 set_stage 'host validation'
 [[ "$(uname -s)" == Linux ]] || die 'Bash bootstrap supports Linux/WSL only'
-for tool in git cmake ninja gcc g++ curl zip unzip tar; do
+for tool in git cmake ninja gcc g++ curl zip unzip tar ctest; do
   command -v "$tool" >/dev/null 2>&1 || die "required host tool is missing: $tool"
 done
 for name in VCPKG_ROOT VCPKG_OVERLAY_PORTS VCPKG_OVERLAY_TRIPLETS VCPKG_CHAINLOAD_TOOLCHAIN_FILE VCPKG_DEFAULT_TRIPLET VCPKG_DEFAULT_HOST_TRIPLET VCPKG_FEATURE_FLAGS; do
@@ -93,6 +94,8 @@ printf 'INFO: CMake %s\n' "$cmake_version"
 printf 'INFO: Ninja %s\n' "$(ninja --version)"
 printf 'INFO: GCC %s\n' "$(gcc --version | head -n1)"
 printf 'INFO: G++ %s\n' "$(g++ --version | head -n1)"
+ctest_version=$(ctest --version) || die 'required host tool is unusable: ctest --version failed'
+printf 'INFO: CTest %s\n' "${ctest_version%%$'\n'*}"
 CC=$(command -v gcc); CXX=$(command -v g++)
 
 set_stage 'lock acquisition'
@@ -109,6 +112,8 @@ fi
 export VCPKG_ROOT="$CHECKOUT"
 export VCPKG_DOWNLOADS="$CHECKOUT/downloads"
 export VCPKG_DISABLE_METRICS=1
+export GIT_TERMINAL_PROMPT=0
+export GCM_INTERACTIVE=never
 printf 'INFO: repository root: %s\nINFO: checkout: %s\nINFO: installed tree: %s\nINFO: build tree: %s\nINFO: triplet/preset: %s/%s\nINFO: pinned revision: %s\n' "$ROOT" "$CHECKOUT" "$INSTALLED" "$BUILD_TREE" "$TRIPLET" "$PRESET" "$PIN"
 printf 'INFO: network-capable stages may include clone, vcpkg bootstrap, pinned port sources, configured caches, and proxies; official clone origin: %s\n' "$OFFICIAL_ORIGIN"
 
@@ -150,7 +155,8 @@ cache_value() {
   grep -E "^${key}(:[^=]*)?=" "$BUILD_TREE/CMakeCache.txt" | head -n1 | sed 's/^[^=]*=//'
 }
 check_cache() {
-  [[ -f "$BUILD_TREE/CMakeCache.txt" ]] || die "configured cache is missing: $BUILD_TREE/CMakeCache.txt"
+  managed_path_check "$BUILD_TREE/CMakeCache.txt"
+  [[ -f "$BUILD_TREE/CMakeCache.txt" && ! -L "$BUILD_TREE/CMakeCache.txt" ]] || die "configured cache is missing or not a regular file: $BUILD_TREE/CMakeCache.txt"
   local key expected actual
   for key in CMAKE_C_COMPILER CMAKE_CXX_COMPILER CMAKE_TOOLCHAIN_FILE VCPKG_TARGET_TRIPLET VCPKG_INSTALLED_DIR VCPKG_MANIFEST_INSTALL VCPKG_APPLOCAL_DEPS; do
     case "$key" in
@@ -165,7 +171,7 @@ check_cache() {
     [[ -n "$actual" && "$actual" == "$expected" ]] || die "CMake cache identity mismatch for $key (expected $expected)"
   done
 }
-if [[ -f "$BUILD_TREE/CMakeCache.txt" ]]; then
+if [[ -e "$BUILD_TREE/CMakeCache.txt" || -L "$BUILD_TREE/CMakeCache.txt" ]]; then
   set_stage 'pre-configure cache validation'; check_cache
 fi
 

@@ -10,7 +10,8 @@ if ($args.Count -eq 1 -and $args[0] -ceq '-Help') {
 if ($args.Count -ne 0) { throw 'only the exact -Help token is supported; this command has no repair, offline, or alternate-path mode' }
 
 $Root = (Resolve-Path -LiteralPath $PSScriptRoot).Path
-Set-Location -LiteralPath $Root
+$CallerLocation = Get-Location
+$LocationChanged = $false
 $OfficialOrigin = 'https://github.com/microsoft/vcpkg.git'
 $Triplet = 'x64-windows'; $Preset = 'dev-windows'
 $Checkout = Join-Path $Root '.cache/vcpkg/x64-windows'
@@ -60,17 +61,20 @@ function Invoke-Git([string[]]$Arguments) {
   return (($output | Out-String).Trim())
 }
 $OwnedEnvironment = @{}
-foreach ($name in @('VCPKG_ROOT','VCPKG_DOWNLOADS','VCPKG_DISABLE_METRICS')) {
+foreach ($name in @('VCPKG_ROOT','VCPKG_DOWNLOADS','VCPKG_DISABLE_METRICS','GIT_TERMINAL_PROMPT','GCM_INTERACTIVE')) {
   $OwnedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 try {
+  Set-Location -LiteralPath $Root
+  $LocationChanged = $true
   Set-Stage 'host validation'
   if ($IsWindows -ne $true) { Stop-Bootstrap 'bootstrap.ps1 supports native Windows only' }
   if ($PSVersionTable.PSVersion -lt [version]'7.3') { Stop-Bootstrap 'PowerShell 7.3 or newer is required' }
-  foreach ($tool in @('git','cmake','ninja','cl')) { if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { Stop-Bootstrap "required host tool is missing: $tool" } }
+  foreach ($tool in @('git','cmake','ninja','cl','ctest')) { if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { Stop-Bootstrap "required host tool is missing: $tool" } }
   $cmakeVersion = [version]((& cmake --version | Select-Object -First 1) -replace '^cmake version ', '')
   if ($cmakeVersion -lt [version]'3.28') { Stop-Bootstrap "CMake 3.28+ is required (found $cmakeVersion)" }
   Write-Output "INFO: CMake $cmakeVersion"; Write-Output "INFO: Ninja $(& ninja --version)"
+  Invoke-Checked 'CTest qualification' { ctest --version }
   Write-Output "INFO: MSVC $((& cl 2>&1 | Select-Object -First 1))"
   if ([string]::IsNullOrWhiteSpace($env:VSCMD_ARG_TGT_ARCH) -or $env:VSCMD_ARG_TGT_ARCH -ne 'x64') { Stop-Bootstrap 'an initialized x64 MSVC Developer PowerShell is required (VSCMD_ARG_TGT_ARCH=x64)' }
   # An initialized MSVC Developer PowerShell may set VCPKG_ROOT to Visual Studio's bundled
@@ -79,6 +83,8 @@ try {
   foreach ($name in @('VCPKG_OVERLAY_PORTS','VCPKG_OVERLAY_TRIPLETS','VCPKG_CHAINLOAD_TOOLCHAIN_FILE','VCPKG_DEFAULT_TRIPLET','VCPKG_DEFAULT_HOST_TRIPLET','VCPKG_FEATURE_FLAGS')) { if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { Stop-Bootstrap "selection environment $name is set; unset it before retrying" } }
   foreach ($name in @('GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES','GIT_COMMON_DIR','GIT_NAMESPACE')) { if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { Stop-Bootstrap "unsafe Git repository environment $name is set; unset it before retrying" } }
   foreach ($name in @('VCPKG_BINARY_SOURCES','VCPKG_ASSET_SOURCES','HTTPS_PROXY','HTTP_PROXY','ALL_PROXY')) { if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { Write-Output "INFO: optional cache/transport override $name is active (value hidden)" } }
+  $env:GIT_TERMINAL_PROMPT = '0'
+  $env:GCM_INTERACTIVE = 'never'
 
   Set-Stage 'pin validation'; $PinFile = Join-Path $Root 'tools/vcpkg-tool-commit.txt'
   if (-not (Test-Path -LiteralPath $PinFile -PathType Leaf)) { Stop-Bootstrap "repository-owned pin is missing: $PinFile" }
@@ -101,7 +107,7 @@ try {
     New-Item -ItemType Directory -Path (Split-Path $Checkout) -Force | Out-Null
     Invoke-Checked 'official clone' { git clone $OfficialOrigin $Checkout }
     Invoke-Checked 'exact checkout' { git -C $Checkout checkout --detach $Pin }
-  } elseif (-not (Test-Path -LiteralPath (Join-Path $Checkout '.git')) -or (Get-Item -LiteralPath (Join-Path $Checkout '.git') -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { Stop-Bootstrap "existing checkout is not a managed Git checkout: $Checkout; move it manually and retry" }
+  } elseif (-not (Test-Path -LiteralPath (Join-Path $Checkout '.git') -PathType Container) -or (Get-Item -LiteralPath (Join-Path $Checkout '.git') -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { Stop-Bootstrap "existing checkout is not a managed Git checkout: $Checkout; move it manually and retry" }
   if ((Invoke-Git @('-C',$Checkout,'rev-parse','--is-inside-work-tree')) -ne 'true') { Stop-Bootstrap "invalid Git checkout: $Checkout" }
   if ((Invoke-Git @('-C',$Checkout,'remote','get-url','origin')) -ne $OfficialOrigin) { Stop-Bootstrap "checkout origin is not the official vcpkg origin: $Checkout" }
   if ((Invoke-Git @('-C',$Checkout,'rev-parse','HEAD')) -ne $Pin) { Stop-Bootstrap "checkout HEAD is not the repository-owned pin: $Checkout" }
@@ -124,7 +130,9 @@ try {
   Set-Stage 'manifest provisioning'; New-Item -ItemType Directory -Path $Installed -Force | Out-Null
   Invoke-Checked 'manifest provisioning' { & $Vcpkg install "--triplet=$Triplet" "--x-manifest-root=$Root" "--x-install-root=$Installed" }
   function Check-Cache {
-    $cache = Join-Path $BuildTree 'CMakeCache.txt'; if (-not (Test-Path -LiteralPath $cache)) { Stop-Bootstrap "configured cache is missing: $cache" }
+    $cache = Join-Path $BuildTree 'CMakeCache.txt'
+    Test-ManagedPath $cache
+    if (-not (Test-Path -LiteralPath $cache -PathType Leaf)) { Stop-Bootstrap "configured cache is missing or not a regular file: $cache" }
     $compiler = (Get-Command cl).Source
     $expected = @{ CMAKE_C_COMPILER=$compiler; CMAKE_CXX_COMPILER=$compiler; CMAKE_TOOLCHAIN_FILE=$Toolchain; VCPKG_TARGET_TRIPLET=$Triplet; VCPKG_INSTALLED_DIR=$Installed; VCPKG_MANIFEST_INSTALL='OFF'; VCPKG_APPLOCAL_DEPS='OFF' }
     foreach ($key in $expected.Keys) {
@@ -144,9 +152,13 @@ try {
   try {
     if ($LockHeld -and (Test-Path -LiteralPath $Lock) -and ((Get-Content -LiteralPath $Lock -Raw) -ceq "$LockToken`r`n" -or (Get-Content -LiteralPath $Lock -Raw) -ceq $LockToken)) { Remove-Item -LiteralPath $Lock -Force }
   } finally {
-    foreach ($name in $OwnedEnvironment.Keys) {
-      if ($null -eq $OwnedEnvironment[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
-      else { Set-Item "Env:$name" $OwnedEnvironment[$name] }
+    try {
+      if ($LocationChanged) { Set-Location -LiteralPath $CallerLocation }
+    } finally {
+      foreach ($name in $OwnedEnvironment.Keys) {
+        if ($null -eq $OwnedEnvironment[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+        else { Set-Item "Env:$name" $OwnedEnvironment[$name] }
+      }
     }
   }
 }

@@ -60,6 +60,7 @@ EOF
 #!/usr/bin/env bash
 set -uo pipefail
 printf 'git %s\n' "$*" >>"${FAKE_LOG:?}"
+[[ ${GIT_TERMINAL_PROMPT:-} == 0 && ${GCM_INTERACTIVE:-} == never ]] || exit 96
 if [[ ${1:-} == --version ]]; then printf 'git version 2.43.0\n'; exit 0; fi
 if [[ ${FAKE_FAIL_STAGE:-} == clone && ${1:-} == clone ]]; then exit 97; fi
 if [[ ${1:-} == clone ]]; then
@@ -124,14 +125,14 @@ EOF
 set -uo pipefail
 printf 'ctest %s\n' "$*" >>"${FAKE_LOG:?}"
 [[ ${1:-} == --version ]] && { printf 'ctest version 3.28.1\n'; exit 0; }
-[[ ${FAKE_FAIL_STAGE:-} == test ]] && exit 97
+[[ ${FAKE_FAIL_STAGE:-} == test && ${1:-} == --preset ]] && exit 97
 exit 0
 EOF
   for tool in curl zip unzip tar; do
     cat >"$bin/$tool" <<EOF
 #!/usr/bin/env bash
 printf '$tool %s\\n' "\$*" >>"\${FAKE_LOG:?}"
-[[ \\${1:-} == --version || \\${1:-} == -v || \\${1:-} == --help ]] && printf '$tool fixture 1.0\\n'
+[[ \${1:-} == --version || \${1:-} == -v || \${1:-} == --help ]] && printf '$tool fixture 1.0\\n'
 exit 0
 EOF
   done
@@ -146,32 +147,34 @@ invoke_wrapper() {
 }
 expect_reject() {
   local name=$1 repo=$2; shift 2
-  local output status
-  set +e
-  output=$(invoke_wrapper "$repo" "$@" 2>&1); status=$?
-  set -e
+  local output status=0
+  output=$(invoke_wrapper "$repo" "$@" 2>&1) || status=$?
   (( status != 0 )) || fail "$name unexpectedly passed"
   printf '%s\n' "$output" | grep -Eiq 'fail|error|reject|invalid|lock|stage|tool|checkout|pin' \
     || fail "$name produced no actionable diagnostic"
 }
 
 bootstrap_missing_host_tool() {
-  local repo; repo=$(copy_case missing-host-tool)
-  write_pin "$repo"; write_fake_tools "$repo"
-  # Keep normal shell utilities available but make exactly one required host tool unavailable.
-  cat >"$repo/fake-native-bin/cmake" <<'EOF'
+  local repo output status tool
+  for tool in cmake ctest; do
+    repo=$(copy_case "missing-host-tool-$tool")
+    write_pin "$repo"; write_fake_tools "$repo"
+    # Keep normal shell utilities available but make one required host tool unusable.
+    cat >"$repo/fake-native-bin/$tool" <<EOF
 #!/usr/bin/env bash
-printf 'cmake unavailable\n' >&2
+printf '$tool unavailable\\n' >&2
 exit 127
 EOF
-  chmod +x "$repo/fake-native-bin/cmake"
-  local output status
-  set +e
-  output=$(env FAKE_LOG="$repo/fake-native.log" PATH="$repo/fake-native-bin:/usr/bin:/bin" \
-    bash "$repo/bootstrap.sh" 2>&1); status=$?
-  set -e
-  (( status != 0 )) || fail 'bootstrap_missing_host_tool unexpectedly passed'
-  grep -Eiq 'tool|command|cmake|missing|available' <<<"$output" || fail 'missing host tool diagnostic is not actionable'
+    chmod +x "$repo/fake-native-bin/$tool"
+    status=0
+    output=$(env FAKE_LOG="$repo/fake-native.log" PATH="$repo/fake-native-bin:/usr/bin:/bin" \
+      bash "$repo/bootstrap.sh" 2>&1) || status=$?
+    (( status != 0 )) || fail "bootstrap_missing_host_tool/$tool unexpectedly passed"
+    grep -Eiq "tool|command|$tool|missing|available|failed" <<<"$output" || fail "missing $tool diagnostic is not actionable"
+    if [[ $tool == ctest ]]; then
+      ! grep -Eq '^git clone |^bootstrap-vcpkg|^vcpkg install|^cmake --preset|^cmake --build' "$repo/fake-native.log" || fail 'unusable ctest reached checkout or build work'
+    fi
+  done
   pass bootstrap_missing_host_tool
 }
 
@@ -184,7 +187,7 @@ bootstrap_invalid_pin() {
 
 bootstrap_untrusted_checkout() {
   local variant repo checkout
-  for variant in wrong-origin wrong-revision tracked-dirtiness unmanaged-path ancestor-redirection; do
+  for variant in wrong-origin wrong-revision tracked-dirtiness unmanaged-path gitfile ancestor-redirection; do
     repo=$(copy_case "untrusted-$variant"); write_pin "$repo"; write_fake_tools "$repo"
     checkout="$repo/.cache/vcpkg/x64-linux"
     mkdir -p -- "$checkout/.git"
@@ -193,6 +196,7 @@ bootstrap_untrusted_checkout() {
       wrong-revision) export FAKE_GIT_REV='0000000000000000000000000000000000000000';;
       tracked-dirtiness) export FAKE_GIT_STATUS=' M ports/example';;
       unmanaged-path) rm -rf -- "$checkout/.git"; printf x >"$checkout/unmanaged";;
+      gitfile) rm -rf -- "$checkout/.git"; printf 'gitdir: %s\n' "$repo/../outside-git-dir" >"$checkout/.git";;
       ancestor-redirection) outside="$repo/../outside-$variant"; mkdir -p -- "$outside"; rm -rf -- "$repo/.cache/vcpkg"; ln -s -- "$outside" "$repo/.cache/vcpkg";;
     esac
     expect_reject "bootstrap_untrusted_checkout/$variant" "$repo"
@@ -210,7 +214,7 @@ bootstrap_stage_failure() {
   local stage repo output status
   for stage in clone bootstrap install configure build test; do
     repo=$(copy_case "stage-$stage"); write_pin "$repo"; write_fake_tools "$repo"
-    set +e; output=$(invoke_wrapper "$repo" FAKE_FAIL_STAGE="$stage" 2>&1); status=$?; set -e
+    status=0; output=$(invoke_wrapper "$repo" FAKE_FAIL_STAGE="$stage" 2>&1) || status=$?
     (( status != 0 )) || fail "bootstrap_stage_failure/$stage unexpectedly passed"
     grep -Eiq "${stage}|fail|error" <<<"$output" || fail "stage failure/$stage lacks stage diagnostic"
     case $stage in
@@ -218,7 +222,7 @@ bootstrap_stage_failure() {
       bootstrap) ! grep -q '^vcpkg ' "$repo/fake-native.log" || fail 'bootstrap failure reached install';;
       install) ! grep -q '^cmake --preset' "$repo/fake-native.log" || fail 'install failure reached configure';;
       configure) ! grep -q '^cmake --build' "$repo/fake-native.log" || fail 'configure failure reached build';;
-      build) ! grep -q '^ctest ' "$repo/fake-native.log" || fail 'build failure reached test';;
+      build) ! grep -q '^ctest --preset' "$repo/fake-native.log" || fail 'build failure reached test';;
     esac
   done
   pass bootstrap_stage_failure
@@ -239,7 +243,7 @@ bootstrap_cold_run() {
   grep -q '^vcpkg install ' "$repo/fake-native.log" || fail 'cold run did not provision'
   grep -q '^cmake --preset ' "$repo/fake-native.log" || fail 'cold run did not configure'
   grep -q '^cmake --build ' "$repo/fake-native.log" || fail 'cold run did not build'
-  grep -q '^ctest ' "$repo/fake-native.log" || fail 'cold run did not test'
+  grep -q '^ctest --preset' "$repo/fake-native.log" || fail 'cold run did not test'
   pass bootstrap_cold_run
 }
 
@@ -253,14 +257,14 @@ bootstrap_warm_run_non_destructive() {
   before_install=$(grep -c '^vcpkg install' "$repo/fake-native.log" || true)
   before_configure=$(grep -c '^cmake --preset' "$repo/fake-native.log" || true)
   before_build=$(grep -c '^cmake --build' "$repo/fake-native.log" || true)
-  before_test=$(grep -c '^ctest ' "$repo/fake-native.log" || true)
+  before_test=$(grep -c '^ctest --preset' "$repo/fake-native.log" || true)
   invoke_wrapper "$repo" >/dev/null 2>&1 || fail 'warm rerun failed'
   require "$before_clone" "$(grep -c '^git clone ' "$repo/fake-native.log" || true)" 'warm run cloned again'
   require "$before_bootstrap" "$(grep -c '^bootstrap-vcpkg' "$repo/fake-native.log" || true)" 'warm run bootstrapped again'
   require "$((before_install + 1))" "$(grep -c '^vcpkg install' "$repo/fake-native.log" || true)" 'warm run omitted provisioning'
   require "$((before_configure + 1))" "$(grep -c '^cmake --preset' "$repo/fake-native.log" || true)" 'warm run omitted configure'
   require "$((before_build + 1))" "$(grep -c '^cmake --build' "$repo/fake-native.log" || true)" 'warm run omitted build'
-  require "$((before_test + 1))" "$(grep -c '^ctest ' "$repo/fake-native.log" || true)" 'warm run omitted test'
+  require "$((before_test + 1))" "$(grep -c '^ctest --preset' "$repo/fake-native.log" || true)" 'warm run omitted test'
   ! grep -Eq ' fetch | reset | clean | checkout --force| rm ' "$repo/fake-native.log" || fail 'warm run invoked destructive operation'
   [[ -f "$repo/warm-sentinel" ]] || fail 'warm run removed sentinel'
   pass bootstrap_warm_run_non_destructive
@@ -274,12 +278,21 @@ bootstrap_forbidden_environment() {
 }
 
 bootstrap_cache_mismatch() {
-  local repo cache; repo=$(copy_case cache-mismatch); write_pin "$repo"; write_fake_tools "$repo"
+  local repo cache outside before
+  repo=$(copy_case cache-mismatch); write_pin "$repo"; write_fake_tools "$repo"
   cache="$repo/build/dev-linux/CMakeCache.txt"; mkdir -p "$(dirname "$cache")"
   printf 'CMAKE_C_COMPILER:FILEPATH=/wrong/compiler\n' >"$cache"
   expect_reject bootstrap_cache_mismatch "$repo"
   ! grep -q '^cmake --preset' "$repo/fake-native.log" || fail 'cache mismatch reached configure'
   [[ -f "$cache" ]] || fail 'cache mismatch was destructively removed'
+
+  repo=$(copy_case cache-redirection); write_pin "$repo"; write_fake_tools "$repo"
+  cache="$repo/build/dev-linux/CMakeCache.txt"; outside="$repo/../outside-cache"
+  mkdir -p -- "$(dirname -- "$cache")"; printf 'sentinel\n' >"$outside"; before=$(cat -- "$outside")
+  ln -s -- "$outside" "$cache"
+  expect_reject bootstrap_cache_redirection "$repo"
+  [[ -L "$cache" && "$(cat -- "$outside")" == "$before" ]] || fail 'cache redirection was followed or mutated'
+  ! grep -q '^cmake --preset' "$repo/fake-native.log" || fail 'cache redirection reached configure'
   pass bootstrap_cache_mismatch
 }
 
