@@ -55,8 +55,13 @@ function Cache-Value([string]$Cache, [string]$Key) {
   if ($null -eq $line) { return '' }
   return ($line -replace '^[^=]*=', '')
 }
+function Resolve-NativeApplication([string]$Name) {
+  $command = Get-Command -Name $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -eq $command -or [string]::IsNullOrWhiteSpace($command.Path)) { Stop-Bootstrap "required host tool is missing: $Name" }
+  return [IO.Path]::GetFullPath($command.Path)
+}
 function Invoke-Git([string[]]$Arguments) {
-  $output = & git @Arguments 2>&1; $code = $LASTEXITCODE
+  $output = & $GitExe @Arguments 2>&1; $code = $LASTEXITCODE
   if ($code -ne 0) { Stop-Bootstrap "Git query failed with native exit code $code; retry: .\bootstrap.ps1" }
   return (($output | Out-String).Trim())
 }
@@ -70,12 +75,16 @@ try {
   Set-Stage 'host validation'
   if ($IsWindows -ne $true) { Stop-Bootstrap 'bootstrap.ps1 supports native Windows only' }
   if ($PSVersionTable.PSVersion -lt [version]'7.3') { Stop-Bootstrap 'PowerShell 7.3 or newer is required' }
-  foreach ($tool in @('git','cmake','ninja','cl','ctest')) { if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { Stop-Bootstrap "required host tool is missing: $tool" } }
-  $cmakeVersion = [version]((& cmake --version | Select-Object -First 1) -replace '^cmake version ', '')
+  $GitExe = Resolve-NativeApplication 'git'
+  $CmakeExe = Resolve-NativeApplication 'cmake'
+  $NinjaExe = Resolve-NativeApplication 'ninja'
+  $ClExe = Resolve-NativeApplication 'cl'
+  $CtestExe = Resolve-NativeApplication 'ctest'
+  $cmakeVersion = [version]((& $CmakeExe --version | Select-Object -First 1) -replace '^cmake version ', '')
   if ($cmakeVersion -lt [version]'3.28') { Stop-Bootstrap "CMake 3.28+ is required (found $cmakeVersion)" }
-  Write-Output "INFO: CMake $cmakeVersion"; Write-Output "INFO: Ninja $(& ninja --version)"
-  Invoke-Checked 'CTest qualification' { ctest --version }
-  Write-Output "INFO: MSVC $((& cl 2>&1 | Select-Object -First 1))"
+  Write-Output "INFO: CMake $cmakeVersion"; Write-Output "INFO: Ninja $(& $NinjaExe --version)"
+  Invoke-Checked 'CTest qualification' { & $CtestExe --version }
+  Write-Output "INFO: MSVC $((& $ClExe 2>&1 | Select-Object -First 1))"
   if ([string]::IsNullOrWhiteSpace($env:VSCMD_ARG_TGT_ARCH) -or $env:VSCMD_ARG_TGT_ARCH -ne 'x64') { Stop-Bootstrap 'an initialized x64 MSVC Developer PowerShell is required (VSCMD_ARG_TGT_ARCH=x64)' }
   # An initialized MSVC Developer PowerShell may set VCPKG_ROOT to Visual Studio's bundled
   # checkout. This wrapper owns and later restores VCPKG_ROOT, so only other selection inputs
@@ -105,8 +114,8 @@ try {
   Set-Stage 'checkout validation'
   if (-not (Test-Path -LiteralPath $Checkout)) {
     New-Item -ItemType Directory -Path (Split-Path $Checkout) -Force | Out-Null
-    Invoke-Checked 'official clone' { git clone $OfficialOrigin $Checkout }
-    Invoke-Checked 'exact checkout' { git -C $Checkout checkout --detach $Pin }
+    Invoke-Checked 'official clone' { & $GitExe clone $OfficialOrigin $Checkout }
+    Invoke-Checked 'exact checkout' { & $GitExe -C $Checkout checkout --detach $Pin }
   } elseif (-not (Test-Path -LiteralPath (Join-Path $Checkout '.git') -PathType Container) -or (Get-Item -LiteralPath (Join-Path $Checkout '.git') -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { Stop-Bootstrap "existing checkout is not a managed Git checkout: $Checkout; move it manually and retry" }
   if ((Invoke-Git @('-C',$Checkout,'rev-parse','--is-inside-work-tree')) -ne 'true') { Stop-Bootstrap "invalid Git checkout: $Checkout" }
   if ((Invoke-Git @('-C',$Checkout,'remote','get-url','origin')) -ne $OfficialOrigin) { Stop-Bootstrap "checkout origin is not the official vcpkg origin: $Checkout" }
@@ -121,7 +130,8 @@ try {
   Test-ManagedPath $Vcpkg
   if (-not (Test-Path -LiteralPath $Vcpkg -PathType Leaf)) { Stop-Bootstrap "vcpkg bootstrap did not create an executable: $Vcpkg" }
   Test-ManagedPath $Toolchain
-  $versionResult = @(& $Vcpkg version 2>&1); $versionCode = $LASTEXITCODE
+  try { $versionResult = @(& $Vcpkg version 2>&1); $versionCode = $LASTEXITCODE }
+  catch { Stop-Bootstrap "vcpkg executable could not report its version: $Vcpkg" }
   $versionOutput = ($versionResult | Out-String).Trim()
   if ($versionCode -ne 0) { Stop-Bootstrap "vcpkg executable could not report its version: $Vcpkg" }
   if ([string]::IsNullOrWhiteSpace($versionOutput) -or $versionOutput -notmatch '(?i)vcpkg.*version') { Stop-Bootstrap "vcpkg executable returned no recognizable version: $Vcpkg" }
@@ -133,7 +143,7 @@ try {
     $cache = Join-Path $BuildTree 'CMakeCache.txt'
     Test-ManagedPath $cache
     if (-not (Test-Path -LiteralPath $cache -PathType Leaf)) { Stop-Bootstrap "configured cache is missing or not a regular file: $cache" }
-    $compiler = (Get-Command cl).Source
+    $compiler = $ClExe
     $expected = @{ CMAKE_C_COMPILER=$compiler; CMAKE_CXX_COMPILER=$compiler; CMAKE_TOOLCHAIN_FILE=$Toolchain; VCPKG_TARGET_TRIPLET=$Triplet; VCPKG_INSTALLED_DIR=$Installed; VCPKG_MANIFEST_INSTALL='OFF'; VCPKG_APPLOCAL_DEPS='OFF' }
     foreach ($key in $expected.Keys) {
       $actual = Cache-Value $cache $key
@@ -142,11 +152,11 @@ try {
     }
   }
   if (Test-Path -LiteralPath (Join-Path $BuildTree 'CMakeCache.txt')) { Set-Stage 'pre-configure cache validation'; Check-Cache }
-  $Compiler = (Get-Command cl).Source
-  Set-Stage 'configure'; Invoke-Checked 'configure' { cmake --preset $Preset "-DCMAKE_C_COMPILER=$Compiler" "-DCMAKE_CXX_COMPILER=$Compiler" "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" "-DVCPKG_TARGET_TRIPLET=$Triplet" "-DVCPKG_INSTALLED_DIR=$Installed" '-DVCPKG_MANIFEST_INSTALL=OFF' '-DVCPKG_APPLOCAL_DEPS=OFF' }
+  $Compiler = $ClExe
+  Set-Stage 'configure'; Invoke-Checked 'configure' { & $CmakeExe --preset $Preset "-DCMAKE_C_COMPILER=$Compiler" "-DCMAKE_CXX_COMPILER=$Compiler" "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" "-DVCPKG_TARGET_TRIPLET=$Triplet" "-DVCPKG_INSTALLED_DIR=$Installed" '-DVCPKG_MANIFEST_INSTALL=OFF' '-DVCPKG_APPLOCAL_DEPS=OFF' }
   Set-Stage 'post-configure cache validation'; Check-Cache
-  Set-Stage 'build'; Invoke-Checked 'build' { cmake --build --preset $Preset }
-  Set-Stage 'test'; Invoke-Checked 'CTest' { ctest --preset $Preset }
+  Set-Stage 'build'; Invoke-Checked 'build' { & $CmakeExe --build --preset $Preset }
+  Set-Stage 'test'; Invoke-Checked 'CTest' { & $CtestExe --preset $Preset }
   Write-Output "SUCCESS: bootstrap completed for $Triplet at $Root"
 } catch { Write-Error $_.Exception.Message; throw } finally {
   try {
