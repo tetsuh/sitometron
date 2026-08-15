@@ -75,7 +75,7 @@ printf 'bootstrap-vcpkg\n' >>"${FAKE_LOG:?}"
 cat >"$(dirname -- "$0")/vcpkg" <<'VCPKG'
 #!/usr/bin/env bash
 printf 'vcpkg %s\n' "$*" >>"${FAKE_LOG:?}"
-[[ ${FAKE_FAIL_STAGE:-} == install ]] && exit 97
+[[ ${FAKE_FAIL_STAGE:-} == install && ${1:-} == install ]] && exit 97
 [[ ${1:-} == version ]] && printf 'vcpkg package management program version 2024-01-01\n'
 exit 0
 VCPKG
@@ -128,11 +128,11 @@ printf 'ctest %s\n' "$*" >>"${FAKE_LOG:?}"
 [[ ${FAKE_FAIL_STAGE:-} == test && ${1:-} == --preset ]] && exit 97
 exit 0
 EOF
-  for tool in curl zip unzip tar; do
-    cat >"$bin/$tool" <<EOF
+  for dependency in curl zip unzip tar; do
+    cat >"$bin/$dependency" <<EOF
 #!/usr/bin/env bash
-printf '$tool %s\\n' "\$*" >>"\${FAKE_LOG:?}"
-[[ \${1:-} == --version || \${1:-} == -v || \${1:-} == --help ]] && printf '$tool fixture 1.0\\n'
+printf '$dependency %s\\n' "\$*" >>"\${FAKE_LOG:?}"
+[[ \${1:-} == --version || \${1:-} == -v || \${1:-} == --help ]] && printf '$dependency fixture 1.0\\n'
 exit 0
 EOF
   done
@@ -158,7 +158,7 @@ bootstrap_missing_host_tool() {
   local repo output status tool
   for tool in cmake ctest; do
     repo=$(copy_case "missing-host-tool-$tool")
-    write_pin "$repo"; write_fake_tools "$repo"
+    write_fake_tools "$repo"
     # Keep normal shell utilities available but make one required host tool unusable.
     cat >"$repo/fake-native-bin/$tool" <<EOF
 #!/usr/bin/env bash
@@ -171,9 +171,8 @@ EOF
       bash "$repo/bootstrap.sh" 2>&1) || status=$?
     (( status != 0 )) || fail "bootstrap_missing_host_tool/$tool unexpectedly passed"
     grep -Eiq "tool|command|$tool|missing|available|failed" <<<"$output" || fail "missing $tool diagnostic is not actionable"
-    if [[ $tool == ctest ]]; then
-      ! grep -Eq '^git clone |^bootstrap-vcpkg|^vcpkg install|^cmake --preset|^cmake --build' "$repo/fake-native.log" || fail 'unusable ctest reached checkout or build work'
-    fi
+    ! grep -Eq '^git clone |^bootstrap-vcpkg|^vcpkg install|^cmake --preset|^cmake --build|^ctest --preset' "$repo/fake-native.log" \
+      || fail "unusable $tool reached checkout or build work"
   done
   pass bootstrap_missing_host_tool
 }
@@ -205,7 +204,7 @@ EOF
 bootstrap_untrusted_checkout() {
   local variant repo checkout
   for variant in wrong-origin wrong-revision tracked-dirtiness unmanaged-path gitfile ancestor-redirection; do
-    repo=$(copy_case "untrusted-$variant"); write_pin "$repo"; write_fake_tools "$repo"
+    repo=$(copy_case "untrusted-$variant"); write_fake_tools "$repo"
     checkout="$repo/.cache/vcpkg/x64-linux"
     mkdir -p -- "$checkout/.git"
     case $variant in
@@ -230,14 +229,19 @@ bootstrap_untrusted_checkout() {
 bootstrap_stage_failure() {
   local stage repo output status
   for stage in clone bootstrap install configure build test; do
-    repo=$(copy_case "stage-$stage"); write_pin "$repo"; write_fake_tools "$repo"
+    repo=$(copy_case "stage-$stage"); write_fake_tools "$repo"
     status=0; output=$(invoke_wrapper "$repo" FAKE_FAIL_STAGE="$stage" 2>&1) || status=$?
     (( status != 0 )) || fail "bootstrap_stage_failure/$stage unexpectedly passed"
     grep -Eiq "${stage}|fail|error" <<<"$output" || fail "stage failure/$stage lacks stage diagnostic"
     case $stage in
       clone) ! grep -q 'bootstrap-vcpkg' "$repo/fake-native.log" || fail 'clone failure reached bootstrap';;
       bootstrap) ! grep -q '^vcpkg ' "$repo/fake-native.log" || fail 'bootstrap failure reached install';;
-      install) ! grep -q '^cmake --preset' "$repo/fake-native.log" || fail 'install failure reached configure';;
+      install)
+        (( status == 97 )) || fail "install failure returned $status instead of 97"
+        grep -q '^vcpkg install ' "$repo/fake-native.log" || fail 'install failure did not reach vcpkg install'
+        grep -Fxq 'ERROR [stage manifest provisioning]: command failed with exit 97; retry: ./bootstrap.sh' <<<"$output" \
+          || fail 'install failure lacked the exact manifest-provisioning diagnostic'
+        ! grep -Eq '^cmake --preset|^cmake --build|^ctest --preset' "$repo/fake-native.log" || fail 'install failure reached configure, build, or test';;
       configure) ! grep -q '^cmake --build' "$repo/fake-native.log" || fail 'configure failure reached build';;
       build) ! grep -q '^ctest --preset' "$repo/fake-native.log" || fail 'build failure reached test';;
     esac
@@ -246,14 +250,14 @@ bootstrap_stage_failure() {
 }
 
 bootstrap_paths_with_spaces() {
-  local repo; repo=$(copy_case paths-with-spaces); write_pin "$repo"; write_fake_tools "$repo"
+  local repo; repo=$(copy_case paths-with-spaces); write_fake_tools "$repo"
   invoke_wrapper "$repo" || fail 'paths_with_spaces did not complete with fixtures'
   grep -Fq "$repo" "$repo/fake-native.log" 2>/dev/null || true
   pass bootstrap_paths_with_spaces
 }
 
 bootstrap_cold_run() {
-  local repo; repo=$(copy_case cold-run); write_pin "$repo"; write_fake_tools "$repo"
+  local repo; repo=$(copy_case cold-run); write_fake_tools "$repo"
   invoke_wrapper "$repo" >/dev/null 2>&1 || fail 'cold run did not complete with fixtures'
   grep -q '^git clone ' "$repo/fake-native.log" || fail 'cold run did not clone'
   grep -q '^bootstrap-vcpkg' "$repo/fake-native.log" || fail 'cold run did not bootstrap'
@@ -266,7 +270,7 @@ bootstrap_cold_run() {
 
 bootstrap_warm_run_non_destructive() {
   local repo before after
-  repo=$(copy_case warm-run); write_pin "$repo"; write_fake_tools "$repo"
+  repo=$(copy_case warm-run); write_fake_tools "$repo"
   printf 'sentinel\n' >"$repo/warm-sentinel"
   invoke_wrapper "$repo" >/dev/null 2>&1 || fail 'warm setup run failed'
   before_clone=$(grep -c '^git clone ' "$repo/fake-native.log" || true)
@@ -288,7 +292,7 @@ bootstrap_warm_run_non_destructive() {
 }
 
 bootstrap_forbidden_environment() {
-  local repo; repo=$(copy_case forbidden-environment); write_pin "$repo"; write_fake_tools "$repo"
+  local repo; repo=$(copy_case forbidden-environment); write_fake_tools "$repo"
   expect_reject bootstrap_forbidden_environment "$repo" VCPKG_DEFAULT_TRIPLET=bad
   ! grep -Eq '^git |^bootstrap-vcpkg|^vcpkg |^cmake --preset|^cmake --build|^ctest --preset' "$repo/fake-native.log" \
     || fail 'forbidden environment reached checkout or build work'
@@ -297,14 +301,14 @@ bootstrap_forbidden_environment() {
 
 bootstrap_cache_mismatch() {
   local repo cache outside before
-  repo=$(copy_case cache-mismatch); write_pin "$repo"; write_fake_tools "$repo"
+  repo=$(copy_case cache-mismatch); write_fake_tools "$repo"
   cache="$repo/build/dev-linux/CMakeCache.txt"; mkdir -p "$(dirname "$cache")"
   printf 'CMAKE_C_COMPILER:FILEPATH=/wrong/compiler\n' >"$cache"
   expect_reject bootstrap_cache_mismatch "$repo"
   ! grep -q '^cmake --preset' "$repo/fake-native.log" || fail 'cache mismatch reached configure'
   [[ -f "$cache" ]] || fail 'cache mismatch was destructively removed'
 
-  repo=$(copy_case cache-redirection); write_pin "$repo"; write_fake_tools "$repo"
+  repo=$(copy_case cache-redirection); write_fake_tools "$repo"
   cache="$repo/build/dev-linux/CMakeCache.txt"; outside="$repo/../outside-cache"
   mkdir -p -- "$(dirname -- "$cache")"; printf 'sentinel\n' >"$outside"; before=$(cat -- "$outside")
   ln -s -- "$outside" "$cache"
@@ -315,12 +319,12 @@ bootstrap_cache_mismatch() {
 }
 
 bootstrap_invalid_existing_executable() {
-  local repo checkout; repo=$(copy_case invalid-existing-executable); write_pin "$repo"; write_fake_tools "$repo"
+  local repo checkout; repo=$(copy_case invalid-existing-executable); write_fake_tools "$repo"
   checkout="$repo/.cache/vcpkg/x64-linux"; mkdir -p "$checkout/scripts/buildsystems"; : >"$checkout/scripts/buildsystems/vcpkg.cmake"
   mkdir -p "$checkout/.git"; printf 'not executable\n' >"$checkout/vcpkg"
   chmod +x "$checkout/vcpkg"
   expect_reject bootstrap_invalid_existing_executable "$repo"
-  repo=$(copy_case zero-output-existing-executable); write_pin "$repo"; write_fake_tools "$repo"
+  repo=$(copy_case zero-output-existing-executable); write_fake_tools "$repo"
   checkout="$repo/.cache/vcpkg/x64-linux"; mkdir -p "$checkout/scripts/buildsystems"; : >"$checkout/scripts/buildsystems/vcpkg.cmake"
   mkdir -p "$checkout/.git"; printf '#!/usr/bin/env bash\nexit 0\n' >"$checkout/vcpkg"; chmod +x "$checkout/vcpkg"
   expect_reject bootstrap_zero_output_existing_executable "$repo"
@@ -337,7 +341,7 @@ bootstrap_malformed_pin() {
 }
 
 bootstrap_lock_contention() {
-  local repo; repo=$(copy_case lock-contention); write_pin "$repo"; write_fake_tools "$repo"
+  local repo; repo=$(copy_case lock-contention); write_fake_tools "$repo"
   mkdir -p -- "$repo/build/bootstrap-locks"
   printf '%s\n' "pid=$$" >"$repo/build/bootstrap-locks/x64-linux.lock"
   expect_reject bootstrap_lock_contention "$repo"
