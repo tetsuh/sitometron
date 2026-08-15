@@ -69,6 +69,17 @@ set_stage 'host validation'
 for tool in git cmake ninja gcc g++ curl zip unzip tar ctest; do
   command -v "$tool" >/dev/null 2>&1 || die "required host tool is missing: $tool"
 done
+cmake_version=$(cmake --version | awk 'NR==1 {print $3}')
+cmake_major=${cmake_version%%.*}; cmake_rest=${cmake_version#*.}; cmake_minor=${cmake_rest%%.*}
+[[ $cmake_major =~ ^[0-9]+$ && $cmake_minor =~ ^[0-9]+$ ]] || die 'unable to determine CMake version'
+(( cmake_major > 3 || (cmake_major == 3 && cmake_minor >= 28) )) || die "CMake 3.28+ is required (found $cmake_version)"
+printf 'INFO: CMake %s\n' "$cmake_version"
+printf 'INFO: Ninja %s\n' "$(ninja --version)"
+printf 'INFO: GCC %s\n' "$(gcc --version | head -n1)"
+printf 'INFO: G++ %s\n' "$(g++ --version | head -n1)"
+ctest_version=$(ctest --version) || die 'required host tool is unusable: ctest --version failed'
+printf 'INFO: CTest %s\n' "${ctest_version%%$'\n'*}"
+CC=$(command -v gcc); CXX=$(command -v g++)
 for name in VCPKG_ROOT VCPKG_OVERLAY_PORTS VCPKG_OVERLAY_TRIPLETS VCPKG_CHAINLOAD_TOOLCHAIN_FILE VCPKG_DEFAULT_TRIPLET VCPKG_DEFAULT_HOST_TRIPLET VCPKG_FEATURE_FLAGS; do
   [[ -z "${!name:-}" ]] || die "selection environment $name is set; unset it before retrying"
 done
@@ -86,17 +97,6 @@ pin_file="$ROOT/tools/vcpkg-tool-commit.txt"
 [[ "$(tail -c 1 "$pin_file" | od -An -t x1 | tr -d '[:space:]')" == 0a ]] || die 'tool pin must end with a newline'
 PIN="$(head -c 40 "$pin_file")"
 [[ $PIN =~ ^[0-9a-f]{40}$ ]] || die 'tool pin must be exactly one lowercase full 40-hex commit'
-cmake_version=$(cmake --version | awk 'NR==1 {print $3}')
-cmake_major=${cmake_version%%.*}; cmake_rest=${cmake_version#*.}; cmake_minor=${cmake_rest%%.*}
-[[ $cmake_major =~ ^[0-9]+$ && $cmake_minor =~ ^[0-9]+$ ]] || die 'unable to determine CMake version'
-(( cmake_major > 3 || (cmake_major == 3 && cmake_minor >= 28) )) || die "CMake 3.28+ is required (found $cmake_version)"
-printf 'INFO: CMake %s\n' "$cmake_version"
-printf 'INFO: Ninja %s\n' "$(ninja --version)"
-printf 'INFO: GCC %s\n' "$(gcc --version | head -n1)"
-printf 'INFO: G++ %s\n' "$(g++ --version | head -n1)"
-ctest_version=$(ctest --version) || die 'required host tool is unusable: ctest --version failed'
-printf 'INFO: CTest %s\n' "${ctest_version%%$'\n'*}"
-CC=$(command -v gcc); CXX=$(command -v g++)
 
 set_stage 'lock acquisition'
 for managed in "$CHECKOUT" "$INSTALLED" "$BUILD_TREE" "$LOCK" "$CHECKOUT/downloads" "$CHECKOUT/scripts/buildsystems/vcpkg.cmake"; do

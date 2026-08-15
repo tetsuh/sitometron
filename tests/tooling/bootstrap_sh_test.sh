@@ -179,9 +179,26 @@ EOF
 }
 
 bootstrap_invalid_pin() {
-  local repo; repo=$(copy_case invalid-pin); write_pin "$repo" invalid; write_fake_tools "$repo"
+  local repo output status=0
+  repo=$(copy_case invalid-pin); write_pin "$repo" invalid; write_fake_tools "$repo"
   expect_reject bootstrap_invalid_pin "$repo"
-  [[ ! -s "$repo/fake-native.log" ]] || fail 'invalid pin performed native work'
+  ! grep -Eq '^git |^bootstrap-vcpkg|^vcpkg |^cmake --preset|^cmake --build|^ctest --preset' "$repo/fake-native.log" \
+    || fail 'invalid pin reached checkout or build work'
+
+  repo=$(copy_case invalid-pin-unsupported-cmake); write_pin "$repo" invalid; write_fake_tools "$repo"
+  cat >"$repo/fake-native-bin/cmake" <<'EOF'
+#!/usr/bin/env bash
+printf 'cmake %s\n' "$*" >>"${FAKE_LOG:?}"
+[[ ${1:-} == --version ]] && { printf 'cmake version 3.27.9\n'; exit 0; }
+exit 0
+EOF
+  chmod +x "$repo/fake-native-bin/cmake"
+  output=$(invoke_wrapper "$repo" 2>&1) || status=$?
+  (( status != 0 )) || fail 'unsupported CMake with an invalid pin unexpectedly passed'
+  grep -Fq 'CMake 3.28+ is required' <<<"$output" || fail 'unsupported CMake did not win before pin validation'
+  ! grep -Fq 'INFO: stage: pin validation' <<<"$output" || fail 'unsupported CMake reached pin validation'
+  ! grep -Eq '^git |^bootstrap-vcpkg|^vcpkg |^cmake --preset|^cmake --build|^ctest --preset' "$repo/fake-native.log" \
+    || fail 'unsupported CMake reached checkout or build work'
   pass bootstrap_invalid_pin
 }
 
@@ -273,7 +290,8 @@ bootstrap_warm_run_non_destructive() {
 bootstrap_forbidden_environment() {
   local repo; repo=$(copy_case forbidden-environment); write_pin "$repo"; write_fake_tools "$repo"
   expect_reject bootstrap_forbidden_environment "$repo" VCPKG_DEFAULT_TRIPLET=bad
-  [[ ! -s "$repo/fake-native.log" ]] || fail 'forbidden environment performed native work'
+  ! grep -Eq '^git |^bootstrap-vcpkg|^vcpkg |^cmake --preset|^cmake --build|^ctest --preset' "$repo/fake-native.log" \
+    || fail 'forbidden environment reached checkout or build work'
   pass bootstrap_forbidden_environment
 }
 
@@ -313,7 +331,8 @@ bootstrap_malformed_pin() {
   local repo; repo=$(copy_case malformed-pin); write_fake_tools "$repo"
   printf '%s\0\n' "$PIN" >"$repo/tools/vcpkg-tool-commit.txt"
   expect_reject bootstrap_malformed_pin "$repo"
-  [[ ! -s "$repo/fake-native.log" ]] || fail 'malformed pin performed native work'
+  ! grep -Eq '^git |^bootstrap-vcpkg|^vcpkg |^cmake --preset|^cmake --build|^ctest --preset' "$repo/fake-native.log" \
+    || fail 'malformed pin reached checkout or build work'
   pass bootstrap_malformed_pin
 }
 
