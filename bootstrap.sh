@@ -74,9 +74,12 @@ cmake_major=${cmake_version%%.*}; cmake_rest=${cmake_version#*.}; cmake_minor=${
 [[ $cmake_major =~ ^[0-9]+$ && $cmake_minor =~ ^[0-9]+$ ]] || die 'unable to determine CMake version'
 (( cmake_major > 3 || (cmake_major == 3 && cmake_minor >= 28) )) || die "CMake 3.28+ is required (found $cmake_version)"
 printf 'INFO: CMake %s\n' "$cmake_version"
-printf 'INFO: Ninja %s\n' "$(ninja --version)"
-printf 'INFO: GCC %s\n' "$(gcc --version | head -n1)"
-printf 'INFO: G++ %s\n' "$(g++ --version | head -n1)"
+ninja_version=$(ninja --version) || die 'required host tool is unusable: ninja --version failed'
+gcc_version=$(gcc --version) || die 'required host tool is unusable: gcc --version failed'
+gxx_version=$(g++ --version) || die 'required host tool is unusable: g++ --version failed'
+printf 'INFO: Ninja %s\n' "$ninja_version"
+printf 'INFO: GCC %s\n' "${gcc_version%%$'\n'*}"
+printf 'INFO: G++ %s\n' "${gxx_version%%$'\n'*}"
 ctest_version=$(ctest --version) || die 'required host tool is unusable: ctest --version failed'
 printf 'INFO: CTest %s\n' "${ctest_version%%$'\n'*}"
 CC=$(command -v gcc); CXX=$(command -v g++)
@@ -136,11 +139,14 @@ mkdir -p -- "$VCPKG_DOWNLOADS"
 
 set_stage 'vcpkg bootstrap'
 VCPKG="$CHECKOUT/vcpkg"
-if [[ ! -x "$VCPKG" ]]; then
+managed_path_check "$VCPKG"
+if [[ -e "$VCPKG" || -L "$VCPKG" ]]; then
+  [[ -f "$VCPKG" && ! -L "$VCPKG" && -x "$VCPKG" ]] \
+    || die "existing vcpkg path is not a regular executable: $VCPKG; move it manually and retry"
+else
   [[ -x "$CHECKOUT/bootstrap-vcpkg.sh" ]] || die "vcpkg bootstrap script is missing: $CHECKOUT/bootstrap-vcpkg.sh"
   (cd "$CHECKOUT" && ./bootstrap-vcpkg.sh -disableMetrics)
 fi
-managed_path_check "$VCPKG"
 [[ -x "$VCPKG" ]] || die "vcpkg bootstrap did not create an executable: $VCPKG"
 version_output=$("$VCPKG" version 2>&1) || die "vcpkg executable could not report its version: $VCPKG"
 [[ "$version_output" =~ [Vv]cpkg.*[Vv]ersion ]] || die "vcpkg executable returned no recognizable version: $VCPKG"

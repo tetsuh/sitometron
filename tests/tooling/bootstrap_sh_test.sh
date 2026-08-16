@@ -156,7 +156,7 @@ expect_reject() {
 
 bootstrap_missing_host_tool() {
   local repo output status tool
-  for tool in cmake ctest; do
+  for tool in cmake ctest ninja gcc g++; do
     repo=$(copy_case "missing-host-tool-$tool")
     write_fake_tools "$repo"
     # Keep normal shell utilities available but make one required host tool unusable.
@@ -171,6 +171,7 @@ EOF
       bash "$repo/bootstrap.sh" 2>&1) || status=$?
     (( status != 0 )) || fail "bootstrap_missing_host_tool/$tool unexpectedly passed"
     grep -Eiq "tool|command|$tool|missing|available|failed" <<<"$output" || fail "missing $tool diagnostic is not actionable"
+    ! grep -Fq 'INFO: stage: pin validation' <<<"$output" || fail "unusable $tool reached pin validation"
     ! grep -Eq '^git clone |^bootstrap-vcpkg|^vcpkg install|^cmake --preset|^cmake --build|^ctest --preset' "$repo/fake-native.log" \
       || fail "unusable $tool reached checkout or build work"
   done
@@ -328,6 +329,24 @@ bootstrap_invalid_existing_executable() {
   checkout="$repo/.cache/vcpkg/x64-linux"; mkdir -p "$checkout/scripts/buildsystems"; : >"$checkout/scripts/buildsystems/vcpkg.cmake"
   mkdir -p "$checkout/.git"; printf '#!/usr/bin/env bash\nexit 0\n' >"$checkout/vcpkg"; chmod +x "$checkout/vcpkg"
   expect_reject bootstrap_zero_output_existing_executable "$repo"
+
+  repo=$(copy_case non-executable-existing-vcpkg); write_fake_tools "$repo"
+  checkout="$repo/.cache/vcpkg/x64-linux"; mkdir -p "$checkout/scripts/buildsystems"; : >"$checkout/scripts/buildsystems/vcpkg.cmake"
+  mkdir -p "$checkout/.git"; printf 'existing sentinel\n' >"$checkout/vcpkg"; chmod 600 "$checkout/vcpkg"
+  cat >"$checkout/bootstrap-vcpkg.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'bootstrap-vcpkg\n' >>"${FAKE_LOG:?}"
+cat >"$(dirname -- "$0")/vcpkg" <<'VCPKG'
+#!/usr/bin/env bash
+[[ ${1:-} == version ]] && printf 'vcpkg package management program version fixture\n'
+exit 0
+VCPKG
+chmod +x "$(dirname -- "$0")/vcpkg"
+EOF
+  chmod +x "$checkout/bootstrap-vcpkg.sh"
+  expect_reject bootstrap_non_executable_existing_vcpkg "$repo"
+  [[ $(cat -- "$checkout/vcpkg") == 'existing sentinel' ]] || fail 'non-executable existing vcpkg was overwritten'
+  ! grep -q '^bootstrap-vcpkg$' "$repo/fake-native.log" || fail 'non-executable existing vcpkg reached bootstrap'
   pass bootstrap_invalid_existing_executable
 }
 
