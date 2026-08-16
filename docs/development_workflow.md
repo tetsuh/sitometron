@@ -266,7 +266,8 @@ CI jobs. Do not enable checks for components before their owning Phase.
 
 ## 12. Release flow
 
-> **Planned, not yet normative:** The Phase 6 release Design Issue and ADR own this mechanism.
+> **Planned, not yet normative:** [Issue #35](https://github.com/tetsuh/sitometron/issues/35)
+> tracks assignment of the future Phase 6 release Design Issue and ADR that will own this mechanism.
 > Implementers must not treat this outline as a finalized contract.
 
 `main` remains green, but Sitometron creates no formal release tag before the Phase 6 Gate completes.

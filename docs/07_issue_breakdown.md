@@ -36,15 +36,27 @@ then the Milestone closes.
 | [#17](https://github.com/tetsuh/sitometron/issues/17) | Approved dependency-boundary integration | Completed |
 | [#20](https://github.com/tetsuh/sitometron/issues/20) | SonarQube Cloud automatic analysis | Completed |
 | [#22](https://github.com/tetsuh/sitometron/issues/22) | Behavior-preserving reducer complexity refactor | Completed |
-| [#23](https://github.com/tetsuh/sitometron/issues/23) | Post-implementation documentation alignment | Open |
-| [#25](https://github.com/tetsuh/sitometron/issues/25) | Canonical developer bootstrap | Open |
+| [#23](https://github.com/tetsuh/sitometron/issues/23) | Post-implementation documentation alignment | Completed |
+| [#25](https://github.com/tetsuh/sitometron/issues/25) | Canonical developer bootstrap | Completed |
 | [#26](https://github.com/tetsuh/sitometron/issues/26) | Lifecycle capability-port ADR | Completed |
+| [#36](https://github.com/tetsuh/sitometron/issues/36) | Deterministic Phase 0A policy CTests | Open |
+| [#37](https://github.com/tetsuh/sitometron/issues/37) | clang-tidy and sanitizer CI | Open |
+| [#38](https://github.com/tetsuh/sitometron/issues/38) | Pinned Phase 0A secret scanning | Open |
+| [#39](https://github.com/tetsuh/sitometron/issues/39) | Phase 0A documentation and governance validation | Open |
+| [#40](https://github.com/tetsuh/sitometron/issues/40) | Post-Phase-0A Planned-authority assignment | Open; first remaining child |
+| [#41](https://github.com/tetsuh/sitometron/issues/41) | Phase 0A clang-tidy baseline cleanup | Open |
 
 The current remaining order is:
 
 ```text
-#23 documentation alignment -> #25 canonical bootstrap -> #14 final CI/Gate evidence -> #1 closes
+#40 Planned-authority links -> Gate #1 horizontal-review acceptance
+  -> #36 policy CTests -> #41 clang-tidy baseline cleanup -> #37 clang-tidy/sanitizer CI
+  -> #38 secret scanning -> #39 documentation/governance validation
+  -> #14 final CI/Gate evidence -> #1 closes
 ```
+
+Issue #35 is the milestone-external assignment/deferral tracker for post-Phase-0A Planned sections;
+it is not a Phase 0A implementation item.
 
 The completed shared-mechanism order is:
 
@@ -75,8 +87,9 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
 
 ## 3. Later Phase ownership
 
-> **Planned, not yet normative:** Each future Phase Gate and its design Issues own the mechanisms
-> below. Implementers must not treat this outline as a finalized contract.
+> **Planned, not yet normative:** [Issue #35](https://github.com/tetsuh/sitometron/issues/35)
+> tracks assignment of each future Phase Gate and its design authorities for the mechanisms below.
+> Implementers must not treat this outline as a finalized contract.
 
 - Phase 0B owns the logger durability spike and production JobJournal foundation.
 - Phase 1 owns external REST, Admission, and Application Registry contracts.

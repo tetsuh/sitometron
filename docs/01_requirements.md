@@ -74,9 +74,13 @@ Accepted ADR-0003 under Issue #10 makes these requirements binding on implementa
 
 ## 7. Planned domains
 
-> **Planned, not yet normative:** The owning Phase Issues and ADRs own these mechanisms.
-> Implementers must not treat this outline as a finalized contract.
+> **Planned, not yet normative:** [Issue #35](https://github.com/tetsuh/sitometron/issues/35)
+> tracks assignment of the owning future Phase Issues and ADRs for these mechanisms. Implementers
+> must not treat this outline as a finalized contract.
 
 The remaining `ADM`, `JRN`, `WRK`, `RES`, `APP`, `PAR`, `ART`, `SEC`, and `OPS` requirements are added
-by their owning design Issues before implementation. Issue #3 owns the first `JOB` reducer and
-logical `JRN` requirements; Phase 0B owns physical JobJournal durability requirements.
+by their future design authorities before implementation. Accepted ADR-0002 owns the current
+Normative `JOB-001`–`JOB-007` and `JRN-001`–`JRN-003` requirements. Issue #35 tracks assignment of
+Phase 0B physical
+JobJournal encoding, production-adapter, durability implementation and qualification,
+replay/recovery/pruning, and additional-mechanics authority.
