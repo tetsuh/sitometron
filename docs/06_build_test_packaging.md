@@ -94,12 +94,22 @@ formatting, schema, and workflow validation instead of a RED test.
 
 ## 6. Dependency provisioning evidence
 
-CI checks out official vcpkg at `40f3c709db80acf154ac4b17a1f83c564ebd022e`, independently verifies that
-checkout, and uses the same commit as the manifest `builtin-baseline`. Linux uses the
-`ubuntu-24.04` x64 runner and `x64-linux`; Windows uses the `windows-latest` x64 runner and
-`x64-windows`. CI bootstraps vcpkg and runs `vcpkg install` outside project CMake, then configures
-with the pre-provisioned installed tree and `VCPKG_MANIFEST_INSTALL=OFF`. The configure/build/CTest
-phase therefore performs no package-manager or network acquisition. The filesystem binary cache is
+The canonical wrappers read the independent lowercase tool pin in
+`tools/vcpkg-tool-commit.txt` and validate the official origin and exact clean checkout before
+bootstrapping. The tool pin is separate from the manifest `builtin-baseline`; equality is recorded
+evidence, not a required invariant. Linux uses `.cache/vcpkg/x64-linux`,
+`build/vcpkg-installed/x64-linux`, `build/dev-linux`, and `build/bootstrap-locks/x64-linux.lock`;
+Windows uses `.cache/vcpkg/x64-windows`, `build/vcpkg-installed/x64-windows`, `build/dev-windows`,
+and `build/bootstrap-locks/x64-windows.lock`. First runs may contact the network for clone, bootstrap, pinned port sources,
+configured caches, or proxies. Values that may contain credentials are never printed. Native host prerequisites are Bash/Git/CMake 3.28+/Ninja/GCC/G++/curl/zip/unzip/tar on Linux and PowerShell 7.3+/Git/CMake 3.28+/Ninja plus an initialized x64 MSVC Developer PowerShell on Windows; the Windows wrapper does not require curl or tar.
+
+Each invocation explicitly provisions the manifest, then configures through the existing platform
+preset with `CMAKE_TOOLCHAIN_FILE`, `VCPKG_TARGET_TRIPLET`, `VCPKG_INSTALLED_DIR`,
+`VCPKG_MANIFEST_INSTALL=OFF`, and `VCPKG_APPLOCAL_DEPS=OFF`. Existing cache identity is checked
+before and after configuration. Warm runs are non-destructive and repeat provisioning; failures
+are fail-fast and safely retried by rerunning the same command. CI-equivalent means this C++
+provision/configure/build/full-CTest path only; schema/core/format/cache/direct-port,
+z-applocal, dependency-policy, and other repository evidence remains separate CI responsibility. The filesystem binary cache is
 an optional `actions/cache` optimization; its keys include cache format, OS, architecture, triplet,
 manifest hash, and runner image identity. A cache miss remains correct.
 

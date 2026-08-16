@@ -56,38 +56,25 @@ jobs:
           else
             echo "VCPKG_BINARY_SOURCES=clear" >> "$GITHUB_ENV"
           fi
-      - name: Checkout and bootstrap pinned vcpkg
+      - name: Read repository-owned vcpkg tool pin
+        id: vcpkg-pin
         run: |
           set -euo pipefail
-          pin=40f3c709db80acf154ac4b17a1f83c564ebd022e
-          baseline="$(python3 -c 'import json; print(json.load(open("vcpkg.json"))["builtin-baseline"])')"
-          test "$pin" = "$baseline"
-          git clone https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
-          git -C "$RUNNER_TEMP/vcpkg" checkout --detach "$pin"
-          test "$(git -C "$RUNNER_TEMP/vcpkg" rev-parse HEAD)" = "$pin"
-          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
-          "$RUNNER_TEMP/vcpkg/vcpkg" version
-          gcc --version | head -1
-          cmake --version | head -1
-          ninja --version
-      - name: Provision pinned manifest outside project CMake
+          pin="$(cat tools/vcpkg-tool-commit.txt)"
+          [[ "$pin" =~ ^[0-9a-f]{40}$ ]]
+          echo "value=$pin" >> "$GITHUB_OUTPUT"
+      - name: Run deterministic Bash bootstrap contract
+        run: bash tests/tooling/bootstrap_sh_test.sh
+      - name: Run canonical Linux bootstrap
+        run: ./bootstrap.sh
+      - name: Verify direct installed-port closure
         run: |
           set -euo pipefail
-          install_root="$GITHUB_WORKSPACE/build/vcpkg-installed"
-          "$RUNNER_TEMP/vcpkg/vcpkg" install --triplet=x64-linux --x-manifest-root="$GITHUB_WORKSPACE" --x-install-root="$install_root"
-          installed="$("$RUNNER_TEMP/vcpkg/vcpkg" list --x-install-root="$install_root")"
+          installed="$(.cache/vcpkg/x64-linux/vcpkg list --x-install-root="$GITHUB_WORKSPACE/build/vcpkg-installed/x64-linux")"
           printf '%s\n' "$installed"
-          for port in nlohmann-json boost-uuid boost-hash2; do
-            grep -Eq "^${port}:x64-linux[[:space:]]" <<<"$installed"
-          done
-      - name: Configure
-        run: cmake --preset dev-linux -DCMAKE_TOOLCHAIN_FILE="$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-linux -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/build/vcpkg-installed" -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_APPLOCAL_DEPS=OFF
-      - name: Build
-        run: cmake --build --preset dev-linux
+          for port in nlohmann-json boost-uuid boost-hash2; do grep -Eq "^${port}:x64-linux[[:space:]]" <<<"$installed"; done
       - name: Format
         run: git ls-files '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror
-      - name: Test
-        run: ctest --preset dev-linux
       - name: Save vcpkg filesystem binary cache
         if: success() && steps.vcpkg-cache-identity.outputs.available == 'true' && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -113,17 +100,6 @@ jobs:
           uv run --frozen --only-group schema python -m unittest discover -s tests/tooling -p 'test_*.py' -v
       - name: Validate core contracts
         run: uv run --frozen --only-group schema python tools/validate_core_contract.py
-      - name: Configure MSVC environment
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $install = & $vswhere -latest -property installationPath
-          Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-          Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
-          "VS_INSTALL=$install" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          cl 2>&1 | Select-Object -First 1
-          cmake --version | Select-Object -First 1
-          ninja --version
       - name: Resolve vcpkg cache identity
         id: vcpkg-cache-identity
         shell: pwsh
@@ -157,52 +133,34 @@ jobs:
           } else {
             'VCPKG_BINARY_SOURCES=clear' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
-      - name: Checkout and bootstrap pinned vcpkg
+      - name: Resolve MSVC and run canonical Windows bootstrap
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          $pin = '40f3c709db80acf154ac4b17a1f83c564ebd022e'
-          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
-          if ($pin -ne $manifest.'builtin-baseline') { throw 'vcpkg tool and registry pins differ' }
-          git clone https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
-          git -C "$env:RUNNER_TEMP\vcpkg" checkout --detach $pin
-          if ((git -C "$env:RUNNER_TEMP\vcpkg" rev-parse HEAD) -ne $pin) { throw 'vcpkg pin mismatch' }
-          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
-          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" version
-      - name: Provision pinned manifest outside project CMake
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $true
+          $pin = (Get-Content tools/vcpkg-tool-commit.txt -Raw).Trim()
+          if ($pin -notmatch '^[0-9a-f]{40}$') { throw 'invalid repository-owned vcpkg tool pin' }
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $install = & $vswhere -latest -property installationPath
           Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
-          $installRoot = "$env:GITHUB_WORKSPACE/build/vcpkg-installed"
-          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install --triplet=x64-windows --x-manifest-root="$env:GITHUB_WORKSPACE" --x-install-root="$installRoot"
-          $installed = & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" list --x-install-root="$installRoot"
+          cl 2>&1 | Select-Object -First 1
+          cmake --version | Select-Object -First 1
+          ninja --version
+          & "$env:GITHUB_WORKSPACE\tests\tooling\bootstrap_ps1_test.ps1"
+          & "$env:GITHUB_WORKSPACE\bootstrap.ps1"
+      - name: Verify direct installed-port closure and z-applocal boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $installed = & "$env:GITHUB_WORKSPACE\.cache\vcpkg\x64-windows\vcpkg.exe" list --x-install-root="$env:GITHUB_WORKSPACE\build\vcpkg-installed\x64-windows"
           $installed | Write-Output
-          foreach ($port in 'nlohmann-json', 'boost-uuid', 'boost-hash2') {
-            if (-not ($installed -match "^$([regex]::Escape($port)):x64-windows\s")) {
-              throw "expected direct port is absent from the installed closure: $port"
-            }
-          }
-      - name: Configure, build, and test
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $true
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $install = & $vswhere -latest -property installationPath
-          Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-          Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
-          cmake --preset dev-windows -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/build/vcpkg-installed" -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_APPLOCAL_DEPS=OFF
-          if (Select-String -Path "$env:GITHUB_WORKSPACE/build/dev-windows/build.ninja" -Pattern 'z-applocal' -Quiet) {
-            throw 'project build still invokes vcpkg z-applocal after explicit provisioning'
-          }
-          cmake --build --preset dev-windows
-          ctest --preset dev-windows
+          foreach ($port in 'nlohmann-json', 'boost-uuid', 'boost-hash2') { if (-not ($installed -match "^$([regex]::Escape($port)):x64-windows\s")) { throw "expected direct port is absent: $port" } }
+          $buildNinja = "$env:GITHUB_WORKSPACE/build/dev-windows/build.ninja"
+          if (-not (Test-Path -LiteralPath $buildNinja -PathType Leaf)) { throw "readable build.ninja is missing: $buildNinja" }
+          if (-not (Select-String -LiteralPath $buildNinja -Pattern 'z-applocal' -Quiet -ErrorAction Stop)) { return }
+          throw 'project build still invokes vcpkg z-applocal'
       - name: Save vcpkg filesystem binary cache
         if: success() && steps.vcpkg-cache-identity.outputs.available == 'true' && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

@@ -34,39 +34,53 @@ See:
 
 ## Build
 
-Requirements:
+Supported host prerequisites:
 
-- CMake 3.28 or later
-- Ninja
-- a C++20 compiler
-- the official vcpkg checkout at the independently reviewed tool commit used by CI
-- the root manifest pre-provisioned outside project CMake for the selected platform
+- Linux/WSL: Bash, Git, CMake 3.28+, Ninja, GCC/G++, curl, zip/unzip, and tar.
+- Native Windows: PowerShell 7.3+, Git, CMake 3.28+, Ninja, and an initialized x64 MSVC Developer PowerShell with `cl.exe`.
 
-Pending Issue #25's canonical developer-bootstrap task, developers explicitly mirror the
-[pinned CI provisioning procedure](.github/workflows/ci.yml). The configure step must receive the
-pre-provisioned toolchain, triplet, and installed tree and must disable manifest installation and
-app-local deployment from project CMake.
+The wrapper owns the pinned vcpkg checkout and manifest provisioning; no pre-provisioned checkout is required. Use the canonical, fail-fast bootstrap from the repository root. It reads the independent lowercase
+vcpkg tool pin in `tools/vcpkg-tool-commit.txt`, uses the official
+`https://github.com/microsoft/vcpkg.git` origin, provisions outside project CMake, and runs the
+matching configure, build, and full CTest presets:
 
-Linux, after provisioning `build/vcpkg-installed` for `x64-linux`:
+```sh
+./bootstrap.sh
+```
+
+```powershell
+.\bootstrap.ps1
+```
+
+Linux uses `.cache/vcpkg/x64-linux`, `build/vcpkg-installed/x64-linux`, `build/dev-linux`, and
+`build/bootstrap-locks/x64-linux.lock`. Windows uses `.cache/vcpkg/x64-windows`,
+`build/vcpkg-installed/x64-windows`, `build/dev-windows`, and
+`build/bootstrap-locks/x64-windows.lock`. First runs may
+use the network for clone, vcpkg bootstrap, pinned port sources, caches, or proxies; diagnostics
+never print credential-bearing values. Warm runs reprovision explicitly and never repair, reset,
+clean, or delete an existing checkout. Native Windows requires PowerShell 7.3+ in an initialized
+x64 MSVC Developer PowerShell. See the [build and test specification](docs/06_build_test_packaging.md).
+
+For manual Linux verification after provisioning `build/vcpkg-installed/x64-linux`:
 
 ```sh
 cmake --preset dev-linux \
   -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
   -DVCPKG_TARGET_TRIPLET=x64-linux \
-  -DVCPKG_INSTALLED_DIR="$PWD/build/vcpkg-installed" \
+  -DVCPKG_INSTALLED_DIR="$PWD/build/vcpkg-installed/x64-linux" \
   -DVCPKG_MANIFEST_INSTALL=OFF \
   -DVCPKG_APPLOCAL_DEPS=OFF
 cmake --build --preset dev-linux
 ctest --preset dev-linux
 ```
 
-Windows, after provisioning `build/vcpkg-installed` for `x64-windows`:
+For manual Windows verification after provisioning `build/vcpkg-installed/x64-windows`:
 
 ```powershell
 cmake --preset dev-windows `
   -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows `
-  -DVCPKG_INSTALLED_DIR="$PWD/build/vcpkg-installed" `
+  -DVCPKG_INSTALLED_DIR="$PWD/build/vcpkg-installed/x64-windows" `
   -DVCPKG_MANIFEST_INSTALL=OFF `
   -DVCPKG_APPLOCAL_DEPS=OFF
 cmake --build --preset dev-windows
@@ -74,7 +88,8 @@ ctest --preset dev-windows
 ```
 
 See [the build and test specification](docs/06_build_test_packaging.md) and
-[dependency policy](docs/09_dependency_policy.md) for the current acquisition boundary and evidence.
+[dependency policy](docs/09_dependency_policy.md) for the acquisition boundary, pin distinction,
+and CI-equivalent evidence.
 In-source builds are rejected.
 
 ## License
