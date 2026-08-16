@@ -120,7 +120,8 @@ unofficial lock file.
 
 ## 7. Packaging
 
-> **Planned, not yet normative:** The Phase 6 release Design Issue and ADR own this mechanism.
+> **Planned, not yet normative:** [Issue #35](https://github.com/tetsuh/sitometron/issues/35)
+> tracks assignment of the future Phase 6 release Design Issue and ADR that will own this mechanism.
 > Implementers must not treat this outline as a finalized contract.
 
 The bootstrap creates no install package, release tag, or publication workflow. Phase 6 decides the
