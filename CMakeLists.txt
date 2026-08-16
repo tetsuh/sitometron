@@ -244,4 +244,23 @@ if(SITOMETRON_BUILD_TESTS)
       -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
       -DCORE_NEGATIVE_MODE=public
       -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_negative_isolation.cmake)
+
+  add_test(
+    NAME in_source_build_rejected
+    COMMAND
+      ${CMAKE_COMMAND}
+      "-DSITOMETRON_SOURCE_DIR:PATH=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DSITOMETRON_BINARY_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}"
+      "-DSITOMETRON_POLICY_SCRATCH_ROOT:PATH=${CMAKE_CURRENT_BINARY_DIR}/policy-probes"
+      "-DSITOMETRON_POLICY_GENERATOR:STRING=${CMAKE_GENERATOR}"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_in_source_build_rejected.cmake)
+
+  add_test(
+    NAME unit_tests_reject_real_sleep
+    COMMAND
+      ${CMAKE_COMMAND}
+      "-DSITOMETRON_SOURCE_DIR:PATH=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DSITOMETRON_BINARY_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}"
+      "-DSITOMETRON_POLICY_SCRATCH_ROOT:PATH=${CMAKE_CURRENT_BINARY_DIR}/policy-probes"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_unit_tests_reject_real_sleep.cmake)
 endif()

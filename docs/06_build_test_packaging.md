@@ -43,6 +43,12 @@ must follow before merge.
 Unit tests are deterministic. Use fake clocks, deterministic UUID generation, fake Journal and
 ApplicationRunner ports, and explicit event injection. Do not use real sleeps to establish ordering.
 
+CTest `in_source_build_rejected` qualifies the top-level CMake guard in a run-owned fixture without
+configuring the source checkout. CTest `unit_tests_reject_real_sleep` fail-closed enumerates tracked
+`tests/unit/**/*.cpp`, `tests/support/**/*.{cpp,hpp}`, and `tests/tooling/**/*.{sh,ps1,py}` files
+through Git. It rejects the frozen C/C++, PowerShell, shell, and Python sleep tokens in normalized
+raw text, including comments and strings, and self-qualifies negative and benign fixtures.
+
 Development-time schema checks run with Python 3.12.13 and dependencies frozen by `uv.lock`:
 
 ```text
@@ -66,8 +72,8 @@ may iterate internal machine-readable vectors without creating a second stable f
 |---|---|---|
 | `NFR-001` | CI jobs `linux`, `windows` | Active |
 | `NFR-002` | Legacy check names retired by Issue #17; standard-header enforcement continues under `NFR-005` | Requirement Superseded |
-| `NFR-003` | CI jobs `linux`, `windows`; CTest `in_source_build_rejected` | CI active; rejection test planned before the Phase 0A Gate closes |
-| `NFR-004` | CTests `sitometron_core_tests`, `core_port_fake_contracts`, `job_fake_effect_observation`; C++ test `job_successful_lifecycle_slice`; policy check `unit_tests_reject_real_sleep` | Core, port/fake support, and deterministic fake-driven lifecycle orchestration checks active; policy check planned before the Phase 0A Gate closes |
+| `NFR-003` | CI jobs `linux`, `windows`; CTest `in_source_build_rejected` | Active |
+| `NFR-004` | CTests `sitometron_core_tests`, `core_port_fake_contracts`, `job_fake_effect_observation`, `unit_tests_reject_real_sleep`; C++ test `job_successful_lifecycle_slice` | Active |
 | `NFR-005` | CTests `core_dependency_allowlist` (including the reviewed standard-header allowlist), `core_dependency_rejects_unapproved_target`, `core_dependency_rejects_unapproved_private_include`, `core_public_api_dependency_isolation`, `core_dependency_api_smoke`; CI jobs `linux`, `windows` | Normative under Accepted ADR-0004; implemented by Issue #17 |
 | `JOB-001` | CTest `core_job_contract`; C++ test `job_closed_state_set` | Active |
 | `JOB-002` | CTest `core_job_contract`; C++ tests `job_state_event_vectors`, `job_command_vectors` | Active |
