@@ -64,13 +64,13 @@ function(_sleep_scan_content _path _content _out_found _out_token)
       set(_token "std::this_thread::sleep_for")
     elseif(_normalized MATCHES "(^|[^A-Za-z0-9_])std::this_thread::sleep_until([^A-Za-z0-9_]|$)")
       set(_token "std::this_thread::sleep_until")
-    elseif(_normalized MATCHES "::Sleep\\(")
+    elseif(_normalized MATCHES "::Sleep[ \t]*\\(")
       set(_token "::Sleep(")
-    elseif(_normalized MATCHES "(^|[^A-Za-z0-9_])usleep\\(")
+    elseif(_normalized MATCHES "(^|[^A-Za-z0-9_])usleep[ \t]*\\(")
       set(_token "usleep(")
-    elseif(_normalized MATCHES "(^|[^A-Za-z0-9_])nanosleep\\(")
+    elseif(_normalized MATCHES "(^|[^A-Za-z0-9_])nanosleep[ \t]*\\(")
       set(_token "nanosleep(")
-    elseif(_normalized MATCHES "(^|[^A-Za-z0-9_])sleep\\(")
+    elseif(_normalized MATCHES "(^|[^A-Za-z0-9_])sleep[ \t]*\\(")
       set(_token "sleep(")
     endif()
     if(NOT _token STREQUAL "")
@@ -88,7 +88,7 @@ function(_sleep_scan_content _path _content _out_found _out_token)
       set(_token "sleep")
     endif()
   elseif(_family STREQUAL python)
-    if(_normalized MATCHES "(^|[^A-Za-z0-9_])time\\.sleep\\(")
+    if(_normalized MATCHES "(^|[^A-Za-z0-9_])time\\.sleep[ \t]*\\(")
       set(_found TRUE)
       set(_token "time.sleep(")
     endif()
@@ -298,6 +298,16 @@ if(DEFINED SITOMETRON_POLICY_SELF_TEST_MODE AND SITOMETRON_POLICY_SELF_TEST_MODE
     _sleep_expect_child_finding(
       "C++ token ${_token}" "tests/unit/sample.cpp" "${_token}" "${_cpp_clean}")
   endforeach()
+  foreach(_token IN ITEMS
+      "std::this_thread::sleep_for ("
+      "std::this_thread::sleep_until ("
+      "::Sleep ("
+      "usleep ("
+      "nanosleep ("
+      "sleep (")
+    _sleep_expect_child_finding(
+      "C++ whitespace token ${_token}" "tests/unit/sample.cpp" "${_token}" "${_cpp_clean}")
+  endforeach()
   _sleep_expect_child_finding(
     "C++ comment" "tests/unit/sample.cpp" "// sleep(1)" "${_cpp_clean}")
   _sleep_expect_child_finding(
@@ -325,6 +335,8 @@ if(DEFINED SITOMETRON_POLICY_SELF_TEST_MODE AND SITOMETRON_POLICY_SELF_TEST_MODE
     "shell string" "tests/tooling/sample.sh" "printf '%s' 'sleep'" "${_shell_clean}")
   _sleep_expect_child_finding(
     "Python call" "tests/tooling/sample.py" "time.sleep(1)" "${_python_clean}")
+  _sleep_expect_child_finding(
+    "Python whitespace call" "tests/tooling/sample.py" "time.sleep (1)" "${_python_clean}")
   _sleep_expect_child_finding(
     "Python comment" "tests/tooling/sample.py" "# time.sleep(1)" "${_python_clean}")
   _sleep_expect_child_finding(
