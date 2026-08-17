@@ -369,8 +369,20 @@ if(DEFINED SITOMETRON_POLICY_SELF_TEST_MODE AND SITOMETRON_POLICY_SELF_TEST_MODE
   set(_empty_root "${SITOMETRON_POLICY_SELF_TEST_DIR}/empty")
   file(MAKE_DIRECTORY "${_empty_root}")
   file(WRITE "${_empty_root}/README.md" "empty selection\n")
-  execute_process(COMMAND "${_git_executable}" -C "${_empty_root}" init --quiet)
-  execute_process(COMMAND "${_git_executable}" -C "${_empty_root}" add -- README.md)
+  execute_process(
+    COMMAND "${_git_executable}" -C "${_empty_root}" init --quiet
+    RESULT_VARIABLE _empty_init_result
+    ERROR_VARIABLE _empty_init_error)
+  execute_process(
+    COMMAND "${_git_executable}" -C "${_empty_root}" add -- README.md
+    RESULT_VARIABLE _empty_add_result
+    ERROR_VARIABLE _empty_add_error)
+  if(NOT _empty_init_result EQUAL 0 OR NOT _empty_add_result EQUAL 0)
+    message(FATAL_ERROR
+      "unit_tests_reject_real_sleep empty-selection fixture setup failure: "
+      "git init result=${_empty_init_result}: ${_empty_init_error}; "
+      "git add result=${_empty_add_result}: ${_empty_add_error}")
+  endif()
   _sleep_run_child("${_empty_root}" _empty_result _empty_log)
   if(_empty_result EQUAL 0 OR NOT _empty_log MATCHES "selected tracked set is invalid")
     message(FATAL_ERROR "unit_tests_reject_real_sleep empty-selection self-test failed: ${_empty_log}")
