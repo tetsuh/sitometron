@@ -64,7 +64,7 @@ function(_sleep_scan_content _path _content _out_found _out_token)
       set(_token "std::this_thread::sleep_for")
     elseif(_normalized MATCHES "(^|[^A-Za-z0-9_])std::this_thread::sleep_until([^A-Za-z0-9_]|$)")
       set(_token "std::this_thread::sleep_until")
-    elseif(_normalized MATCHES "::Sleep[ \t\n]*\\(")
+    elseif(_normalized MATCHES "(^|[^A-Za-z0-9_:])::Sleep[ \t\n]*\\(")
       set(_token "::Sleep(")
     elseif(_normalized MATCHES "(^|[^A-Za-z0-9_])usleep[ \t\n]*\\(")
       set(_token "usleep(")
@@ -235,6 +235,7 @@ if(DEFINED SITOMETRON_POLICY_SELF_TEST_MODE AND SITOMETRON_POLICY_SELF_TEST_MODE
     "${_control_root}/tests/support"
     "${_control_root}/tests/tooling")
   set(_cpp_clean "int main() { return 0; }\nint oversleep() { return 0; }\nconst char* future = \"std::this_thread::sleep_forever std::this_thread::sleep_until_forever\";\n")
+  set(_cpp_benign_namespaced_sleep "int control() { return FixtureNamespace::Sleep(0); }\n")
   set(_hpp_clean "#pragma once\n")
   set(_shell_clean "sleep_mode=1\n")
   set(_powershell_clean "Write-Output Start-Sleeper\n")
@@ -287,6 +288,13 @@ if(DEFINED SITOMETRON_POLICY_SELF_TEST_MODE AND SITOMETRON_POLICY_SELF_TEST_MODE
   _sleep_run_child("${_control_root}" _clean_result _clean_log)
   if(NOT _clean_result EQUAL 0)
     message(FATAL_ERROR "unit_tests_reject_real_sleep clean control failed: ${_clean_log}")
+  endif()
+  file(WRITE "${_control_root}/tests/unit/sample.cpp" "${_cpp_benign_namespaced_sleep}")
+  _sleep_run_child("${_control_root}" _benign_result _benign_log)
+  file(WRITE "${_control_root}/tests/unit/sample.cpp" "${_cpp_clean}")
+  if(NOT _benign_result EQUAL 0)
+    message(FATAL_ERROR
+      "unit_tests_reject_real_sleep benign namespaced Sleep control failed: ${_benign_log}")
   endif()
   foreach(_token IN ITEMS
       "std::this_thread::sleep_for"
