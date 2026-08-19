@@ -22,8 +22,8 @@ namespace {
 using namespace sitometron::core;
 using namespace sitometron::test;
 
-constexpr std::string_view kPrincipal = "operator@example";
-constexpr std::string_view kTimestamp = "2026-08-04T00:00:00Z";
+constexpr std::string_view k_principal = "operator@example";
+constexpr std::string_view k_timestamp = "2026-08-04T00:00:00Z";
 
 int Check(bool condition, std::string_view message) {
   if (condition) return 0;
@@ -31,9 +31,9 @@ int Check(bool condition, std::string_view message) {
   return 1;
 }
 
-Command Cancel(const Uuid& job) { return {1, CommandType::kCancel, job, std::string(kPrincipal)}; }
+Command Cancel(const Uuid& job) { return {1, CommandType::kCancel, job, std::string(k_principal)}; }
 Command Terminate(const Uuid& job) {
-  return {1, CommandType::kTerminate, job, std::string(kPrincipal)};
+  return {1, CommandType::kTerminate, job, std::string(k_principal)};
 }
 
 bool PayloadEqual(const EventPayload& lhs, const EventPayload& rhs) {
@@ -43,10 +43,11 @@ bool PayloadEqual(const EventPayload& lhs, const EventPayload& rhs) {
         using L = std::decay_t<decltype(left)>;
         using R = std::decay_t<decltype(right)>;
         if constexpr (!std::is_same_v<L, R>) {
-          return false;
+          return std::is_same_v<L, R>;
         } else if constexpr (std::is_same_v<L, EmptyPayload>) {
           return true;
-        } else if constexpr (std::is_same_v<L, JobCreatedPayload>) {
+        } else if constexpr (std::is_same_v<L, JobCreatedPayload> ||
+                             std::is_same_v<L, SessionPayload>) {
           return left.session_id == right.session_id;
         } else if constexpr (std::is_same_v<L, ResourcesCommittedPayload>) {
           return left.allocation_id == right.allocation_id &&
@@ -74,8 +75,6 @@ bool PayloadEqual(const EventPayload& lhs, const EventPayload& rhs) {
         } else if constexpr (std::is_same_v<L, ProcessExitConfirmedPayload>) {
           return left.completion_mode == right.completion_mode &&
                  left.launch_operation_id == right.launch_operation_id;
-        } else if constexpr (std::is_same_v<L, SessionPayload>) {
-          return left.session_id == right.session_id;
         } else if constexpr (std::is_same_v<L, TerminalOutcomePayload>) {
           return left.outcome == right.outcome;
         } else if constexpr (std::is_same_v<L, ResourcesReleasedPayload>) {
@@ -87,7 +86,7 @@ bool PayloadEqual(const EventPayload& lhs, const EventPayload& rhs) {
           return left.original_event_type == right.original_event_type &&
                  left.worker_id == right.worker_id && left.event_sequence == right.event_sequence;
         } else {
-          return false;
+          return std::is_same_v<L, R> && false;
         }
       },
       lhs, rhs);
@@ -337,11 +336,11 @@ int CheckExactJournalPosition(const std::vector<LogicalJobEvent>& journal, std::
     return Check(false, "ordered turn has its complete logical Journal envelope");
   const auto sequence = PositiveConfig().initial_journal_sequence + index;
   const auto& actual = journal[index];
-  return Check(actual.schema_version == 1 && actual.sequence == sequence &&
-                   actual.event_type == expected.event &&
-                   actual.recorded_at.rfc3339 == kTimestamp && actual.job_id == Ids().primary_job &&
-                   PayloadEqual(actual.payload, expected.payload),
-               "ordered turn has its complete logical Journal envelope");
+  return Check(
+      actual.schema_version == 1 && actual.sequence == sequence &&
+          actual.event_type == expected.event && actual.recorded_at.rfc3339 == k_timestamp &&
+          actual.job_id == Ids().primary_job && PayloadEqual(actual.payload, expected.payload),
+      "ordered turn has its complete logical Journal envelope");
 }
 
 int CheckPairTraceDelta(const JobOrchestratorHarness& harness, const OrderedPair& pair,
@@ -523,7 +522,7 @@ std::vector<ExpectedEnvelope> ExpectedSuccessfulEnvelopes(const IdFixtures& ids,
                                                           const AllocationFixture& allocation) {
   const auto event = [&](std::uint64_t sequence, EventType type, EventPayload payload) {
     return ExpectedEnvelope{
-        1, sequence, type, std::string(kTimestamp), ids.primary_job, std::move(payload)};
+        1, sequence, type, std::string(k_timestamp), ids.primary_job, std::move(payload)};
   };
   return {
       event(1, EventType::kJobCreated, JobCreatedPayload{ids.primary_job}),
@@ -620,9 +619,13 @@ int JobIngressLinearizationOrder() {
   result |= Check(first_worker && first_worker->code == IngressCode::kAdmitted &&
                       first_worker->ingress_sequence != 0,
                   "first Worker delivery receives a nonzero sequence");
-  result |= Check(retry_worker && retry_worker->code == IngressCode::kCoalescedPending &&
-                      retry_worker->ingress_sequence == first_worker->ingress_sequence,
-                  "two-thread retry coalesces only to the first assigned sequence");
+  if (!retry_worker.has_value() || !first_worker.has_value()) {
+    result |= Check(false, "two-thread retry coalesces only to the first assigned sequence");
+  } else {
+    result |= Check(retry_worker->code == IngressCode::kCoalescedPending &&
+                        retry_worker->ingress_sequence == first_worker->ingress_sequence,
+                    "two-thread retry coalesces only to the first assigned sequence");
+  }
 
   JobOrchestratorHarness coalesced_window(PositiveConfig());
   result |= DriveToRunning(coalesced_window, ids, allocation);
@@ -1532,7 +1535,7 @@ int JobIngressCoalescing() {
   auto duplicate = MakeWorkerCompleted(ids.primary_job, ids.worker, 1);
   duplicate.payload_json = "{\"worker_id\":\"" + ids.secondary_worker.value +
                            "\",\"worker_id\":\"" + ids.worker.value + "\",\"event_sequence\":1}";
-  const auto duplicate_first = duplicate_payload.SubmitWorker(std::move(duplicate));
+  const auto duplicate_first = duplicate_payload.SubmitWorker(duplicate);
   const auto duplicate_retry =
       duplicate_payload.SubmitWorker(MakeWorkerCompleted(ids.primary_job, ids.worker, 1));
   result |= Check(duplicate_first.code == IngressCode::kAdmitted &&
@@ -1685,7 +1688,7 @@ int JobIngressFailClosed() {
                   "padded Worker identity test pauses before first delivery dequeue");
   auto padded_worker = MakeWorkerCompleted(ids.primary_job, ids.worker, 1);
   padded_worker.payload_json.append(300, ' ');
-  const auto padded_first = padded_identity.SubmitWorker(std::move(padded_worker));
+  const auto padded_first = padded_identity.SubmitWorker(padded_worker);
   const auto padded_retry =
       padded_identity.SubmitWorker(MakeWorkerCompleted(ids.primary_job, ids.worker, 1));
   result |=
@@ -2116,14 +2119,14 @@ int OrderedRaceQualification() {
       turn(EventType::kCancelAccepted, {"source:timer:cooperative_stop"},
            {{EffectId::kRequestCooperativeStop, "handoff:cooperative-stop"},
             {EffectId::kArmCooperativeStopTimeout, "timer:arm:cooperative_stop:1"}},
-           0, false, PrincipalPayload{std::string(kPrincipal)});
+           0, false, PrincipalPayload{std::string(k_principal)});
   const auto terminate_without_cooperative_timer = [&](EventType event, bool pending_ack = false) {
     return turn(event, {"source:timer:process_exit_confirmation"},
                 {{EffectId::kRequestForcedStop, "handoff:forced-stop"},
                  {EffectId::kDisarmCooperativeStopTimeout, "timer:disarm:cooperative_stop:0"},
                  {EffectId::kArmProcessExitConfirmationTimeoutIfNeeded,
                   "timer:arm:process_exit_confirmation:1"}},
-                0, pending_ack, PrincipalPayload{std::string(kPrincipal)});
+                0, pending_ack, PrincipalPayload{std::string(k_principal)});
   };
   const auto terminate_after_cooperative_stop = [&](EventType event) {
     return turn(event, {"source:timer:process_exit_confirmation"},
@@ -2131,7 +2134,7 @@ int OrderedRaceQualification() {
                  {EffectId::kDisarmCooperativeStopTimeout, "timer:disarm:cooperative_stop:1"},
                  {EffectId::kArmProcessExitConfirmationTimeoutIfNeeded,
                   "timer:arm:process_exit_confirmation:1"}},
-                0, false, PrincipalPayload{std::string(kPrincipal)});
+                0, false, PrincipalPayload{std::string(k_principal)});
   };
   const auto preparation_timeout =
       turn(EventType::kTimeoutExpired, {},
@@ -2633,7 +2636,7 @@ int JobLogicalCommitFailureFailClosed() {
                         terminal.ingress_sequence != 0 && !journal.empty() &&
                         journal.back().schema_version == 1 &&
                         journal.back().sequence == expected_sequence &&
-                        journal.back().recorded_at.rfc3339 == kTimestamp &&
+                        journal.back().recorded_at.rfc3339 == k_timestamp &&
                         journal.back().job_id == ids.primary_job &&
                         journal.back().event_type == EventType::kTerminalOutcomeCommitted &&
                         PayloadEqual(journal.back().payload,
@@ -2761,7 +2764,7 @@ struct SelectorEntry {
   std::string_view name;
   Selector function;
 };
-constexpr std::array<SelectorEntry, 14> kSelectors{{
+constexpr std::array<SelectorEntry, 14> k_selectors{{
     {"job_ingress_linearization_order", JobIngressLinearizationOrder},
     {"job_ingress_single_writer", JobIngressSingleWriter},
     {"job_ingress_source_classification", JobIngressSourceClassification},
@@ -2784,7 +2787,7 @@ int main(int argc, char** argv) {
     std::cerr << "usage: sitometron_job_orchestration_tests <selector>\n";
     return 2;
   }
-  for (const auto& selector : kSelectors) {
+  for (const auto& selector : k_selectors) {
     if (selector.name == argv[1]) return selector.function();
   }
   std::cerr << "unknown selector: " << argv[1] << '\n';

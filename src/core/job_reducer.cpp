@@ -189,7 +189,7 @@ std::optional<TerminalOutcome> ParseOutcome(std::string_view value) {
 }
 std::optional<EventType> ParseEvent(std::string_view value) {
 #define EVENT(name, text) \
-  if (value == text) return EventType::k##name;
+  if (value == (text)) return EventType::k##name;
   EVENT(JobCreated, "job_created")
   EVENT(ResourcesCommitted, "resources_committed")
   EVENT(WorkerLaunchIntent, "worker_launch_intent")

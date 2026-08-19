@@ -52,19 +52,19 @@ using sitometron::test::RunnerCallKind;
 using sitometron::test::RunnerObservation;
 using sitometron::test::RunnerRequest;
 
-constexpr std::string_view kJobId = "01890f30-7b54-7cc3-98c4-dc0c0c07398f";
-constexpr std::string_view kOtherV7Id = "01890f30-7b54-7cc3-98c4-dc0c0c073990";
-constexpr std::string_view kWorkerId = "550e8400-e29b-41d4-a716-446655440000";
-constexpr std::string_view kLaunchOperationId = "launch-op-1";
-constexpr std::string_view kEmptyObjectDigest =
+constexpr std::string_view k_job_id = "01890f30-7b54-7cc3-98c4-dc0c0c07398f";
+constexpr std::string_view k_other_v7_id = "01890f30-7b54-7cc3-98c4-dc0c0c073990";
+constexpr std::string_view k_worker_id = "550e8400-e29b-41d4-a716-446655440000";
+constexpr std::string_view k_launch_operation_id = "launch-op-1";
+constexpr std::string_view k_empty_object_digest =
     "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
-constexpr std::string_view kMaxResourceDigest =
+constexpr std::string_view k_max_resource_digest =
     "e1f2b8fa362bf7b7574e009b741da16f4ac6961bb1e2a594dbf19c5a7f5a2ad0";
-constexpr std::string_view kOversizeResourceDigest =
+constexpr std::string_view k_oversize_resource_digest =
     "4677f55af78bbd6788ee548feb1b932cc7a41f890dc9bd121f2f339c588a8f5d";
-constexpr std::string_view kInvalidUtf8Digest =
+constexpr std::string_view k_invalid_utf8_digest =
     "4df51a863599ce9b7e9cac29d2144a68d0509897aa26626ded17edb0c761bd52";
-constexpr std::string_view kInvalidJsonDigest =
+constexpr std::string_view k_invalid_json_digest =
     "7ccfa1fbf3940e6f0c0375d87c0f9235a50514e14cb427bdfaf5077987b26ccf";
 
 std::string RepeatUtf8(std::string_view scalar, std::size_t count) {
@@ -101,9 +101,9 @@ LogicalJobEvent MakeEvent(std::uint64_t sequence, EventType event_type) {
   event.sequence = sequence;
   event.event_type = event_type;
   event.recorded_at = DiagnosticTimestamp{"2026-08-04T00:00:00Z"};
-  event.job_id = Uuid{std::string(kJobId)};
+  event.job_id = Uuid{std::string(k_job_id)};
   if (event_type == EventType::kWorkerLaunchObserved) {
-    event.payload = WorkerLaunchObservedPayload{StableId{std::string(kLaunchOperationId)}, true};
+    event.payload = WorkerLaunchObservedPayload{StableId{std::string(k_launch_operation_id)}, true};
   } else {
     event.payload = TerminalOutcomePayload{TerminalOutcome::kSucceeded};
   }
@@ -115,27 +115,28 @@ LogicalJobEvent MakeValidEvent(EventType event_type) {
   using namespace sitometron::core;
   switch (event_type) {
     case EventType::kJobCreated:
-      event.payload = JobCreatedPayload{Uuid{std::string(kJobId)}};
+      event.payload = JobCreatedPayload{Uuid{std::string(k_job_id)}};
       break;
     case EventType::kResourcesCommitted:
       event.payload = ResourcesCommittedPayload{StableId{"allocation-1"},
-                                                Digest{std::string(kEmptyObjectDigest)},
+                                                Digest{std::string(k_empty_object_digest)},
                                                 StableId{"allocation-schema"}, 1, "{}"};
       break;
     case EventType::kWorkerLaunchIntent:
-      event.payload = WorkerLaunchIntentPayload{StableId{std::string(kLaunchOperationId)},
+      event.payload = WorkerLaunchIntentPayload{StableId{std::string(k_launch_operation_id)},
                                                 StableId{"application-1"},
                                                 RepeatUtf8("\xC3\xA9", 128),
                                                 Digest{std::string(64, 'a')},
                                                 StableId{"allocation-1"},
                                                 Digest{std::string(64, 'b')},
-                                                Uuid{std::string(kWorkerId)}};
+                                                Uuid{std::string(k_worker_id)}};
       break;
     case EventType::kWorkerLaunchObserved:
-      event.payload = WorkerLaunchObservedPayload{StableId{std::string(kLaunchOperationId)}, true};
+      event.payload =
+          WorkerLaunchObservedPayload{StableId{std::string(k_launch_operation_id)}, true};
       break;
     case EventType::kWorkerRunning:
-      event.payload = WorkerRunningPayload{Uuid{std::string(kWorkerId)}};
+      event.payload = WorkerRunningPayload{Uuid{std::string(k_worker_id)}};
       break;
     case EventType::kCancelAccepted:
     case EventType::kTerminateAccepted:
@@ -146,15 +147,15 @@ LogicalJobEvent MakeValidEvent(EventType event_type) {
       break;
     case EventType::kWorkerCompleted:
     case EventType::kWorkerFailed:
-      event.payload = WorkerEventPayload{Uuid{std::string(kWorkerId)}, 1};
+      event.payload = WorkerEventPayload{Uuid{std::string(k_worker_id)}, 1};
       break;
     case EventType::kProcessExitConfirmed:
       event.payload = ProcessExitConfirmedPayload{CompletionMode::kCooperative,
-                                                  StableId{std::string(kLaunchOperationId)}};
+                                                  StableId{std::string(k_launch_operation_id)}};
       break;
     case EventType::kSessionRetainRequested:
     case EventType::kSessionRetained:
-      event.payload = SessionPayload{Uuid{std::string(kJobId)}};
+      event.payload = SessionPayload{Uuid{std::string(k_job_id)}};
       break;
     case EventType::kFinalizationCompleted:
     case EventType::kFinalizationFailed:
@@ -172,7 +173,7 @@ LogicalJobEvent MakeValidEvent(EventType event_type) {
       break;
     case EventType::kLateWorkerEvent:
       event.payload =
-          LateWorkerEventPayload{EventType::kWorkerCompleted, Uuid{std::string(kWorkerId)}, 1};
+          LateWorkerEventPayload{EventType::kWorkerCompleted, Uuid{std::string(k_worker_id)}, 1};
       break;
     case EventType::kInvalid:
       break;
@@ -182,20 +183,20 @@ LogicalJobEvent MakeValidEvent(EventType event_type) {
 
 ApplicationLaunchRequest MakeLaunchRequest() {
   WorkerLaunchIntentPayload intent;
-  intent.operation_id = StableId{std::string(kLaunchOperationId)};
+  intent.operation_id = StableId{std::string(k_launch_operation_id)};
   intent.application_id = StableId{"application-1"};
   intent.application_version = "1.0.0";
   intent.bundle_sha256.value = std::string(64, 'a');
   intent.allocation_id = StableId{"allocation-1"};
   intent.allocation_digest.value = std::string(64, 'b');
-  intent.worker_id = Uuid{std::string(kWorkerId)};
-  return ApplicationLaunchRequest{Uuid{std::string(kJobId)}, std::move(intent)};
+  intent.worker_id = Uuid{std::string(k_worker_id)};
+  return ApplicationLaunchRequest{Uuid{std::string(k_job_id)}, std::move(intent)};
 }
 
 ApplicationStopRequest MakeStopRequest() {
-  return ApplicationStopRequest{Uuid{std::string(kJobId)},
-                                StableId{std::string(kLaunchOperationId)},
-                                Uuid{std::string(kWorkerId)}};
+  return ApplicationStopRequest{Uuid{std::string(k_job_id)},
+                                StableId{std::string(k_launch_operation_id)},
+                                Uuid{std::string(k_worker_id)}};
 }
 
 int CheckPortAndFakeContracts() {
@@ -251,9 +252,9 @@ int CheckPortAndFakeContracts() {
                   "clock rejects an invalid diagnostic timestamp during setup");
 
   FakeIdentitySource identities(
-      {GeneratedJobSessionIdentity{Uuid{std::string(kJobId)}}, IdentitySourceExhausted{}},
-      {GeneratedWorkerIdentity{Uuid{std::string(kWorkerId)}}, IdentitySourceExhausted{}},
-      {GeneratedLaunchOperationIdentity{StableId{std::string(kLaunchOperationId)}},
+      {GeneratedJobSessionIdentity{Uuid{std::string(k_job_id)}}, IdentitySourceExhausted{}},
+      {GeneratedWorkerIdentity{Uuid{std::string(k_worker_id)}}, IdentitySourceExhausted{}},
+      {GeneratedLaunchOperationIdentity{StableId{std::string(k_launch_operation_id)}},
        IdentitySourceExhausted{}});
   result |= Check(
       std::holds_alternative<GeneratedJobSessionIdentity>(identities.GenerateJobSessionIdentity()),
@@ -275,13 +276,14 @@ int CheckPortAndFakeContracts() {
       "identity fake returns scripted launch exhaustion");
   result |= Check(identities.Verify(), "identity fake consumes every mandatory script entry");
 
-  FakeIdentitySource invalid_identities({GeneratedJobSessionIdentity{Uuid{std::string(kWorkerId)}}},
-                                        {}, {});
+  FakeIdentitySource invalid_identities(
+      {GeneratedJobSessionIdentity{Uuid{std::string(k_worker_id)}}}, {}, {});
   result |= Check(invalid_identities.verification_failed(),
                   "identity fake rejects a UUIDv4 in the Job/Session script");
-  FakeIdentitySource duplicate_identities({GeneratedJobSessionIdentity{Uuid{std::string(kJobId)}},
-                                           GeneratedJobSessionIdentity{Uuid{std::string(kJobId)}}},
-                                          {}, {});
+  FakeIdentitySource duplicate_identities(
+      {GeneratedJobSessionIdentity{Uuid{std::string(k_job_id)}},
+       GeneratedJobSessionIdentity{Uuid{std::string(k_job_id)}}},
+      {}, {});
   result |= Check(duplicate_identities.verification_failed(),
                   "identity fake rejects a duplicate generated identity");
 
@@ -307,13 +309,13 @@ int CheckPortAndFakeContracts() {
   const auto launch_candidate = runner.TakeNextCandidate();
   result |= Check(
       launch_candidate.has_value() && launch_candidate->event_type == "worker_launch_observed" &&
-          launch_candidate->job_id.value == kJobId &&
+          launch_candidate->job_id.value == k_job_id &&
           launch_candidate->payload_json.find("\"outcome\":\"started\"") != std::string::npos &&
           launch_candidate->payload_json.find("\"started\":") == std::string::npos,
       "runner stages the schema-valid matching launch observation candidate");
   if (launch_candidate.has_value()) {
     const auto normalized = sitometron::core::NormalizeCandidate(
-        sitometron::core::InitialSnapshot(Uuid{std::string(kJobId)}, Uuid{std::string(kJobId)}),
+        sitometron::core::InitialSnapshot(Uuid{std::string(k_job_id)}, Uuid{std::string(k_job_id)}),
         *launch_candidate);
     result |= Check(std::holds_alternative<InternalEvent>(normalized.value),
                     "staged launch observation normalizes as a raw candidate");
@@ -335,7 +337,7 @@ int CheckPortAndFakeContracts() {
 
   FakeApplicationRunner mismatched_runner({ExpectLaunch(MakeLaunchRequest(), true)}, 1);
   auto wrong_launch = MakeLaunchRequest();
-  wrong_launch.job_id.value = std::string(kOtherV7Id);
+  wrong_launch.job_id.value = std::string(k_other_v7_id);
   mismatched_runner.HandoffLaunch(std::move(wrong_launch));
   result |= Check(mismatched_runner.verification_failed(), "runner mismatch is sticky");
   result |= Check(mismatched_runner.discarded_request_count() == 1,
@@ -369,18 +371,19 @@ int CheckPortAndFakeContracts() {
   result |= Check(invalid_digest_runner.verification_failed(),
                   "runner rejects an invalid digest during setup");
 
-  const SessionRetainRequest retain_request{Uuid{std::string(kJobId)}, Uuid{std::string(kJobId)}};
+  const SessionRetainRequest retain_request{Uuid{std::string(k_job_id)},
+                                            Uuid{std::string(k_job_id)}};
   FakeSessionRetainer retainer({ExpectSessionRetain(retain_request)}, 1);
   retainer.HandoffRetainSameIdentity(SessionRetainRequest{retain_request});
   const auto retained_candidate = retainer.TakeNextCandidate();
   result |= Check(retained_candidate.has_value() &&
                       retained_candidate->event_type == "session_retained" &&
-                      retained_candidate->job_id.value == kJobId,
+                      retained_candidate->job_id.value == k_job_id,
                   "Session fake stages only the matching retained candidate");
   result |= Check(retainer.Verify(), "Session fake verifies consumed expectations");
 
-  const SessionRetainRequest unequal_retain{Uuid{std::string(kJobId)},
-                                            Uuid{std::string(kOtherV7Id)}};
+  const SessionRetainRequest unequal_retain{Uuid{std::string(k_job_id)},
+                                            Uuid{std::string(k_other_v7_id)}};
   FakeSessionRetainer unequal_retainer({ExpectSessionRetain(unequal_retain)}, 1);
   result |= Check(unequal_retainer.verification_failed(),
                   "Session fake rejects unequal Job and Session identity during setup");
@@ -424,7 +427,7 @@ int CheckLogicalCommitResults() {
                   "Journal fake preserves writer-assigned sequence values");
   result |= Check(observations.at(0).schema_version == 1 &&
                       observations.at(0).event_type == EventType::kWorkerLaunchObserved &&
-                      observations.at(0).job_id.value == kJobId,
+                      observations.at(0).job_id.value == k_job_id,
                   "Journal fake preserves schema, event type, and Job identity");
   result |= Check(observations.at(0).recorded_at.rfc3339 == "2026-08-04T00:00:00Z",
                   "Journal fake preserves writer-assigned recorded_at");
@@ -459,8 +462,9 @@ int CheckLogicalCommitResults() {
                   "Journal observes the exact schema-valid year-zero event once");
   result |= Check(year_zero_journal.remaining_expectations() == 0 && year_zero_journal.Verify(),
                   "Journal consumes the year-zero expectation and verifies successfully");
-  result |= Check(launch_payload.operation_id.value == kLaunchOperationId && launch_payload.started,
-                  "Journal fake preserves the complete payload");
+  result |=
+      Check(launch_payload.operation_id.value == k_launch_operation_id && launch_payload.started,
+            "Journal fake preserves the complete payload");
 
   FakeJobJournal recording_failure(
       {JournalExpectation{committed_event, LogicalCommitResult::kCommitted, true}});
@@ -488,7 +492,7 @@ int CheckLogicalCommitResults() {
   result |= Check(invalid_result.Commit(committed_event) == LogicalCommitResult::kOutcomeUnknown,
                   "invalid Journal setup can return only outcome unknown");
 
-  const auto check_malformed_setup = [&](LogicalJobEvent malformed_event,
+  const auto check_malformed_setup = [&](const LogicalJobEvent& malformed_event,
                                          std::string_view description) {
     FakeJobJournal malformed(
         {JournalExpectation{malformed_event, LogicalCommitResult::kCommitted}});
@@ -530,7 +534,7 @@ int CheckLogicalCommitResults() {
       std::get<sitometron::core::ResourcesCommittedPayload>(boundary_event.payload);
   boundary_payload.schema_version = std::numeric_limits<std::uint32_t>::max();
   boundary_payload.payload_utf8 = MakeMaxResourceJson();
-  boundary_payload.allocation_digest = sitometron::core::Digest{std::string(kMaxResourceDigest)};
+  boundary_payload.allocation_digest = sitometron::core::Digest{std::string(k_max_resource_digest)};
   result |= Check(boundary_payload.payload_utf8.size() == 65536,
                   "resource boundary fixture is exactly 65536 bytes");
   FakeJobJournal boundary_journal(
@@ -556,13 +560,13 @@ int CheckLogicalCommitResults() {
          event.recorded_at = DiagnosticTimestamp{"abcd-01-01T00:00:00Z"};
        }},
       {"invalid Job identity", EventType::kJobCreated,
-       [](LogicalJobEvent& event) { event.job_id = Uuid{std::string(kWorkerId)}; }},
+       [](LogicalJobEvent& event) { event.job_id = Uuid{std::string(k_worker_id)}; }},
       {"EventType/payload mismatch", EventType::kWorkerLaunchObserved,
        [](LogicalJobEvent& event) { event.event_type = EventType::kTerminalOutcomeCommitted; }},
       {"JobCreated UUID", EventType::kJobCreated,
        [](LogicalJobEvent& event) {
          std::get<sitometron::core::JobCreatedPayload>(event.payload).session_id =
-             Uuid{std::string(kWorkerId)};
+             Uuid{std::string(k_worker_id)};
        }},
       {"ResourcesCommitted allocation StableId", EventType::kResourcesCommitted,
        [](LogicalJobEvent& event) {
@@ -587,20 +591,21 @@ int CheckLogicalCommitResults() {
        [](LogicalJobEvent& event) {
          auto& payload = std::get<sitometron::core::ResourcesCommittedPayload>(event.payload);
          payload.payload_utf8 = std::string("\xC0\x80", 2);
-         payload.allocation_digest = sitometron::core::Digest{std::string(kInvalidUtf8Digest)};
+         payload.allocation_digest = sitometron::core::Digest{std::string(k_invalid_utf8_digest)};
        }},
       {"ResourcesCommitted payload byte bound", EventType::kResourcesCommitted,
        [](LogicalJobEvent& event) {
          auto& payload = std::get<sitometron::core::ResourcesCommittedPayload>(event.payload);
          payload.payload_utf8 = MakeMaxResourceJson();
          payload.payload_utf8.push_back(' ');
-         payload.allocation_digest = sitometron::core::Digest{std::string(kOversizeResourceDigest)};
+         payload.allocation_digest =
+             sitometron::core::Digest{std::string(k_oversize_resource_digest)};
        }},
       {"ResourcesCommitted invalid JSON", EventType::kResourcesCommitted,
        [](LogicalJobEvent& event) {
          auto& payload = std::get<sitometron::core::ResourcesCommittedPayload>(event.payload);
          payload.payload_utf8 = "not json";
-         payload.allocation_digest = sitometron::core::Digest{std::string(kInvalidJsonDigest)};
+         payload.allocation_digest = sitometron::core::Digest{std::string(k_invalid_json_digest)};
        }},
       {"ResourcesCommitted digest mismatch", EventType::kResourcesCommitted,
        [](LogicalJobEvent& event) {
@@ -650,7 +655,7 @@ int CheckLogicalCommitResults() {
       {"WorkerLaunchIntent Worker UUID", EventType::kWorkerLaunchIntent,
        [](LogicalJobEvent& event) {
          std::get<sitometron::core::WorkerLaunchIntentPayload>(event.payload).worker_id =
-             Uuid{std::string(kJobId)};
+             Uuid{std::string(k_job_id)};
        }},
       {"WorkerLaunchObserved operation StableId", EventType::kWorkerLaunchObserved,
        [](LogicalJobEvent& event) {
@@ -660,7 +665,7 @@ int CheckLogicalCommitResults() {
       {"WorkerRunning Worker UUID", EventType::kWorkerRunning,
        [](LogicalJobEvent& event) {
          std::get<sitometron::core::WorkerRunningPayload>(event.payload).worker_id =
-             Uuid{std::string(kJobId)};
+             Uuid{std::string(k_job_id)};
        }},
       {"Principal required text", EventType::kCancelAccepted,
        [](LogicalJobEvent& event) {
@@ -688,7 +693,7 @@ int CheckLogicalCommitResults() {
       {"Worker event Worker UUID", EventType::kWorkerCompleted,
        [](LogicalJobEvent& event) {
          std::get<sitometron::core::WorkerEventPayload>(event.payload).worker_id =
-             Uuid{std::string(kJobId)};
+             Uuid{std::string(k_job_id)};
        }},
       {"Worker event sequence", EventType::kWorkerCompleted,
        [](LogicalJobEvent& event) {
@@ -707,12 +712,12 @@ int CheckLogicalCommitResults() {
       {"Session UUID", EventType::kSessionRetained,
        [](LogicalJobEvent& event) {
          std::get<sitometron::core::SessionPayload>(event.payload).session_id =
-             Uuid{std::string(kWorkerId)};
+             Uuid{std::string(k_worker_id)};
        }},
       {"Session identity mismatch", EventType::kSessionRetained,
        [](LogicalJobEvent& event) {
          std::get<sitometron::core::SessionPayload>(event.payload).session_id =
-             Uuid{std::string(kOtherV7Id)};
+             Uuid{std::string(k_other_v7_id)};
        }},
       {"Terminal outcome enum", EventType::kTerminalOutcomeCommitted,
        [](LogicalJobEvent& event) {
@@ -742,7 +747,7 @@ int CheckLogicalCommitResults() {
       {"Late event Worker UUID", EventType::kLateWorkerEvent,
        [](LogicalJobEvent& event) {
          std::get<sitometron::core::LateWorkerEventPayload>(event.payload).worker_id =
-             Uuid{std::string(kJobId)};
+             Uuid{std::string(k_job_id)};
        }},
       {"Late event sequence", EventType::kLateWorkerEvent, [](LogicalJobEvent& event) {
          std::get<sitometron::core::LateWorkerEventPayload>(event.payload).event_sequence = 0;
@@ -751,7 +756,7 @@ int CheckLogicalCommitResults() {
   for (const auto& malformed_case : malformed_cases) {
     auto malformed_event = MakeValidEvent(malformed_case.event_type);
     malformed_case.mutate(malformed_event);
-    result |= check_malformed_setup(std::move(malformed_event), malformed_case.description);
+    result |= check_malformed_setup(malformed_event, malformed_case.description);
   }
 
   FakeJobJournal unused({JournalExpectation{committed_event, LogicalCommitResult::kCommitted}});
@@ -792,7 +797,7 @@ int CheckEffectObservation() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   if (argc != 2) {
     std::cerr << "usage: core_ports_fakes_test <check-name>\n";
     return 2;
@@ -809,4 +814,6 @@ int main(int argc, char** argv) {
   }
   std::cerr << "unknown check: " << check << '\n';
   return 2;
+} catch (...) {
+  return 1;
 }

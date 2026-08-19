@@ -73,7 +73,7 @@ CommandType ArtifactCommandType(std::string_view value) {
                                      std::pair{"terminate"sv, CommandType::kTerminate}};
   return ClosedEnum(value, values, "command_type");
 }
-enum class ArtifactDisposition { kTransition, kAudit, kLateAudit, kReject };
+enum class ArtifactDisposition : std::uint8_t { kTransition, kAudit, kLateAudit, kReject };
 ArtifactDisposition Disposition(std::string_view value) {
   static constexpr std::array values{std::pair{"transition"sv, ArtifactDisposition::kTransition},
                                      std::pair{"audit"sv, ArtifactDisposition::kAudit},
@@ -351,6 +351,7 @@ std::optional<RejectionReason> RejectionOf(const NormalizedCandidate& d) {
 }
 std::vector<std::string> EffectNames(const std::vector<Effect>& effects) {
   std::vector<std::string> result;
+  result.reserve(effects.size());
   for (const auto& effect : effects) result.emplace_back(ToString(effect.id));
   return result;
 }
@@ -601,7 +602,7 @@ int CheckExpected(const Json& vector, const Snapshot& before, const Decision& de
 }
 }  // namespace
 
-int RunJobReducerVectorJsonChecks(const Json& vectors, const char* selector) {
+int RunJobReducerVectorJsonChecks(const Json& vectors, std::string_view selector) {
   int result = 0;
   result |= Check(vectors.at("contract_version") == 1, "contract version is consumed explicitly");
   const auto& cases = vectors.at("case_vectors");
@@ -616,9 +617,9 @@ int RunJobReducerVectorJsonChecks(const Json& vectors, const char* selector) {
       "job_closed_state_set",     "job_state_event_vectors",  "job_command_vectors",
       "job_first_cause_vectors",  "job_finalization_vectors", "job_timeout_vectors",
       "job_late_cleanup_vectors", "job_ordering_vectors",     "job_rejected_input_no_append"};
-  const std::string_view selected_selector = selector == nullptr ? "" : selector;
+  const std::string_view selected_selector = selector;
   if (selected_selector == "all") {
-    for (const auto name : selectors) result |= RunJobReducerVectorJsonChecks(vectors, name.data());
+    for (const auto name : selectors) result |= RunJobReducerVectorJsonChecks(vectors, name);
     return result;
   }
   result |=
@@ -768,9 +769,12 @@ int RunJobReducerVectorJsonChecks(const Json& vectors, const char* selector) {
           result |= Check(expected_reason_value.is_string(), id + " step rejection reason shape");
           if (!expected_reason_value.is_string()) continue;
           const auto expected_reason = expected_reason_value.get<std::string>();
-          result |= Check(actual_reason == expected_reason,
-                          id + " step rejection (actual=" + std::string(actual_reason) +
-                              ", expected=" + expected_reason + ")");
+          std::string rejection_message = id + " step rejection (actual=";
+          rejection_message += actual_reason;
+          rejection_message += ", expected=";
+          rejection_message += expected_reason;
+          rejection_message += ")";
+          result |= Check(actual_reason == expected_reason, rejection_message);
           result |= Check(
               expected.at("journal_event").is_null() && expected.at("post_sync_effects").empty(),
               id + " rejected step no append/effects");
@@ -842,11 +846,11 @@ int RunJobReducerVectorJsonChecks(const Json& vectors, const char* selector) {
     if (selected_selector != "job_timeout_vectors") continue;
     TimerState state;
     state.job_id = Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"};
-    const auto active = vector.at("active_generation");
+    const auto& active = vector.at("active_generation");
     state.execution_armed = !active.is_null();
     state.execution_generation = active.is_null() ? 0 : active.get<std::uint64_t>();
-    const auto notification = vector.at("notification_generation");
-    const auto arm = vector.at("arm_requested");
+    const auto& notification = vector.at("notification_generation");
+    const auto& arm = vector.at("arm_requested");
     const std::optional<TimerArmRequest> arm_request =
         arm.get<bool>()
             ? std::optional<TimerArmRequest>{TimerArmRequest{
@@ -880,7 +884,7 @@ int RunJobReducerVectorJsonChecks(const Json& vectors, const char* selector) {
   return result;
 }
 
-int RunJobReducerVectorChecks(const char* path, const char* selector) {
+int RunJobReducerVectorChecks(const char* path, std::string_view selector) {
   try {
     std::ifstream input(path);
     if (!input) return Check(false, "normative vector artifact is readable");
@@ -894,7 +898,8 @@ int RunJobReducerVectorChecks(const char* path, const char* selector) {
 int RunJobReducerVectorTextChecks(std::string_view text, const char* selector) {
   try {
     const Json vectors = Json::parse(text.begin(), text.end(), nullptr, true, false);
-    return RunJobReducerVectorJsonChecks(vectors, selector);
+    return RunJobReducerVectorJsonChecks(vectors,
+                                         selector == nullptr ? std::string_view{} : selector);
   } catch (const std::exception& exception) {
     return Check(false, "normative vectors text error: " + std::string(exception.what()));
   }
