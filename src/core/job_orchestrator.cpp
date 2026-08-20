@@ -138,7 +138,7 @@ struct JobOrchestrator::Impl {
     std::array<Gate, static_cast<std::size_t>(GateKind::kCount)> gates{};
   };
 
-  explicit Impl(Config value) : config(value) {
+  explicit Impl(const Config& value) : config(value) {
     if (config.max_jobs == 0 || config.normal_capacity == 0 || config.critical_reserve() == 0 ||
         config.total_capacity() == 0 || config.trace_capacity == 0 ||
         config.completion_capacity < config.total_capacity() ||
