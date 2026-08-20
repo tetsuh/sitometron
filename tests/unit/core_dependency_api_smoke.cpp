@@ -38,7 +38,7 @@ int CheckSha256(const void* bytes, std::size_t size, std::string_view expected) 
   return Check(boost::hash2::to_string(hasher.result()) == expected, "SHA-256 vector");
 }
 
-int CheckUuid(std::string_view text, std::string_view canonical,
+int CheckUuid(std::string_view text, const char* canonical,
               boost::uuids::uuid::version_type version, boost::uuids::uuid::variant_type variant) {
   const boost::uuids::string_generator parse;
   const auto value = parse(text);
@@ -51,7 +51,7 @@ int CheckUuid(std::string_view text, std::string_view canonical,
 
 }  // namespace
 
-int main() {
+int main() try {
   int result = 0;
 
   const std::array<char, 4> raw_nul_json{'{', '}', '\0', 'x'};
@@ -115,4 +115,6 @@ int main() {
       boost::uuids::uuid::version_random_number_based, boost::uuids::uuid::variant_microsoft);
 
   return result;
+} catch (...) {
+  return 1;
 }

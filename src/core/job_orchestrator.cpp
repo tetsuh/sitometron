@@ -27,8 +27,8 @@ struct CallbackHandle::Control {
 struct JobOrchestrator::Impl {
   // These modes are modified and read only while mutex is held.  They make the
   // shutdown marker the sole running-to-draining transition.
-  enum class Mode { kRunning, kQuiescing, kDraining, kSealed, kStopped };
-  enum class GateKind : std::size_t {
+  enum class Mode : std::uint8_t { kRunning, kQuiescing, kDraining, kSealed, kStopped };
+  enum class GateKind : std::uint8_t {
     kTerminate,
     kPreparationTimer,
     kExecutionTimer,
@@ -40,13 +40,13 @@ struct JobOrchestrator::Impl {
     kCleanup,
     kCount
   };
-  static constexpr std::size_t kNoResident = std::numeric_limits<std::size_t>::max();
+  static constexpr std::size_t k_no_resident = std::numeric_limits<std::size_t>::max();
   // The reducer's closed EffectId set has no transition producing more than four
   // effects (the terminal stopping turn is the maximum).  These are startup
   // proofs, not tunable runtime capacities.
-  static constexpr std::size_t kMaxPreparedEffects = 4;
-  static constexpr std::size_t kMaxMappedDestinations = kMaxPreparedEffects;
-  static constexpr std::size_t kMaxAckDestinations = 1;
+  static constexpr std::size_t k_max_prepared_effects = 4;
+  static constexpr std::size_t k_max_mapped_destinations = k_max_prepared_effects;
+  static constexpr std::size_t k_max_ack_destinations = 1;
   // Retry identities contain only the typed semantic fields needed for exact
   // coalescing.  They deliberately do not retain raw JSON or impose a raw
   // input-size limit on reducer payloads.
@@ -59,7 +59,7 @@ struct JobOrchestrator::Impl {
     std::uint64_t timer_generation = 0;
     bool valid = false;
   };
-  static constexpr std::uint8_t kNoIdentitySlot = std::numeric_limits<std::uint8_t>::max();
+  static constexpr std::uint8_t k_no_identity_slot = std::numeric_limits<std::uint8_t>::max();
   struct Gate {
     bool registered = false;
     bool pending = false;
@@ -68,7 +68,7 @@ struct JobOrchestrator::Impl {
     bool permit = false;
     bool callback_lease = false;
     std::uint64_t ingress_sequence = 0;
-    std::uint8_t identity_slot = kNoIdentitySlot;
+    std::uint8_t identity_slot = k_no_identity_slot;
   };
   struct GeneratedIdentityBundle {
     ::sitometron::core::Uuid job_session;
@@ -76,20 +76,20 @@ struct JobOrchestrator::Impl {
     ::sitometron::core::StableId launch_operation;
   };
   struct Entry {
-    enum class Kind { kCandidate, kCommand, kShutdown };
+    enum class Kind : std::uint8_t { kCandidate, kCommand, kShutdown };
     Kind kind = Kind::kCandidate;
     RawCandidateEvent candidate;
     Command command;
     std::uint64_t sequence = 0;
     // A completion slot is reserved at the same mutex-protected
     // linearization point as FIFO insertion.  It remains owned until Take.
-    std::size_t completion_index = kNoResident;
+    std::size_t completion_index = k_no_resident;
     std::uint64_t completion_generation = 0;
     GateIdentity identity{};
     bool identity_ready = false;
     bool critical = false;
     GateKind gate = GateKind::kCount;
-    std::size_t resident_index = kNoResident;
+    std::size_t resident_index = k_no_resident;
     std::optional<GeneratedIdentityBundle> creation_identities;
     bool authorized = false;
   };
@@ -138,18 +138,18 @@ struct JobOrchestrator::Impl {
     std::array<Gate, static_cast<std::size_t>(GateKind::kCount)> gates{};
   };
 
-  explicit Impl(Config value) : config(std::move(value)) {
+  explicit Impl(const Config& value) : config(value) {
     if (config.max_jobs == 0 || config.normal_capacity == 0 || config.critical_reserve() == 0 ||
         config.total_capacity() == 0 || config.trace_capacity == 0 ||
         config.completion_capacity < config.total_capacity() ||
         config.trace_capacity < config.total_capacity() ||
-        config.handoff_capacity < kMaxPreparedEffects ||
-        config.handoff_capacity < kMaxMappedDestinations || config.ack_capacity < config.max_jobs ||
-        config.ack_capacity < kMaxAckDestinations || config.callback_registration_capacity < 2 ||
-        config.initial_ingress_sequence == 0 || config.initial_journal_sequence == 0 ||
-        config.ports.clock == nullptr || config.ports.journal == nullptr ||
-        config.ports.runner == nullptr || config.ports.session == nullptr ||
-        config.ports.identity == nullptr)
+        config.handoff_capacity < k_max_prepared_effects ||
+        config.handoff_capacity < k_max_mapped_destinations ||
+        config.ack_capacity < config.max_jobs || config.ack_capacity < k_max_ack_destinations ||
+        config.callback_registration_capacity < 2 || config.initial_ingress_sequence == 0 ||
+        config.initial_journal_sequence == 0 || config.ports.clock == nullptr ||
+        config.ports.journal == nullptr || config.ports.runner == nullptr ||
+        config.ports.session == nullptr || config.ports.identity == nullptr)
       throw std::bad_variant_access();
     fifo.resize(config.total_capacity());
     residents.resize(config.max_jobs);
@@ -160,7 +160,7 @@ struct JobOrchestrator::Impl {
     callbacks.resize(config.callback_registration_capacity);
     for (auto& resident : residents) {
       for (std::size_t bank = 0; bank != 2; ++bank) {
-        resident.prepared_effects[bank].reserve(kMaxPreparedEffects);
+        resident.prepared_effects[bank].reserve(k_max_prepared_effects);
         resident.prepared_trace[bank].reserve(config.trace_capacity);
       }
     }
@@ -502,7 +502,7 @@ struct JobOrchestrator::Impl {
       // draining. It is retired only by the atomic sealed transition.
       return;
     }
-    if (entry.resident_index == kNoResident || entry.resident_index >= residents.size()) {
+    if (entry.resident_index == k_no_resident || entry.resident_index >= residents.size()) {
       FailLocked();
       return;
     }
@@ -554,7 +554,7 @@ struct JobOrchestrator::Impl {
         gate.retained = false;
         gate.ack_authorized = false;
         gate.callback_lease = false;
-        gate.identity_slot = kNoIdentitySlot;
+        gate.identity_slot = k_no_identity_slot;
         gate.ingress_sequence = 0;
         if (gate.permit) {
           gate.permit = false;
@@ -574,7 +574,7 @@ struct JobOrchestrator::Impl {
     if (kind >= GateKind::kPreparationTimer && kind <= GateKind::kProcessExitTimer)
       gate.registered = false;
     if (IsIdentityGate(kind)) resident.identity_slots[IdentitySlot(kind)] = {};
-    gate.identity_slot = kNoIdentitySlot;
+    gate.identity_slot = k_no_identity_slot;
     gate.ingress_sequence = 0;
     if (gate.permit) {
       gate.permit = false;
@@ -583,7 +583,7 @@ struct JobOrchestrator::Impl {
   }
   void ReleaseCreationClaimLocked(const Entry& entry) {
     if (entry.kind == Entry::Kind::kCandidate && entry.candidate.event_type == "job_created" &&
-        entry.resident_index != kNoResident && entry.resident_index < residents.size()) {
+        entry.resident_index != k_no_resident && entry.resident_index < residents.size()) {
       auto& resident = residents[entry.resident_index];
       if (resident.claims != 0) --resident.claims;
       if (!resident.exists && resident.claims == 0) {
@@ -643,14 +643,14 @@ struct JobOrchestrator::Impl {
     }
     if (slot.completed) return;
     slot.completed = true;
-    slot.value = std::move(completion);
+    slot.value = completion;
     ++completion_total;
     if (outstanding != 0) --outstanding;
     if (in_flight && in_flight_sequence == entry.sequence) in_flight = false;
   }
   void Complete(const Entry& entry, Completion completion) {
     std::lock_guard lock(mutex);
-    CompleteLocked(entry, std::move(completion));
+    CompleteLocked(entry, completion);
   }
   void PublishPrepared(Resident& resident, int bank, std::size_t& cursor) noexcept {
     auto& prepared = resident.prepared_trace[static_cast<std::size_t>(bank)];
@@ -670,15 +670,18 @@ struct JobOrchestrator::Impl {
     trace[trace_count].writer_context = measured_writer_id == std::this_thread::get_id();
     ++trace_count;
   }
-  void PrepareTrace(Resident& resident, int bank, std::uint64_t journal_sequence,
-                    const LogicalJobEvent& event) {
+  struct TracePosition {
+    int bank;
+    std::uint64_t journal_sequence;
+  };
+  void PrepareTrace(Resident& resident, TracePosition position, const LogicalJobEvent& event) {
     if (postcommit_phase) ++postcommit_construction_count;
-    auto& prepared = resident.prepared_trace[static_cast<std::size_t>(bank)];
+    auto& prepared = resident.prepared_trace[static_cast<std::size_t>(position.bank)];
     if (prepared.capacity() < config.trace_capacity) ++postcommit_allocation_count;
     prepared.clear();
     auto add = [&](TraceKind kind, EffectId effect = EffectId::kInvalid, std::string action = {}) {
-      prepared.emplace_back(0, kind, journal_sequence, event.event_type, effect, std::move(action),
-                            false, true);
+      prepared.emplace_back(0, kind, position.journal_sequence, event.event_type, effect,
+                            std::move(action), false, true);
     };
     add(TraceKind::kJournalAttempt);
     add(TraceKind::kJournalCommitted);
@@ -700,7 +703,8 @@ struct JobOrchestrator::Impl {
     } else if (event.event_type == EventType::kTerminateAccepted) {
       add_source("source:timer:process_exit_confirmation");
     }
-    for (const auto& operation : resident.prepared_effects[static_cast<std::size_t>(bank)]) {
+    for (const auto& operation :
+         resident.prepared_effects[static_cast<std::size_t>(position.bank)]) {
       add(TraceKind::kEffect, operation.id);
       add(operation.mapped_kind, operation.id, operation.action);
     }
@@ -748,7 +752,7 @@ struct JobOrchestrator::Impl {
     // Build the typed retry identity before taking ingress ownership. Invalid identity fields do
     // not reject the reducer payload; they simply disable exact coalescing for that relationship.
     entry.identity_ready = identity_required && identity_ready;
-    if (entry.identity_ready) entry.identity = std::move(prepared_identity);
+    if (entry.identity_ready) entry.identity = prepared_identity;
     if (held_lock == nullptr) local_lock.lock();
     auto& lock = held_lock == nullptr ? local_lock : *held_lock;
     struct AdmissionInsertionWindow {
@@ -896,7 +900,7 @@ struct JobOrchestrator::Impl {
         break;
       }
     }
-    if (entry.completion_index == kNoResident) {
+    if (entry.completion_index == k_no_resident) {
       FailLocked();
       return ResultLocked(IngressCode::kServiceFailed);
     }
@@ -912,7 +916,7 @@ struct JobOrchestrator::Impl {
       gate->ingress_sequence = sequence;
       if (entry.identity_ready) {
         gate->identity_slot = static_cast<std::uint8_t>(IdentitySlot(entry.gate));
-        resident->identity_slots[IdentitySlot(entry.gate)] = std::move(entry.identity);
+        resident->identity_slots[IdentitySlot(entry.gate)] = entry.identity;
       }
     }
     const auto completion_before = completion_total + outstanding;
@@ -1031,13 +1035,13 @@ struct JobOrchestrator::Impl {
                       const ApplyResult& applied) {
     if (postcommit_phase) ++postcommit_construction_count;
     auto& prepared = resident.prepared_effects[static_cast<std::size_t>(inactive)];
-    if (prepared.capacity() < kMaxPreparedEffects) {
+    if (prepared.capacity() < k_max_prepared_effects) {
       ++postcommit_allocation_count;
       return false;
     }
     if (const auto valid_effects = static_cast<std::size_t>(std::ranges::count_if(
             applied.effects, [](const Effect& effect) { return effect.id != EffectId::kInvalid; }));
-        valid_effects > kMaxPreparedEffects || valid_effects > kMaxMappedDestinations ||
+        valid_effects > k_max_prepared_effects || valid_effects > k_max_mapped_destinations ||
         valid_effects > config.handoff_capacity)
       return false;
     prepared.clear();
@@ -1381,7 +1385,7 @@ struct JobOrchestrator::Impl {
       FailTurn(entry);
       return;
     }
-    PrepareTrace(*resident, inactive, 0, event);
+    PrepareTrace(*resident, TracePosition{inactive, 0}, event);
     bool source_capacity_ok = false;
     {
       std::lock_guard lock(mutex);
@@ -1473,7 +1477,7 @@ struct JobOrchestrator::Impl {
     Checkpoint(entry.sequence, WriterPhase::kTurnFinished);
   }
 };
-JobOrchestrator::JobOrchestrator(Config config) : impl_(std::make_unique<Impl>(std::move(config))) {
+JobOrchestrator::JobOrchestrator(Config config) : impl_(std::make_unique<Impl>(config)) {
   // Callback controls are fully allocated before the writer or any producer is exposed.
   for (auto& control : impl_->callbacks) {
     control = std::make_shared<CallbackHandle::Control>();
@@ -1951,7 +1955,7 @@ IngressResult JobOrchestrator::SubmitShutdown() {
         break;
       }
     }
-    if (marker.completion_index == Impl::kNoResident) {
+    if (marker.completion_index == Impl::k_no_resident) {
       impl_->FailLocked();
       return impl_->ResultLocked(IngressCode::kServiceFailed);
     }
@@ -2003,7 +2007,7 @@ bool JobOrchestrator::RetireWorkerAck(const RawCandidateEvent& acked) {
   gate.retained = false;
   gate.ack_authorized = false;
   gate.callback_lease = false;
-  gate.identity_slot = Impl::kNoIdentitySlot;
+  gate.identity_slot = Impl::k_no_identity_slot;
   resident->identity_slots[Impl::IdentitySlot(Impl::GateKind::kWorker)] = {};
   gate.ingress_sequence = 0;
   if (gate.permit) {
@@ -2229,14 +2233,18 @@ std::optional<Uuid> JobOrchestrator::GeneratedJob() const {
 }
 std::optional<Uuid> JobOrchestrator::GeneratedWorker() const {
   std::lock_guard lock(impl_->mutex);
-  const auto* resident = impl_->last_created ? impl_->Find(*impl_->last_created) : nullptr;
+  const auto resident_id = impl_->last_created;
+  if (!resident_id.has_value()) return std::nullopt;
+  const auto* resident = impl_->Find(*resident_id);
   return resident && resident->generated_identities
              ? std::optional<Uuid>(resident->generated_identities->worker)
              : std::nullopt;
 }
 std::optional<StableId> JobOrchestrator::GeneratedLaunch() const {
   std::lock_guard lock(impl_->mutex);
-  const auto* resident = impl_->last_created ? impl_->Find(*impl_->last_created) : nullptr;
+  const auto resident_id = impl_->last_created;
+  if (!resident_id.has_value()) return std::nullopt;
+  const auto* resident = impl_->Find(*resident_id);
   return resident && resident->generated_identities
              ? std::optional<StableId>(resident->generated_identities->launch_operation)
              : std::nullopt;
@@ -2338,7 +2346,7 @@ std::optional<Completion> JobOrchestrator::TakeCompletion(std::uint64_t s) {
   std::lock_guard lock(impl_->mutex);
   for (auto& slot : impl_->completions) {
     if (slot.reserved && slot.completed && slot.sequence == s) {
-      auto result = std::move(slot.value);
+      auto result = slot.value;
       slot.reserved = false;
       slot.completed = false;
       slot.sequence = 0;

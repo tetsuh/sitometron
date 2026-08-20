@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -27,7 +28,7 @@ IngressResult Convert(PIngress value) {
           value.completion_count_before};
 }
 Completion Convert(core::internal::Completion value) {
-  return {static_cast<Completion::Code>(value.code), std::move(value.rejection)};
+  return {static_cast<Completion::Code>(value.code), value.rejection};
 }
 TraceRecord Convert(core::internal::TraceRecord value) {
   return {value.ordinal,
@@ -64,8 +65,9 @@ bool EqualPayload(const core::EventPayload& lhs, const core::EventPayload& rhs) 
         const auto* right = std::get_if<Value>(&rhs);
         if (right == nullptr) return false;
         if constexpr (std::is_same_v<Value, core::EmptyPayload>)
-          return true;
-        else if constexpr (std::is_same_v<Value, core::JobCreatedPayload>)
+          return std::is_same_v<Value, core::EmptyPayload>;
+        else if constexpr (std::is_same_v<Value, core::JobCreatedPayload> ||
+                           std::is_same_v<Value, core::SessionPayload>)
           return left.session_id == right->session_id;
         else if constexpr (std::is_same_v<Value, core::ResourcesCommittedPayload>)
           return left.allocation_id == right->allocation_id &&
@@ -94,8 +96,6 @@ bool EqualPayload(const core::EventPayload& lhs, const core::EventPayload& rhs) 
         else if constexpr (std::is_same_v<Value, core::ProcessExitConfirmedPayload>)
           return left.completion_mode == right->completion_mode &&
                  left.launch_operation_id == right->launch_operation_id;
-        else if constexpr (std::is_same_v<Value, core::SessionPayload>)
-          return left.session_id == right->session_id;
         else if constexpr (std::is_same_v<Value, core::TerminalOutcomePayload>)
           return left.outcome == right->outcome;
         else if constexpr (std::is_same_v<Value, core::ResourcesReleasedPayload>)
@@ -167,52 +167,57 @@ class JournalAdapter final : public core::JobJournalPort {
         journal_(expected_) {
     bounded_.reserve(capacity_);
   }
-  core::LogicalCommitResult Commit(const core::LogicalJobEvent& event) noexcept override {
+  core::LogicalCommitResult Commit(const core::LogicalJobEvent& event) noexcept override try {
     std::lock_guard lock(mutex_);
-    if (!fallback_ && result_ == core::LogicalCommitResult::kCommitted &&
-        real_next_ < expected_.size() && EqualEvent(event, expected_[real_next_].event)) {
-      const auto result = journal_.Commit(event);
-      if (result != core::LogicalCommitResult::kOutcomeUnknown) {
-        ++real_next_;
-        return result;
-      }
-      fallback_ = true;
-    } else {
-      fallback_ = true;
-    }
     try {
+      if (!fallback_ && result_ == core::LogicalCommitResult::kCommitted &&
+          real_next_ < expected_.size() && EqualEvent(event, expected_[real_next_].event)) {
+        const auto result = journal_.Commit(event);
+        if (result != core::LogicalCommitResult::kOutcomeUnknown) {
+          ++real_next_;
+          return result;
+        }
+        fallback_ = true;
+      } else {
+        fallback_ = true;
+      }
       if (bounded_.size() == capacity_) {
-        verification_failed_ = true;
+        verification_failed_.store(true, std::memory_order_relaxed);
         return core::LogicalCommitResult::kOutcomeUnknown;
       }
       bounded_.push_back(event);
       return result_;
     } catch (...) {
-      verification_failed_ = true;
+      verification_failed_.store(true, std::memory_order_relaxed);
       return core::LogicalCommitResult::kOutcomeUnknown;
     }
+  } catch (...) {
+    verification_failed_.store(true, std::memory_order_relaxed);
+    return core::LogicalCommitResult::kOutcomeUnknown;
   }
   void SetResult(core::LogicalCommitResult result) noexcept {
     std::lock_guard lock(mutex_);
     result_ = result;
   }
-  std::vector<core::LogicalJobEvent> observations() const {
+  std::vector<core::LogicalJobEvent> Observations() const {
     std::lock_guard lock(mutex_);
     auto result = journal_.CopyObservations();
     result.insert(result.end(), bounded_.begin(), bounded_.end());
     return result;
   }
-  std::size_t count() const noexcept {
+  std::size_t Count() const noexcept {
     std::lock_guard lock(mutex_);
     return real_next_ + bounded_.size();
   }
   bool Verify() noexcept {
     std::lock_guard lock(mutex_);
     if (!fallback_) {
-      if (real_next_ == expected_.size()) return journal_.Verify() && !verification_failed_;
-      return !journal_.verification_failed() && !verification_failed_;
+      if (real_next_ == expected_.size())
+        return journal_.Verify() && !verification_failed_.load(std::memory_order_relaxed);
+      return !journal_.verification_failed() &&
+             !verification_failed_.load(std::memory_order_relaxed);
     }
-    return !journal_.verification_failed() && !verification_failed_;
+    return !journal_.verification_failed() && !verification_failed_.load(std::memory_order_relaxed);
   }
 
  private:
@@ -223,7 +228,7 @@ class JournalAdapter final : public core::JobJournalPort {
   std::vector<core::LogicalJobEvent> bounded_;
   std::size_t real_next_ = 0;
   bool fallback_ = false;
-  bool verification_failed_ = false;
+  std::atomic<bool> verification_failed_{false};
   mutable std::mutex mutex_;
 };
 
@@ -288,7 +293,7 @@ class RunnerAdapter final : public core::ApplicationRunnerPort {
       fake.HandoffForcedStop(std::move(request));
     });
   }
-  std::vector<RunnerObservation> observations() const {
+  std::vector<RunnerObservation> Observations() const {
     std::vector<RunnerObservation> result;
     for (std::size_t index = 0; index < call_count_; ++index) {
       const auto calls = slots_[call_order_[index]].fake->CopyObservations();
@@ -374,7 +379,7 @@ class SessionAdapter final : public core::SessionRetainerPort {
     }
     verification_failed_ = true;
   }
-  std::vector<core::SessionRetainRequest> observations() const {
+  std::vector<core::SessionRetainRequest> Observations() const {
     std::vector<core::SessionRetainRequest> result;
     for (std::size_t index = 0; index < call_count_; ++index) {
       const auto calls = slots_[call_order_[index]].fake->CopyObservations();
@@ -664,7 +669,7 @@ bool JobOrchestratorHarness::failed() const noexcept { return impl_->orchestrato
 bool JobOrchestratorHarness::sealed() const noexcept { return impl_->orchestrator.sealed(); }
 bool JobOrchestratorHarness::stopped() const noexcept { return impl_->orchestrator.stopped(); }
 std::size_t JobOrchestratorHarness::journal_attempts() const noexcept {
-  return impl_->ports.journal.count();
+  return impl_->ports.journal.Count();
 }
 std::size_t JobOrchestratorHarness::apply_count() const noexcept {
   return impl_->orchestrator.apply_count();
@@ -708,7 +713,7 @@ std::size_t JobOrchestratorHarness::total_occupancy() const noexcept {
 std::optional<Completion> JobOrchestratorHarness::TakeCompletion(std::uint64_t s) {
   auto r = impl_->orchestrator.TakeCompletion(s);
   if (!r) return {};
-  return Convert(std::move(*r));
+  return Convert(*r);
 }
 std::optional<core::Snapshot> JobOrchestratorHarness::Snapshot(const core::Uuid& id) const {
   return impl_->orchestrator.SnapshotFor(id);
@@ -719,21 +724,21 @@ std::vector<TraceRecord> JobOrchestratorHarness::CopyTrace() const {
   return out;
 }
 std::vector<core::LogicalJobEvent> JobOrchestratorHarness::CopyJournalAttempts() const {
-  return impl_->ports.journal.observations();
+  return impl_->ports.journal.Observations();
 }
 std::vector<std::uint64_t> JobOrchestratorHarness::CopyIngressSequences() const {
   return impl_->orchestrator.CopyIngressSequences();
 }
 std::vector<core::ApplicationLaunchRequest> JobOrchestratorHarness::CopyLaunchRequests() const {
   std::vector<core::ApplicationLaunchRequest> result;
-  for (const auto& observation : impl_->ports.runner.observations()) {
+  for (const auto& observation : impl_->ports.runner.Observations()) {
     if (const auto* request = std::get_if<core::ApplicationLaunchRequest>(&observation.request))
       result.push_back(*request);
   }
   return result;
 }
 std::vector<core::SessionRetainRequest> JobOrchestratorHarness::CopySessionRequests() const {
-  return impl_->ports.session.observations();
+  return impl_->ports.session.Observations();
 }
 std::optional<core::RawCandidateEvent> JobOrchestratorHarness::TakeRunnerCandidate() {
   return impl_->ports.runner.Take();

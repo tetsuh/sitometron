@@ -12,7 +12,7 @@
 #include <vector>
 
 namespace sitometron::test {
-int RunJobReducerVectorChecks(const char* path, const char* selector);
+int RunJobReducerVectorChecks(const char* path, std::string_view selector);
 int RunJobReducerVectorTextChecks(std::string_view text, const char* selector);
 int RunJobReducerParityMutationChecks(const char* path);
 int RunJobReducerParityMutationTextChecks(std::string_view text);
@@ -22,8 +22,8 @@ int RunJobReducerClosedEnumArtifactChecks();
 
 namespace {
 using namespace sitometron::core;
-constexpr std::string_view kJob = "01890f3e-7b00-7abc-8abc-0123456789ab";
-constexpr std::string_view kWorker = "123e4567-e89b-42d3-a456-426614174000";
+constexpr std::string_view k_job = "01890f3e-7b00-7abc-8abc-0123456789ab";
+constexpr std::string_view k_worker = "123e4567-e89b-42d3-a456-426614174000";
 
 int Check(bool condition, std::string_view message) {
   if (condition) return 0;
@@ -61,7 +61,7 @@ int RunUtf8ScalarBoundaryMatrix() {
     std::string_view value;
     bool valid;
   };
-  constexpr std::array<Utf8Case, 28> kCases{{
+  constexpr std::array<Utf8Case, 28> k_cases{{
       {"ASCII scalar", std::string_view{"A", 1}, true},
       {"two-byte scalar", std::string_view{"\xC2\xA2", 2}, true},
       {"three-byte scalar", std::string_view{"\xE3\x81\x82", 3}, true},
@@ -92,7 +92,7 @@ int RunUtf8ScalarBoundaryMatrix() {
       {"isolated maximum continuation", std::string_view{"\xBF", 1}, false},
   }};
 
-  const Uuid job{std::string(kJob)};
+  const Uuid job{std::string(k_job)};
   Snapshot admitted = InitialSnapshot(job, job);
   admitted.entity_exists = true;
   Snapshot preparing = admitted;
@@ -115,11 +115,11 @@ int RunUtf8ScalarBoundaryMatrix() {
                 Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
                 StableId{"allocation-1"},
                 Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
-                Uuid{std::string(kWorker)}}});
+                Uuid{std::string(k_worker)}}});
   };
 
   int result = 0;
-  for (const auto& test : kCases) {
+  for (const auto& test : k_cases) {
     const auto principal = principal_decision(std::string(test.value));
     const auto version = version_decision(std::string(test.value));
     const bool principal_valid = std::holds_alternative<PreEnvelopeProposal>(principal.value);
@@ -141,13 +141,13 @@ int RunUtf8ScalarBoundaryMatrix() {
     bool principal_valid;
     bool version_valid;
   };
-  constexpr std::array<ScalarLimitCase, 4> kLimits{{
+  constexpr std::array<ScalarLimitCase, 4> k_limits{{
       {128, true, true},
       {129, true, false},
       {256, true, false},
       {257, false, false},
   }};
-  for (const auto& test : kLimits) {
+  for (const auto& test : k_limits) {
     std::string value;
     value.reserve(test.count * 2);
     for (std::size_t index = 0; index < test.count; ++index) value += "\xC2\xA2";
@@ -164,7 +164,7 @@ int RunUtf8ScalarBoundaryMatrix() {
 }
 
 int RunSnapshotInvariantFailClosedMatrix() {
-  const Uuid job{std::string(kJob)};
+  const Uuid job{std::string(k_job)};
   const auto admitted = [&] {
     Snapshot snapshot = InitialSnapshot(job, job);
     snapshot.entity_exists = true;
@@ -179,7 +179,7 @@ int RunSnapshotInvariantFailClosedMatrix() {
         Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"};
     snapshot.worker_launch_status = LaunchStatus::kIntentRecorded;
     snapshot.launch_operation_id = StableId{"launch-op-1"};
-    snapshot.worker_id = Uuid{std::string(kWorker)};
+    snapshot.worker_id = Uuid{std::string(k_worker)};
     snapshot.process_presence = ProcessPresence::kUnknown;
     return snapshot;
   };
@@ -254,7 +254,7 @@ int RunSnapshotInvariantFailClosedMatrix() {
   });
   add("pending Worker sequence domain", finalizing(), [](Snapshot& s) {
     s.pending_worker_event_ack = true;
-    s.pending_worker_id = Uuid{std::string(kWorker)};
+    s.pending_worker_id = Uuid{std::string(k_worker)};
     s.pending_worker_event_sequence = 0;
   });
   add("resource none with allocation", admitted(), [](Snapshot& s) {
@@ -277,7 +277,7 @@ int RunSnapshotInvariantFailClosedMatrix() {
     s.process_presence = ProcessPresence::kAbsent;
     s.completion_mode = CompletionMode::kForced;
     s.pending_worker_event_ack = true;
-    s.pending_worker_id = Uuid{std::string(kWorker)};
+    s.pending_worker_id = Uuid{std::string(k_worker)};
     s.pending_worker_event_sequence = 1;
   });
   add("already-exited completion without confirmed exit", finalizing(),
@@ -288,7 +288,7 @@ int RunSnapshotInvariantFailClosedMatrix() {
       [](Snapshot& s) { s.launch_operation_id.reset(); });
   add("started launch without Worker", preparing(), [](Snapshot& s) { s.worker_id.reset(); });
   add("pending identity without ACK", finalizing(),
-      [](Snapshot& s) { s.pending_worker_id = Uuid{std::string(kWorker)}; });
+      [](Snapshot& s) { s.pending_worker_id = Uuid{std::string(k_worker)}; });
   add("pending sequence without ACK", finalizing(),
       [](Snapshot& s) { s.pending_worker_event_sequence = 1; });
   add("ACK without pending identity", finalizing(), [](Snapshot& s) {
@@ -297,7 +297,7 @@ int RunSnapshotInvariantFailClosedMatrix() {
   });
   add("ACK without pending sequence", finalizing(), [](Snapshot& s) {
     s.pending_worker_event_ack = true;
-    s.pending_worker_id = Uuid{std::string(kWorker)};
+    s.pending_worker_id = Uuid{std::string(k_worker)};
   });
   add("admitted resources", admitted(), [](Snapshot& s) {
     s.resource_status = ResourceStatus::kCommitted;
@@ -308,7 +308,7 @@ int RunSnapshotInvariantFailClosedMatrix() {
   add("admitted launch", admitted(), [](Snapshot& s) {
     s.worker_launch_status = LaunchStatus::kIntentRecorded;
     s.launch_operation_id = StableId{"launch-op-1"};
-    s.worker_id = Uuid{std::string(kWorker)};
+    s.worker_id = Uuid{std::string(k_worker)};
   });
   add("admitted process", admitted(),
       [](Snapshot& s) { s.process_presence = ProcessPresence::kPresent; });
@@ -387,7 +387,7 @@ int RunMalformedArtifactChecks() {
 int Run() {
   int result = RunUtf8ScalarBoundaryMatrix();
   result |= RunSnapshotInvariantFailClosedMatrix();
-  const Uuid job{std::string(kJob)};
+  const Uuid job{std::string(k_job)};
   Snapshot absent = InitialSnapshot(job, job);
   result |= Check(!absent.entity_exists, "initial entity position is absent");
   Command default_command;
@@ -488,7 +488,7 @@ int Run() {
   Snapshot admitted_launch = present;
   admitted_launch.worker_launch_status = LaunchStatus::kIntentRecorded;
   admitted_launch.launch_operation_id = StableId{"launch-op-1"};
-  admitted_launch.worker_id = Uuid{std::string(kWorker)};
+  admitted_launch.worker_id = Uuid{std::string(k_worker)};
   result |= admitted_snapshot_rejected(admitted_launch, "admitted Worker launch fails closed");
   Snapshot admitted_process = present;
   admitted_process.process_presence = ProcessPresence::kPresent;
@@ -497,7 +497,7 @@ int Run() {
   admitted_exit.process_exit_confirmed = true;
   result |= admitted_snapshot_rejected(admitted_exit, "admitted confirmed exit fails closed");
   const RawCandidateEvent created{1, job, "job_created",
-                                  "{\"session_id\":\"" + std::string(kJob) + "\"}"};
+                                  "{\"session_id\":\"" + std::string(k_job) + "\"}"};
   const auto normalized_created = NormalizeCandidate(absent, created);
   const Decision created_decision =
       std::holds_alternative<InternalEvent>(normalized_created.value)
@@ -537,7 +537,7 @@ int Run() {
                         Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
                         StableId{"allocation-1"},
                         Digest{"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
-                        Uuid{std::string(kWorker)}}});
+                        Uuid{std::string(k_worker)}}});
   };
   std::string version_128;
   for (std::size_t index = 0; index < 128; ++index) version_128 += "\xF0\x9F\x98\x80";
@@ -562,7 +562,7 @@ int Run() {
           {"bundle_sha256", "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}},
         {"allocation_id", "allocation-1"},
         {"allocation_digest", "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
-        {"worker_id", std::string(kWorker)}};
+        {"worker_id", std::string(k_worker)}};
     return NormalizeCandidate(absent,
                               RawCandidateEvent{1, job, "worker_launch_intent", payload.dump()});
   };
@@ -611,7 +611,7 @@ int Run() {
                           RejectionReason::kInvalidEventPayload,
                   "reducer-owned late event is rejected at raw ingress");
   const auto expect_invalid_payload = [&](std::string_view event_type, std::string_view payload,
-                                          std::string_view label) {
+                                          const char* label) {
     const auto normalized = NormalizeCandidate(
         absent, RawCandidateEvent{1, job, std::string(event_type), std::string(payload)});
     return Check(
@@ -656,7 +656,7 @@ int Run() {
   const Snapshot forged_before = absent;
   const ApplyResult forged =
       Apply(forged_before, PreEnvelopeProposal{1, job, EventType::kWorkerRunning,
-                                               WorkerRunningPayload{Uuid{std::string(kWorker)}}});
+                                               WorkerRunningPayload{Uuid{std::string(k_worker)}}});
   result |= Check(
       forged.rejection.has_value() && forged.snapshot.state == forged_before.state &&
           forged.snapshot.resource_status == forged_before.resource_status &&
@@ -667,19 +667,19 @@ int Run() {
   finalizing.state = JobState::kFinalizing;
   finalizing.worker_launch_status = LaunchStatus::kObserved;
   finalizing.launch_operation_id = StableId{"launch-op-1"};
-  finalizing.worker_id = Uuid{std::string(kWorker)};
+  finalizing.worker_id = Uuid{std::string(k_worker)};
   finalizing.process_presence = ProcessPresence::kPresent;
   finalizing.finalization_status = FinalizationStatus::kPending;
   const auto late_worker_decision =
       DecideEvent(finalizing, InternalEvent{1, job, EventType::kWorkerCompleted,
-                                            WorkerEventPayload{Uuid{std::string(kWorker)}, 1}});
+                                            WorkerEventPayload{Uuid{std::string(k_worker)}, 1}});
   result |= Check(std::holds_alternative<PreEnvelopeProposal>(late_worker_decision.value) &&
                       std::get<PreEnvelopeProposal>(late_worker_decision.value).event_type ==
                           EventType::kLateWorkerEvent,
                   "finalizing snapshot normalizes a late Worker event");
   const auto normalized_forgery =
       Apply(finalizing, PreEnvelopeProposal{1, job, EventType::kWorkerCompleted,
-                                            WorkerEventPayload{Uuid{std::string(kWorker)}, 1}});
+                                            WorkerEventPayload{Uuid{std::string(k_worker)}, 1}});
   result |=
       Check(normalized_forgery.rejection.has_value() &&
                 normalized_forgery.rejection->reason == RejectionReason::kInvariantViolation &&
@@ -733,11 +733,11 @@ int Run() {
   Snapshot observed = absent;
   observed.worker_launch_status = LaunchStatus::kObserved;
   observed.launch_operation_id = StableId{"launch-op-1"};
-  observed.worker_id = Uuid{std::string(kWorker)};
+  observed.worker_id = Uuid{std::string(k_worker)};
   observed.process_presence = ProcessPresence::kUnknown;
   const auto running_decision =
       DecideEvent(observed, InternalEvent{1, job, EventType::kWorkerRunning,
-                                          WorkerRunningPayload{Uuid{std::string(kWorker)}}});
+                                          WorkerRunningPayload{Uuid{std::string(k_worker)}}});
   result |= Check(std::holds_alternative<PreEnvelopeProposal>(running_decision.value),
                   "observed Worker may enter running");
   Snapshot running = observed;
@@ -787,7 +787,7 @@ int Run() {
   running_with_reason.latched_reason = TerminalOutcome::kCancelled;
   const auto completed_with_reason = DecideEvent(
       running_with_reason, InternalEvent{1, job, EventType::kWorkerCompleted,
-                                         WorkerEventPayload{Uuid{std::string(kWorker)}, 7}});
+                                         WorkerEventPayload{Uuid{std::string(k_worker)}, 7}});
   result |= Check(std::holds_alternative<PreEnvelopeProposal>(completed_with_reason.value),
                   "matching running Worker completion is accepted");
   if (std::holds_alternative<PreEnvelopeProposal>(completed_with_reason.value)) {
@@ -801,7 +801,7 @@ int Run() {
   stopping.completion_candidate = true;
   const auto stopping_failed =
       DecideEvent(stopping, InternalEvent{1, job, EventType::kWorkerFailed,
-                                          WorkerEventPayload{Uuid{std::string(kWorker)}, 8}});
+                                          WorkerEventPayload{Uuid{std::string(k_worker)}, 8}});
   result |= Check(std::holds_alternative<PreEnvelopeProposal>(stopping_failed.value),
                   "matching stopping Worker failure is accepted");
   if (std::holds_alternative<PreEnvelopeProposal>(stopping_failed.value)) {
@@ -947,12 +947,12 @@ int Run() {
   result |= Check(IngestTimer(timer, TimerIngressInput{std::nullopt, std::nullopt}).kind ==
                       TimerIngressKind::kDiscardWithoutCandidate,
                   "null notification does not fail closed");
-  (void)kWorker;
+  (void)k_worker;
   return result;
 }
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   int result = Run();
   if (argc == 1) result |= RunMalformedArtifactChecks();
   if (argc > 1) {
@@ -963,4 +963,6 @@ int main(int argc, char** argv) {
     }
   }
   return result;
+} catch (...) {
+  return 1;
 }

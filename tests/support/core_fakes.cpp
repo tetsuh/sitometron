@@ -206,12 +206,12 @@ bool IsRfc3339(std::string_view value) {
   const int hour = ParseDigits(value, 11, 2);
   const int minute = ParseDigits(value, 14, 2);
   const int second = ParseDigits(value, 17, 2);
-  constexpr int kDaysByMonth[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  constexpr int k_days_by_month[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
   if (year < 0 || month < 1 || month > 12 || hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
       second < 0 || second > 60) {
     return false;
   }
-  int max_day = kDaysByMonth[month];
+  int max_day = k_days_by_month[month];
   if (month == 2 && (year % 400 == 0 || (year % 4 == 0 && year % 100 != 0))) {
     max_day = 29;
   }
@@ -411,7 +411,7 @@ void ConsumeTransferredRequest(Request&& request) noexcept {
   using Value = std::decay_t<Request>;
   static_assert(std::is_nothrow_move_constructible_v<Value>);
   static_assert(std::is_nothrow_destructible_v<Value>);
-  [[maybe_unused]] Value discarded(std::move(request));
+  [[maybe_unused]] Value discarded(std::forward<Request>(request));
 }
 
 core::RawCandidateEvent MakeLaunchObservedCandidate(const core::ApplicationLaunchRequest& request,
@@ -621,7 +621,8 @@ std::vector<core::LogicalJobEvent> FakeJobJournal::CopyObservations() const {
   std::vector<core::LogicalJobEvent> result;
   result.reserve(observation_count_);
   for (std::size_t index = 0; index < observation_count_; ++index) {
-    result.push_back(*observations_[index]);
+    if (const auto& observation = observations_[index]; observation.has_value())
+      result.push_back(observation.value());
   }
   return result;
 }
@@ -771,7 +772,8 @@ std::vector<RunnerObservation> FakeApplicationRunner::CopyObservations() const {
   std::vector<RunnerObservation> result;
   result.reserve(observation_count_);
   for (std::size_t index = 0; index < observation_count_; ++index) {
-    result.push_back(*observations_[index]);
+    if (const auto& observation = observations_[index]; observation.has_value())
+      result.push_back(observation.value());
   }
   return result;
 }
@@ -870,7 +872,8 @@ std::vector<core::SessionRetainRequest> FakeSessionRetainer::CopyObservations() 
   std::vector<core::SessionRetainRequest> result;
   result.reserve(observation_count_);
   for (std::size_t index = 0; index < observation_count_; ++index) {
-    result.push_back(*observations_[index]);
+    if (const auto& observation = observations_[index]; observation.has_value())
+      result.push_back(observation.value());
   }
   return result;
 }
@@ -985,7 +988,8 @@ std::vector<EffectObservation> PassiveEffectObserver::CopyObservations() const {
   std::vector<EffectObservation> result;
   result.reserve(observation_count_);
   for (std::size_t index = 0; index < observation_count_; ++index) {
-    result.push_back(*observations_[index]);
+    if (const auto& observation = observations_[index]; observation.has_value())
+      result.push_back(observation.value());
   }
   return result;
 }
