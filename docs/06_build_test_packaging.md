@@ -29,10 +29,24 @@ Phase 0A PR CI requires:
 - Windows configure, build, and CTest;
 - pinned development-time Draft 2020-12 schema-tooling tests on Linux and Windows;
 - clang-format dry-run;
+- clang-tidy 18.1.3 with warnings treated as errors on the frozen tracked translation units;
+- Linux ASan/UBSan with the same CTest name set as `dev-linux`;
 - positive and negative core dependency-isolation checks.
 
-Before the Phase 0A Gate closes, add clang-tidy, Linux ASan/UBSan, documentation/link validation,
-and secret scanning. Later Gate Issues own the remaining qualification lanes.
+The Linux clang-tidy step resolves the absolute `clang-tidy-18` application and runs the
+standard-library-only `tools/run_clang_tidy.py` helper against
+`build/dev-linux/compile_commands.json`. The helper intersects tracked `apps/**/*.cpp`,
+`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 12-source set and
+LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection drift.
+
+The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
+the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
+CTest-name parity with the 36-test `dev-linux` baseline. It runs without suppressions using
+`ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
+
+Before the Phase 0A Gate closes, add documentation/link validation and secret scanning. Later Gate
+Issues own the remaining qualification lanes.
 
 ## 3. Test policy
 
