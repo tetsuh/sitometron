@@ -37,9 +37,12 @@ Python dependencies use `pyproject.toml` plus a committed `uv.lock`. They are no
 or Conan. CI provisions the exact `uv` and Python versions outside project CMake, then uses
 `uv sync --frozen`; dependency resolution or lock-file updates are never implicit build steps.
 
-Phase 0A permits Python only for development-time Draft 2020-12 schema validation. This exception
-does not make Python a dependency of `sitometron_core`, `sitometrond`, a Worker, an SDK, or a product
-package. Runtime or product-build use requires a separately reviewed decision.
+Phase 0A permits repository-owned Python standard-library development-analysis and governance
+scripts in addition to the pinned development-time Draft 2020-12 schema environment. These scripts
+use the interpreter already provisioned by CI, add no package, and cannot become a project-CMake,
+runtime, product-build, adapter, or acquisition dependency. Issue #37 owns only the clang-tidy
+analysis helper; Issue #39 owns later governance-validator implementation. Runtime or product-build
+use requires a separately reviewed decision.
 
 ## CI and caches
 
