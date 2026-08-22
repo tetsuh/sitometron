@@ -364,6 +364,24 @@ class RunSecretScanTest(unittest.TestCase):
                 with self.assertRaises(self.error):
                     self.module.validate_configuration(config)
 
+    def test_repository_configuration_satisfies_the_validator(self) -> None:
+        config = REPOSITORY_ROOT / ".gitleaks.toml"
+        if not config.is_file():
+            self.skipTest("repository configuration is absent")
+        self.module.validate_configuration(config)
+
+    def test_unexpected_exceptions_are_bounded_runner_failures(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        code = self.module.run(
+            ["--repository", str(self.repository_path), "--expected-head", HEAD],
+            run_process=self.processes, fetch=self.transport(),
+            workspace_parent=self.root / "missing-workspace-parent", stdout=out, stderr=err,
+        )
+        self.assertEqual(code, self.module.EXIT_FAILURE)
+        self.assertIn("category=runner-failure", err.getvalue())
+        self.assertNotIn("Traceback", out.getvalue() + err.getvalue())
+        self.assertNotIn(str(self.root), out.getvalue() + err.getvalue())
+
     def test_clean_repository_runs_every_probe_then_scans_exact_head(self) -> None:
         self.repository.add("link", b"target", mode="120000")
         code, out, err = self.run_scan()

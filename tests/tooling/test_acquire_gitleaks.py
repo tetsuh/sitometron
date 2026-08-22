@@ -302,6 +302,17 @@ class AcquireGitleaksTest(unittest.TestCase):
                     "no archive may remain after a failed download",
                 )
 
+    def test_write_failures_are_acquisition_errors_and_leave_no_file(self) -> None:
+        destination = self.root / "missing-directory" / "archive.tar.gz"
+        transport = FakeTransport({INITIAL_URL: ok_response(valid_archive())})
+        with self.assertRaises(self.error):
+            self.module.download(INITIAL_URL, destination, fetch=transport)
+        self.assertFalse(destination.exists())
+        archive = self.root / ARCHIVE_NAME
+        archive.write_bytes(valid_archive())
+        with self.assertRaises(self.error):
+            self.module.extract_gitleaks(archive, self.root / "absent-target-directory")
+
     def test_download_refuses_existing_destination(self) -> None:
         destination = self.root / "archive.tar.gz"
         destination.write_bytes(b"old")
@@ -449,14 +460,17 @@ class AcquireGitleaksTest(unittest.TestCase):
         }
         for label, options in cases.items():
             with self.subTest(stage=label):
+                runner = options.get("runner") or FakeProcessRunner()
                 with self.assertRaises(self.error):
-                    self.acquire(**options)  # type: ignore[arg-type]
+                    self.acquire(runner=runner, **{k: v for k, v in options.items() if k != "runner"})  # type: ignore[arg-type]
                 directory = self.root / "run"
                 self.assertEqual(
                     list(directory.iterdir()), [], f"{label} failure must leave no run-owned file"
                 )
-                if label != "version":
-                    self.assertEqual(options.get("runner", FakeProcessRunner()).calls, [])
+                if label == "version":
+                    self.assertEqual(len(runner.calls), 1)
+                else:
+                    self.assertEqual(runner.calls, [], f"{label} failure must not reach version qualification")
                 directory.rmdir()
 
 

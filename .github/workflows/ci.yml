@@ -49,7 +49,10 @@ jobs:
         if: always()
         env:
           SECRET_SCAN_CHECKOUT: secret-scan-head-${{ github.run_id }}-${{ github.run_attempt }}
-        run: rm -rf "$GITHUB_WORKSPACE/$SECRET_SCAN_CHECKOUT"
+        run: |
+          set -euo pipefail
+          [[ -n "$GITHUB_WORKSPACE" && -n "$SECRET_SCAN_CHECKOUT" ]]
+          rm -rf -- "$GITHUB_WORKSPACE/$SECRET_SCAN_CHECKOUT"
       - name: Resolve vcpkg cache identity
         id: vcpkg-cache-identity
         run: |

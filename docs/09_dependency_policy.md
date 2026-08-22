@@ -51,8 +51,8 @@ Gitleaks is a pinned, CI-only, Linux-only development tool and not a project dep
 repository owns its identity in `tools/gitleaks-tool-version.txt` (`8.30.1`) and
 `tools/gitleaks-linux-x64.sha256`; helper code reads and byte-validates those files instead of
 repeating the literals. Linux CI downloads the official release archive from the frozen
-`github.com` release URL, permits at most two HTTPS redirects to `release-assets.githubusercontent.com`,
-verifies the SHA-256 pin before opening the archive, extracts only the executable into a run-owned
+`github.com` release URL, permits at most two HTTPS redirects whose targets are limited to
+`github.com` and `release-assets.githubusercontent.com`, verifies the SHA-256 pin before opening the archive, extracts only the executable into a run-owned
 temporary directory, requires the exact reported version, and removes every downloaded or
 extracted file afterwards. No floating action, package-manager install, repository-local checkout,
 vcpkg manifest entry, project-CMake, runtime, adapter, or Windows acquisition is permitted; a new

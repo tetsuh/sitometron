@@ -162,33 +162,41 @@ def _is_link(path: Path) -> bool:
     return stat.S_ISLNK(status.st_mode) or bool(attributes & reparse)
 
 
+def _fetch_blob(repository: Path, blob: TrackedBlob, run_process: ProcessRunner) -> bytes:
+    result = _run(run_process, ["git", "-C", str(repository), "cat-file", "blob", blob.oid], "policy-failure")
+    if result.returncode != 0:
+        raise ScanError("policy-failure", f"git cat-file failed with exit {result.returncode}")
+    data = result.stdout if isinstance(result.stdout, bytes) else str(result.stdout).encode("utf-8")
+    # Git object IDs are SHA-1 by repository format; this is an identity check, not a security hash.
+    digest = hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+    if digest != blob.oid:
+        raise ScanError("policy-failure", "materialized blob does not match its enumerated object")
+    return data
+
+
+def _create_scan_file(scan_root: Path, path: str) -> int:
+    parts = PurePosixPath(path).parts
+    directory = scan_root
+    for part in parts[:-1]:
+        directory = directory / part
+        if _is_link(directory):
+            raise ScanError("policy-failure", "scan tree ancestor is a symbolic link or reparse point")
+        directory.mkdir(exist_ok=True)
+    target = directory / parts[-1]
+    if _is_link(target):
+        raise ScanError("policy-failure", "scan tree target is a symbolic link or reparse point")
+    try:
+        return os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as error:
+        raise ScanError("policy-failure", f"scan tree path already exists or cannot be created: {error.strerror}") from error
+
+
 def materialize_blobs(
     repository: Path, blobs: Sequence[TrackedBlob], scan_root: Path, run_process: ProcessRunner
 ) -> int:
     for blob in blobs:
-        result = _run(run_process, ["git", "-C", str(repository), "cat-file", "blob", blob.oid], "policy-failure")
-        if result.returncode != 0:
-            raise ScanError("policy-failure", f"git cat-file failed with exit {result.returncode}")
-        data = result.stdout if isinstance(result.stdout, bytes) else str(result.stdout).encode("utf-8")
-        # Git object IDs are SHA-1 by repository format; this is an identity check, not a security hash.
-        digest = hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
-        if digest != blob.oid:
-            raise ScanError("policy-failure", "materialized blob does not match its enumerated object")
-        parts = PurePosixPath(blob.path).parts
-        directory = scan_root
-        for part in parts[:-1]:
-            directory = directory / part
-            if _is_link(directory):
-                raise ScanError("policy-failure", "scan tree ancestor is a symbolic link or reparse point")
-            directory.mkdir(exist_ok=True)
-        target = directory / parts[-1]
-        if _is_link(target):
-            raise ScanError("policy-failure", "scan tree target is a symbolic link or reparse point")
-        try:
-            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except OSError as error:
-            raise ScanError("policy-failure", f"scan tree path already exists or cannot be created: {error.strerror}") from error
-        with os.fdopen(descriptor, "wb") as handle:
+        data = _fetch_blob(repository, blob, run_process)
+        with os.fdopen(_create_scan_file(scan_root, blob.path), "wb") as handle:
             handle.write(data)
     return len(blobs)
 
@@ -327,6 +335,12 @@ def run(
             file=stderr,
         )
         return EXIT_FINDING if error.category == "finding" else EXIT_FAILURE
+    except Exception as error:  # noqa: BLE001 - bounded fail-closed boundary; no traceback or paths leak
+        print(
+            f"sitometron-scan: stage={progress.stage} category=runner-failure detail={type(error).__name__}",
+            file=stderr,
+        )
+        return EXIT_FAILURE
 
 
 def main(arguments: Sequence[str] | None = None) -> int:

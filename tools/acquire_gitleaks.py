@@ -183,8 +183,10 @@ def _stream_to_file(response: HttpResponse, destination: Path, length: int) -> N
                 handle.write(chunk)
         if received != length:
             raise AcquisitionError("response body is shorter than its declared Content-Length")
-    except AcquisitionError:
-        destination.unlink()
+    except (AcquisitionError, OSError) as error:
+        destination.unlink(missing_ok=True)
+        if isinstance(error, OSError):
+            raise AcquisitionError(f"cannot write download destination: {error.strerror}") from error
         raise
 
 
@@ -221,9 +223,12 @@ def download(url: str, destination: Path, fetch: Fetch = open_https) -> None:
 
 def verify_checksum(path: Path, expected_sha256: str) -> None:
     digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise AcquisitionError(f"cannot read the downloaded archive: {error.strerror}") from error
     if digest.hexdigest() != expected_sha256:
         raise AcquisitionError("archive SHA-256 does not match the repository-owned pin")
 
@@ -317,9 +322,13 @@ def extract_gitleaks(archive: Path, directory: Path) -> Path:
         descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
     except OSError as error:
         raise AcquisitionError(f"cannot create the extracted executable: {error.strerror}") from error
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(data)
-    os.chmod(target, 0o700)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+        os.chmod(target, 0o700)
+    except OSError as error:
+        target.unlink(missing_ok=True)
+        raise AcquisitionError(f"cannot write the extracted executable: {error.strerror}") from error
     if not os.access(target, os.X_OK):
         raise AcquisitionError("extracted gitleaks is not executable")
     return target
@@ -358,7 +367,6 @@ def acquire(
         require_version(application, pin.version, run_process)
     except AcquisitionError:
         for leftover in (archive, application):
-            if leftover.exists():
-                leftover.unlink()
+            leftover.unlink(missing_ok=True)
         raise
     return application
