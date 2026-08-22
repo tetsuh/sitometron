@@ -2,6 +2,7 @@ import gzip
 import hashlib
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -387,7 +388,9 @@ class AcquireGitleaksTest(unittest.TestCase):
         self.assertEqual(application, target / "gitleaks")
         self.assertEqual(sorted(path.name for path in target.iterdir()), ["gitleaks"])
         self.assertEqual(application.read_bytes(), GITLEAKS_BODY)
-        self.assertTrue(application.stat().st_mode & 0o100)
+        self.assertTrue(os.access(application, os.X_OK))
+        if os.name == "posix":
+            self.assertEqual(application.stat().st_mode & 0o777, 0o700)
         with self.assertRaises(self.error):
             self.module.extract_gitleaks(archive, target)
         archive.write_bytes(build_archive([valid_members()["LICENSE"]]))
