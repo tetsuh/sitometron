@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import subprocess
+import sys
 import tempfile
 import unittest
 from email.message import Message
@@ -29,6 +30,7 @@ def load_helper() -> ModuleType:
     if spec is None or spec.loader is None:
         raise RuntimeError("unable to load acquisition helper")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 

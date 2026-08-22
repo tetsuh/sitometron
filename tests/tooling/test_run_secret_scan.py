@@ -4,6 +4,7 @@ import io
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +34,7 @@ def load_module(name: str, path: Path) -> ModuleType:
     if spec is None or spec.loader is None:
         raise RuntimeError(f"unable to load {path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -242,7 +244,7 @@ class RunSecretScanTest(unittest.TestCase):
         self.repository.add("link", b"target", mode="120000")
         self.repository.add("vendor/module", b"", mode="160000")
         blobs = self.module.enumerate_tracked_blobs(self.repository_path, self.processes)
-        self.assertEqual([blob.path for blob in blobs], self.repository.regular_paths())
+        self.assertEqual(sorted(blob.path for blob in blobs), self.repository.regular_paths())
         self.assertEqual({blob.mode for blob in blobs}, {"100644", "100755"})
         for blob in blobs:
             self.assertEqual(blob.oid, blob_oid(self.repository.files[blob.path][1]))
@@ -278,9 +280,9 @@ class RunSecretScanTest(unittest.TestCase):
         with self.assertRaises(self.error):
             self.module.enumerate_tracked_blobs(self.repository_path, self.processes)
 
-    def materialize(self) -> Path:
-        scan_root = self.root / "scan-tree"
-        scan_root.mkdir(exist_ok=True)
+    def materialize(self, scan_root: Path | None = None) -> Path:
+        if scan_root is None:
+            scan_root = Path(tempfile.mkdtemp(prefix="scan-tree-", dir=self.root))
         blobs = self.module.enumerate_tracked_blobs(self.repository_path, self.processes)
         self.module.materialize_blobs(self.repository_path, blobs, scan_root, self.processes)
         return scan_root
@@ -303,18 +305,19 @@ class RunSecretScanTest(unittest.TestCase):
         with self.assertRaisesRegex(self.error, "cat-file"):
             self.materialize()
         self.repository.cat_file_failures.clear()
-        collision = self.root / "scan-tree" / "README.md"
-        collision.parent.mkdir(parents=True, exist_ok=True)
-        collision.write_bytes(b"pre-existing")
+        collided = self.root / "collided"
+        collided.mkdir()
+        (collided / "README.md").write_bytes(b"pre-existing")
         with self.assertRaisesRegex(self.error, "exists"):
-            self.materialize()
-        collision.unlink()
+            self.materialize(collided)
+        linked = self.root / "linked"
+        linked.mkdir()
         try:
-            os.symlink(self.root / "elsewhere", self.root / "scan-tree" / "src")
+            os.symlink(self.root / "elsewhere", linked / "src")
         except (OSError, NotImplementedError):
             self.skipTest("symbolic links are unavailable")
         with self.assertRaisesRegex(self.error, "symbolic"):
-            self.materialize()
+            self.materialize(linked)
 
     def test_validates_exact_configuration(self) -> None:
         config = self.root / ".gitleaks.toml"
