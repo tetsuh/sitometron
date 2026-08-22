@@ -232,7 +232,7 @@ def _require_exit(stage: str, observed: int, expected: int, out: TextIO) -> None
         raise ScanError("tool-failure", f"stage {stage} exited {observed}")
     if observed != expected:
         raise ScanError("probe-failure", f"stage {stage} exited {observed}; expected {expected}")
-    print(f"secret-scan: stage={stage} exit={observed} ok", file=out)
+    print(f"sitometron-scan: stage={stage} exit={observed} ok", file=out)
 
 
 def execute(
@@ -247,13 +247,13 @@ def execute(
     if not repository.is_dir():
         raise ScanError("policy-failure", "repository path is not a directory")
     assert_head(repository, options.expected_head, run_process)
-    print(f"secret-scan: stage=head-assertion head={options.expected_head} ok", file=out)
+    print(f"sitometron-scan: stage=head-assertion head={options.expected_head} ok", file=out)
     progress.stage = "materialization"
     blobs = enumerate_tracked_blobs(repository, run_process)
     scan_tree = workspace / "scan-tree"
     scan_tree.mkdir()
     count = materialize_blobs(repository, blobs, scan_tree, run_process)
-    print(f"secret-scan: stage=materialization blobs={count} ok", file=out)
+    print(f"sitometron-scan: stage=materialization blobs={count} ok", file=out)
     progress.stage = "configuration"
     try:
         pin = acquire_gitleaks.read_tool_pin(scan_tree / "tools")
@@ -261,7 +261,7 @@ def execute(
         raise ScanError("policy-failure", str(error)) from error
     configuration = scan_tree / CONFIGURATION_FILE
     validate_configuration(configuration)
-    print(f"secret-scan: stage=configuration version={pin.version} ok", file=out)
+    print(f"sitometron-scan: stage=configuration version={pin.version} ok", file=out)
     progress.stage = "acquisition"
     tool_directory = workspace / "tool"
     tool_directory.mkdir()
@@ -269,7 +269,7 @@ def execute(
         application = acquire_gitleaks.acquire(pin, tool_directory, fetch=fetch, run_process=run_process)
     except acquire_gitleaks.AcquisitionError as error:
         raise ScanError("acquisition-failure", str(error)) from error
-    print(f"secret-scan: stage=acquisition version={pin.version} ok", file=out)
+    print(f"sitometron-scan: stage=acquisition version={pin.version} ok", file=out)
     ignore_file = workspace / "empty.gitleaksignore"
     ignore_file.touch(mode=0o600, exist_ok=False)
     canary = synthetic_canary()
@@ -293,7 +293,7 @@ def execute(
     progress.stage = "repository"
     observed = _scan(application, scan_tree, configuration, ignore_file, workspace, run_process)
     if observed == EXIT_CLEAN:
-        print("secret-scan: stage=repository exit=0 category=clean", file=out)
+        print("sitometron-scan: stage=repository exit=0 category=clean", file=out)
         return EXIT_CLEAN
     if observed == FINDING_FLAG_EXIT:
         raise ScanError("finding", "repository scan reported at least one finding")
@@ -316,7 +316,7 @@ def run(
             return execute(options, Path(name).resolve(), run_process, fetch, stdout, progress)
     except ScanError as error:
         print(
-            f"secret-scan: stage={progress.stage} category={error.category} detail={str(error)[:200]}",
+            f"sitometron-scan: stage={progress.stage} category={error.category} detail={str(error)[:200]}",
             file=stderr,
         )
         return EXIT_FINDING if error.category == "finding" else EXIT_FAILURE
