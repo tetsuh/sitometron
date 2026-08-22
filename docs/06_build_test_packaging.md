@@ -31,6 +31,7 @@ Phase 0A PR CI requires:
 - clang-format dry-run;
 - clang-tidy 18.1.3 with warnings treated as errors on the frozen tracked translation units;
 - Linux ASan/UBSan with the same CTest name set as `dev-linux`;
+- pinned Gitleaks 8.30.1 secret scanning of the exact event head on Linux;
 - positive and negative core dependency-isolation checks.
 
 The Linux clang-tidy step resolves the absolute `clang-tidy-18` application and runs the
@@ -45,8 +46,31 @@ CTest-name parity with the 36-test `dev-linux` baseline. It runs without suppres
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
-Before the Phase 0A Gate closes, add documentation/link validation and secret scanning. Later Gate
-Issues own the remaining qualification lanes.
+The Linux secret-scan step checks out the exact pull-request head or push head a second time
+without persisted credentials and runs the standard-library-only `tools/run_secret_scan.py` helper
+against it. The helper asserts that `HEAD` equals the event-selected commit, materializes only
+tracked regular-file blobs (modes `100644`/`100755`) into a run-owned tree, and validates the
+repository-owned pins `tools/gitleaks-tool-version.txt` and `tools/gitleaks-linux-x64.sha256`
+plus `.gitleaks.toml` from that tree. `tools/acquire_gitleaks.py` then downloads the official
+Gitleaks 8.30.1 Linux x64 archive through at most two HTTPS redirects on `github.com` and
+`release-assets.githubusercontent.com`, verifies the SHA-256 pin, inspects raw tar headers,
+extracts only the `gitleaks` executable into the run-owned directory, and requires the reported
+version to equal the pin. Every invocation uses `gitleaks dir` with `--no-banner`, `--no-color`,
+`--redact=100`, `--ignore-gitleaks-allow`, an explicit empty run-owned ignore file, the
+materialized configuration, and `--exit-code 1`. Before the repository scan, ephemeral probes
+built outside Git require the synthetic canary to exit `1`, a one-character near-match to exit
+`0`, an inline `gitleaks:allow` canary to exit `1`, and a canary whose fingerprint is listed in a
+`.gitleaksignore` at the process working directory to exit `1`. Gitleaks 8.30.1 still honors a
+`.gitleaksignore` at the scanned tree root even when an explicit ignore path is given, so the helper
+fails closed when any tracked path is named `.gitleaksignore`; the materialized tree therefore
+never contains one. Repository exit `0` is clean, exit `1` is a finding, and any other exit or
+process-start failure is a tool failure; the helper returns `0`, `1`, or `2` respectively, prints
+only bounded stage/category lines, writes no report, and removes every run-owned file. The
+configuration extends the built-in rules with exactly one canary rule and permits no allowlist or
+other suppression; any exception requires an owner re-freeze.
+
+Before the Phase 0A Gate closes, add documentation/link validation. Later Gate Issues own the
+remaining qualification lanes.
 
 ## 3. Test policy
 
@@ -76,6 +100,11 @@ schema registry, local reference resolution, known formats, and instances.
 `tools/validate_core_contract.py` applies it to every core schema plus the contract and vector
 documents. Contract-specific checks remain in their own validators; generic JSON Schema validation
 does not interpret project extension keywords.
+
+The same `unittest` discovery runs the network-free contract tests for `tools/run_clang_tidy.py`,
+`tools/acquire_gitleaks.py`, and `tools/run_secret_scan.py` on Linux and native Windows. Those
+tests inject HTTP, subprocess, and filesystem seams and never download a tool or scan real
+history.
 
 ## 4. Requirement-to-test mapping
 

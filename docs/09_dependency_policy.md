@@ -40,9 +40,23 @@ or Conan. CI provisions the exact `uv` and Python versions outside project CMake
 Phase 0A permits repository-owned Python standard-library development-analysis and governance
 scripts in addition to the pinned development-time Draft 2020-12 schema environment. These scripts
 use the interpreter already provisioned by CI, add no package, and cannot become a project-CMake,
-runtime, product-build, adapter, or acquisition dependency. Issue #37 owns only the clang-tidy
-analysis helper; Issue #39 owns later governance-validator implementation. Runtime or product-build
-use requires a separately reviewed decision.
+runtime, product-build, adapter, or acquisition dependency. Issue #37 owns the clang-tidy
+analysis helper, Issue #38 owns the Gitleaks acquisition and secret-scan helpers, and Issue #39
+owns later governance-validator implementation. Runtime or product-build use requires a
+separately reviewed decision.
+
+## Development-time security tooling
+
+Gitleaks is a pinned, CI-only, Linux-only development tool and not a project dependency. The
+repository owns its identity in `tools/gitleaks-tool-version.txt` (`8.30.1`) and
+`tools/gitleaks-linux-x64.sha256`; helper code reads and byte-validates those files instead of
+repeating the literals. Linux CI downloads the official release archive from the frozen
+`github.com` release URL, permits at most two HTTPS redirects whose targets are limited to
+`github.com` and `release-assets.githubusercontent.com`, verifies the SHA-256 pin before opening the archive, extracts only the executable into a run-owned
+temporary directory, requires the exact reported version, and removes every downloaded or
+extracted file afterwards. No floating action, package-manager install, repository-local checkout,
+vcpkg manifest entry, project-CMake, runtime, adapter, or Windows acquisition is permitted; a new
+tool version requires a reviewed pin update.
 
 ## CI and caches
 
