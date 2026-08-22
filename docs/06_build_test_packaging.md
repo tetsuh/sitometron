@@ -59,8 +59,11 @@ version to equal the pin. Every invocation uses `gitleaks dir` with `--no-banner
 `--redact=100`, `--ignore-gitleaks-allow`, an explicit empty run-owned ignore file, the
 materialized configuration, and `--exit-code 1`. Before the repository scan, ephemeral probes
 built outside Git require the synthetic canary to exit `1`, a one-character near-match to exit
-`0`, an inline `gitleaks:allow` canary to exit `1`, and a canary with a matching `.gitleaksignore`
-entry to exit `1`. Repository exit `0` is clean, exit `1` is a finding, and any other exit or
+`0`, an inline `gitleaks:allow` canary to exit `1`, and a canary whose fingerprint is listed in a
+`.gitleaksignore` at the process working directory to exit `1`. Gitleaks 8.30.1 still honors a
+`.gitleaksignore` at the scanned tree root even when an explicit ignore path is given, so the helper
+fails closed when any tracked path is named `.gitleaksignore`; the materialized tree therefore
+never contains one. Repository exit `0` is clean, exit `1` is a finding, and any other exit or
 process-start failure is a tool failure; the helper returns `0`, `1`, or `2` respectively, prints
 only bounded stage/category lines, writes no report, and removes every run-owned file. The
 configuration extends the built-in rules with exactly one canary rule and permits no allowlist or

@@ -44,6 +44,7 @@ RECORD_PATTERN = re.compile(rb"\A([0-7]{6}) (blob|commit|tree) ([0-9a-f]{40})\t(
 INCLUDED_MODES = frozenset({"100644", "100755"})
 EXCLUDED_MODES = frozenset({"120000", "160000"})
 PROBE_FILE = "probe.txt"
+IGNORE_FILE = ".gitleaksignore"
 FINDING_FLAG_EXIT = 1
 GITLEAKS_OPTIONS = ("--no-banner", "--no-color", "--redact=100", "--ignore-gitleaks-allow")
 ProcessRunner = acquire_gitleaks.ProcessRunner
@@ -116,6 +117,8 @@ def _validate_path(raw: bytes) -> str:
     parts = path.split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise ScanError("policy-failure", "tracked path contains an empty, dot, or dot-dot component")
+    if parts[-1] == IGNORE_FILE:
+        raise ScanError("policy-failure", "tracked suppression file is not permitted")
     return path
 
 
@@ -204,17 +207,14 @@ def validate_configuration(path: Path) -> None:
         raise ScanError("policy-failure", f"{CONFIGURATION_FILE} canary rule differs from the frozen rule")
 
 
-def _write_probe(directory: Path, line: str, ignore_lines: Sequence[str] = ()) -> Path:
+def _write_probe(directory: Path, line: str) -> Path:
     directory.mkdir()
-    probe = directory / PROBE_FILE
-    probe.write_text(line + "\n", encoding="utf-8")
-    if ignore_lines:
-        (directory / ".gitleaksignore").write_text("".join(f"{item}\n" for item in ignore_lines), encoding="utf-8")
+    (directory / PROBE_FILE).write_text(line + "\n", encoding="utf-8")
     return directory
 
 
 def _scan(
-    application: Path, target: Path, configuration: Path, ignore_file: Path, workspace: Path,
+    application: Path, target: Path, configuration: Path, ignore_file: Path, cwd: Path,
     run_process: ProcessRunner,
 ) -> int:
     if ignore_file.stat().st_size != 0:
@@ -223,7 +223,7 @@ def _scan(
         str(application), "dir", str(target), *GITLEAKS_OPTIONS, "--gitleaks-ignore-path", str(ignore_file),
         "--config", str(configuration), "--exit-code", str(FINDING_FLAG_EXIT),
     ]
-    result = _run(run_process, arguments, "tool-failure", cwd=str(workspace))
+    result = _run(run_process, arguments, "tool-failure", cwd=str(cwd))
     return int(result.returncode)
 
 
@@ -274,20 +274,21 @@ def execute(
     ignore_file.touch(mode=0o600, exist_ok=False)
     canary = synthetic_canary()
     probe_line = f'probe = "{canary}"'
-    ignore_probe = workspace / "probe-ignore-state"
-    fingerprints = [
-        f"{ignore_probe / PROBE_FILE}:{CANARY_RULE_ID}:1",
-        f"{PROBE_FILE}:{CANARY_RULE_ID}:1",
-    ]
+    ignore_probe = _write_probe(workspace / "probe-ignore-state", probe_line)
+    ignore_cwd = workspace / "probe-ignore-state-cwd"
+    ignore_cwd.mkdir()
+    (ignore_cwd / IGNORE_FILE).write_text(
+        f"{ignore_probe / PROBE_FILE}:{CANARY_RULE_ID}:1\n{PROBE_FILE}:{CANARY_RULE_ID}:1\n", encoding="utf-8"
+    )
     probes = [
-        ("probe-positive", _write_probe(workspace / "probe-positive", probe_line), FINDING_FLAG_EXIT),
-        ("probe-near-match", _write_probe(workspace / "probe-near-match", f'probe = "{near_match()}"'), EXIT_CLEAN),
-        ("probe-inline-allow", _write_probe(workspace / "probe-inline-allow", f"{probe_line}  # gitleaks:allow"), FINDING_FLAG_EXIT),
-        ("probe-ignore-state", _write_probe(ignore_probe, probe_line, fingerprints), FINDING_FLAG_EXIT),
+        ("probe-positive", _write_probe(workspace / "probe-positive", probe_line), workspace, FINDING_FLAG_EXIT),
+        ("probe-near-match", _write_probe(workspace / "probe-near-match", f'probe = "{near_match()}"'), workspace, EXIT_CLEAN),
+        ("probe-inline-allow", _write_probe(workspace / "probe-inline-allow", f"{probe_line}  # gitleaks:allow"), workspace, FINDING_FLAG_EXIT),
+        ("probe-ignore-state", ignore_probe, ignore_cwd, FINDING_FLAG_EXIT),
     ]
-    for stage, target, expected in probes:
+    for stage, target, cwd, expected in probes:
         progress.stage = stage
-        observed = _scan(application, target, configuration, ignore_file, workspace, run_process)
+        observed = _scan(application, target, configuration, ignore_file, cwd, run_process)
         _require_exit(stage, observed, expected, out)
     progress.stage = "repository"
     observed = _scan(application, scan_tree, configuration, ignore_file, workspace, run_process)

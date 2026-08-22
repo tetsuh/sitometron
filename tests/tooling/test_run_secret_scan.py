@@ -50,6 +50,10 @@ def record(mode: str, kind: str, oid: str, path: bytes) -> bytes:
     return f"{mode} {kind} {oid}\t".encode("ascii") + path
 
 
+def kwargs_cwd(kwargs: dict[str, object]) -> object:
+    return kwargs.get("cwd", ".")
+
+
 class FakeRepository:
     def __init__(self, head: str = HEAD) -> None:
         self.head = head
@@ -131,13 +135,18 @@ class FakeProcesses:
             raise OSError("cannot start gitleaks")
         if target.name in self.exit_overrides:
             return FIXTURES.completed(args, self.exit_overrides[target.name])
+        # Gitleaks 8.30.1 always honors <target>/.gitleaksignore; the explicit flag only replaces
+        # the default lookup in the process working directory.
+        ignore_paths = [target / ".gitleaksignore"]
         if "--gitleaks-ignore-path" in flags:
-            ignore_path = Path(flags[flags.index("--gitleaks-ignore-path") + 1])
-            self.ignore_sizes.append(ignore_path.stat().st_size)
+            ignore_paths.append(Path(flags[flags.index("--gitleaks-ignore-path") + 1]))
+            self.ignore_sizes.append(ignore_paths[-1].stat().st_size)
         else:
-            ignore_path = target / ".gitleaksignore"
-        ignored = set(ignore_path.read_text().split()) if ignore_path.is_file() else set()
-        files = sorted(path for path in target.rglob("*") if path.is_file())
+            ignore_paths.append(Path(str(kwargs_cwd(self.calls[-1][1]))) / ".gitleaksignore")
+        ignored = {
+            line for path in ignore_paths if path.is_file() for line in path.read_text().split()
+        }
+        files = sorted(path for path in target.rglob("*") if path.is_file() and path.name != ".gitleaksignore")
         self.scan_snapshots[target.name] = [path.relative_to(target).as_posix() for path in files]
         findings = 0
         for path in files:
@@ -264,6 +273,8 @@ class RunSecretScanTest(unittest.TestCase):
             "dot component": [record("100644", "blob", oid, b"./x")],
             "dotdot component": [record("100644", "blob", oid, b"a/../x")],
             "trailing slash": [record("100644", "blob", oid, b"a/")],
+            "tracked ignore file": [record("100644", "blob", oid, b".gitleaksignore")],
+            "nested ignore file": [record("100644", "blob", oid, b"docs/.gitleaksignore")],
             "empty path": [record("100644", "blob", oid, b"")],
             "unexpected mode": [record("100664", "blob", oid, b"x")],
             "tree record": [record("040000", "tree", oid, b"dir")],
@@ -375,11 +386,15 @@ class RunSecretScanTest(unittest.TestCase):
                 self.assertNotIn(forbidden, flags)
         for args, kwargs in self.processes.calls:
             if args[1] == "dir":
-                self.assertEqual(Path(str(kwargs["cwd"])).parent, self.workspaces)
+                self.assertIn(self.workspaces, Path(str(kwargs["cwd"])).parents)
                 self.assertTrue(kwargs.get("capture_output"))
+        ignore_cwd = Path(str(calls[3][2])).with_name("probe-ignore-state-cwd")
+        self.assertEqual([Path(str(kwargs["cwd"])) for args, kwargs in self.processes.calls
+                          if args[1] == "dir"][3], ignore_cwd)
 
     def test_classifies_failures_and_stops_later_stages(self) -> None:
         cases = {
+            "tracked ignore file": ("ignore", "policy-failure", 0, 0),
             "version pin": ("pin", "policy-failure", 0, 0),
             "configuration": ("config", "policy-failure", 0, 0),
             "checksum": ("checksum", "acquisition-failure", 2, 0),
@@ -396,7 +411,9 @@ class RunSecretScanTest(unittest.TestCase):
         for label, (setup, category, requests, dir_calls) in cases.items():
             with self.subTest(case=label):
                 self.reset()
-                if setup == "pin":
+                if setup == "ignore":
+                    self.repository.add(".gitleaksignore", b"README.md:generic-api-key:1\n")
+                elif setup == "pin":
                     self.repository.add("tools/gitleaks-tool-version.txt", b"8.30.1")
                 elif setup == "config":
                     self.repository.add(".gitleaks.toml", b'title = "x"\n')
