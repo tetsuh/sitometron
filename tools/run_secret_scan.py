@@ -122,26 +122,31 @@ def _validate_path(raw: bytes) -> str:
     return path
 
 
+def _parse_record(record: bytes) -> tuple[str, TrackedBlob | None]:
+    """Return the validated path and its blob, or ``None`` for an excluded symlink/gitlink."""
+    match = RECORD_PATTERN.match(record)
+    if match is None:
+        raise ScanError("policy-failure", "tracked-object record is malformed")
+    mode, kind, oid = (match.group(index).decode("ascii") for index in (1, 2, 3))
+    path = _validate_path(match.group(4))
+    if mode in EXCLUDED_MODES:
+        return path, None
+    if mode not in INCLUDED_MODES or kind != "blob":
+        raise ScanError("policy-failure", f"tracked object has unexpected mode/type {mode} {kind}")
+    return path, TrackedBlob(mode=mode, oid=oid, path=path)
+
+
 def enumerate_tracked_blobs(repository: Path, run_process: ProcessRunner) -> list[TrackedBlob]:
     output = _git(repository, run_process, "ls-tree", "-r", "-z", "HEAD")
     blobs: list[TrackedBlob] = []
     seen: set[str] = set()
-    for record in output.split(b"\0"):
-        if not record:
-            continue
-        match = RECORD_PATTERN.match(record)
-        if match is None:
-            raise ScanError("policy-failure", "tracked-object record is malformed")
-        mode, kind, oid = (match.group(index).decode("ascii") for index in (1, 2, 3))
-        path = _validate_path(match.group(4))
+    for record in filter(None, output.split(b"\0")):
+        path, blob = _parse_record(record)
         if path in seen:
             raise ScanError("policy-failure", "tracked path is listed twice")
         seen.add(path)
-        if mode in EXCLUDED_MODES:
-            continue
-        if mode not in INCLUDED_MODES or kind != "blob":
-            raise ScanError("policy-failure", f"tracked object has unexpected mode/type {mode} {kind}")
-        blobs.append(TrackedBlob(mode=mode, oid=oid, path=path))
+        if blob is not None:
+            blobs.append(blob)
     if not blobs:
         raise ScanError("policy-failure", "no tracked regular-file blobs were enumerated")
     return blobs
@@ -165,7 +170,9 @@ def materialize_blobs(
         if result.returncode != 0:
             raise ScanError("policy-failure", f"git cat-file failed with exit {result.returncode}")
         data = result.stdout if isinstance(result.stdout, bytes) else str(result.stdout).encode("utf-8")
-        if hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest() != blob.oid:
+        # Git object IDs are SHA-1 by repository format; this is an identity check, not a security hash.
+        digest = hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+        if digest != blob.oid:
             raise ScanError("policy-failure", "materialized blob does not match its enumerated object")
         parts = PurePosixPath(blob.path).parts
         directory = scan_root

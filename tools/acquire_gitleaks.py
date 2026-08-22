@@ -39,9 +39,9 @@ MAX_MEMBER_BYTES = 32 * 1024 * 1024
 EXPECTED_MEMBERS = frozenset({"LICENSE", "README.md", "gitleaks"})
 EXECUTABLE_MEMBER = "gitleaks"
 TAR_BLOCK = 512
-VERSION_PATTERN = re.compile(rb"\A([0-9]+\.[0-9]+\.[0-9]+)\n\Z")
-CHECKSUM_PATTERN = re.compile(rb"\A([0-9a-f]{64})  ([A-Za-z0-9._-]+)\n\Z")
-DECIMAL_PATTERN = re.compile(r"\A(?:0|[1-9][0-9]*)\Z")
+VERSION_PATTERN = re.compile(rb"\A(\d+\.\d+\.\d+)\n\Z")
+CHECKSUM_PATTERN = re.compile(rb"\A([0-9a-f]{64}) {2}([A-Za-z0-9._-]+)\n\Z")
+DECIMAL_PATTERN = re.compile(r"\A(?:0|[1-9]\d*)\Z", re.ASCII)
 REGULAR_TYPEFLAGS = frozenset({b"0", b"\0"})
 TYPEFLAG_NAMES = {
     b"1": "hard link", b"2": "symbolic link", b"3": "character device",
@@ -138,8 +138,12 @@ def validate_target(url: str) -> str:
 def open_https(url: str, timeout: float = 60.0) -> http.client.HTTPResponse:
     """Issue one GET without following redirects; callers enforce the policy."""
     parts = urlsplit(url)
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
     connection = http.client.HTTPSConnection(
-        parts.hostname or "", parts.port or 443, timeout=timeout, context=ssl.create_default_context()
+        parts.hostname or "", parts.port or 443, timeout=timeout, context=context
     )
     target = parts.path + (f"?{parts.query}" if parts.query else "")
     connection.request(
@@ -259,6 +263,23 @@ def _member_name(block: bytes) -> str:
     return name
 
 
+def _validate_header(block: bytes) -> tuple[str, int, int]:
+    """Return ``(name, size, mode)`` for one validated regular-file tar header."""
+    checksum = sum(block[:148]) + sum(b" " * 8) + sum(block[156:])
+    if _octal_field(block, 148, 156, "header checksum") != checksum:
+        raise AcquisitionError("archive header checksum mismatch")
+    typeflag = block[156:157]
+    if typeflag not in REGULAR_TYPEFLAGS:
+        kind = TYPEFLAG_NAMES.get(typeflag, "unsupported entry")
+        raise AcquisitionError(f"archive member type is not a regular file: {kind}")
+    if block[157:257].rstrip(b"\0"):
+        raise AcquisitionError("archive regular member carries a link target")
+    name = _member_name(block)
+    size = _octal_field(block, 124, 136, "size")
+    mode = _octal_field(block, 100, 108, "mode")
+    return name, size, mode
+
+
 def inspect_archive(path: Path) -> bytes:
     """Validate every raw tar header and return the bytes of the ``gitleaks`` member."""
     seen: set[str] = set()
@@ -269,30 +290,17 @@ def inspect_archive(path: Path) -> bytes:
     except OSError as error:
         raise AcquisitionError("archive cannot be opened") from error
     with stream:
-        while True:
-            block = _read_exact(stream, TAR_BLOCK, "a member header")
-            if block == b"\0" * TAR_BLOCK:
-                break
-            checksum = sum(block[:148]) + sum(b" " * 8) + sum(block[156:])
-            if _octal_field(block, 148, 156, "header checksum") != checksum:
-                raise AcquisitionError("archive header checksum mismatch")
-            typeflag = block[156:157]
-            if typeflag not in REGULAR_TYPEFLAGS:
-                kind = TYPEFLAG_NAMES.get(typeflag, "unsupported entry")
-                raise AcquisitionError(f"archive member type is not a regular file: {kind}")
-            if block[157:257].rstrip(b"\0"):
-                raise AcquisitionError("archive regular member carries a link target")
-            name = _member_name(block)
+        while (block := _read_exact(stream, TAR_BLOCK, "a member header")) != b"\0" * TAR_BLOCK:
+            name, size, mode = _validate_header(block)
             if name in seen:
                 raise AcquisitionError("archive contains a duplicate member")
-            size = _octal_field(block, 124, 136, "size")
             total += size
             if size > MAX_MEMBER_BYTES or total > MAX_MEMBER_BYTES:
                 raise AcquisitionError("archive member or total size exceeds the permitted bound")
             data = _read_exact(stream, size, "member content")
             _read_exact(stream, (-size) % TAR_BLOCK, "member padding")
             if name == EXECUTABLE_MEMBER:
-                if not _octal_field(block, 100, 108, "mode") & 0o100:
+                if not mode & 0o100:
                     raise AcquisitionError("archive gitleaks member is not owner-executable")
                 executable = data
             seen.add(name)
