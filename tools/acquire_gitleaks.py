@@ -285,6 +285,18 @@ def _validate_header(block: bytes) -> tuple[str, int, int]:
     return name, size, mode
 
 
+def _consume_archive_end(stream: Any, zero_block: bytes) -> None:
+    end_block = _read_exact(stream, TAR_BLOCK, "the complete archive end marker")
+    if end_block != zero_block:
+        raise AcquisitionError("archive has an incomplete end marker")
+    try:
+        while trailing := stream.read(65536):
+            if any(trailing):
+                raise AcquisitionError("archive contains nonzero data after its end marker")
+    except (OSError, EOFError) as error:
+        raise AcquisitionError("archive has unreadable trailing data") from error
+
+
 def inspect_archive(path: Path) -> bytes:
     """Validate every raw tar header and return the bytes of the ``gitleaks`` member."""
     seen: set[str] = set()
@@ -299,15 +311,7 @@ def inspect_archive(path: Path) -> bytes:
         while True:
             block = _read_exact(stream, TAR_BLOCK, "a member header")
             if block == zero_block:
-                end_block = _read_exact(stream, TAR_BLOCK, "the complete archive end marker")
-                if end_block != zero_block:
-                    raise AcquisitionError("archive has an incomplete end marker")
-                try:
-                    while trailing := stream.read(65536):
-                        if any(trailing):
-                            raise AcquisitionError("archive contains nonzero data after its end marker")
-                except (OSError, EOFError) as error:
-                    raise AcquisitionError("archive has unreadable trailing data") from error
+                _consume_archive_end(stream, zero_block)
                 break
             name, size, mode = _validate_header(block)
             if name in seen:
