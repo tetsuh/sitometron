@@ -25,7 +25,6 @@ SIGNED_URL = (
 )
 MIB = 1024 * 1024
 
-
 def load_helper() -> ModuleType:
     spec = importlib.util.spec_from_file_location("acquire_gitleaks", HELPER)
     if spec is None or spec.loader is None:
@@ -34,7 +33,6 @@ def load_helper() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
 
 def tar_header(
     name: bytes,
@@ -62,11 +60,9 @@ def tar_header(
     block[148:156] = checksum_field or f"{sum(block):06o}\0 ".encode("ascii")
     return bytes(block)
 
-
 def tar_member(name: bytes, data: bytes, **header_options: object) -> bytes:
     header = tar_header(name, len(data), **header_options)  # type: ignore[arg-type]
     return header + data + b"\0" * ((-len(data)) % 512)
-
 
 def build_archive(
     members: list[bytes], *, terminate: bool = True, terminator_blocks: int = 2,
@@ -77,10 +73,7 @@ def build_archive(
         payload += b"\0" * (512 * terminator_blocks)
     return gzip.compress(payload + trailing)
 
-
 GITLEAKS_BODY = b"#!/bin/sh\nprintf '%s\\n' 8.30.1\n"
-
-
 def valid_members() -> dict[str, bytes]:
     return {
         "LICENSE": tar_member(b"LICENSE", b"MIT\n"),
@@ -91,7 +84,6 @@ def valid_members() -> dict[str, bytes]:
 
 def valid_archive() -> bytes:
     return build_archive(list(valid_members().values()))
-
 
 class FakeResponse:
     def __init__(self, status: int, headers: list[tuple[str, str]], body: bytes = b"") -> None:
@@ -108,17 +100,14 @@ class FakeResponse:
     def close(self) -> None:
         self.closed = True
 
-
 def ok_response(body: bytes, length: str | None = None) -> FakeResponse:
     headers = [("Content-Type", "application/octet-stream")]
     if length != "":
         headers.append(("Content-Length", length if length is not None else str(len(body))))
     return FakeResponse(200, headers, body)
 
-
 def redirect(location: str | None, status: int = 302) -> FakeResponse:
     return FakeResponse(status, [] if location is None else [("Location", location)])
-
 
 class FakeTransport:
     def __init__(self, responses: dict[str, FakeResponse]) -> None:
@@ -133,7 +122,6 @@ class FakeTransport:
         if isinstance(response, BaseException):
             raise response
         return response
-
 
 def completed(args: list[str], returncode: int = 0, stdout: bytes = b"") -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr=b"")
@@ -457,6 +445,24 @@ class AcquireGitleaksTest(unittest.TestCase):
         with patch.object(Path, "unlink", side_effect=PermissionError("denied")):
             with self.assertRaises(self.error):
                 self.acquire(checksum="0" * 64)
+
+    def test_extraction_cleanup_failure_is_bounded(self) -> None:
+        archive = self.root / ARCHIVE_NAME
+        archive.write_bytes(valid_archive())
+        target = self.root / "extract"
+        target.mkdir()
+        with patch.object(self.module.os, "chmod", side_effect=OSError("denied")):
+            with patch.object(Path, "unlink", side_effect=PermissionError("denied")):
+                with self.assertRaises(self.error):
+                    self.module.extract_gitleaks(archive, target)
+        self.assertTrue((target / "gitleaks").exists())
+
+    def test_successful_archive_cleanup_failure_is_bounded(self) -> None:
+        with patch.object(Path, "unlink", side_effect=PermissionError("denied")):
+            with self.assertRaises(self.error) as raised:
+                self.acquire()
+        self.assertIn("cannot remove run-owned file", str(raised.exception))
+        self.assertEqual(sorted(path.name for path in (self.root / "run").iterdir()), ["gitleaks", ARCHIVE_NAME])
 
     def test_acquire_runs_every_stage_in_order(self) -> None:
         application, transport, runner, directory = self.acquire()
