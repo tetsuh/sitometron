@@ -7,7 +7,6 @@ HTTPS redirect policy, verifies the checksum, inspects the raw tar headers,
 extracts only the ``gitleaks`` executable, and requires the exact reported
 version. No stage runs after a prerequisite stage fails.
 """
-
 from __future__ import annotations
 
 import gzip
@@ -54,7 +53,6 @@ TYPEFLAG_NAMES = {
 class AcquisitionError(RuntimeError):
     """A fail-closed acquisition error; messages never contain URLs or payloads."""
 
-
 class HttpResponse(Protocol):
     status: int
     headers: Any
@@ -74,7 +72,6 @@ class ToolPin:
     archive_name: str
     sha256: str
     url: str
-
 
 def _read_pin_file(path: Path) -> bytes:
     try:
@@ -165,6 +162,14 @@ def _content_length(headers: Any) -> int:
     return length
 
 
+def _remove(path: Path, primary: BaseException | None = None) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        if primary is None:
+            raise AcquisitionError(f"cannot remove run-owned file: {error.strerror}") from error
+
+
 def _stream_to_file(response: HttpResponse, destination: Path, length: int) -> None:
     received = 0
     try:
@@ -183,11 +188,12 @@ def _stream_to_file(response: HttpResponse, destination: Path, length: int) -> N
                 handle.write(chunk)
         if received != length:
             raise AcquisitionError("response body is shorter than its declared Content-Length")
-    except (AcquisitionError, OSError) as error:
-        destination.unlink(missing_ok=True)
-        if isinstance(error, OSError):
-            raise AcquisitionError(f"cannot write download destination: {error.strerror}") from error
-        raise
+    except (AcquisitionError, OSError, http.client.HTTPException) as error:
+        primary = error if isinstance(error, AcquisitionError) else AcquisitionError(
+            f"cannot read or write download destination: {type(error).__name__}"
+        )
+        _remove(destination, primary)
+        raise primary from error
 
 
 def _next_target(headers: Any) -> str:
@@ -206,6 +212,7 @@ def download(url: str, destination: Path, fetch: Fetch = open_https) -> None:
             response = fetch(current)
         except (OSError, http.client.HTTPException) as error:
             raise AcquisitionError(f"download request failed: {type(error).__name__}") from error
+        failure: BaseException | None = None
         try:
             if response.status in REDIRECT_STATUSES:
                 redirects += 1
@@ -217,8 +224,15 @@ def download(url: str, destination: Path, fetch: Fetch = open_https) -> None:
                 raise AcquisitionError(f"download received HTTP status {response.status}")
             _stream_to_file(response, destination, _content_length(response.headers))
             return
+        except AcquisitionError as error:
+            failure = error
+            raise
         finally:
-            response.close()
+            try:
+                response.close()
+            except (OSError, http.client.HTTPException) as error:
+                if failure is None:
+                    raise AcquisitionError("download response could not close") from error
 
 
 def verify_checksum(path: Path, expected_sha256: str) -> None:
@@ -297,6 +311,20 @@ def _consume_archive_end(stream: Any, zero_block: bytes) -> None:
         raise AcquisitionError("archive has unreadable trailing data") from error
 
 
+def _read_member(stream: Any, block: bytes, seen: set[str], total: int) -> tuple[str, bytes, int]:
+    name, size, mode = _validate_header(block)
+    if name in seen:
+        raise AcquisitionError("archive contains a duplicate member")
+    total += size
+    if size > MAX_MEMBER_BYTES or total > MAX_MEMBER_BYTES:
+        raise AcquisitionError("archive member or total size exceeds the permitted bound")
+    data = _read_exact(stream, size, "member content")
+    _read_exact(stream, (-size) % TAR_BLOCK, "member padding")
+    if name == EXECUTABLE_MEMBER and not mode & 0o100:
+        raise AcquisitionError("archive gitleaks member is not owner-executable")
+    return name, data, total
+
+
 def inspect_archive(path: Path) -> bytes:
     """Validate every raw tar header and return the bytes of the ``gitleaks`` member."""
     seen: set[str] = set()
@@ -313,17 +341,8 @@ def inspect_archive(path: Path) -> bytes:
             if block == zero_block:
                 _consume_archive_end(stream, zero_block)
                 break
-            name, size, mode = _validate_header(block)
-            if name in seen:
-                raise AcquisitionError("archive contains a duplicate member")
-            total += size
-            if size > MAX_MEMBER_BYTES or total > MAX_MEMBER_BYTES:
-                raise AcquisitionError("archive member or total size exceeds the permitted bound")
-            data = _read_exact(stream, size, "member content")
-            _read_exact(stream, (-size) % TAR_BLOCK, "member padding")
+            name, data, total = _read_member(stream, block, seen, total)
             if name == EXECUTABLE_MEMBER:
-                if not mode & 0o100:
-                    raise AcquisitionError("archive gitleaks member is not owner-executable")
                 executable = data
             seen.add(name)
     if seen != EXPECTED_MEMBERS or executable is None:
@@ -362,7 +381,7 @@ def require_version(application: Path, version: str, run_process: ProcessRunner 
         raise AcquisitionError(f"gitleaks version command could not start: {error.strerror}") from error
     if result.returncode != 0:
         raise AcquisitionError(f"gitleaks version command failed with exit {result.returncode}")
-    if _text(result.stdout).strip() != version:
+    if result.stdout != (version + "\n").encode("ascii"):
         raise AcquisitionError("gitleaks reported a version that differs from the repository pin")
 
 
@@ -382,8 +401,8 @@ def acquire(
         extract_gitleaks(archive, directory)
         archive.unlink()
         require_version(application, pin.version, run_process)
-    except AcquisitionError:
+    except AcquisitionError as error:
         for leftover in (archive, application):
-            leftover.unlink(missing_ok=True)
+            _remove(leftover, error)
         raise
     return application

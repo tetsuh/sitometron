@@ -8,9 +8,9 @@ import sys
 import tempfile
 import unittest
 from email.message import Message
+from unittest.mock import patch
 from pathlib import Path
 from types import ModuleType
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 HELPER = REPOSITORY_ROOT / "tools" / "acquire_gitleaks.py"
 VERSION = "8.30.1"
@@ -129,7 +129,10 @@ class FakeTransport:
         self.requests.append(url)
         if url not in self.responses:
             raise AssertionError(f"unexpected request: {url}")
-        return self.responses[url]
+        response = self.responses[url]
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 def completed(args: list[str], returncode: int = 0, stdout: bytes = b"") -> subprocess.CompletedProcess:
@@ -163,7 +166,6 @@ class AcquireGitleaksPresenceTest(unittest.TestCase):
     def test_helper_exists(self) -> None:
         self.assertTrue(HELPER.is_file(), "tools/acquire_gitleaks.py is absent")
 
-
 @unittest.skipUnless(HELPER.is_file(), "acquisition helper is not implemented")
 class AcquireGitleaksTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -185,16 +187,8 @@ class AcquireGitleaksTest(unittest.TestCase):
 
     def test_rejects_malformed_pin_bytes(self) -> None:
         digest = "a" * 64
-        malformed_versions = [
-            b"8.30.1", b"8.30.1\r\n", b" 8.30.1\n", b"8.30.1\n\n", b"v8.30.1\n", b"",
-            b"8.30\n", b"8.30.1\n8.30.1\n", b"\xef\xbb\xbf8.30.1\n", b"8.30.1 \n",
-        ]
-        malformed_checksums = [
-            f"{digest.upper()}  {ARCHIVE_NAME}\n", f"{digest} {ARCHIVE_NAME}\n",
-            f"{digest}  other.tar.gz\n", f"{digest}  {ARCHIVE_NAME}", f"{digest}  {ARCHIVE_NAME}\r\n",
-            f"{digest}  {ARCHIVE_NAME}\n\n", f"{digest[:63]}  {ARCHIVE_NAME}\n",
-            f"{digest}   {ARCHIVE_NAME}\n", f"{digest}  {ARCHIVE_NAME} \n", "",
-        ]
+        malformed_versions = [b"8.30.1", b"8.30.1\r\n", b" 8.30.1\n", b"8.30.1\n\n", b"v8.30.1\n", b"", b"8.30\n", b"8.30.1\n8.30.1\n", b"\xef\xbb\xbf8.30.1\n", b"8.30.1 \n"]
+        malformed_checksums = [f"{digest.upper()}  {ARCHIVE_NAME}\n", f"{digest} {ARCHIVE_NAME}\n", f"{digest}  other.tar.gz\n", f"{digest}  {ARCHIVE_NAME}", f"{digest}  {ARCHIVE_NAME}\r\n", f"{digest}  {ARCHIVE_NAME}\n\n", f"{digest[:63]}  {ARCHIVE_NAME}\n", f"{digest}   {ARCHIVE_NAME}\n", f"{digest}  {ARCHIVE_NAME} \n", ""]
         for version in malformed_versions:
             with self.subTest(version=version):
                 write_pins(self.root / "tools", version=version)
@@ -307,6 +301,18 @@ class AcquireGitleaksTest(unittest.TestCase):
                     "no archive may remain after a failed download",
                 )
 
+    def test_stream_http_failure_is_bounded_and_cleans_partial_file(self) -> None:
+        module = self.module
+        class Broken(FakeResponse):
+            def read(self, amount: int = -1) -> bytes:
+                raise module.http.client.IncompleteRead(b"x", 2)
+
+        destination = self.root / "archive.tar.gz"
+        response = Broken(200, [("Content-Length", "1")], b"x")
+        with self.assertRaises(self.error):
+            self.module.download(INITIAL_URL, destination, fetch=FakeTransport({INITIAL_URL: response}))
+        self.assertFalse(destination.exists())
+
     def test_write_failures_are_acquisition_errors_and_leave_no_file(self) -> None:
         destination = self.root / "missing-directory" / "archive.tar.gz"
         transport = FakeTransport({INITIAL_URL: ok_response(valid_archive())})
@@ -360,32 +366,14 @@ class AcquireGitleaksTest(unittest.TestCase):
             return build_archive(list(members.values()))
 
         cases = {
-            "missing member": build_archive([base["LICENSE"], base["gitleaks"]]),
-            "extra member": build_archive([*base.values(), tar_member(b"CHANGELOG", b"x")]),
-            "duplicate member": build_archive([*base.values(), base["LICENSE"]]),
-            "absolute name": with_member("gitleaks", tar_member(b"/gitleaks", GITLEAKS_BODY, mode=0o755)),
-            "separator name": with_member("gitleaks", tar_member(b"bin/gitleaks", GITLEAKS_BODY, mode=0o755)),
-            "backslash name": with_member("gitleaks", tar_member(b"bin\\gitleaks", GITLEAKS_BODY, mode=0o755)),
-            "dot name": with_member("LICENSE", tar_member(b".", b"x")),
-            "dotdot name": with_member("LICENSE", tar_member(b"..", b"x")),
-            "prefix name": with_member("gitleaks", tar_member(b"gitleaks", GITLEAKS_BODY, mode=0o755, prefix=b"bin")),
-            "directory": with_member("LICENSE", tar_member(b"LICENSE", b"", typeflag=b"5")),
-            "symlink": with_member("gitleaks", tar_member(b"gitleaks", b"", typeflag=b"2", linkname=b"/bin/sh")),
-            "hard link": with_member("gitleaks", tar_member(b"gitleaks", b"", typeflag=b"1", linkname=b"LICENSE")),
-            "character device": with_member("LICENSE", tar_member(b"LICENSE", b"", typeflag=b"3")),
-            "block device": with_member("LICENSE", tar_member(b"LICENSE", b"", typeflag=b"4")),
-            "fifo": with_member("LICENSE", tar_member(b"LICENSE", b"", typeflag=b"6")),
-            "contiguous": with_member("LICENSE", tar_member(b"LICENSE", b"x", typeflag=b"7")),
-            "unknown type": with_member("LICENSE", tar_member(b"LICENSE", b"x", typeflag=b"s")),
-            "pax extended": build_archive([tar_member(b"PaxHeader", b"1 x\n", typeflag=b"x"), *base.values()]),
-            "pax global": build_archive([tar_member(b"pax_global", b"1 x\n", typeflag=b"g"), *base.values()]),
-            "gnu long name": build_archive([tar_member(b"././@LongLink", b"gitleaks\0", typeflag=b"L"), *base.values()]),
-            "sparse": with_member("gitleaks", tar_member(b"gitleaks", GITLEAKS_BODY, typeflag=b"S", mode=0o755)),
-            "link target on regular": with_member("LICENSE", tar_member(b"LICENSE", b"x", linkname=b"other")),
-            "non-executable gitleaks": with_member("gitleaks", tar_member(b"gitleaks", GITLEAKS_BODY, mode=0o644)),
-            "base-256 size": with_member("LICENSE", tar_header(b"LICENSE", 0, size_field=b"\x80" + b"\0" * 11)),
-            "non-octal size": with_member("LICENSE", tar_header(b"LICENSE", 0, size_field=b"zzzzzzzzzzz\0")),
-            "oversized member": with_member("LICENSE", tar_header(b"LICENSE", 32 * MIB + 1)),
+            "missing member": build_archive([base["LICENSE"], base["gitleaks"]]), "extra member": build_archive([*base.values(), tar_member(b"CHANGELOG", b"x")]), "duplicate member": build_archive([*base.values(), base["LICENSE"]]),
+            "absolute name": with_member("gitleaks", tar_member(b"/gitleaks", GITLEAKS_BODY, mode=0o755)), "separator name": with_member("gitleaks", tar_member(b"bin/gitleaks", GITLEAKS_BODY, mode=0o755)), "backslash name": with_member("gitleaks", tar_member(b"bin\\gitleaks", GITLEAKS_BODY, mode=0o755)),
+            "dot name": with_member("LICENSE", tar_member(b".", b"x")), "dotdot name": with_member("LICENSE", tar_member(b"..", b"x")), "prefix name": with_member("gitleaks", tar_member(b"gitleaks", GITLEAKS_BODY, mode=0o755, prefix=b"bin")),
+            "directory": with_member("LICENSE", tar_member(b"LICENSE", b"", typeflag=b"5")), "symlink": with_member("gitleaks", tar_member(b"gitleaks", b"", typeflag=b"2", linkname=b"/bin/sh")), "hard link": with_member("gitleaks", tar_member(b"gitleaks", b"", typeflag=b"1", linkname=b"LICENSE")),
+            "character device": with_member("LICENSE", tar_member(b"LICENSE", b"", typeflag=b"3")), "block device": with_member("LICENSE", tar_member(b"LICENSE", b"", typeflag=b"4")), "fifo": with_member("LICENSE", tar_member(b"LICENSE", b"", typeflag=b"6")), "contiguous": with_member("LICENSE", tar_member(b"LICENSE", b"x", typeflag=b"7")), "unknown type": with_member("LICENSE", tar_member(b"LICENSE", b"x", typeflag=b"s")),
+            "pax extended": build_archive([tar_member(b"PaxHeader", b"1 x\n", typeflag=b"x"), *base.values()]), "pax global": build_archive([tar_member(b"pax_global", b"1 x\n", typeflag=b"g"), *base.values()]), "gnu long name": build_archive([tar_member(b"././@LongLink", b"gitleaks\0", typeflag=b"L"), *base.values()]),
+            "sparse": with_member("gitleaks", tar_member(b"gitleaks", GITLEAKS_BODY, typeflag=b"S", mode=0o755)), "link target on regular": with_member("LICENSE", tar_member(b"LICENSE", b"x", linkname=b"other")), "non-executable gitleaks": with_member("gitleaks", tar_member(b"gitleaks", GITLEAKS_BODY, mode=0o644)),
+            "base-256 size": with_member("LICENSE", tar_header(b"LICENSE", 0, size_field=b"\x80" + b"\0" * 11)), "non-octal size": with_member("LICENSE", tar_header(b"LICENSE", 0, size_field=b"zzzzzzzzzzz\0")), "oversized member": with_member("LICENSE", tar_header(b"LICENSE", 32 * MIB + 1)),
             "oversized total": build_archive([
                 tar_member(b"LICENSE", big), tar_member(b"README.md", big),
                 tar_member(b"gitleaks", big, mode=0o755),
@@ -439,6 +427,8 @@ class AcquireGitleaksTest(unittest.TestCase):
         failures = [
             FakeProcessRunner(stdout=b"v8.30.1\n"), FakeProcessRunner(stdout=b"8.30.2\n"),
             FakeProcessRunner(stdout=b""), FakeProcessRunner(stdout=b"8.30.1\n8.30.1\n"),
+            FakeProcessRunner(stdout=b" 8.30.1\n"), FakeProcessRunner(stdout=b"8.30.1 \n"),
+            FakeProcessRunner(stdout=b"8.30.1\r\n"),
             FakeProcessRunner(returncode=1), FakeProcessRunner(start_error=True),
         ]
         for failing in failures:
@@ -462,6 +452,11 @@ class AcquireGitleaksTest(unittest.TestCase):
         directory.mkdir()
         result = self.module.acquire(pin, directory, fetch=transport, run_process=runner)
         return result, transport, runner, directory
+
+    def test_cleanup_failure_preserves_bounded_acquisition_error(self) -> None:
+        with patch.object(Path, "unlink", side_effect=PermissionError("denied")):
+            with self.assertRaises(self.error):
+                self.acquire(checksum="0" * 64)
 
     def test_acquire_runs_every_stage_in_order(self) -> None:
         application, transport, runner, directory = self.acquire()

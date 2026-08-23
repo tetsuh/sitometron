@@ -9,7 +9,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 HELPER = REPOSITORY_ROOT / "tools" / "run_secret_scan.py"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -43,7 +42,8 @@ FIXTURES = load_module("acquire_fixtures", Path(__file__).with_name("test_acquir
 
 
 def blob_oid(data: bytes) -> str:
-    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    # Git object IDs use SHA-1 for identity, not security; mirror production explicitly.
+    return hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
 
 
 def record(mode: str, kind: str, oid: str, path: bytes) -> bytes:
@@ -100,6 +100,8 @@ class FakeProcesses:
         self.version = version
         self.exit_overrides: dict[str, int] = {}
         self.start_failures: set[str] = set()
+        self.git_failures: set[str] = set()
+        self.git_start_failures: set[str] = set()
         self.calls: list[tuple[list[str], dict[str, object]]] = []
         self.scan_snapshots: dict[str, list[str]] = {}
         self.ignore_sizes: list[int] = []
@@ -119,6 +121,10 @@ class FakeProcesses:
         raise AssertionError(f"unexpected process: {args}")
 
     def _git(self, args: list[str], command: list[str]) -> subprocess.CompletedProcess:
+        if command[0] in self.git_start_failures:
+            raise OSError("cannot start git")
+        if command[0] in self.git_failures:
+            return FIXTURES.completed(args, 128)
         if command == ["rev-parse", "--verify", "HEAD^{commit}"]:
             return FIXTURES.completed(args, 0, f"{self.repository.head}\n".encode("ascii"))
         if command == ["ls-tree", "-r", "-z", "HEAD"]:
@@ -170,7 +176,6 @@ class RunSecretScanPresenceTest(unittest.TestCase):
     def test_helper_exists(self) -> None:
         self.assertTrue(HELPER.is_file(), "tools/run_secret_scan.py is absent")
 
-
 @unittest.skipUnless(HELPER.is_file(), "secret-scan helper is not implemented")
 class RunSecretScanTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -193,10 +198,13 @@ class RunSecretScanTest(unittest.TestCase):
         self.processes = FakeProcesses(self.repository)
 
     def transport(self):  # type: ignore[no-untyped-def]
-        return FIXTURES.FakeTransport({
+        responses = {
             FIXTURES.INITIAL_URL: FIXTURES.redirect(FIXTURES.SIGNED_URL),
             FIXTURES.SIGNED_URL: FIXTURES.ok_response(FIXTURES.valid_archive()),
-        })
+        }
+        if getattr(self, "transport_failure", False):
+            responses[FIXTURES.INITIAL_URL] = OSError("network down")
+        return FIXTURES.FakeTransport(responses)
 
     def run_scan(self, head: str = HEAD, repository: Path | None = None) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
@@ -248,7 +256,6 @@ class RunSecretScanTest(unittest.TestCase):
         self.assertIn("stage=head-assertion", err)
         self.assertEqual(self.transport_used.requests, [])
         self.assertEqual(self.processes.dir_calls(), [])
-
     def test_enumerates_only_tracked_regular_blobs(self) -> None:
         self.repository.add("link", b"target", mode="120000")
         self.repository.add("vendor/module", b"", mode="160000")
@@ -261,25 +268,11 @@ class RunSecretScanTest(unittest.TestCase):
     def test_rejects_malformed_enumeration_records(self) -> None:
         oid = blob_oid(b"x")
         cases = {
-            "garbage": [b"garbage"],
-            "short oid": [record("100644", "blob", "abc", b"x")],
-            "duplicate path": [record("100644", "blob", oid, b"README.md")],
-            "invalid utf-8": [record("100644", "blob", oid, b"\xff.txt")],
-            "absolute": [record("100644", "blob", oid, b"/etc/passwd")],
-            "drive": [record("100644", "blob", oid, b"C:/x")],
-            "unc": [record("100644", "blob", oid, b"//server/share/x")],
-            "backslash": [record("100644", "blob", oid, b"a\\b")],
-            "empty component": [record("100644", "blob", oid, b"a//b")],
-            "dot component": [record("100644", "blob", oid, b"./x")],
-            "dotdot component": [record("100644", "blob", oid, b"a/../x")],
-            "trailing slash": [record("100644", "blob", oid, b"a/")],
-            "tracked ignore file": [record("100644", "blob", oid, b".gitleaksignore")],
-            "nested ignore file": [record("100644", "blob", oid, b"docs/.gitleaksignore")],
-            "empty path": [record("100644", "blob", oid, b"")],
-            "unexpected mode": [record("100664", "blob", oid, b"x")],
-            "tree record": [record("040000", "tree", oid, b"dir")],
-            "type mismatch": [record("100644", "commit", oid, b"x")],
-            "uppercase oid": [record("100644", "blob", oid.upper(), b"x")],
+            "garbage": [b"garbage"], "double NUL": [b""], "short oid": [record("100644", "blob", "abc", b"x")], "duplicate path": [record("100644", "blob", oid, b"README.md")],
+            "invalid utf-8": [record("100644", "blob", oid, b"\xff.txt")], "absolute": [record("100644", "blob", oid, b"/etc/passwd")], "drive": [record("100644", "blob", oid, b"C:/x")], "unc": [record("100644", "blob", oid, b"//server/share/x")],
+            "backslash": [record("100644", "blob", oid, b"a\\b")], "empty component": [record("100644", "blob", oid, b"a//b")], "dot component": [record("100644", "blob", oid, b"./x")], "dotdot component": [record("100644", "blob", oid, b"a/../x")], "trailing slash": [record("100644", "blob", oid, b"a/")],
+            "tracked ignore file": [record("100644", "blob", oid, b".gitleaksignore")], "nested ignore file": [record("100644", "blob", oid, b"docs/.gitleaksignore")], "empty path": [record("100644", "blob", oid, b"")], "unexpected mode": [record("100664", "blob", oid, b"x")], "tree record": [record("040000", "tree", oid, b"dir")],
+            "type mismatch": [record("100644", "commit", oid, b"x")], "excluded type mismatch": [record("120000", "commit", oid, b"x")], "uppercase oid": [record("100644", "blob", oid.upper(), b"x")],
         }
         for label, records in cases.items():
             with self.subTest(case=label):
@@ -369,7 +362,6 @@ class RunSecretScanTest(unittest.TestCase):
         if not config.is_file():
             self.skipTest("repository configuration is absent")
         self.module.validate_configuration(config)
-
     def test_unexpected_exceptions_are_bounded_runner_failures(self) -> None:
         out, err = io.StringIO(), io.StringIO()
         code = self.module.run(
@@ -425,10 +417,13 @@ class RunSecretScanTest(unittest.TestCase):
             "repository finding": ({"scan-tree": 1}, "finding", 2, 5),
             "repository tool error": ({"scan-tree": 126}, "tool-failure", 2, 5),
             "process start": ("start", "tool-failure", 2, 5),
+            "transport exception": ("transport", "acquisition-failure", 1, 0), "rev-parse nonzero": ("rev-parse", "policy-failure", 0, 0), "ls-tree nonzero": ("ls-tree", "policy-failure", 0, 0),
+            "rev-parse start": ("rev-parse-start", "policy-failure", 0, 0), "ls-tree start": ("ls-tree-start", "policy-failure", 0, 0),
         }
         for label, (setup, category, requests, dir_calls) in cases.items():
             with self.subTest(case=label):
                 self.reset()
+                self.transport_failure = setup == "transport"
                 if setup == "ignore":
                     self.repository.add(".gitleaksignore", b"README.md:generic-api-key:1\n")
                 elif setup == "pin":
@@ -443,7 +438,11 @@ class RunSecretScanTest(unittest.TestCase):
                     self.processes.version = b"8.30.2\n"
                 elif setup == "start":
                     self.processes.start_failures.add("scan-tree")
-                else:
+                elif isinstance(setup, str) and setup in {"rev-parse", "ls-tree"}:
+                    self.processes.git_failures.add(setup)
+                elif isinstance(setup, str) and setup.endswith("-start"):
+                    self.processes.git_start_failures.add(setup[:-6])
+                elif isinstance(setup, dict):
                     self.processes.exit_overrides.update(setup)
                 code, out, err = self.run_scan()
                 expected = self.module.EXIT_FINDING if category == "finding" else self.module.EXIT_FAILURE

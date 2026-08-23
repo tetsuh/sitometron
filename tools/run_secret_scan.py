@@ -8,7 +8,6 @@ the detector with ephemeral canary probes, scans the materialized tree, and
 removes every run-owned file. It prints only bounded stage and category
 diagnostics and never echoes scanner output, redirect targets, or probe values.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -54,7 +53,6 @@ class ScanError(RuntimeError):
     def __init__(self, category: str, message: str) -> None:
         super().__init__(message)
         self.category = category
-
 
 @dataclass
 class Progress:
@@ -129,18 +127,21 @@ def _parse_record(record: bytes) -> tuple[str, TrackedBlob | None]:
         raise ScanError("policy-failure", "tracked-object record is malformed")
     mode, kind, oid = (match.group(index).decode("ascii") for index in (1, 2, 3))
     path = _validate_path(match.group(4))
-    if mode in EXCLUDED_MODES:
+    if mode in INCLUDED_MODES and kind == "blob":
+        return path, TrackedBlob(mode=mode, oid=oid, path=path)
+    if (mode, kind) in {("120000", "blob"), ("160000", "commit")}:
         return path, None
-    if mode not in INCLUDED_MODES or kind != "blob":
-        raise ScanError("policy-failure", f"tracked object has unexpected mode/type {mode} {kind}")
-    return path, TrackedBlob(mode=mode, oid=oid, path=path)
+    raise ScanError("policy-failure", f"tracked object has unexpected mode/type {mode} {kind}")
 
 
 def enumerate_tracked_blobs(repository: Path, run_process: ProcessRunner) -> list[TrackedBlob]:
     output = _git(repository, run_process, "ls-tree", "-r", "-z", "HEAD")
     blobs: list[TrackedBlob] = []
     seen: set[str] = set()
-    for record in filter(None, output.split(b"\0")):
+    records = output.split(b"\0")
+    if not output.endswith(b"\0") or any(not record for record in records[:-1]):
+        raise ScanError("policy-failure", "tracked-object output contains an empty record")
+    for record in records[:-1]:
         path, blob = _parse_record(record)
         if path in seen:
             raise ScanError("policy-failure", "tracked path is listed twice")
