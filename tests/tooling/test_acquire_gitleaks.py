@@ -68,9 +68,14 @@ def tar_member(name: bytes, data: bytes, **header_options: object) -> bytes:
     return header + data + b"\0" * ((-len(data)) % 512)
 
 
-def build_archive(members: list[bytes], *, terminate: bool = True) -> bytes:
-    payload = b"".join(members) + (b"\0" * 1024 if terminate else b"")
-    return gzip.compress(payload)
+def build_archive(
+    members: list[bytes], *, terminate: bool = True, terminator_blocks: int = 2,
+    trailing: bytes = b"",
+) -> bytes:
+    payload = b"".join(members)
+    if terminate:
+        payload += b"\0" * (512 * terminator_blocks)
+    return gzip.compress(payload + trailing)
 
 
 GITLEAKS_BODY = b"#!/bin/sh\nprintf '%s\\n' 8.30.1\n"
@@ -339,6 +344,12 @@ class AcquireGitleaksTest(unittest.TestCase):
         reordered = build_archive([members["gitleaks"], members["README.md"], members["LICENSE"]])
         self.assertEqual(self.inspect(reordered), GITLEAKS_BODY)
 
+    def test_accepts_additional_zero_padding_after_end_marker(self) -> None:
+        self.assertEqual(
+            self.inspect(build_archive(list(valid_members().values()), terminator_blocks=3)),
+            GITLEAKS_BODY,
+        )
+
     def test_rejects_unsafe_archives(self) -> None:
         base = valid_members()
         big = b"\0" * (12 * MIB)
@@ -379,6 +390,14 @@ class AcquireGitleaksTest(unittest.TestCase):
                 tar_member(b"LICENSE", big), tar_member(b"README.md", big),
                 tar_member(b"gitleaks", big, mode=0o755),
             ]),
+            "single zero block terminator": build_archive(list(base.values()), terminator_blocks=1),
+            "member after one zero block": build_archive(
+                list(base.values()), terminator_blocks=1, trailing=tar_member(b"EVIL", b"x")
+            ),
+            "member after complete end marker": build_archive(
+                list(base.values()), trailing=tar_member(b"EVIL", b"x")
+            ),
+            "nonzero trailing data": build_archive(list(base.values()), trailing=b"EVIL"),
             "truncated content": gzip.compress(tar_header(b"LICENSE", 4096) + b"x" * 100),
             "truncated header": gzip.compress(b"".join(base.values()) + b"x" * 100),
             "checksum mismatch": with_member("LICENSE", tar_member(b"LICENSE", b"x", checksum_field=b"000000\0 ")),

@@ -290,12 +290,25 @@ def inspect_archive(path: Path) -> bytes:
     seen: set[str] = set()
     total = 0
     executable: bytes | None = None
+    zero_block = b"\0" * TAR_BLOCK
     try:
         stream = gzip.open(path, "rb")
     except OSError as error:
         raise AcquisitionError("archive cannot be opened") from error
     with stream:
-        while (block := _read_exact(stream, TAR_BLOCK, "a member header")) != b"\0" * TAR_BLOCK:
+        while True:
+            block = _read_exact(stream, TAR_BLOCK, "a member header")
+            if block == zero_block:
+                end_block = _read_exact(stream, TAR_BLOCK, "the complete archive end marker")
+                if end_block != zero_block:
+                    raise AcquisitionError("archive has an incomplete end marker")
+                try:
+                    while trailing := stream.read(65536):
+                        if any(trailing):
+                            raise AcquisitionError("archive contains nonzero data after its end marker")
+                except (OSError, EOFError) as error:
+                    raise AcquisitionError("archive has unreadable trailing data") from error
+                break
             name, size, mode = _validate_header(block)
             if name in seen:
                 raise AcquisitionError("archive contains a duplicate member")
