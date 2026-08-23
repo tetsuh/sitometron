@@ -442,9 +442,10 @@ class AcquireGitleaksTest(unittest.TestCase):
         return result, transport, runner, directory
 
     def test_cleanup_failure_preserves_bounded_acquisition_error(self) -> None:
-        with patch.object(Path, "unlink", side_effect=PermissionError("denied")):
-            with self.assertRaises(self.error):
+        with patch.object(Path, "unlink", side_effect=PermissionError("denied")) as unlink:
+            with self.assertRaisesRegex(self.error, r"^archive SHA-256"):
                 self.acquire(checksum="0" * 64)
+        self.assertEqual(unlink.call_count, 2)
 
     def test_extraction_cleanup_failure_is_bounded(self) -> None:
         archive = self.root / ARCHIVE_NAME

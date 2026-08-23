@@ -186,13 +186,18 @@ def _stream_to_file(response: HttpResponse, destination: Path, length: int) -> N
         _remove(destination, primary)
         raise primary from error
 
-
 def _next_target(headers: Any) -> str:
     locations = headers.get_all("Location") or []
     if len(locations) != 1 or not isinstance(locations[0], str):
         raise AcquisitionError("redirect must carry exactly one Location header")
     return validate_target(locations[0])
 
+def _close_response(response: HttpResponse, primary: BaseException | None) -> None:
+    try:
+        response.close()
+    except (OSError, http.client.HTTPException) as error:
+        if primary is None:
+            raise AcquisitionError("download response could not close") from error
 
 def download(url: str, destination: Path, fetch: Fetch = open_https) -> None:
     """Download ``url`` to ``destination`` under the frozen redirect and size policy."""
@@ -219,11 +224,7 @@ def download(url: str, destination: Path, fetch: Fetch = open_https) -> None:
             failure = error
             raise
         finally:
-            try:
-                response.close()
-            except (OSError, http.client.HTTPException) as error:
-                if failure is None:
-                    raise AcquisitionError("download response could not close") from error
+            _close_response(response, failure)
 
 
 def verify_checksum(path: Path, expected_sha256: str) -> None:
