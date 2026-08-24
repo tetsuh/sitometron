@@ -235,17 +235,16 @@ class RunSecretScanTest(unittest.TestCase):
                 self.assertIsNone(CANARY_PATTERN.search(path.read_text(encoding="utf-8")), path)
 
     def test_rejects_malformed_command_lines(self) -> None:
-        good = ["--repository", str(self.repository_path), "--expected-head", HEAD]
+        good, secret = ["--repository", str(self.repository_path), "--expected-head", HEAD], self.module.synthetic_canary()
         self.module.parse_arguments(good)
         for arguments in [
-            [], good[:2], good[2:], [*good, "extra"], [*good, "--verbose"],
-            ["--repository", str(self.repository_path), "--expected-head", HEAD.upper()],
-            ["--repository", str(self.repository_path), "--expected-head", HEAD[:39]],
-            ["--repository", str(self.repository_path), "--expected-head", HEAD + "0"],
+            [], good[:2], good[2:], [*good, "extra"], [*good, "--verbose", secret],
+            ["--repository", str(self.repository_path), "--expected-head", HEAD.upper()], ["--repository", str(self.repository_path), "--expected-head", HEAD[:39]], ["--repository", str(self.repository_path), "--expected-head", HEAD + "0"],
         ]:
             with self.subTest(arguments=arguments):
-                with self.assertRaises(SystemExit):
-                    self.module.parse_arguments(arguments)
+                result = subprocess.run([sys.executable, str(HELPER), *arguments], capture_output=True, text=True, check=False)
+                self.assertEqual((result.returncode, result.stderr), (self.module.EXIT_FAILURE, "sitometron-scan: stage=arguments category=policy-failure detail=command-line arguments are invalid\n"))
+                self.assertNotIn(secret, result.stdout + result.stderr)
         code, _, err = self.run_scan(repository=self.root / "absent")
         self.assertEqual(code, self.module.EXIT_FAILURE)
         self.assertIn("category=policy-failure", err)

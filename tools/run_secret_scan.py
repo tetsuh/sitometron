@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""Run the pinned Phase 0A Gitleaks secret scan against one exact Git head.
+"""Run pinned Gitleaks against one exact head using only tracked regular-file blobs.
 
-The runner asserts the expected head, materializes only tracked regular-file
-blobs into a run-owned tree, validates the repository-owned pins and
-configuration from that tree, acquires the pinned Gitleaks release, qualifies
-the detector with ephemeral canary probes, scans the materialized tree, and
-removes every run-owned file. It prints only bounded stage and category
-diagnostics and never echoes scanner output, redirect targets, or probe values.
-"""
+Validate pins, qualify and run the detector, remove run-owned files, and emit only bounded diagnostics."""
 from __future__ import annotations
 
 import argparse
@@ -54,6 +48,12 @@ class ScanError(RuntimeError):
         super().__init__(message)
         self.category = category
 
+
+class BoundedArgumentParser(argparse.ArgumentParser):
+    def error(self, _: str) -> None:
+        raise ScanError("policy-failure", "command-line arguments are invalid")
+
+
 @dataclass
 class Progress:
     stage: str = "arguments"
@@ -76,7 +76,7 @@ def near_match() -> str:
 
 
 def parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__, add_help=True)
+    parser = BoundedArgumentParser(description=__doc__, add_help=True)
     parser.add_argument("--repository", required=True, type=Path)
     parser.add_argument("--expected-head", required=True)
     options = parser.parse_args(arguments)
@@ -325,9 +325,9 @@ def run(
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
 ) -> int:
-    options = parse_arguments(arguments)
     progress = Progress()
     try:
+        options = parse_arguments(arguments)
         with tempfile.TemporaryDirectory(prefix="sitometron-secret-scan-", dir=workspace_parent) as name:
             return execute(options, Path(name).resolve(), run_process, fetch, stdout, progress)
     except ScanError as error:
