@@ -239,6 +239,7 @@ class RunSecretScanTest(unittest.TestCase):
         self.module.parse_arguments(good)
         for arguments in [
             [], good[:2], good[2:], [*good, "extra"], [*good, "--verbose", secret],
+            ["-h"], ["--help"], ["--help", secret], ["--repo", str(self.repository_path), "--expected-head", HEAD], ["--repository", str(self.repository_path), "--expected-h", HEAD],
             ["--repository", str(self.repository_path), "--expected-head", HEAD.upper()], ["--repository", str(self.repository_path), "--expected-head", HEAD[:39]], ["--repository", str(self.repository_path), "--expected-head", HEAD + "0"],
         ]:
             with self.subTest(arguments=arguments):

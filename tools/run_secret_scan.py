@@ -76,7 +76,7 @@ def near_match() -> str:
 
 
 def parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
-    parser = BoundedArgumentParser(description=__doc__, add_help=True)
+    parser = BoundedArgumentParser(description=__doc__, add_help=False, allow_abbrev=False)
     parser.add_argument("--repository", required=True, type=Path)
     parser.add_argument("--expected-head", required=True)
     options = parser.parse_args(arguments)
