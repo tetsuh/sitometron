@@ -5,6 +5,5 @@ useDefault = true
 
 [[rules]]
 id = "sitometron-synthetic-canary"
-description = "Deterministic non-secret canary used only by the Phase 0A runner probes."
 keywords = ["SITOMETRON_CANARY_"]
 regex = '''SITOMETRON_CANARY_[0-9a-f]{32}'''

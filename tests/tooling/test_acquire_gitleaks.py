@@ -224,11 +224,9 @@ class AcquireGitleaksTest(unittest.TestCase):
         sequences = [
             {INITIAL_URL: ok_response(body)},
             {INITIAL_URL: redirect(SIGNED_URL), SIGNED_URL: ok_response(body)},
-            {
-                INITIAL_URL: redirect(hop, 301),
-                hop: redirect(SIGNED_URL, 307),
-                SIGNED_URL: ok_response(body),
-            },
+            {INITIAL_URL: redirect(SIGNED_URL, 303), SIGNED_URL: ok_response(body)},
+            {INITIAL_URL: redirect(SIGNED_URL, 308), SIGNED_URL: ok_response(body)},
+            {INITIAL_URL: redirect(hop, 301), hop: redirect(SIGNED_URL, 307), SIGNED_URL: ok_response(body)},
         ]
         for responses in sequences:
             with self.subTest(hops=len(responses) - 1):

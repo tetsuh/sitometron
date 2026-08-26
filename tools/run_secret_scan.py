@@ -77,9 +77,12 @@ def near_match() -> str:
 
 def parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
     parser = BoundedArgumentParser(description=__doc__, add_help=False, allow_abbrev=False)
-    parser.add_argument("--repository", required=True, type=Path)
-    parser.add_argument("--expected-head", required=True)
+    parser.add_argument("--repository", required=True, type=Path, action="append")
+    parser.add_argument("--expected-head", required=True, action="append")
     options = parser.parse_args(arguments)
+    if len(options.repository) != 1 or len(options.expected_head) != 1:
+        parser.error("recognized options must occur exactly once")
+    options.repository, options.expected_head = options.repository[0], options.expected_head[0]
     if HEAD_PATTERN.match(options.expected_head) is None:
         parser.error("--expected-head must be exactly 40 lowercase hexadecimal characters")
     return options
@@ -216,10 +219,9 @@ def validate_configuration(path: Path) -> None:
     rules = document["rules"]
     if not isinstance(rules, list) or len(rules) != 1 or not isinstance(rules[0], dict):
         raise ScanError("policy-failure", f"{CONFIGURATION_FILE} must define exactly one rule")
-    rule = dict(rules[0])
-    description = rule.pop("description", "")
+    rule = rules[0]
     expected = {"id": CANARY_RULE_ID, "keywords": [CANARY_KEYWORD], "regex": CANARY_REGEX}
-    if rule != expected or not isinstance(description, str):
+    if rule != expected:
         raise ScanError("policy-failure", f"{CONFIGURATION_FILE} canary rule differs from the frozen rule")
 
 

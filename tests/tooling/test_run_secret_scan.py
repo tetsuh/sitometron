@@ -22,7 +22,6 @@ useDefault = true
 
 [[rules]]
 id = "sitometron-synthetic-canary"
-description = "Deterministic non-secret canary used only by the Phase 0A probes."
 keywords = ["SITOMETRON_CANARY_"]
 regex = '''SITOMETRON_CANARY_[0-9a-f]{32}'''
 """
@@ -241,11 +240,12 @@ class RunSecretScanTest(unittest.TestCase):
             [], good[:2], good[2:], [*good, "extra"], [*good, "--verbose", secret],
             ["-h"], ["--help"], ["--help", secret], ["--repo", str(self.repository_path), "--expected-head", HEAD], ["--repository", str(self.repository_path), "--expected-h", HEAD],
             ["--repository", str(self.repository_path), "--expected-head", HEAD.upper()], ["--repository", str(self.repository_path), "--expected-head", HEAD[:39]], ["--repository", str(self.repository_path), "--expected-head", HEAD + "0"],
+            [f"--repository={self.repository_path}", f"--repository={self.root / 'duplicate'}", "--expected-head", HEAD], ["--repository", str(self.repository_path), f"--expected-head={HEAD}", f"--expected-head={OTHER_HEAD}"],
         ]:
             with self.subTest(arguments=arguments):
                 result = subprocess.run([sys.executable, str(HELPER), *arguments], capture_output=True, text=True, check=False)
                 self.assertEqual((result.returncode, result.stderr), (self.module.EXIT_FAILURE, "sitometron-scan: stage=arguments category=policy-failure detail=command-line arguments are invalid\n"))
-                self.assertNotIn(secret, result.stdout + result.stderr)
+                self.assertFalse(any(value in result.stdout + result.stderr for value in [secret, str(self.root / "duplicate"), OTHER_HEAD]))
         code, _, err = self.run_scan(repository=self.root / "absent")
         self.assertEqual(code, self.module.EXIT_FAILURE)
         self.assertIn("category=policy-failure", err)
@@ -334,6 +334,7 @@ class RunSecretScanTest(unittest.TestCase):
             "allowlist": VALID_CONFIG + '\n[allowlist]\npaths = [".*"]\n',
             "rule allowlist": VALID_CONFIG + '\n[rules.allowlist]\nregexes = ["x"]\n',
             "extra rule": VALID_CONFIG + '\n[[rules]]\nid = "other"\nregex = "x"\n',
+            "description": VALID_CONFIG.replace('id = "sitometron-synthetic-canary"', 'description = "not frozen"\nid = "sitometron-synthetic-canary"'),
             "no rule": VALID_CONFIG.split("[[rules]]")[0],
             "other id": VALID_CONFIG.replace("sitometron-synthetic-canary", "other"),
             "other keyword": VALID_CONFIG.replace('["SITOMETRON_CANARY_"]', '["OTHER_"]'),
