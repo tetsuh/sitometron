@@ -32,15 +32,14 @@ ALLOWED_HOSTS = frozenset({"github.com", "release-assets.githubusercontent.com"}
 SIGNED_QUERY_HOST = "release-assets.githubusercontent.com"
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 MAX_REDIRECTS = 2
-MAX_LOCATION_BYTES = 8192
-MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
+MAX_LOCATION_BYTES, MAX_DOWNLOAD_BYTES = 8192, 16 * 1024 * 1024
 MAX_MEMBER_BYTES = 32 * 1024 * 1024
 EXPECTED_MEMBERS = frozenset({"LICENSE", "README.md", "gitleaks"})
 EXECUTABLE_MEMBER = "gitleaks"
 TAR_BLOCK = 512
 VERSION_PATTERN = re.compile(rb"\A(\d+\.\d+\.\d+)\n\Z")
 CHECKSUM_PATTERN = re.compile(rb"\A([0-9a-f]{64}) {2}([A-Za-z0-9._-]+)\n\Z")
-DECIMAL_PATTERN = re.compile(r"\A(?:0|[1-9]\d*)\Z", re.ASCII)
+DECIMAL_PATTERN = re.compile(r"\A[0-9]+\Z", re.ASCII)
 REGULAR_TYPEFLAGS = frozenset({b"0", b"\0"})
 TYPEFLAG_NAMES = {
     b"1": "hard link", b"2": "symbolic link", b"3": "character device",
@@ -145,7 +144,8 @@ def _content_length(headers: Any) -> int:
     value = values[0]
     if not isinstance(value, str) or DECIMAL_PATTERN.match(value) is None:
         raise AcquisitionError("Content-Length is not a valid decimal value")
-    length = int(value)
+    normalized = value.lstrip("0") or "0"
+    length = int(normalized) if len(normalized) <= len(str(MAX_DOWNLOAD_BYTES)) else MAX_DOWNLOAD_BYTES + 1
     if not 1 <= length <= MAX_DOWNLOAD_BYTES:
         raise AcquisitionError("Content-Length is outside the permitted download size")
     return length

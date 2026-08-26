@@ -222,7 +222,7 @@ class AcquireGitleaksTest(unittest.TestCase):
         body = valid_archive()
         hop = "https://github.com/gitleaks/gitleaks/releases/download/hop"
         sequences = [
-            {INITIAL_URL: ok_response(body)},
+            {INITIAL_URL: ok_response(body, f"{len(body):04302d}")},
             {INITIAL_URL: redirect(SIGNED_URL), SIGNED_URL: ok_response(body)},
             {INITIAL_URL: redirect(SIGNED_URL, 303), SIGNED_URL: ok_response(body)},
             {INITIAL_URL: redirect(SIGNED_URL, 308), SIGNED_URL: ok_response(body)},
@@ -272,7 +272,7 @@ class AcquireGitleaksTest(unittest.TestCase):
             "malformed length": {INITIAL_URL: ok_response(body, "abc")},
             "signed length": {INITIAL_URL: ok_response(body, "+5")},
             "padded length": {INITIAL_URL: ok_response(body, " 5")},
-            "leading zero length": {INITIAL_URL: ok_response(body, "05")},
+            "embedded newline length": {INITIAL_URL: ok_response(body, f"{len(body)}\n")},
             "zero length": {INITIAL_URL: ok_response(b"", "0")},
             "oversized length": {INITIAL_URL: ok_response(body, str(16 * MIB + 1))},
             "short body": {INITIAL_URL: ok_response(body, str(len(body) + 1))},
