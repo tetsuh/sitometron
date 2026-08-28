@@ -26,7 +26,7 @@ EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
 SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
 FENCE_PATTERN = re.compile(r"\A {0,3}(?:```|~~~)")
-LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\(\s*([^()\s]*)[^()]*\)")
+LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\(([^()]*)\)")
 LABEL_LINK_PATTERN = re.compile(r"!?\[([^\]]*)\]\([^()]*\)")
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
 PERCENT_PATTERN = re.compile(r"%(..?|\Z)", re.DOTALL)
@@ -216,7 +216,8 @@ def extract_links(markdown: str) -> list[tuple[int, str]]:
     """Return every (line number, raw target) link outside fenced code."""
     links: list[tuple[int, str]] = []
     for number, line in enumerate(_content_lines(markdown), 1):
-        for target in LINK_PATTERN.findall(line):
+        for inline in LINK_PATTERN.findall(line):
+            target = inline.strip().split(" ", 1)[0].split("\t", 1)[0]
             if target:
                 links.append((number, target))
     return links
@@ -279,16 +280,22 @@ def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
     return findings
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
 def parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
+    """Accept no option: the validator always checks its own repository."""
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parents[1])
     return parser.parse_args(arguments)
 
 
-def main(arguments: Sequence[str] | None = None, stdout: TextIO = sys.stdout) -> int:
-    options = parse_arguments(arguments)
+def main(
+    arguments: Sequence[str] | None = None, stdout: TextIO = sys.stdout,
+    repository: Path = REPOSITORY_ROOT,
+) -> int:
+    parse_arguments(arguments)
     try:
-        findings = check_repository(options.repository, tracked_files(options.repository))
+        findings = check_repository(repository, tracked_files(repository))
     except ValidationError as error:
         print(f"relative-links: ERROR {error}", file=sys.stderr)
         return 1

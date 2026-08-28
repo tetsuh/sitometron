@@ -359,16 +359,22 @@ def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
     return findings
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
 def parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
+    """Accept no option: the validator always checks its own repository."""
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parents[1])
     return parser.parse_args(arguments)
 
 
-def main(arguments: Sequence[str] | None = None, stdout: TextIO = sys.stdout) -> int:
-    options = parse_arguments(arguments)
+def main(
+    arguments: Sequence[str] | None = None, stdout: TextIO = sys.stdout,
+    repository: Path = REPOSITORY_ROOT,
+) -> int:
+    parse_arguments(arguments)
     try:
-        findings = check_repository(options.repository, tracked_files(options.repository))
+        findings = check_repository(repository, tracked_files(repository))
     except ValidationError as error:
         print(f"governance: ERROR {error}", file=sys.stderr)
         return 1

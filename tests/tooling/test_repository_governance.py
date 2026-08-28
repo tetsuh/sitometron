@@ -277,23 +277,22 @@ class GovernanceCheckTest(unittest.TestCase):
 
     def test_main_returns_zero_when_clean_and_one_otherwise(self) -> None:
         with mock.patch.object(self.module, "tracked_files", lambda root: self.tracked()):
-            self.assertEqual(self.module.main(["--repository", str(self.root)], io.StringIO()), 0)
+            self.assertEqual(self.module.main([], io.StringIO(), self.root), 0)
             self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on", "Draft on"))
-            self.assertEqual(self.module.main(["--repository", str(self.root)], io.StringIO()), 1)
+            self.assertEqual(self.module.main([], io.StringIO(), self.root), 1)
 
     def test_main_fails_closed_when_git_enumeration_fails(self) -> None:
         def failing(root: object) -> list[str]:
             raise self.module.ValidationError("git ls-files failed")
 
         with mock.patch.object(self.module, "tracked_files", failing):
-            self.assertEqual(self.module.main(["--repository", str(self.root)], io.StringIO()), 1)
+            self.assertEqual(self.module.main([], io.StringIO(), self.root), 1)
 
     def test_main_rejects_unknown_arguments(self) -> None:
-        for arguments in [["--repository"], ["--unknown", str(self.root)],
-                          ["--repository", str(self.root), "extra"]]:
+        for arguments in [["--repository", str(self.root)], ["--unknown"], ["extra"], ["-h"]]:
             with self.subTest(arguments=arguments):
                 with self.assertRaises(SystemExit):
-                    self.module.main(arguments)
+                    self.module.main(arguments, io.StringIO(), self.root)
 
 
 @unittest.skipUnless(VALIDATOR.is_file(), "governance validator is not implemented")
