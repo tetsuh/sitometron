@@ -33,6 +33,7 @@ from check_relative_links import (  # noqa: E402
     run_validator,
     tracked_files,
     validated_repository,
+    _content_lines,
 )
 
 __all__ = ["ValidationError", "tracked_files", "validated_repository"]
@@ -47,7 +48,9 @@ GATE_FORM = ".github/ISSUE_TEMPLATE/gate.yml"
 PULL_REQUEST_TEMPLATE = ".github/pull_request_template.md"
 
 ADR_STATUSES = ("Proposed", "Accepted", "Rejected", "Deprecated", "Superseded")
-ADR_SECTIONS = ("Status", "Context", "Decision", "Consequences")
+ADR_SECTIONS = ("Status", "Context", "Decision", "Consequences", "Options considered", "References")
+ADR_LEGACY_PATH = f"{ADR_DIRECTORY}/0001-bootstrap-a-stdlib-only-cpp20-core.md"
+ADR_LEGACY_SECTIONS = ADR_SECTIONS[:4]
 DATE_PATTERN = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 MATURITY_VALUES = ("Planned", "Normative", "Deprecated", "Superseded")
 IMPLEMENTATION_VALUES = ("Planned", "In progress", "Implemented", "Removed")
@@ -190,7 +193,8 @@ def parse_issue_form(text: str) -> dict[str, FormBlock]:
 def _adr_status(text: str, relative_path: str) -> list[Finding]:
     findings: list[Finding] = []
     sections = _sections(text)
-    for section in ADR_SECTIONS:
+    required_sections = ADR_LEGACY_SECTIONS if relative_path == ADR_LEGACY_PATH else ADR_SECTIONS
+    for section in required_sections:
         if section not in sections:
             findings.append(Finding(relative_path, f"missing required ADR section {section!r}"))
     body = sections.get("Status", "").strip()
@@ -222,13 +226,7 @@ def _heading_text(line: str) -> str | None:
 def _sections(text: str) -> dict[str, str]:
     sections: dict[str, str] = {}
     current: str | None = None
-    fenced = False
-    for line in text.split("\n"):
-        if FENCE_PATTERN.match(line):
-            fenced = not fenced
-            continue
-        if fenced:
-            continue
+    for line in _content_lines(text):
         heading = _heading_text(line)
         if heading is not None:
             current = heading
@@ -255,7 +253,7 @@ def check_adrs(root: Path, tracked: Sequence[str]) -> list[Finding]:
 
 def _registry_rows(text: str) -> list[list[str]]:
     rows: list[list[str]] = []
-    for line in text.split("\n"):
+    for line in _content_lines(text):
         if not line.startswith("|"):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]

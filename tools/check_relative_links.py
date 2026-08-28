@@ -25,9 +25,12 @@ from typing import TextIO
 EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
 SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
-FENCE_PATTERN = re.compile(r"\A {0,3}(?:```|~~~)")
+FENCE_PATTERN = re.compile(r"\A {0,3}([`~]{3,})(.*)\Z")
 LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\(([^()]*)\)")
+REFERENCE_USE_PATTERN = re.compile(r"(?<!\!)\[([^\]]+)\]\[([^\]]*)\]")
+REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(\S+)")
 LABEL_LINK_PATTERN = re.compile(r"!?\[([^\]]*)\]\([^()]*\)")
+INVALID_REFERENCE_TARGET = "<invalid-reference>"
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
 PERCENT_PATTERN = re.compile(r"%(..?|\Z)", re.DOTALL)
 VALID_ESCAPE_PATTERN = re.compile(r"\A[0-9A-Fa-f]{2}\Z")
@@ -102,7 +105,9 @@ def resolve_local_path(source: str, target: str) -> str:
         raise ValidationError("local path contains a backslash")
     if path.startswith("/") or DRIVE_PATTERN.match(path) is not None:
         raise ValidationError("local path is absolute, a drive path, or a UNC path")
-    components = path.rstrip("/").split("/") if path != "/" else [""]
+    components = path[:-1].split("/") if path.endswith("/") else path.split("/")
+    if path == "/":
+        components = [""]
     if any(component in {"", "."} for component in components):
         raise ValidationError("local path contains an empty or dot component")
     parts = list(PurePosixPath(source).parent.parts)
@@ -163,16 +168,25 @@ def slugify(heading: str) -> str:
 
 
 def _content_lines(markdown: str) -> list[str]:
+    """Return lines outside correctly matched Markdown fenced code blocks."""
     lines: list[str] = []
-    fenced = False
+    fence: tuple[str, int] | None = None
     for line in markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        if FENCE_PATTERN.match(line):
-            fenced = not fenced
+        match = FENCE_PATTERN.match(line)
+        if fence is None:
+            if match is not None:
+                delimiter = match.group(1)
+                fence = (delimiter[0], len(delimiter))
+                lines.append("")
+            else:
+                lines.append(line)
             continue
-        if not fenced:
-            lines.append(line)
-        else:
-            lines.append("")
+        delimiter = match.group(1) if match is not None else ""
+        trailing = match.group(2).strip() if match is not None else ""
+        if (match is not None and delimiter[0] == fence[0]
+                and len(delimiter) >= fence[1] and not trailing):
+            fence = None
+        lines.append("" if fence is not None else "")
     return lines
 
 
@@ -185,9 +199,14 @@ def emitted_anchors(markdown: str) -> list[str]:
         if not raw:
             continue
         slug = slugify(raw)
-        seen = counts.get(slug, 0)
-        counts[slug] = seen + 1
-        anchors.append(slug if seen == 0 else f"{slug}-{seen}")
+        suffix = counts.get(slug, 0)
+        candidate = slug if suffix == 0 else f"{slug}-{suffix}"
+        used = set(anchors)
+        while candidate in used:
+            suffix += 1
+            candidate = f"{slug}-{suffix}"
+        counts[slug] = suffix + 1
+        anchors.append(candidate)
     return anchors
 
 
@@ -214,12 +233,28 @@ def tracked_files(root: Path | str) -> list[str]:
 
 def extract_links(markdown: str) -> list[tuple[int, str]]:
     """Return every (line number, raw target) link outside fenced code."""
+    lines = _content_lines(markdown)
+    definitions: dict[str, str] = {}
+    definition_lines: dict[str, int] = {}
+    for number, line in enumerate(lines, 1):
+        match = REFERENCE_DEFINITION_PATTERN.match(line)
+        if match is not None:
+            label = " ".join(match.group(1).split()).casefold()
+            definitions[label] = match.group(2)
+            definition_lines[label] = number
     links: list[tuple[int, str]] = []
-    for number, line in enumerate(_content_lines(markdown), 1):
+    for number, line in enumerate(lines, 1):
+        definition = REFERENCE_DEFINITION_PATTERN.match(line)
+        if definition is not None:
+            label = " ".join(definition.group(1).split()).casefold()
+            links.append((number, definitions[label]))
         for inline in LINK_PATTERN.findall(line):
             target = inline.strip().split(" ", 1)[0].split("\t", 1)[0]
             if target:
                 links.append((number, target))
+        for match in REFERENCE_USE_PATTERN.finditer(line):
+            label = " ".join((match.group(2) or match.group(1)).split()).casefold()
+            links.append((number, definitions.get(label, INVALID_REFERENCE_TARGET)))
     return links
 
 
@@ -234,6 +269,8 @@ def _check_target(
     root: Path, source: str, target: str, files: set[str], directories: set[str],
     cache: dict[str, set[str]],
 ) -> str | None:
+    if target == INVALID_REFERENCE_TARGET:
+        return "missing or malformed reference definition"
     path_part, fragment = split_local_target(target)
     if path_part == "":
         resolved = source
@@ -251,7 +288,7 @@ def _check_target(
         return None
     if not resolved.lower().endswith(MARKDOWN_SUFFIX):
         return "fragment target is not a Markdown file"
-    if unicodedata.normalize("NFC", fragment).casefold() not in _anchor_set(root, resolved, cache):
+    if fragment not in _anchor_set(root, resolved, cache):
         return "missing anchor"
     return None
 

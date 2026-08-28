@@ -183,7 +183,7 @@ class GovernanceCheckTest(unittest.TestCase):
                            ADR_TEMPLATE.replace("Accepted on 2026-08-28.", status or "\n"))
                 self.assertTrue(any("status" in f.reason.lower() for f in self.check()))
 
-    def test_requires_the_core_adr_metadata_sections(self) -> None:
+    def test_requires_all_six_adr_metadata_sections_for_non_legacy_adrs(self) -> None:
         for section in self.module.ADR_SECTIONS:
             with self.subTest(section=section):
                 self.write("docs/adr/0009-example.md",
@@ -191,6 +191,21 @@ class GovernanceCheckTest(unittest.TestCase):
                 self.assertTrue(any(section in f.reason for f in self.check()),
                                 f"missing {section} must be reported")
         self.write("docs/adr/0009-example.md", ADR_TEMPLATE)
+
+    def test_allows_only_the_two_omitted_sections_on_legacy_adr(self) -> None:
+        legacy = ADR_TEMPLATE.replace("0009-example", "0001-bootstrap-a-stdlib-only-cpp20-core")
+        for section, passage in (
+            ("Options considered", "\n## Options considered\n\nOptions text.\n"),
+            ("References", "\n## References\n\n- [the ADR process](../10_adr_process.md)\n"),
+        ):
+            self.write("docs/adr/0001-bootstrap-a-stdlib-only-cpp20-core.md", legacy.replace(passage, ""))
+            self.assertEqual(self.check(), [], f"legacy ADR may omit {section}")
+        self.write("docs/adr/0001-bootstrap-a-stdlib-only-cpp20-core.md", legacy)
+
+    def test_ignores_fenced_registry_rows(self) -> None:
+        self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE +
+                   "\n```text\n| Fake | Invalid | Invalid | no authority | none |\n```\n")
+        self.assertEqual(self.check(), [])
 
     def test_requires_a_decision_date_on_a_decided_adr(self) -> None:
         self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Accepted."))

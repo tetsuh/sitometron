@@ -84,6 +84,9 @@ class SlugTest(unittest.TestCase):
         markdown = "# Same\n# Same\n# Same\n# Other\n# Same\n"
         self.assertEqual(self.slugs(markdown), ["same", "same-1", "same-2", "other", "same-3"])
 
+    def test_avoids_collisions_between_natural_and_generated_suffixes(self) -> None:
+        self.assertEqual(self.slugs("# X\n# X-1\n# X\n"), ["x", "x-1", "x-2"])
+
     def test_rejects_headings_whose_slug_would_be_empty(self) -> None:
         with self.assertRaises(self.module.ValidationError):
             self.slugs("## ...\n")
@@ -248,6 +251,29 @@ class RepositoryCheckTest(unittest.TestCase):
 
     def test_ignores_links_inside_fenced_code(self) -> None:
         self.write("README.md", "```text\n[broken](absent.md)\n```\n\n[real](README.md)\n")
+        self.assertEqual(self.check(), [])
+
+    def test_requires_reference_definitions_and_validates_their_targets(self) -> None:
+        self.write("README.md", "[missing][ref]\n\n[ref]: absent.md\n")
+        findings = self.check()
+        self.assertEqual(len(findings), 2, findings)
+        self.write("README.md", "[valid][ref]\n\n[ref]: README.md\n")
+        self.assertEqual(self.check(), [])
+
+    def test_rejects_repeated_trailing_directory_markers(self) -> None:
+        self.write("docs/keep.txt", "data\n")
+        self.write("README.md", "[double](docs//)\n[triple](docs///)\n")
+        findings = self.check()
+        self.assertEqual(len(findings), 2, findings)
+
+    def test_requires_exact_fragment_case_and_normalization(self) -> None:
+        self.write("docs/target.md", "# Summary\n# Café\n")
+        self.write("README.md", "[case](docs/target.md#SUMMARY)\n[unicode](docs/target.md#cafe\u0301)\n")
+        findings = self.check()
+        self.assertEqual(len(findings), 2, findings)
+
+    def test_matches_only_compatible_fence_character_and_width(self) -> None:
+        self.write("README.md", "````text\n[hidden](absent.md)\n```\n[still-hidden](absent.md)\n````\n")
         self.assertEqual(self.check(), [])
 
     def test_matches_anchors_after_normalization(self) -> None:
