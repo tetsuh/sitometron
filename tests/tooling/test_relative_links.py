@@ -1,9 +1,11 @@
 import importlib.util
+import io
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = REPOSITORY_ROOT / "tools" / "check_relative_links.py"
@@ -276,9 +278,17 @@ class RepositoryCheckTest(unittest.TestCase):
 
     def test_main_returns_zero_for_a_clean_repository_and_one_otherwise(self) -> None:
         self.write("README.md", "# Home\n\n[self](#home)\n")
-        self.assertEqual(self.module.main(["--repository", str(self.root)]), 0)
-        self.write("README.md", "# Home\n\n[broken](absent.md)\n")
-        self.assertEqual(self.module.main(["--repository", str(self.root)]), 1)
+        with mock.patch.object(self.module, "tracked_files", lambda root: sorted(self.files)):
+            self.assertEqual(self.module.main(["--repository", str(self.root)], io.StringIO()), 0)
+            self.write("README.md", "# Home\n\n[broken](absent.md)\n")
+            self.assertEqual(self.module.main(["--repository", str(self.root)], io.StringIO()), 1)
+
+    def test_main_fails_closed_when_git_enumeration_fails(self) -> None:
+        def failing(root: object) -> list[str]:
+            raise self.module.ValidationError("git ls-files failed")
+
+        with mock.patch.object(self.module, "tracked_files", failing):
+            self.assertEqual(self.module.main(["--repository", str(self.root)], io.StringIO()), 1)
 
     def test_main_rejects_unknown_arguments(self) -> None:
         for arguments in [["--repository"], ["--unknown", str(self.root)],

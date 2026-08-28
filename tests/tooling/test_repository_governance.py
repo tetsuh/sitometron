@@ -1,9 +1,11 @@
 import importlib.util
+import io
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = REPOSITORY_ROOT / "tools" / "check_repository_governance.py"
@@ -181,13 +183,24 @@ class GovernanceCheckTest(unittest.TestCase):
                            ADR_TEMPLATE.replace("Accepted on 2026-08-28.", status or "\n"))
                 self.assertTrue(any("status" in f.reason.lower() for f in self.check()))
 
-    def test_requires_every_adr_metadata_section(self) -> None:
-        for section in ["Status", "Context", "Decision", "Consequences", "Options considered",
-                        "References"]:
+    def test_requires_the_core_adr_metadata_sections(self) -> None:
+        for section in self.module.ADR_SECTIONS:
             with self.subTest(section=section):
                 self.write("docs/adr/0009-example.md",
                            ADR_TEMPLATE.replace(f"## {section}\n", "## Removed\n"))
-                self.assertTrue(self.check(), f"missing {section} must be reported")
+                self.assertTrue(any(section in f.reason for f in self.check()),
+                                f"missing {section} must be reported")
+        self.write("docs/adr/0009-example.md", ADR_TEMPLATE)
+
+    def test_requires_a_decision_date_on_a_decided_adr(self) -> None:
+        self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Accepted."))
+        self.assertTrue(any("date" in f.reason.lower() for f in self.check()))
+        self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Proposed."))
+        self.assertEqual(self.check(), [], "a Proposed ADR needs no decision date")
+
+    def test_reports_an_adr_directory_without_decision_records(self) -> None:
+        (self.root / "docs/adr/0009-example.md").unlink()
+        self.assertTrue(self.check())
 
     def test_rejects_unknown_registry_vocabulary(self) -> None:
         for original, replacement in [
@@ -263,9 +276,17 @@ class GovernanceCheckTest(unittest.TestCase):
                 self.setUp()
 
     def test_main_returns_zero_when_clean_and_one_otherwise(self) -> None:
-        self.assertEqual(self.module.main(["--repository", str(self.root)]), 0)
-        self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on", "Draft on"))
-        self.assertEqual(self.module.main(["--repository", str(self.root)]), 1)
+        with mock.patch.object(self.module, "tracked_files", lambda root: self.tracked()):
+            self.assertEqual(self.module.main(["--repository", str(self.root)], io.StringIO()), 0)
+            self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on", "Draft on"))
+            self.assertEqual(self.module.main(["--repository", str(self.root)], io.StringIO()), 1)
+
+    def test_main_fails_closed_when_git_enumeration_fails(self) -> None:
+        def failing(root: object) -> list[str]:
+            raise self.module.ValidationError("git ls-files failed")
+
+        with mock.patch.object(self.module, "tracked_files", failing):
+            self.assertEqual(self.module.main(["--repository", str(self.root)], io.StringIO()), 1)
 
     def test_main_rejects_unknown_arguments(self) -> None:
         for arguments in [["--repository"], ["--unknown", str(self.root)],
