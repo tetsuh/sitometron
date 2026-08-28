@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Validate repository-owned governance invariants without network access.
 
+Git enumeration, the argument contract, the fail-closed error type, and the
+finding report format are shared with `check_relative_links.py` so that both
+Phase 0A validators behave identically at their boundaries.
+
 The validator checks only mechanical, repository-format invariants: ADR status
 vocabulary and required sections, Contract Registry maturity and implementation
 vocabularies with their authority rules, Planned-not-normative banner authority,
@@ -11,14 +15,27 @@ Gate evidence; those remain human and provider review evidence.
 
 from __future__ import annotations
 
-import argparse
 import re
-import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
+
+TOOLS_DIRECTORY = Path(__file__).resolve().parent
+if str(TOOLS_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIRECTORY))
+
+from check_relative_links import (  # noqa: E402
+    REPOSITORY_ROOT,
+    ValidationError,
+    parse_arguments,
+    run_validator,
+    tracked_files,
+    validated_repository,
+)
+
+__all__ = ["ValidationError", "tracked_files", "validated_repository"]
 
 ADR_DIRECTORY = "docs/adr"
 ADR_TEMPLATE = f"{ADR_DIRECTORY}/template.md"
@@ -68,10 +85,6 @@ TEXT_REQUIRED_INDENT = 6
 CHECKBOX_REQUIRED_INDENT = 10
 
 
-class ValidationError(RuntimeError):
-    """A fail-closed governance validation error."""
-
-
 @dataclass(frozen=True)
 class Finding:
     source: str
@@ -87,27 +100,6 @@ class FormBlock:
     kind: str
     label: str
     required: bool
-
-
-def validated_repository(candidate: Path | str) -> Path:
-    """Return one existing Git working tree, rejecting every other argument value."""
-    resolved = Path(candidate).resolve()
-    if not resolved.is_dir() or not (resolved / ".git").exists():
-        raise ValidationError("--repository must name an existing Git working tree")
-    return resolved
-
-
-def tracked_files(root: Path | str) -> list[str]:
-    repository = validated_repository(root)
-    result = subprocess.run(
-        ["git", "-C", str(repository), "ls-files", "-z"], capture_output=True, check=False
-    )
-    if result.returncode != 0:
-        raise ValidationError(f"git ls-files failed with exit {result.returncode}")
-    try:
-        return [item for item in result.stdout.decode("utf-8").split("\0") if item]
-    except UnicodeDecodeError as error:
-        raise ValidationError("tracked paths are not valid UTF-8") from error
 
 
 def _names_authority(text: str) -> bool:
@@ -359,29 +351,12 @@ def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
     return findings
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-
-
-def parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
-    """Accept no option: the validator always checks its own repository."""
-    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    return parser.parse_args(arguments)
-
-
 def main(
     arguments: Sequence[str] | None = None, stdout: TextIO = sys.stdout,
     repository: Path = REPOSITORY_ROOT,
 ) -> int:
-    parse_arguments(arguments)
-    try:
-        findings = check_repository(repository, tracked_files(repository))
-    except ValidationError as error:
-        print(f"governance: ERROR {error}", file=sys.stderr)
-        return 1
-    for finding in findings:
-        print(f"governance: {finding}", file=stdout)
-    print(f"governance: {len(findings)} finding(s)", file=stdout)
-    return 1 if findings else 0
+    parse_arguments(arguments, __doc__)
+    return run_validator("governance", check_repository, repository, stdout, tracked_files)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ import re
 import subprocess
 import sys
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TextIO
@@ -283,10 +283,31 @@ def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
-def parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
-    """Accept no option: the validator always checks its own repository."""
-    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    return parser.parse_args(arguments)
+def parse_arguments(arguments: Sequence[str] | None, description: str | None = None) -> None:
+    """Accept no option: a validator always checks its own repository."""
+    argparse.ArgumentParser(
+        description=description or __doc__, allow_abbrev=False
+    ).parse_args(arguments)
+
+
+def run_validator(
+    prefix: str, check: Callable[[Path, Sequence[str]], list[object]], repository: Path,
+    stdout: TextIO, enumerate_tracked: Callable[[Path], list[str]],
+) -> int:
+    """Run one repository validator and map its findings to a process exit code.
+
+    Shared by `check_repository_governance.py` so that both validators keep one
+    Git enumeration, one argument contract, and one reporting format.
+    """
+    try:
+        findings = check(repository, enumerate_tracked(repository))
+    except ValidationError as error:
+        print(f"{prefix}: ERROR {error}", file=sys.stderr)
+        return 1
+    for finding in findings:
+        print(f"{prefix}: {finding}", file=stdout)
+    print(f"{prefix}: {len(findings)} finding(s)", file=stdout)
+    return 1 if findings else 0
 
 
 def main(
@@ -294,15 +315,7 @@ def main(
     repository: Path = REPOSITORY_ROOT,
 ) -> int:
     parse_arguments(arguments)
-    try:
-        findings = check_repository(repository, tracked_files(repository))
-    except ValidationError as error:
-        print(f"relative-links: ERROR {error}", file=sys.stderr)
-        return 1
-    for finding in findings:
-        print(f"relative-links: {finding}", file=stdout)
-    print(f"relative-links: {len(findings)} finding(s)", file=stdout)
-    return 1 if findings else 0
+    return run_validator("relative-links", check_repository, repository, stdout, tracked_files)
 
 
 if __name__ == "__main__":
