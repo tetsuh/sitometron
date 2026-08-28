@@ -24,16 +24,16 @@ from typing import TextIO
 
 EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
-SCHEME_PATTERN = re.compile(r"\A([A-Za-z][A-Za-z0-9+.-]*):")
-FENCE_PATTERN = re.compile(r"\A {0,3}(```|~~~)")
-HEADING_PATTERN = re.compile(r"\A {0,3}(#{1,6})(?:[ \t]+(.*))?\Z")
-LINK_PATTERN = re.compile(r"(?<!\\)!?\[(?:[^\[\]\\]|\\.)*\]\(\s*([^()\s]*)[^()]*\)")
-LABEL_LINK_PATTERN = re.compile(r"!?\[((?:[^\[\]\\]|\\.)*)\]\([^()]*\)")
+SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
+FENCE_PATTERN = re.compile(r"\A {0,3}(?:```|~~~)")
+LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\(\s*([^()\s]*)[^()]*\)")
+LABEL_LINK_PATTERN = re.compile(r"!?\[([^\]]*)\]\([^()]*\)")
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
-CLOSING_HASHES_PATTERN = re.compile(r"[ \t]+#+[ \t]*\Z")
 PERCENT_PATTERN = re.compile(r"%(..?|\Z)", re.DOTALL)
 VALID_ESCAPE_PATTERN = re.compile(r"\A[0-9A-Fa-f]{2}\Z")
 DRIVE_PATTERN = re.compile(r"\A[A-Za-z]:")
+MAX_HEADING_LEVEL = 6
+MAX_HEADING_INDENT = 3
 FORBIDDEN_DECODED = frozenset({"/", "\\"})
 KEPT_CATEGORIES = ("L", "N", "M")
 KEPT_CHARACTERS = frozenset({"-", "_"})
@@ -118,8 +118,31 @@ def resolve_local_path(source: str, target: str) -> str:
     return "/".join(parts)
 
 
+def _strip_closing_hashes(heading: str) -> str:
+    text = heading.rstrip(" \t")
+    stripped = text.rstrip("#")
+    if stripped != text and (not stripped or stripped[-1] in " \t"):
+        return stripped.rstrip(" \t")
+    return text
+
+
+def heading_text(line: str) -> str | None:
+    """Return the raw text of one ATX heading line, or None when it is not a heading."""
+    indent = len(line) - len(line.lstrip(" "))
+    if indent > MAX_HEADING_INDENT:
+        return None
+    rest = line[indent:]
+    level = len(rest) - len(rest.lstrip("#"))
+    if not 1 <= level <= MAX_HEADING_LEVEL:
+        return None
+    rest = rest[level:]
+    if rest and rest[0] not in " \t":
+        return None
+    return rest.strip(" \t")
+
+
 def _visible_text(heading: str) -> str:
-    text = CLOSING_HASHES_PATTERN.sub("", heading)
+    text = _strip_closing_hashes(heading)
     text = LABEL_LINK_PATTERN.sub(lambda match: match.group(1), text)
     text = HTML_TAG_PATTERN.sub("", text)
     text = html.unescape(text)
@@ -158,11 +181,8 @@ def emitted_anchors(markdown: str) -> list[str]:
     anchors: list[str] = []
     counts: dict[str, int] = {}
     for line in _content_lines(markdown):
-        match = HEADING_PATTERN.match(line)
-        if match is None:
-            continue
-        raw = match.group(2)
-        if raw is None or not raw.strip():
+        raw = heading_text(line)
+        if not raw:
             continue
         slug = slugify(raw)
         seen = counts.get(slug, 0)
@@ -171,9 +191,18 @@ def emitted_anchors(markdown: str) -> list[str]:
     return anchors
 
 
+def validated_repository(candidate: Path | str) -> Path:
+    """Return one existing Git working tree, rejecting every other argument value."""
+    resolved = Path(candidate).resolve()
+    if not resolved.is_dir() or not (resolved / ".git").exists():
+        raise ValidationError("--repository must name an existing Git working tree")
+    return resolved
+
+
 def tracked_files(root: Path | str) -> list[str]:
+    repository = validated_repository(root)
     result = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=False
+        ["git", "-C", str(repository), "ls-files", "-z"], capture_output=True, check=False
     )
     if result.returncode != 0:
         raise ValidationError(f"git ls-files failed with exit {result.returncode}")

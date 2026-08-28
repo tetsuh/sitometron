@@ -181,7 +181,7 @@ class RepositoryCheckTest(unittest.TestCase):
     def write(self, relative_path: str, text: str) -> None:
         path = self.root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(text.encode("utf-8"))
         self.files[relative_path] = text
 
     def check(self) -> list:

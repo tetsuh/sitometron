@@ -27,9 +27,9 @@ jobs:
       - name: Validate core contracts
         run: uv run --frozen --only-group schema python tools/validate_core_contract.py
       - name: Validate repository-relative links
-        run: uv run --frozen --only-group schema python tools/check_relative_links.py
+        run: uv run --frozen --no-build --only-group schema python tools/check_relative_links.py
       - name: Validate repository governance
-        run: uv run --frozen --only-group schema python tools/check_repository_governance.py
+        run: uv run --frozen --no-build --only-group schema python tools/check_repository_governance.py
       - name: Check out exact event head for secret scanning
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -172,9 +172,9 @@ jobs:
       - name: Validate core contracts
         run: uv run --frozen --only-group schema python tools/validate_core_contract.py
       - name: Validate repository-relative links
-        run: uv run --frozen --only-group schema python tools/check_relative_links.py
+        run: uv run --frozen --no-build --only-group schema python tools/check_relative_links.py
       - name: Validate repository governance
-        run: uv run --frozen --only-group schema python tools/check_repository_governance.py
+        run: uv run --frozen --no-build --only-group schema python tools/check_repository_governance.py
       - name: Resolve vcpkg cache identity
         id: vcpkg-cache-identity
         shell: pwsh

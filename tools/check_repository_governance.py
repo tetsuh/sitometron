@@ -55,14 +55,17 @@ PULL_REQUEST_FIELDS = (
 
 BANNER_MARKER = "**Planned, not yet normative:**"
 BANNER_SPECIMEN = "Issue/ADR #NN"
-AUTHORITY_PATTERN = re.compile(r"\[[^\]]+\]\([^)]*(?:issues|adr)[^)]*\)", re.IGNORECASE)
-ACCEPTED_ADR_PATTERN = re.compile(r"Accepted\s+\[ADR-\d{4}\]\([^)]+\)")
-HEADING_PATTERN = re.compile(r"\A {0,3}#{1,6}[ \t]+(.*?)[ \t]*#*[ \t]*\Z")
-STATUS_PATTERN = re.compile(r"\A(" + "|".join(ADR_STATUSES) + r")\b")
-FORM_ITEM_PATTERN = re.compile(r"\A  - type: ([a-z]+)\s*\Z")
-FORM_ID_PATTERN = re.compile(r"\A    id: ([A-Za-z0-9_]+)\s*\Z")
-FORM_LABEL_PATTERN = re.compile(r"\A      label: (.+?)\s*\Z")
-FORM_REQUIRED_PATTERN = re.compile(r"\A\s+required: (true|false)\s*\Z")
+LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]*)\)")
+AUTHORITY_TOKENS = ("issues", "adr")
+ACCEPTED_ADR_PATTERN = re.compile(r"Accepted \[ADR-\d{4}\]\([^)]+\)")
+FENCE_PATTERN = re.compile(r"\A {0,3}(?:```|~~~)")
+STATUS_PATTERN = re.compile(r"\A(?:" + "|".join(ADR_STATUSES) + r")\b")
+FORM_ITEM_PATTERN = re.compile(r"\A {2}- type: (\w+)\Z")
+FORM_ID_PATTERN = re.compile(r"\A {4}id: (\w+)\Z")
+FORM_LABEL_PATTERN = re.compile(r"\A {6}label: (\S.*)\Z")
+FORM_REQUIRED_PATTERN = re.compile(r"\A( +)required: (true|false)\Z")
+TEXT_REQUIRED_INDENT = 6
+CHECKBOX_REQUIRED_INDENT = 10
 
 
 class ValidationError(RuntimeError):
@@ -86,9 +89,18 @@ class FormBlock:
     required: bool
 
 
+def validated_repository(candidate: Path | str) -> Path:
+    """Return one existing Git working tree, rejecting every other argument value."""
+    resolved = Path(candidate).resolve()
+    if not resolved.is_dir() or not (resolved / ".git").exists():
+        raise ValidationError("--repository must name an existing Git working tree")
+    return resolved
+
+
 def tracked_files(root: Path | str) -> list[str]:
+    repository = validated_repository(root)
     result = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=False
+        ["git", "-C", str(repository), "ls-files", "-z"], capture_output=True, check=False
     )
     if result.returncode != 0:
         raise ValidationError(f"git ls-files failed with exit {result.returncode}")
@@ -96,6 +108,13 @@ def tracked_files(root: Path | str) -> list[str]:
         return [item for item in result.stdout.decode("utf-8").split("\0") if item]
     except UnicodeDecodeError as error:
         raise ValidationError("tracked paths are not valid UTF-8") from error
+
+
+def _names_authority(text: str) -> bool:
+    return any(
+        token in target.lower() for target in LINK_PATTERN.findall(text)
+        for token in AUTHORITY_TOKENS
+    )
 
 
 def _read(root: Path, relative_path: str) -> str:
@@ -109,61 +128,68 @@ def _read(root: Path, relative_path: str) -> str:
         raise ValidationError(f"{relative_path} is not valid UTF-8") from error
 
 
+class _FormBlockBuilder:
+    """Accumulate one Issue-form block while its lines are read."""
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        self.identifier: str | None = None
+        self.label: str | None = None
+        self.required = False
+        self.in_validation = False
+
+    @property
+    def required_indent(self) -> int:
+        return CHECKBOX_REQUIRED_INDENT if self.kind == "checkboxes" else TEXT_REQUIRED_INDENT
+
+    def read(self, line: str) -> None:
+        if (match := FORM_ID_PATTERN.match(line)) is not None:
+            self.identifier = match.group(1)
+            return
+        if (match := FORM_LABEL_PATTERN.match(line)) is not None:
+            self.label = match.group(1).rstrip()
+            return
+        if (match := FORM_REQUIRED_PATTERN.match(line)) is not None:
+            if self.in_validation and len(match.group(1)) == self.required_indent:
+                self.required = match.group(2) == "true"
+            return
+        stripped = line.strip()
+        if stripped in {"validations:", "options:"} or stripped.startswith("- label:"):
+            self.in_validation = True
+        elif stripped.startswith("attributes:"):
+            self.in_validation = False
+
+    def build(self) -> FormBlock:
+        if self.identifier is None:
+            raise ValidationError("issue form block has no id")
+        if self.label is None:
+            raise ValidationError(f"issue form block {self.identifier} has no label")
+        return FormBlock(self.identifier, self.kind, self.label, self.required)
+
+
 def parse_issue_form(text: str) -> dict[str, FormBlock]:
     """Parse one repository-format Issue form into its expected id/label/required blocks."""
     if "\r" in text:
         raise ValidationError("issue form must use LF line endings")
     blocks: dict[str, FormBlock] = {}
-    kind: str | None = None
-    identifier: str | None = None
-    label: str | None = None
-    required = False
-    in_validation = False
+    builder: _FormBlockBuilder | None = None
 
-    def close() -> None:
-        nonlocal kind, identifier, label, required, in_validation
-        if kind is None:
+    def close(current: _FormBlockBuilder | None) -> None:
+        if current is None:
             return
-        if identifier is None:
-            raise ValidationError("issue form block has no id")
-        if label is None:
-            raise ValidationError(f"issue form block {identifier} has no label")
-        if identifier in blocks:
-            raise ValidationError(f"issue form declares duplicate id {identifier}")
-        blocks[identifier] = FormBlock(identifier, kind, label, required)
-        kind = identifier = label = None
-        required = False
-        in_validation = False
+        block = current.build()
+        if block.identifier in blocks:
+            raise ValidationError(f"issue form declares duplicate id {block.identifier}")
+        blocks[block.identifier] = block
 
     for line in text.split("\n"):
         item = FORM_ITEM_PATTERN.match(line)
         if item is not None:
-            close()
-            kind = item.group(1)
-            continue
-        if kind is None:
-            continue
-        if (match := FORM_ID_PATTERN.match(line)) is not None:
-            identifier = match.group(1)
-            continue
-        if (match := FORM_LABEL_PATTERN.match(line)) is not None:
-            label = match.group(1)
-            continue
-        stripped = line.strip()
-        if stripped in {"validations:", "options:"}:
-            in_validation = True
-            continue
-        if stripped.startswith("- label:"):
-            in_validation = True
-            continue
-        if (match := FORM_REQUIRED_PATTERN.match(line)) is not None:
-            expected_indent = 6 if kind != "checkboxes" else 10
-            if in_validation and len(line) - len(line.lstrip(" ")) == expected_indent:
-                required = match.group(1) == "true"
-            continue
-        if stripped.startswith("attributes:"):
-            in_validation = False
-    close()
+            close(builder)
+            builder = _FormBlockBuilder(item.group(1))
+        elif builder is not None:
+            builder.read(line)
+    close(builder)
     if not blocks:
         raise ValidationError("issue form declares no block")
     return blocks
@@ -187,19 +213,33 @@ def _adr_status(text: str, relative_path: str) -> list[Finding]:
     return findings
 
 
+def _heading_text(line: str) -> str | None:
+    indent = len(line) - len(line.lstrip(" "))
+    if indent > 3:
+        return None
+    rest = line[indent:]
+    level = len(rest) - len(rest.lstrip("#"))
+    if not 1 <= level <= 6:
+        return None
+    rest = rest[level:]
+    if not rest or rest[0] not in " \t":
+        return None
+    return rest.strip(" \t").rstrip("#").strip(" \t") or None
+
+
 def _sections(text: str) -> dict[str, str]:
     sections: dict[str, str] = {}
     current: str | None = None
     fenced = False
     for line in text.split("\n"):
-        if re.match(r"\A {0,3}(```|~~~)", line):
+        if FENCE_PATTERN.match(line):
             fenced = not fenced
             continue
         if fenced:
             continue
-        heading = HEADING_PATTERN.match(line)
+        heading = _heading_text(line)
         if heading is not None:
-            current = heading.group(1).strip()
+            current = heading
             sections.setdefault(current, "")
             continue
         if current is not None:
@@ -251,7 +291,7 @@ def check_registry(root: Path, tracked: Sequence[str]) -> list[Finding]:
                 where, f"implementation value {implementation!r} is outside the vocabulary"))
         if maturity == "Normative" and ACCEPTED_ADR_PATTERN.search(authority) is None:
             findings.append(Finding(where, "Normative row does not name an Accepted ADR authority"))
-        if maturity == "Planned" and AUTHORITY_PATTERN.search(authority) is None:
+        if maturity == "Planned" and not _names_authority(authority):
             findings.append(Finding(
                 where, "Planned-maturity row does not name a traceable Issue or design authority"))
     return findings
@@ -263,7 +303,7 @@ def check_banners(root: Path, tracked: Sequence[str]) -> list[Finding]:
         for number, line in enumerate(_read(root, path).split("\n"), 1):
             if BANNER_MARKER not in line or BANNER_SPECIMEN in line:
                 continue
-            if AUTHORITY_PATTERN.search(line) is None:
+            if not _names_authority(line):
                 findings.append(Finding(
                     f"{path}:{number}", "Planned banner does not name an owning Issue or ADR"))
     return findings
