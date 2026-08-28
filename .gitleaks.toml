@@ -1,0 +1,9 @@
+title = "Sitometron Phase 0A secret scan"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "sitometron-synthetic-canary"
+keywords = ["SITOMETRON_CANARY_"]
+regex = '''SITOMETRON_CANARY_[0-9a-f]{32}'''
