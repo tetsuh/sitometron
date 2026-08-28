@@ -32,6 +32,7 @@ Phase 0A PR CI requires:
 - clang-tidy 18.1.3 with warnings treated as errors on the frozen tracked translation units;
 - Linux ASan/UBSan with the same CTest name set as `dev-linux`;
 - pinned Gitleaks 8.30.1 secret scanning of the exact event head on Linux;
+- repository-relative link and repository governance validation on Linux and Windows;
 - positive and negative core dependency-isolation checks.
 
 The Linux clang-tidy step resolves the absolute `clang-tidy-18` application and runs the
@@ -69,8 +70,31 @@ only bounded stage/category lines, writes no report, and removes every run-owned
 configuration extends the built-in rules with exactly one canary rule and permits no allowlist or
 other suppression; any exception requires an owner re-freeze.
 
-Before the Phase 0A Gate closes, add documentation/link validation. Later Gate Issues own the
-remaining qualification lanes.
+`tools/check_relative_links.py` validates every repository-relative Markdown link and anchor in the
+tracked Markdown files without network access. It ignores exactly the `http`, `https`, and `mailto`
+schemes and fails closed on every other scheme, on any query in a local target, and on malformed or
+ambiguous percent-escapes, encoded separators, control characters, backslashes, drive or UNC forms,
+and `.`/`..` escapes. Paths resolve against Git-tracked entries, so repository spelling stays
+case-sensitive on Windows; a directory link needs an exact tracked directory, a trailing `/`, and no
+fragment, and no implicit README or index resolution occurs. Anchors come only from ATX headings:
+the validator removes an optional closing `#` run, replaces links and images with their visible
+label, strips HTML tags, unescapes entities, drops backtick and emphasis delimiters, normalizes to
+NFC, casefolds, maps each whitespace run to one `-`, keeps Unicode letters, numbers, and marks plus
+`-` and `_`, and appends `-1`, `-2`, and so on to later collisions. Setext headings and raw HTML
+`id`/`name` anchors are not anchor sources, and fenced-code contents are ignored.
+
+`tools/check_repository_governance.py` validates repository-owned governance invariants only: the
+ADR status vocabulary with its core metadata sections and decision date, the independent Contract
+Registry maturity and implementation vocabularies, an Accepted ADR authority on every Normative row,
+a traceable Issue or design authority on every Planned-maturity row, an authority link in every
+Planned-not-normative banner, and the fields the Issue forms and pull-request template must declare
+as required. It is a bounded repository-format parser rather than a general YAML implementation: it
+requires LF-normalized UTF-8 issue-form text, unique expected `id`/label blocks, and `required: true`
+in the correct validation or checkbox block. Actual Issue completeness, clean-room provenance, owner
+decisions, current-head authorization, and Gate evidence remain human and provider review evidence;
+CI never calls a GitHub API to infer them.
+
+Later Gate Issues own the remaining qualification lanes.
 
 ## 3. Test policy
 
@@ -102,7 +126,8 @@ documents. Contract-specific checks remain in their own validators; generic JSON
 does not interpret project extension keywords.
 
 The same `unittest` discovery runs the network-free contract tests for `tools/run_clang_tidy.py`,
-`tools/acquire_gitleaks.py`, and `tools/run_secret_scan.py` on Linux and native Windows. Those
+`tools/acquire_gitleaks.py`, `tools/run_secret_scan.py`, `tools/check_relative_links.py`, and
+`tools/check_repository_governance.py` on Linux and native Windows. Those
 tests inject HTTP, subprocess, and filesystem seams and never download a tool or scan real
 history.
 
