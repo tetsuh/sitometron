@@ -25,12 +25,10 @@ from typing import TextIO
 EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
 SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
-FENCE_PATTERN = re.compile(r"\A {0,3}(`{3,}|~{3,})(.*)\Z")
 LINK_OPEN_PATTERN = re.compile(r"!?\[[^\]]*\]\(")
 REFERENCE_USE_PATTERN = re.compile(r"(?<!\!)\[([^\]]+)\]\[([^\]]*)\]")
-REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(\S+)")
+REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(.*)\Z")
 LABEL_LINK_PATTERN = re.compile(r"!?\[([^\]]*)\]\([^()]*\)")
-CODE_SPAN_PATTERN = re.compile(r"(`+)[^`]*\1")
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
 MAX_DESTINATION_DEPTH = 8
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
@@ -168,12 +166,23 @@ def slugify(heading: str) -> str:
 
 
 def _fence_delimiter(line: str) -> tuple[str, int, str] | None:
-    """Return the (character, length, trailing text) of one fence line."""
-    match = FENCE_PATTERN.match(line)
-    if match is None:
+    """Return the (character, length, trailing text) of one valid fence line."""
+    indent = len(line) - len(line.lstrip(" "))
+    if indent > MAX_HEADING_INDENT or indent == len(line):
         return None
-    delimiter = match.group(1)
-    return delimiter[0], len(delimiter), match.group(2).strip()
+    marker = line[indent]
+    if marker not in "`~":
+        return None
+    end = indent
+    while end < len(line) and line[end] == marker:
+        end += 1
+    length = end - indent
+    if length < 3:
+        return None
+    trailing = line[end:].strip(" \t")
+    if marker == "`" and "`" in trailing:
+        return None
+    return marker, length, trailing
 
 
 def _closes_fence(line: str, fence: tuple[str, int]) -> bool:
@@ -200,9 +209,44 @@ def _content_lines(markdown: str) -> list[str]:
     return lines
 
 
+def _backtick_runs(line: str) -> list[tuple[int, int]]:
+    """Return the half-open bounds of every maximal backtick run."""
+    runs: list[tuple[int, int]] = []
+    index = 0
+    while index < len(line):
+        if line[index] != "`":
+            index += 1
+            continue
+        end = index + 1
+        while end < len(line) and line[end] == "`":
+            end += 1
+        runs.append((index, end))
+        index = end
+    return runs
+
+
 def strip_code_spans(line: str) -> str:
-    """Blank the contents of inline code spans so their text is never a link."""
-    return CODE_SPAN_PATTERN.sub(lambda match: " " * len(match.group(0)), line)
+    """Blank inline code spans using equal-width maximal backtick runs."""
+    runs = _backtick_runs(line)
+    next_matching: list[int | None] = [None] * len(runs)
+    latest: dict[int, int] = {}
+    for index in range(len(runs) - 1, -1, -1):
+        width = runs[index][1] - runs[index][0]
+        next_matching[index] = latest.get(width)
+        latest[width] = index
+
+    characters = list(line)
+    index = 0
+    while index < len(runs):
+        closing = next_matching[index]
+        if closing is None:
+            index += 1
+            continue
+        start = runs[index][0]
+        end = runs[closing][1]
+        characters[start:end] = " " * (end - start)
+        index = closing + 1
+    return "".join(characters)
 
 
 def emitted_anchors(markdown: str) -> list[str]:
@@ -287,6 +331,18 @@ def inline_links(line: str) -> list[str]:
     return targets
 
 
+def _reference_target(raw: str) -> str:
+    """Return one normalized reference-definition destination or an invalid sentinel."""
+    text = raw.strip(" \t")
+    if text.startswith("<"):
+        end = text.find(">")
+        if end <= 1:
+            return INVALID_REFERENCE_TARGET
+        return text[1:end]
+    target = text.split(" ", 1)[0].split("\t", 1)[0]
+    return target or INVALID_REFERENCE_TARGET
+
+
 def _reference_definitions(lines: Sequence[str]) -> dict[str, tuple[str, int]]:
     """Return the first definition of every reference label, as CommonMark requires."""
     definitions: dict[str, tuple[str, int]] = {}
@@ -294,8 +350,22 @@ def _reference_definitions(lines: Sequence[str]) -> dict[str, tuple[str, int]]:
         match = REFERENCE_DEFINITION_PATTERN.match(line)
         if match is not None:
             label = " ".join(match.group(1).split()).casefold()
-            definitions.setdefault(label, (match.group(2), number))
+            definitions.setdefault(label, (_reference_target(match.group(2)), number))
     return definitions
+
+
+def _line_links(
+    number: int, raw_line: str, definitions: dict[str, tuple[str, int]],
+) -> list[tuple[int, str]]:
+    definition = REFERENCE_DEFINITION_PATTERN.match(raw_line)
+    if definition is not None:
+        return [(number, _reference_target(definition.group(2)))]
+    line = strip_code_spans(raw_line)
+    links = [(number, target) for target in inline_links(line)]
+    for match in REFERENCE_USE_PATTERN.finditer(line):
+        label = " ".join((match.group(2) or match.group(1)).split()).casefold()
+        links.append((number, definitions.get(label, (INVALID_REFERENCE_TARGET, 0))[0]))
+    return links
 
 
 def extract_links(markdown: str) -> list[tuple[int, str]]:
@@ -304,15 +374,7 @@ def extract_links(markdown: str) -> list[tuple[int, str]]:
     definitions = _reference_definitions(lines)
     links: list[tuple[int, str]] = []
     for number, raw_line in enumerate(lines, 1):
-        definition = REFERENCE_DEFINITION_PATTERN.match(raw_line)
-        if definition is not None:
-            links.append((number, definition.group(2)))
-            continue
-        line = strip_code_spans(raw_line)
-        links.extend((number, target) for target in inline_links(line))
-        for match in REFERENCE_USE_PATTERN.finditer(line):
-            label = " ".join((match.group(2) or match.group(1)).split()).casefold()
-            links.append((number, definitions.get(label, (INVALID_REFERENCE_TARGET, 0))[0]))
+        links.extend(_line_links(number, raw_line, definitions))
     return links
 
 

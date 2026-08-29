@@ -158,8 +158,10 @@ class _FormBlockBuilder:
 
     def build(self) -> FormBlock | None:
         if self.identifier is None:
-            # `- type: markdown` help text legitimately declares no id and no label.
-            return None
+            if self.kind == "markdown":
+                # `- type: markdown` help text legitimately declares no id and no label.
+                return None
+            raise ValidationError(f"issue form {self.kind} block has no id")
         if self.label is None:
             raise ValidationError(f"issue form block {self.identifier} has no label")
         return FormBlock(self.identifier, self.kind, self.label, self.required)

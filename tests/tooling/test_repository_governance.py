@@ -129,12 +129,22 @@ class IssueFormParserTest(unittest.TestCase):
 
     def test_rejects_a_block_without_an_identifier_or_label(self) -> None:
         for text in [
-            "name: Example\nbody:\n  - type: textarea\n    attributes:\n      label: Summary\n",
+            issue_form([("valid", "Valid")])
+            + "  - type: textarea\n    attributes:\n      label: Missing identifier\n",
             "name: Example\nbody:\n  - type: textarea\n    id: summary\n    attributes:\n",
         ]:
             with self.subTest(text=text):
                 with self.assertRaises(self.module.ValidationError):
                     self.module.parse_issue_form(text)
+
+    def test_allows_markdown_help_without_an_identifier(self) -> None:
+        text = (
+            "name: Example\nbody:\n"
+            "  - type: markdown\n    attributes:\n      value: Helpful text\n"
+            + issue_form([("summary", "Summary")]).partition("body:\n")[2]
+        )
+        blocks = self.module.parse_issue_form(text)
+        self.assertEqual(list(blocks), ["summary"])
 
 
 @unittest.skipUnless(VALIDATOR.is_file(), "governance validator is not implemented")

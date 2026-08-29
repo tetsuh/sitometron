@@ -97,6 +97,16 @@ class SlugTest(unittest.TestCase):
         markdown = "# Real\n```text\n# Fake\n```\n~~~\n## Also fake\n~~~\n## Second real\n"
         self.assertEqual(self.slugs(markdown), ["real", "second-real"])
 
+    def test_rejects_backticks_only_in_backtick_fence_info(self) -> None:
+        self.assertEqual(self.slugs("``` language `option`\n# Visible\n"), ["visible"])
+        self.assertEqual(self.slugs("~~~ language `option`\n# Hidden\n~~~\n"), [])
+
+    def test_does_not_close_fences_with_non_ascii_trailing_whitespace(self) -> None:
+        for marker in ("```", "~~~"):
+            with self.subTest(marker=marker):
+                markdown = f"{marker}\n# Hidden\n{marker}\u00a0\n## Still hidden\n{marker}\n# Visible\n"
+                self.assertEqual(self.slugs(markdown), ["visible"])
+
     def test_handles_crlf_and_lf_identically(self) -> None:
         self.assertEqual(self.slugs("# One\r\n## Two\r\n"), self.slugs("# One\n## Two\n"))
 
@@ -260,6 +270,19 @@ class RepositoryCheckTest(unittest.TestCase):
         self.write("README.md", "[valid][ref]\n\n[ref]: README.md\n")
         self.assertEqual(self.check(), [])
 
+    def test_accepts_angle_bracket_reference_destinations(self) -> None:
+        self.write("docs/target file.md", "# Target\n")
+        self.write("README.md", "[valid][ref]\n\n[ref]: <docs/target file.md>\n")
+        self.assertEqual(self.check(), [])
+
+    def test_rejects_malformed_angle_bracket_reference_destinations(self) -> None:
+        for destination in ("<docs/absent file.md>", "<docs/absent.md"):
+            with self.subTest(destination=destination):
+                self.write("README.md", f"[missing][ref]\n\n[ref]: {destination}\n")
+                findings = self.check()
+                self.assertEqual(len(findings), 2, findings)
+                self.assertEqual([finding.line for finding in findings], [1, 3])
+
     def test_rejects_repeated_trailing_directory_markers(self) -> None:
         self.write("docs/keep.txt", "data\n")
         self.write("README.md", "[double](docs//)\n[triple](docs///)\n")
@@ -279,6 +302,14 @@ class RepositoryCheckTest(unittest.TestCase):
             "[real](README.md)\n"
         ))
         self.assertEqual(self.check(), [])
+
+    def test_does_not_pair_mismatched_long_backtick_runs(self) -> None:
+        self.write("README.md", (
+            ("`" * 4096) + " [broken](absent.md) " + ("`" * 4095) + "\n"
+        ))
+        findings = self.check()
+        self.assertEqual(len(findings), 1, findings)
+        self.assertEqual(findings[0].target, "absent.md")
 
     def test_reads_angle_bracket_and_parenthesised_destinations(self) -> None:
         self.write("docs/a(1).md", "# Target\n")
