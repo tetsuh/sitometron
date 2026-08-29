@@ -269,6 +269,35 @@ class GovernanceCheckTest(unittest.TestCase):
             self.write(path, issue_form([(i, i.title()) for i in fields],
                                         checkbox_ids=("provenance", "planned_banners")))
 
+    def test_ignores_form_blocks_that_declare_no_identifier(self) -> None:
+        text = ("name: X\ndescription: Y\nbody:\n"
+                "  - type: markdown\n    attributes:\n      value: Intro text.\n"
+                "  - type: textarea\n    id: summary\n    attributes:\n      label: Summary\n"
+                "    validations:\n      required: true\n")
+        blocks = self.module.parse_issue_form(text)
+        self.assertEqual(sorted(blocks), ["summary"])
+        self.assertTrue(blocks["summary"].required)
+
+    def test_treats_a_checkbox_block_as_required_when_any_option_is(self) -> None:
+        text = ("name: X\nbody:\n  - type: checkboxes\n    id: provenance\n    attributes:\n"
+                "      label: L\n      options:\n        - label: A\n          required: true\n"
+                "        - label: B\n          required: false\n")
+        self.assertTrue(self.module.parse_issue_form(text)["provenance"].required)
+        relaxed = text.replace("required: true", "required: false")
+        self.assertFalse(self.module.parse_issue_form(relaxed)["provenance"].required)
+
+    def test_reports_a_registry_row_with_the_wrong_column_count(self) -> None:
+        self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE.replace(
+            "| Future surface | Planned | Planned | [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment | Phase 1 |",
+            "| Future surface | Planned | [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment | Phase 1 |"))
+        findings = self.check()
+        self.assertTrue(any("columns" in f.reason for f in findings), findings)
+
+    def test_ignores_a_banner_shown_inside_fenced_code(self) -> None:
+        self.write("docs/99_example.md",
+                   "# Example\n\n```markdown\n> " + BANNER.replace("> ", "").splitlines()[0] + "\n```\n")
+        self.assertEqual(self.check(), [])
+
     def test_requires_expected_fields_to_be_required(self) -> None:
         self.write(".github/ISSUE_TEMPLATE/feature.yml", issue_form(
             [(i, i.title()) for i in self.module.FEATURE_FIELDS], required=False))

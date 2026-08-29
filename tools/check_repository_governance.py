@@ -53,6 +53,7 @@ ADR_LEGACY_PATH = f"{ADR_DIRECTORY}/0001-bootstrap-a-stdlib-only-cpp20-core.md"
 ADR_LEGACY_SECTIONS = ADR_SECTIONS[:4]
 DATE_PATTERN = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 MATURITY_VALUES = ("Planned", "Normative", "Deprecated", "Superseded")
+REGISTRY_COLUMNS = 5
 IMPLEMENTATION_VALUES = ("Planned", "In progress", "Implemented", "Removed")
 
 FEATURE_FIELDS = (
@@ -78,7 +79,6 @@ BANNER_SPECIMEN = "Issue/ADR #NN"
 LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]*)\)")
 AUTHORITY_TOKENS = ("issues", "adr")
 ACCEPTED_ADR_PATTERN = re.compile(r"Accepted \[ADR-\d{4}\]\([^)]+\)")
-FENCE_PATTERN = re.compile(r"\A {0,3}(?:```|~~~)")
 STATUS_PATTERN = re.compile(r"\A(?:" + "|".join(ADR_STATUSES) + r")\b")
 FORM_ITEM_PATTERN = re.compile(r"\A {2}- type: (\w+)\Z")
 FORM_ID_PATTERN = re.compile(r"\A {4}id: (\w+)\Z")
@@ -146,7 +146,9 @@ class _FormBlockBuilder:
             return
         if (match := FORM_REQUIRED_PATTERN.match(line)) is not None:
             if self.in_validation and len(match.group(1)) == self.required_indent:
-                self.required = match.group(2) == "true"
+                declared = match.group(2) == "true"
+                # A checkbox block enforces an answer when any single option is required.
+                self.required = self.required or declared if self.kind == "checkboxes" else declared
             return
         stripped = line.strip()
         if stripped in {"validations:", "options:"} or stripped.startswith("- label:"):
@@ -154,9 +156,10 @@ class _FormBlockBuilder:
         elif stripped.startswith("attributes:"):
             self.in_validation = False
 
-    def build(self) -> FormBlock:
+    def build(self) -> FormBlock | None:
         if self.identifier is None:
-            raise ValidationError("issue form block has no id")
+            # `- type: markdown` help text legitimately declares no id and no label.
+            return None
         if self.label is None:
             raise ValidationError(f"issue form block {self.identifier} has no label")
         return FormBlock(self.identifier, self.kind, self.label, self.required)
@@ -173,6 +176,8 @@ def parse_issue_form(text: str) -> dict[str, FormBlock]:
         if current is None:
             return
         block = current.build()
+        if block is None:
+            return
         if block.identifier in blocks:
             raise ValidationError(f"issue form declares duplicate id {block.identifier}")
         blocks[block.identifier] = block
@@ -251,27 +256,36 @@ def check_adrs(root: Path, tracked: Sequence[str]) -> list[Finding]:
     return findings
 
 
-def _registry_rows(text: str) -> list[list[str]]:
+def _registry_rows(text: str) -> tuple[list[list[str]], list[int]]:
+    """Return the surface rows of the Registry table and the lines that are malformed."""
     rows: list[list[str]] = []
-    for line in _content_lines(text):
+    malformed: list[int] = []
+    for number, line in enumerate(_content_lines(text), 1):
         if not line.startswith("|"):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) < 5 or set("".join(cells)) <= set("-: "):
+        if set("".join(cells)) <= set("-: ") or (len(cells) > 1 and cells[1] == "Maturity"):
             continue
-        if cells[1] == "Maturity":
+        if len(cells) != REGISTRY_COLUMNS:
+            malformed.append(number)
             continue
         rows.append(cells)
-    return rows
+    return rows, malformed
 
 
 def check_registry(root: Path, tracked: Sequence[str]) -> list[Finding]:
     if REGISTRY_PATH not in tracked:
         return [Finding(REGISTRY_PATH, "the Contract Registry is not tracked")]
     findings: list[Finding] = []
-    rows = _registry_rows(_read(root, REGISTRY_PATH))
+    rows, malformed = _registry_rows(_read(root, REGISTRY_PATH))
+    findings.extend(
+        Finding(f"{REGISTRY_PATH}:{number}",
+                f"Registry row does not declare exactly {REGISTRY_COLUMNS} columns")
+        for number in malformed
+    )
     if not rows:
-        return [Finding(REGISTRY_PATH, "the Contract Registry declares no surface row")]
+        findings.append(Finding(REGISTRY_PATH, "the Contract Registry declares no surface row"))
+        return findings
     for surface, maturity, implementation, authority, *_ in rows:
         where = f"{REGISTRY_PATH} [{surface}]"
         if maturity not in MATURITY_VALUES:
@@ -290,7 +304,7 @@ def check_registry(root: Path, tracked: Sequence[str]) -> list[Finding]:
 def check_banners(root: Path, tracked: Sequence[str]) -> list[Finding]:
     findings: list[Finding] = []
     for path in sorted(path for path in tracked if path.endswith(".md")):
-        for number, line in enumerate(_read(root, path).split("\n"), 1):
+        for number, line in enumerate(_content_lines(_read(root, path)), 1):
             if BANNER_MARKER not in line or BANNER_SPECIMEN in line:
                 continue
             if not _names_authority(line):

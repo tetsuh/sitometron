@@ -272,6 +272,46 @@ class RepositoryCheckTest(unittest.TestCase):
         findings = self.check()
         self.assertEqual(len(findings), 2, findings)
 
+    def test_ignores_link_syntax_inside_inline_code_spans(self) -> None:
+        self.write("README.md", (
+            "Write `[a](absent.md)` in a doc.\n"
+            "Double ``[b](absent.md)`` too.\n"
+            "[real](README.md)\n"
+        ))
+        self.assertEqual(self.check(), [])
+
+    def test_reads_angle_bracket_and_parenthesised_destinations(self) -> None:
+        self.write("docs/a(1).md", "# Target\n")
+        self.write("docs/plain.md", "# Plain\n")
+        self.write("README.md", (
+            "[angle](<docs/plain.md>)\n"
+            "[parens](docs/a(1).md)\n"
+            "[title](docs/plain.md \"a title\")\n"
+        ))
+        self.assertEqual(self.check(), [])
+        self.write("README.md", "[angle](<docs/absent.md>)\n[parens](docs/b(2).md)\n")
+        findings = self.check()
+        self.assertEqual([f.target for f in findings], ["docs/absent.md", "docs/b(2).md"])
+
+    def test_validates_each_reference_definition_at_its_own_line(self) -> None:
+        self.write("docs/target.md", "# Target\n")
+        self.write("README.md", (
+            "[a]: docs/absent.md\n"
+            "[a]: docs/target.md\n"
+            "\n"
+            "use [x][a]\n"
+        ))
+        findings = self.check()
+        self.assertEqual([f.line for f in findings], [1, 4],
+                         "the first definition binds the label and every definition is checked")
+        self.assertTrue(all("docs/absent.md" == f.target for f in findings), findings)
+
+    def test_reports_unreadable_markdown_as_a_validation_error(self) -> None:
+        (self.root / "bad.md").write_bytes(b"# Title\n\xff\n")
+        self.files["bad.md"] = ""
+        with self.assertRaises(self.module.ValidationError):
+            self.check()
+
     def test_matches_only_compatible_fence_character_and_width(self) -> None:
         self.write("README.md", "````text\n[hidden](absent.md)\n```\n[still-hidden](absent.md)\n````\n")
         self.assertEqual(self.check(), [])

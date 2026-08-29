@@ -25,12 +25,14 @@ from typing import TextIO
 EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
 SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
-FENCE_PATTERN = re.compile(r"\A {0,3}([`~]{3,})(.*)\Z")
-LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\(([^()]*)\)")
+FENCE_PATTERN = re.compile(r"\A {0,3}(`{3,}|~{3,})(.*)\Z")
+LINK_OPEN_PATTERN = re.compile(r"!?\[[^\]]*\]\(")
 REFERENCE_USE_PATTERN = re.compile(r"(?<!\!)\[([^\]]+)\]\[([^\]]*)\]")
 REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(\S+)")
 LABEL_LINK_PATTERN = re.compile(r"!?\[([^\]]*)\]\([^()]*\)")
+CODE_SPAN_PATTERN = re.compile(r"(`+)[^`]*\1")
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
+MAX_DESTINATION_DEPTH = 8
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
 PERCENT_PATTERN = re.compile(r"%(..?|\Z)", re.DOTALL)
 VALID_ESCAPE_PATTERN = re.compile(r"\A[0-9A-Fa-f]{2}\Z")
@@ -106,8 +108,6 @@ def resolve_local_path(source: str, target: str) -> str:
     if path.startswith("/") or DRIVE_PATTERN.match(path) is not None:
         raise ValidationError("local path is absolute, a drive path, or a UNC path")
     components = path[:-1].split("/") if path.endswith("/") else path.split("/")
-    if path == "/":
-        components = [""]
     if any(component in {"", "."} for component in components):
         raise ValidationError("local path contains an empty or dot component")
     parts = list(PurePosixPath(source).parent.parts)
@@ -167,27 +167,42 @@ def slugify(heading: str) -> str:
     return slug
 
 
+def _fence_delimiter(line: str) -> tuple[str, int, str] | None:
+    """Return the (character, length, trailing text) of one fence line."""
+    match = FENCE_PATTERN.match(line)
+    if match is None:
+        return None
+    delimiter = match.group(1)
+    return delimiter[0], len(delimiter), match.group(2).strip()
+
+
+def _closes_fence(line: str, fence: tuple[str, int]) -> bool:
+    marker = _fence_delimiter(line)
+    return marker is not None and marker[0] == fence[0] and marker[1] >= fence[1] and not marker[2]
+
+
 def _content_lines(markdown: str) -> list[str]:
     """Return lines outside correctly matched Markdown fenced code blocks."""
     lines: list[str] = []
     fence: tuple[str, int] | None = None
     for line in markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        match = FENCE_PATTERN.match(line)
-        if fence is None:
-            if match is not None:
-                delimiter = match.group(1)
-                fence = (delimiter[0], len(delimiter))
-                lines.append("")
-            else:
-                lines.append(line)
+        if fence is not None:
+            if _closes_fence(line, fence):
+                fence = None
+            lines.append("")
             continue
-        delimiter = match.group(1) if match is not None else ""
-        trailing = match.group(2).strip() if match is not None else ""
-        if (match is not None and delimiter[0] == fence[0]
-                and len(delimiter) >= fence[1] and not trailing):
-            fence = None
-        lines.append("" if fence is not None else "")
+        marker = _fence_delimiter(line)
+        if marker is None:
+            lines.append(line)
+            continue
+        fence = (marker[0], marker[1])
+        lines.append("")
     return lines
+
+
+def strip_code_spans(line: str) -> str:
+    """Blank the contents of inline code spans so their text is never a link."""
+    return CODE_SPAN_PATTERN.sub(lambda match: " " * len(match.group(0)), line)
 
 
 def emitted_anchors(markdown: str) -> list[str]:
@@ -231,37 +246,89 @@ def tracked_files(root: Path | str) -> list[str]:
         raise ValidationError("tracked paths are not valid UTF-8") from error
 
 
-def extract_links(markdown: str) -> list[tuple[int, str]]:
-    """Return every (line number, raw target) link outside fenced code."""
-    lines = _content_lines(markdown)
-    definitions: dict[str, str] = {}
-    definition_lines: dict[str, int] = {}
+def _destination(line: str, start: int) -> tuple[str, int] | None:
+    """Read one inline destination that starts just after `(`, honouring nesting."""
+    depth = 1
+    index = start
+    while index < len(line) and depth <= MAX_DESTINATION_DEPTH:
+        character = line[index]
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth == 0:
+                return line[start:index], index + 1
+        index += 1
+    return None
+
+
+def _inline_target(raw: str) -> str:
+    """Return the link destination of one inline `(...)` body without its title."""
+    text = raw.strip()
+    if text.startswith("<"):
+        end = text.find(">")
+        return text[1:end] if end != -1 else ""
+    return text.split(" ", 1)[0].split("\t", 1)[0]
+
+
+def inline_links(line: str) -> list[str]:
+    """Return every inline link destination on one content line."""
+    targets: list[str] = []
+    index = 0
+    while (match := LINK_OPEN_PATTERN.search(line, index)) is not None:
+        destination = _destination(line, match.end())
+        if destination is None:
+            index = match.end()
+            continue
+        target = _inline_target(destination[0])
+        if target:
+            targets.append(target)
+        index = destination[1]
+    return targets
+
+
+def _reference_definitions(lines: Sequence[str]) -> dict[str, tuple[str, int]]:
+    """Return the first definition of every reference label, as CommonMark requires."""
+    definitions: dict[str, tuple[str, int]] = {}
     for number, line in enumerate(lines, 1):
         match = REFERENCE_DEFINITION_PATTERN.match(line)
         if match is not None:
             label = " ".join(match.group(1).split()).casefold()
-            definitions[label] = match.group(2)
-            definition_lines[label] = number
+            definitions.setdefault(label, (match.group(2), number))
+    return definitions
+
+
+def extract_links(markdown: str) -> list[tuple[int, str]]:
+    """Return every (line number, raw target) link outside fenced code."""
+    lines = _content_lines(markdown)
+    definitions = _reference_definitions(lines)
     links: list[tuple[int, str]] = []
-    for number, line in enumerate(lines, 1):
-        definition = REFERENCE_DEFINITION_PATTERN.match(line)
+    for number, raw_line in enumerate(lines, 1):
+        definition = REFERENCE_DEFINITION_PATTERN.match(raw_line)
         if definition is not None:
-            label = " ".join(definition.group(1).split()).casefold()
-            links.append((number, definitions[label]))
-        for inline in LINK_PATTERN.findall(line):
-            target = inline.strip().split(" ", 1)[0].split("\t", 1)[0]
-            if target:
-                links.append((number, target))
+            links.append((number, definition.group(2)))
+            continue
+        line = strip_code_spans(raw_line)
+        links.extend((number, target) for target in inline_links(line))
         for match in REFERENCE_USE_PATTERN.finditer(line):
             label = " ".join((match.group(2) or match.group(1)).split()).casefold()
-            links.append((number, definitions.get(label, INVALID_REFERENCE_TARGET)))
+            links.append((number, definitions.get(label, (INVALID_REFERENCE_TARGET, 0))[0]))
     return links
+
+
+def read_markdown(root: Path, relative_path: str) -> str:
+    """Read one tracked Markdown file, failing closed on I/O and encoding errors."""
+    try:
+        return (root / relative_path).read_bytes().decode("utf-8")
+    except OSError as error:
+        raise ValidationError(f"cannot read {relative_path}: {error.strerror}") from error
+    except UnicodeDecodeError as error:
+        raise ValidationError(f"{relative_path} is not valid UTF-8") from error
 
 
 def _anchor_set(root: Path, relative_path: str, cache: dict[str, set[str]]) -> set[str]:
     if relative_path not in cache:
-        text = (root / relative_path).read_text(encoding="utf-8")
-        cache[relative_path] = set(emitted_anchors(text))
+        cache[relative_path] = set(emitted_anchors(read_markdown(root, relative_path)))
     return cache[relative_path]
 
 
@@ -288,6 +355,8 @@ def _check_target(
         return None
     if not resolved.lower().endswith(MARKDOWN_SUFFIX):
         return "fragment target is not a Markdown file"
+    # Fragments are compared byte-exactly: a decomposed or differently cased fragment does not
+    # resolve on GitHub either, so normalizing here would accept a genuinely broken link.
     if fragment not in _anchor_set(root, resolved, cache):
         return "missing anchor"
     return None
@@ -304,7 +373,7 @@ def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
     cache: dict[str, set[str]] = {}
     findings: list[Finding] = []
     for source in sorted(path for path in tracked if path.lower().endswith(MARKDOWN_SUFFIX)):
-        text = (root / source).read_text(encoding="utf-8")
+        text = read_markdown(root, source)
         for line, target in extract_links(text):
             if is_external(target):
                 continue
