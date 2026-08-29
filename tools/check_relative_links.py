@@ -25,10 +25,9 @@ from typing import TextIO
 EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
 SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
-LINK_OPEN_PATTERN = re.compile(r"!?\[[^\]]*\]\(")
 REFERENCE_USE_PATTERN = re.compile(r"(?<!\!)\[([^\]]+)\]\[([^\]]*)\]")
 REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(.*)\Z")
-LABEL_LINK_PATTERN = re.compile(r"!?\[([^\]]*)\]\([^()]*\)")
+MAX_LABEL_DEPTH = 8
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
 MAX_DESTINATION_DEPTH = 8
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
@@ -77,7 +76,7 @@ def _decode_once(raw: str, what: str) -> str:
         ).decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValidationError(f"{what} is not valid UTF-8 after decoding") from error
-    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in decoded):
+    if any(unicodedata.category(character) == "Cc" for character in decoded):
         raise ValidationError(f"{what} contains a control character")
     if PERCENT_PATTERN.search(decoded) is not None:
         raise ValidationError(f"{what} remains percent-encoded after one decoding")
@@ -144,9 +143,57 @@ def heading_text(line: str) -> str | None:
     return rest.strip(" \t")
 
 
+def _label_end(line: str, start: int) -> int | None:
+    if start >= len(line) or line[start] != "[":
+        return None
+    depth = 1
+    index = start + 1
+    while index < len(line):
+        character = line[index]
+        if character == "\\":
+            index += 2
+            continue
+        if character == "[":
+            depth += 1
+            if depth > MAX_LABEL_DEPTH:
+                return None
+        elif character == "]":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def _replace_inline_labels(text: str) -> str:
+    visible: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] == "[" and not _is_escaped(text, index):
+            end = _label_end(text, index)
+            if end is not None and end < len(text) and text[end] == "(":
+                destination = _destination(text, end + 1)
+                if destination is not None:
+                    visible.append(text[index + 1:end - 1])
+                    index = destination[1]
+                    continue
+        visible.append(text[index])
+        index += 1
+    return "".join(visible)
+
+
+def _is_escaped(text: str, index: int) -> bool:
+    slashes = 0
+    index -= 1
+    while index >= 0 and text[index] == "\\":
+        slashes += 1
+        index -= 1
+    return slashes % 2 == 1
+
+
 def _visible_text(heading: str) -> str:
     text = _strip_closing_hashes(heading)
-    text = LABEL_LINK_PATTERN.sub(lambda match: match.group(1), text)
+    text = _replace_inline_labels(text)
     text = HTML_TAG_PATTERN.sub("", text)
     text = html.unescape(text)
     return re.sub(r"[`*~]|(?<![0-9A-Za-z])_|_(?![0-9A-Za-z])", "", text)
@@ -255,7 +302,7 @@ def emitted_anchors(markdown: str) -> list[str]:
     counts: dict[str, int] = {}
     for line in _content_lines(markdown):
         raw = heading_text(line)
-        if not raw:
+        if raw is None:
             continue
         slug = slugify(raw)
         suffix = counts.get(slug, 0)
@@ -319,10 +366,20 @@ def inline_links(line: str) -> list[str]:
     """Return every inline link destination on one content line."""
     targets: list[str] = []
     index = 0
-    while (match := LINK_OPEN_PATTERN.search(line, index)) is not None:
-        destination = _destination(line, match.end())
+    while index < len(line):
+        if line[index] != "[" or _is_escaped(line, index):
+            index += 1
+            continue
+        end = _label_end(line, index)
+        if end is None:
+            index += 1
+            continue
+        if end >= len(line) or line[end] != "(":
+            index = end
+            continue
+        destination = _destination(line, end + 1)
         if destination is None:
-            index = match.end()
+            index = end + 1
             continue
         target = _inline_target(destination[0])
         if target:
@@ -435,6 +492,7 @@ def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
     cache: dict[str, set[str]] = {}
     findings: list[Finding] = []
     for source in sorted(path for path in tracked if path.lower().endswith(MARKDOWN_SUFFIX)):
+        _anchor_set(root, source, cache)
         text = read_markdown(root, source)
         for line, target in extract_links(text):
             if is_external(target):

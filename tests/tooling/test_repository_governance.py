@@ -46,8 +46,8 @@ values are `Planned`, `In progress`, `Implemented`, and `Removed`.
 
 | Contract surface | Maturity | Implementation | Normative or design authority | Owner |
 |---|---|---|---|---|
-| Implemented surface | Normative | Implemented | Accepted [ADR-0002](adr/0002-x.md) | Phase 0A |
-| Normative but unbuilt surface | Normative | Planned | Accepted [ADR-0003](adr/0003-x.md) | Phase 0B |
+| Implemented surface | Normative | Implemented | Accepted [ADR-0009](adr/0009-example.md) | Phase 0A |
+| Normative but unbuilt surface | Normative | Planned | Accepted [ADR-0009](adr/0009-example.md) | Phase 0B |
 | Future surface | Planned | Planned | [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment | Phase 1 |
 """
 
@@ -126,6 +126,15 @@ class IssueFormParserTest(unittest.TestCase):
         text = issue_form([("summary", "Summary")])
         with self.assertRaises(self.module.ValidationError):
             self.module.parse_issue_form(text.replace("\n", "\r\n"))
+
+    def test_rejects_required_flags_in_the_wrong_kind_specific_block(self) -> None:
+        textarea_options = ("name: Example\nbody:\n  - type: textarea\n    id: summary\n"
+                            "    attributes:\n      label: Summary\n      options:\n      required: true\n")
+        checkbox_validations = ("name: Example\nbody:\n  - type: checkboxes\n    id: provenance\n"
+                                "    attributes:\n      label: Confirmation\n    validations:\n"
+                                "          required: true\n")
+        for text, identifier in ((textarea_options, "summary"), (checkbox_validations, "provenance")):
+            self.assertFalse(self.module.parse_issue_form(text)[identifier].required)
 
     def test_rejects_a_block_without_an_identifier_or_label(self) -> None:
         for text in [
@@ -217,10 +226,35 @@ class GovernanceCheckTest(unittest.TestCase):
                    "\n```text\n| Fake | Invalid | Invalid | no authority | none |\n```\n")
         self.assertEqual(self.check(), [])
 
+    def test_requires_normative_authority_to_resolve_an_accepted_tracked_adr(self) -> None:
+        rejected = ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Rejected on 2026-08-28.")
+        self.write("docs/adr/0009-example.md", rejected)
+        self.assertTrue(any("normative" in f.reason.lower() for f in self.check()))
+        self.write("docs/adr/0009-example.md", ADR_TEMPLATE)
+        missing = REGISTRY_TEMPLATE.replace("adr/0009-example.md", "adr/0008-missing.md")
+        self.write("docs/08_contract_registry.md", missing)
+        self.assertTrue(any("normative" in f.reason.lower() for f in self.check()))
+        self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE)
+        external = REGISTRY_TEMPLATE.replace("[ADR-0009](adr/0009-example.md)",
+                                             "[ADR-0009](https://example.test/adr/0009.md)")
+        self.write("docs/08_contract_registry.md", external)
+        self.assertTrue(any("normative" in f.reason.lower() for f in self.check()))
+
+    def test_rejects_authority_substring_spoofs(self) -> None:
+        spoof = REGISTRY_TEMPLATE.replace("[Issue #35](https://github.com/tetsuh/sitometron/issues/35)",
+                                          "[fake](not-an-adrift.txt)")
+        self.write("docs/08_contract_registry.md", spoof)
+        self.assertTrue(any("planned" in f.reason.lower() for f in self.check()))
+        self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE)
+        self.write("docs/99_planned.md", BANNER.replace("[Issue #35](https://github.com/tetsuh/sitometron/issues/35)",
+                                                        "[fake](not-an-adrift.txt)"))
+        self.assertTrue(any("banner" in f.reason.lower() for f in self.check()))
+
     def test_requires_a_decision_date_on_a_decided_adr(self) -> None:
         self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Accepted."))
         self.assertTrue(any("date" in f.reason.lower() for f in self.check()))
         self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Proposed."))
+        self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE.replace("Normative", "Planned"))
         self.assertEqual(self.check(), [], "a Proposed ADR needs no decision date")
 
     def test_reports_an_adr_directory_without_decision_records(self) -> None:
@@ -240,7 +274,7 @@ class GovernanceCheckTest(unittest.TestCase):
 
     def test_requires_accepted_adr_authority_on_normative_rows(self) -> None:
         self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE.replace(
-            "| Implemented surface | Normative | Implemented | Accepted [ADR-0002](adr/0002-x.md) |",
+            "| Implemented surface | Normative | Implemented | Accepted [ADR-0009](adr/0009-example.md) |",
             "| Implemented surface | Normative | Implemented | Owner decision |"))
         self.assertTrue(any("normative" in f.reason.lower() for f in self.check()))
 

@@ -19,7 +19,7 @@ import re
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TextIO
 
 TOOLS_DIRECTORY = Path(__file__).resolve().parent
@@ -33,6 +33,8 @@ from check_relative_links import (  # noqa: E402
     run_validator,
     tracked_files,
     validated_repository,
+    resolve_local_path,
+    split_local_target,
     _content_lines,
 )
 
@@ -76,9 +78,10 @@ PULL_REQUEST_FIELDS = (
 
 BANNER_MARKER = "**Planned, not yet normative:**"
 BANNER_SPECIMEN = "Issue/ADR #NN"
-LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]*)\)")
-AUTHORITY_TOKENS = ("issues", "adr")
-ACCEPTED_ADR_PATTERN = re.compile(r"Accepted \[ADR-\d{4}\]\([^)]+\)")
+LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]*)\)")
+ISSUE_URL_PATTERN = re.compile(r"\Ahttps://github\.com/tetsuh/sitometron/issues/[1-9][0-9]*\Z")
+ADR_LABEL_PATTERN = re.compile(r"\AADR-[0-9]{4}\Z", re.IGNORECASE)
+ADR_PATH_PATTERN = re.compile(r"\Adocs/adr/[0-9]{4}-[^/]+\.md\Z")
 STATUS_PATTERN = re.compile(r"\A(?:" + "|".join(ADR_STATUSES) + r")\b")
 FORM_ITEM_PATTERN = re.compile(r"\A {2}- type: (\w+)\Z")
 FORM_ID_PATTERN = re.compile(r"\A {4}id: (\w+)\Z")
@@ -105,11 +108,54 @@ class FormBlock:
     required: bool
 
 
-def _names_authority(text: str) -> bool:
-    return any(
-        token in target.lower() for target in LINK_PATTERN.findall(text)
-        for token in AUTHORITY_TOKENS
-    )
+def _authority_links(text: str) -> list[tuple[str, str]]:
+    links: list[tuple[str, str]] = []
+    for label, raw_destination in LINK_PATTERN.findall(text):
+        destination = raw_destination.strip()
+        if destination.startswith("<"):
+            end = destination.find(">")
+            if end <= 1:
+                continue
+            destination = destination[1:end]
+        else:
+            destination = destination.split(None, 1)[0]
+        if destination:
+            links.append((label.strip(), destination))
+    return links
+
+
+def _is_issue_authority(destination: str) -> bool:
+    return ISSUE_URL_PATTERN.fullmatch(destination) is not None
+
+
+def _resolve_adr(source: str, destination: str, tracked: Sequence[str]) -> str | None:
+    try:
+        path, fragment = split_local_target(destination)
+        if fragment or not path:
+            return None
+        resolved = resolve_local_path(source, destination)
+    except ValidationError:
+        return None
+    return resolved if ADR_PATH_PATTERN.fullmatch(resolved) and resolved in tracked else None
+
+
+def _names_authority(source: str, text: str, tracked: Sequence[str]) -> bool:
+    return any(_is_issue_authority(destination) or _resolve_adr(source, destination, tracked) is not None
+               for _, destination in _authority_links(text))
+
+
+def _accepted_adr_authority(source: str, text: str, root: Path, tracked: Sequence[str]) -> bool:
+    for label, destination in _authority_links(text):
+        if not ADR_LABEL_PATTERN.fullmatch(label):
+            continue
+        resolved = _resolve_adr(source, destination, tracked)
+        if resolved is None:
+            continue
+        sections = _sections(_read(root, resolved))
+        status = sections.get("Status", "").strip()
+        if (match := STATUS_PATTERN.match(status)) is not None and match.group(0) == "Accepted":
+            return True
+    return False
 
 
 def _read(root: Path, relative_path: str) -> str:
@@ -131,7 +177,8 @@ class _FormBlockBuilder:
         self.identifier: str | None = None
         self.label: str | None = None
         self.required = False
-        self.in_validation = False
+        self.validation_context: str | None = None
+        self.in_option = False
 
     @property
     def required_indent(self) -> int:
@@ -145,16 +192,29 @@ class _FormBlockBuilder:
             self.label = match.group(1).rstrip()
             return
         if (match := FORM_REQUIRED_PATTERN.match(line)) is not None:
-            if self.in_validation and len(match.group(1)) == self.required_indent:
+            indent = len(match.group(1))
+            valid_context = (
+                self.kind != "checkboxes" and self.validation_context == "validations" and
+                indent == TEXT_REQUIRED_INDENT
+            ) or (self.kind == "checkboxes" and self.validation_context == "options" and
+                  self.in_option and indent == CHECKBOX_REQUIRED_INDENT)
+            if valid_context:
                 declared = match.group(2) == "true"
-                # A checkbox block enforces an answer when any single option is required.
                 self.required = self.required or declared if self.kind == "checkboxes" else declared
             return
+        indent = len(line) - len(line.lstrip(" "))
         stripped = line.strip()
-        if stripped in {"validations:", "options:"} or stripped.startswith("- label:"):
-            self.in_validation = True
-        elif stripped.startswith("attributes:"):
-            self.in_validation = False
+        if indent == 4 and stripped == "validations:":
+            self.validation_context = "validations"
+            self.in_option = False
+        elif indent == 6 and stripped == "options:":
+            self.validation_context = "options"
+            self.in_option = False
+        elif indent == 8 and stripped.startswith("- label:"):
+            self.in_option = self.validation_context == "options"
+        elif indent <= 4:
+            self.validation_context = None
+            self.in_option = False
 
     def build(self) -> FormBlock | None:
         if self.identifier is None:
@@ -295,9 +355,10 @@ def check_registry(root: Path, tracked: Sequence[str]) -> list[Finding]:
         if implementation not in IMPLEMENTATION_VALUES:
             findings.append(Finding(
                 where, f"implementation value {implementation!r} is outside the vocabulary"))
-        if maturity == "Normative" and ACCEPTED_ADR_PATTERN.search(authority) is None:
+        if maturity == "Normative" and not _accepted_adr_authority(
+                REGISTRY_PATH, authority, root, tracked):
             findings.append(Finding(where, "Normative row does not name an Accepted ADR authority"))
-        if maturity == "Planned" and not _names_authority(authority):
+        if maturity == "Planned" and not _names_authority(REGISTRY_PATH, authority, tracked):
             findings.append(Finding(
                 where, "Planned-maturity row does not name a traceable Issue or design authority"))
     return findings
@@ -309,7 +370,7 @@ def check_banners(root: Path, tracked: Sequence[str]) -> list[Finding]:
         for number, line in enumerate(_content_lines(_read(root, path)), 1):
             if BANNER_MARKER not in line or BANNER_SPECIMEN in line:
                 continue
-            if not _names_authority(line):
+            if not _names_authority(path, line, tracked):
                 findings.append(Finding(
                     f"{path}:{number}", "Planned banner does not name an owning Issue or ADR"))
     return findings

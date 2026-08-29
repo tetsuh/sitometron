@@ -50,8 +50,9 @@ class SlugTest(unittest.TestCase):
             with self.subTest(case=label):
                 self.assertEqual(self.slugs(markdown), [])
 
-    def test_accepts_a_bare_hash_only_when_followed_by_a_line_end(self) -> None:
-        self.assertEqual(self.slugs("#\n"), [])
+    def test_rejects_a_bare_hash_heading_as_an_empty_slug(self) -> None:
+        with self.assertRaises(self.module.ValidationError):
+            self.slugs("#\n")
 
     def test_removes_optional_closing_hash_sequence(self) -> None:
         self.assertEqual(self.slugs("## Closing ##\n"), ["closing"])
@@ -152,7 +153,7 @@ class TargetTest(unittest.TestCase):
         for target in [
             "docs/%zz.md", "docs/%2.md", "docs/%.md", "docs/a%2Fb.md", "docs/a%2fb.md",
             "docs/a%5Cb.md", "docs/a%00b.md", "docs/a%01b.md", "docs/a%2525b.md",
-            "docs/a.md#a%2500", "docs/%C3.md",
+            "docs/a.md#a%2500", "docs/%C3.md", "docs/a%C2%80b.md", "docs/a.md#sec%C2%85",
         ]:
             with self.subTest(target=target):
                 with self.assertRaises(self.module.ValidationError):
@@ -214,6 +215,13 @@ class RepositoryCheckTest(unittest.TestCase):
             "- [mail](mailto:person@example.com)\n"
         ))
         self.assertEqual(self.check(), [])
+
+    def test_scans_nested_and_escaped_labels(self) -> None:
+        self.write("README.md", "[outer [inner]](absent.md)\n[outer \\] label](also-absent.md)\n"
+                   "[nested scheme [inner]](ftp://example.test/x)\n[escaped scheme \\] label](ftp://example.test/x)\n")
+        findings = self.check()
+        self.assertEqual([f.target for f in findings],
+                         ["absent.md", "also-absent.md", "ftp://example.test/x", "ftp://example.test/x"])
 
     def test_reports_missing_files_directories_and_anchors(self) -> None:
         self.write("docs/target.md", "# Target\n")
@@ -365,6 +373,13 @@ class RepositoryCheckTest(unittest.TestCase):
         findings = self.check()
         self.assertEqual(len(findings), 2, findings)
         self.assertEqual([f.line for f in findings], [1, 2])
+
+    def test_validates_headings_in_every_tracked_markdown_file(self) -> None:
+        self.write("README.md", "# Home\n")
+        for heading in ("## ...\n", "##\n"):
+            self.write("docs/empty.md", heading)
+            with self.assertRaises(self.module.ValidationError):
+                self.check()
 
     def test_reports_findings_for_every_tracked_markdown_file(self) -> None:
         self.write("a.md", "[x](absent.md)\n")
