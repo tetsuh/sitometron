@@ -17,7 +17,7 @@ import re
 import subprocess
 import sys
 import unicodedata
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TextIO
@@ -25,7 +25,6 @@ from typing import TextIO
 EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
 SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
-REFERENCE_USE_PATTERN = re.compile(r"(?<!\!)\[([^\]]+)\]\[([^\]]*)\]")
 REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(.*)\Z")
 MAX_LABEL_DEPTH = 8
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
@@ -358,8 +357,30 @@ def _inline_target(raw: str) -> str:
         return text[1:end] if end != -1 else ""
     return text.split(" ", 1)[0].split("\t", 1)[0]
 
-def inline_links(line: str) -> list[str]:
-    """Return every inline link destination on one content line."""
+def _normalized_label(text: str) -> str:
+    """Return one CommonMark-normalized reference label."""
+    return " ".join(text.split()).casefold()
+
+
+def _reference_use(
+    line: str, label_start: int, label_end: int, definitions: Mapping[str, tuple[str, int]],
+) -> tuple[str | None, int]:
+    """Resolve one full, collapsed, or shortcut reference that ends at `label_end`."""
+    label = _normalized_label(line[label_start + 1:label_end - 1])
+    if label_end < len(line) and line[label_end] == "[":
+        second = _label_end(line, label_end)
+        if second is None:
+            return None, label_end
+        explicit = _normalized_label(line[label_end + 1:second - 1])
+        target = definitions.get(explicit or label)
+        return (target[0] if target is not None else INVALID_REFERENCE_TARGET), second
+    # A shortcut reference is a link only when its label is defined; otherwise it is plain text.
+    target = definitions.get(label)
+    return (target[0] if target is not None else None), label_end
+
+
+def line_targets(line: str, definitions: Mapping[str, tuple[str, int]]) -> list[str]:
+    """Return every inline and reference link destination on one content line."""
     targets: list[str] = []
     index = 0
     while index < len(line):
@@ -370,18 +391,21 @@ def inline_links(line: str) -> list[str]:
         if end is None:
             index += 1
             continue
-        if end >= len(line) or line[end] != "(":
-            index = end
+        if end < len(line) and line[end] == "(":
+            destination = _destination(line, end + 1)
+            if destination is None:
+                index = end + 1
+                continue
+            target = _inline_target(destination[0])
+            if target:
+                targets.append(target)
+            index = destination[1]
             continue
-        destination = _destination(line, end + 1)
-        if destination is None:
-            index = end + 1
-            continue
-        target = _inline_target(destination[0])
-        if target:
+        target, index = _reference_use(line, index, end, definitions)
+        if target is not None:
             targets.append(target)
-        index = destination[1]
     return targets
+
 
 def _reference_target(raw: str) -> str:
     """Return one normalized reference-definition destination or an invalid sentinel."""
@@ -400,22 +424,18 @@ def _reference_definitions(lines: Sequence[str]) -> dict[str, tuple[str, int]]:
     for number, line in enumerate(lines, 1):
         match = REFERENCE_DEFINITION_PATTERN.match(line)
         if match is not None:
-            label = " ".join(match.group(1).split()).casefold()
+            label = _normalized_label(match.group(1))
             definitions.setdefault(label, (_reference_target(match.group(2)), number))
     return definitions
 
 def _line_links(
-    number: int, raw_line: str, definitions: dict[str, tuple[str, int]],
+    number: int, raw_line: str, definitions: Mapping[str, tuple[str, int]],
 ) -> list[tuple[int, str]]:
     definition = REFERENCE_DEFINITION_PATTERN.match(raw_line)
     if definition is not None:
         return [(number, _reference_target(definition.group(2)))]
-    line = strip_code_spans(raw_line)
-    links = [(number, target) for target in inline_links(line)]
-    for match in REFERENCE_USE_PATTERN.finditer(line):
-        label = " ".join((match.group(2) or match.group(1)).split()).casefold()
-        links.append((number, definitions.get(label, (INVALID_REFERENCE_TARGET, 0))[0]))
-    return links
+    return [(number, target) for target in line_targets(strip_code_spans(raw_line), definitions)]
+
 
 def extract_links(markdown: str) -> list[tuple[int, str]]:
     """Return every (line number, raw target) link outside fenced code."""

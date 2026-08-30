@@ -250,14 +250,30 @@ class GovernanceCheckTest(unittest.TestCase):
                                                         "[fake](not-an-adrift.txt)"))
         self.assertTrue(any("banner" in f.reason.lower() for f in self.check()))
 
-    def test_requires_a_decision_date_on_a_decided_adr(self) -> None:
-        self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Accepted."))
-        self.assertTrue(any("date" in f.reason.lower() for f in self.check()))
-        self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Proposed."))
-        self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE.replace(
-            "| Implemented surface | Normative |", "| Implemented surface | Planned |").replace(
-            "| Normative but unbuilt surface | Normative |", "| Normative but unbuilt surface | Planned |"))
-        self.assertEqual(self.check(), [], "a Proposed ADR needs no decision date")
+    def date_findings(self, status: str) -> list:
+        self.write("docs/adr/0009-example.md",
+                   ADR_TEMPLATE.replace("Accepted on 2026-08-28.", status))
+        return [f for f in self.check() if "date" in f.reason]
+
+    def test_requires_one_real_calendar_decision_date_for_every_status(self) -> None:
+        rejected = {
+            "no date on Accepted": "Accepted.",
+            "no date on Proposed": "Proposed.",
+            "no date on Rejected": "Rejected.",
+            "impossible month and day": "Accepted — 2026-99-99.",
+            "impossible February day": "Accepted — 2026-02-30.",
+            "non-leap February 29": "Accepted — 2026-02-29.",
+            "impossible month": "Accepted — 2026-13-01.",
+            "two different dates": "Accepted — 2026-01-01 and 2026-02-02.",
+        }
+        for label, status in rejected.items():
+            with self.subTest(case=label):
+                self.assertTrue(self.date_findings(status), f"{label} must be reported")
+        for status in ["Accepted — 2026-02-28.", "Accepted on 2024-02-29.",
+                       "Proposed on 2026-08-30.", "Rejected 2026-08-30."]:
+            with self.subTest(accepted=status):
+                self.assertEqual(self.date_findings(status), [], status)
+        self.write("docs/adr/0009-example.md", ADR_TEMPLATE)
 
     def test_reports_an_adr_directory_without_decision_records(self) -> None:
         (self.root / "docs/adr/0009-example.md").unlink()
@@ -369,6 +385,23 @@ class GovernanceCheckTest(unittest.TestCase):
                 self.write(".github/pull_request_template.md",
                            "".join(f"- {field}:\n" for field in kept))
                 self.assertTrue(any(omitted in f.reason for f in self.check()))
+
+    def test_rejects_prose_spoofed_duplicated_or_fenced_field_lines(self) -> None:
+        fields = list(self.module.PULL_REQUEST_FIELDS)
+        spoofed = fields[0]
+        body = "".join(f"- {field}:\n" for field in fields[1:])
+        cases = {
+            "prose mention": f"The {spoofed}: is recorded in the summary above.\n" + body,
+            "heading mention": f"## {spoofed}\n" + body,
+            "inside fenced code": f"```text\n- {spoofed}:\n```\n" + body,
+        }
+        for label, text in cases.items():
+            with self.subTest(case=label):
+                self.write(".github/pull_request_template.md", text)
+                self.assertTrue(any(spoofed in f.reason for f in self.check()), label)
+        self.write(".github/pull_request_template.md",
+                   f"- {spoofed}:\n" + body + f"- {spoofed}:\n")
+        self.assertTrue(any("declared 2 times" in f.reason for f in self.check()))
 
     def test_reports_missing_governance_sources(self) -> None:
         for path in [".github/pull_request_template.md", ".github/ISSUE_TEMPLATE/gate.yml",

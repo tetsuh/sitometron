@@ -329,6 +329,47 @@ class RepositoryCheckTest(unittest.TestCase):
                          "the first definition binds the label and every definition is checked")
         self.assertTrue(all("docs/absent.md" == f.target for f in findings), findings)
 
+    def test_resolves_every_reference_form_including_images_and_nesting(self) -> None:
+        self.write("docs/target.md", "# Target\n")
+        self.write("icon.png", "")
+        self.write("README.md", (
+            "[full]: docs/target.md\n"
+            "[collapsed]: docs/target.md\n"
+            "[shortcut]: docs/target.md\n"
+            "[img]: icon.png\n"
+            "\n"
+            "full [text][full]\n"
+            "collapsed [collapsed][]\n"
+            "shortcut [shortcut]\n"
+            "image ![alt][img]\n"
+            "nested [outer [inner] label][full]\n"
+            "escaped [not a label\\] still text][full]\n"
+        ))
+        self.assertEqual(self.check(), [])
+
+    def test_reports_reference_uses_without_a_definition(self) -> None:
+        self.write("README.md", (
+            "full [text][absent]\n"
+            "collapsed [absent][]\n"
+            "image ![alt][absent]\n"
+            "shortcut [absent]\n"
+        ))
+        findings = self.check()
+        self.assertEqual([f.line for f in findings], [1, 2, 3],
+                         "an undefined shortcut is literal text in CommonMark, not a link")
+
+    def test_reference_labels_are_normalized_but_not_confused(self) -> None:
+        self.write("docs/target.md", "# Target\n")
+        self.write("README.md", (
+            "[Mixed   Case]: docs/target.md\n"
+            "\n"
+            "[text][mixed case]\n"
+            "[text][mixed  case]\n"
+            "[text][mixedcase]\n"
+        ))
+        findings = self.check()
+        self.assertEqual([f.line for f in findings], [5])
+
     def test_reports_unreadable_markdown_as_a_validation_error(self) -> None:
         (self.root / "bad.md").write_bytes(b"# Title\n\xff\n")
         self.files["bad.md"] = ""

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import sys
+from datetime import date
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -73,7 +74,8 @@ GATE_FIELDS = (
 )
 PULL_REQUEST_FIELDS = (
     "Phase", "Gate Issue", "Requirement IDs or N/A", "ADR or N/A", "Affected rows or N/A",
-    "RED command", "GREEN command and result", "REFACTOR command and result",
+    "RED command", "GREEN command and result",
+    "REFACTOR command and result, or N/A with reason",
     "Exact-head owner authorization", "Selected merge method", "Auto-merge not enabled",
 )
 
@@ -277,9 +279,24 @@ def _adr_status(text: str, relative_path: str) -> list[Finding]:
     if STATUS_PATTERN.match(body) is None:
         findings.append(Finding(
             relative_path, f"ADR status value is outside the vocabulary {ADR_STATUSES}"))
-    elif DATE_PATTERN.search(body) is None and not body.startswith("Proposed"):
-        findings.append(Finding(relative_path, "ADR status carries no ISO-8601 decision date"))
+        return findings
+    findings.extend(_adr_decision_date(body, relative_path))
     return findings
+
+
+def _adr_decision_date(body: str, relative_path: str) -> list[Finding]:
+    """Every ADR status carries exactly one real ISO-8601 calendar decision date."""
+    candidates = DATE_PATTERN.findall(body)
+    if not candidates:
+        return [Finding(relative_path, "ADR status carries no ISO-8601 decision date")]
+    if len(set(candidates)) > 1:
+        return [Finding(relative_path, "ADR status carries more than one decision date")]
+    try:
+        date.fromisoformat(candidates[0])
+    except ValueError:
+        return [Finding(
+            relative_path, f"ADR decision date {candidates[0]!r} is not a real calendar date")]
+    return []
 
 
 def _heading_text(line: str) -> str | None:
@@ -425,11 +442,18 @@ def check_issue_forms(root: Path, tracked: Sequence[str]) -> list[Finding]:
 def check_pull_request_template(root: Path, tracked: Sequence[str]) -> list[Finding]:
     if PULL_REQUEST_TEMPLATE not in tracked:
         return [Finding(PULL_REQUEST_TEMPLATE, "the pull-request template is not tracked")]
-    text = _read(root, PULL_REQUEST_TEMPLATE)
-    return [
-        Finding(PULL_REQUEST_TEMPLATE, f"missing required field {field!r}")
-        for field in PULL_REQUEST_FIELDS if field not in text
-    ]
+    lines = [line.strip() for line in _content_lines(_read(root, PULL_REQUEST_TEMPLATE))]
+    findings: list[Finding] = []
+    for field in PULL_REQUEST_FIELDS:
+        occurrences = lines.count(f"- {field}:")
+        if occurrences == 0:
+            findings.append(Finding(
+                PULL_REQUEST_TEMPLATE,
+                f"missing required field line {f'- {field}:'!r}; prose mentions do not count"))
+        elif occurrences > 1:
+            findings.append(Finding(
+                PULL_REQUEST_TEMPLATE, f"required field {field!r} is declared {occurrences} times"))
+    return findings
 
 
 def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
