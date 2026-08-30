@@ -20,11 +20,9 @@ def load_validator() -> ModuleType:
     spec.loader.exec_module(module)
     return module
 
-
 class RelativeLinksPresenceTest(unittest.TestCase):
     def test_validator_exists(self) -> None:
         self.assertTrue(VALIDATOR.is_file(), "tools/check_relative_links.py is absent")
-
 
 @unittest.skipUnless(VALIDATOR.is_file(), "relative-link validator is not implemented")
 class SlugTest(unittest.TestCase):
@@ -57,6 +55,17 @@ class SlugTest(unittest.TestCase):
         markdown = ("## See [the guide](docs/guide.md) and ![icon](icon.png)\n"
                     "## [Guide][manual]\n## ![Icon][image]\n## [Guide again][]\n## ![Icon again][]\n")
         self.assertEqual(self.slugs(markdown), ["see-the-guide-and-icon", "guide", "icon", "guide-again", "icon-again"])
+    def test_scans_escaped_and_nested_reference_labels(self) -> None:
+        markdown = ("## [outer \\] inner][manual]\n"
+                    "## ![outer \\] image][manual]\n"
+                    "## [outer [inner]][manual]\n"
+                    "## ![outer [image]][manual]\n"
+                    "## [outer \\] collapsed][]\n"
+                    "## ![outer [collapsed]][]\n")
+        self.assertEqual(self.slugs(markdown), [
+            "outer--inner", "outer--image", "outer-inner", "outer-image",
+            "outer--collapsed", "outer-collapsed",
+        ])
     def test_removes_html_tags_and_unescapes_entities(self) -> None:
         self.assertEqual(self.slugs("## <b>Bold</b> &amp; more\n"), ["bold--more"])
         self.assertEqual(self.slugs("## Caf&#233;\n"), ["café"])
@@ -95,7 +104,6 @@ class SlugTest(unittest.TestCase):
                 self.assertEqual(self.slugs(markdown), ["visible"])
     def test_handles_crlf_and_lf_identically(self) -> None:
         self.assertEqual(self.slugs("# One\r\n## Two\r\n"), self.slugs("# One\n## Two\n"))
-
 
 @unittest.skipUnless(VALIDATOR.is_file(), "relative-link validator is not implemented")
 class TargetTest(unittest.TestCase):
@@ -156,7 +164,6 @@ class TargetTest(unittest.TestCase):
             with self.subTest(source=source, target=target):
                 with self.assertRaises(self.module.ValidationError):
                     self.module.resolve_local_path(source, target)
-
 
 @unittest.skipUnless(VALIDATOR.is_file(), "relative-link validator is not implemented")
 class RepositoryCheckTest(unittest.TestCase):

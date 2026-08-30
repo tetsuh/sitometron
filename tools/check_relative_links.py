@@ -26,7 +26,6 @@ EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
 SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
 REFERENCE_USE_PATTERN = re.compile(r"(?<!\!)\[([^\]]+)\]\[([^\]]*)\]")
-REFERENCE_HEADING_PATTERN = re.compile(r"!?\[([^\]]+)\]\[[^\]]*\]")
 REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(.*)\Z")
 MAX_LABEL_DEPTH = 8
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
@@ -41,10 +40,8 @@ FORBIDDEN_DECODED = frozenset({"/", "\\"})
 KEPT_CATEGORIES = ("L", "N", "M")
 KEPT_CHARACTERS = frozenset({"-", "_"})
 
-
 class ValidationError(RuntimeError):
     """A fail-closed link or anchor validation error."""
-
 
 @dataclass(frozen=True)
 class Finding:
@@ -56,11 +53,9 @@ class Finding:
     def __str__(self) -> str:
         return f"{self.file}:{self.line}: {self.reason}: {self.target!r}"
 
-
 def is_external(target: str) -> bool:
     match = SCHEME_PATTERN.match(target)
     return match is not None and match.group(1).lower() in EXTERNAL_SCHEMES
-
 
 def _decode_once(raw: str, what: str) -> str:
     escapes = PERCENT_PATTERN.findall(raw)
@@ -83,7 +78,6 @@ def _decode_once(raw: str, what: str) -> str:
         raise ValidationError(f"{what} remains percent-encoded after one decoding")
     return decoded
 
-
 def split_local_target(target: str) -> tuple[str, str]:
     """Split one local target into a decoded (path, fragment) pair."""
     if is_external(target):
@@ -94,7 +88,6 @@ def split_local_target(target: str) -> tuple[str, str]:
     if "?" in path_part or "?" in fragment_part:
         raise ValidationError("local target must not carry a query")
     return _decode_once(path_part, "path"), _decode_once(fragment_part, "fragment")
-
 
 def resolve_local_path(source: str, target: str) -> str:
     """Resolve one decoded local path against its containing directory."""
@@ -120,14 +113,12 @@ def resolve_local_path(source: str, target: str) -> str:
         raise ValidationError("local path resolves to the repository root")
     return "/".join(parts)
 
-
 def _strip_closing_hashes(heading: str) -> str:
     text = heading.rstrip(" \t")
     stripped = text.rstrip("#")
     if stripped != text and (not stripped or stripped[-1] in " \t"):
         return stripped.rstrip(" \t")
     return text
-
 
 def heading_text(line: str) -> str | None:
     """Return the raw text of one ATX heading line, or None when it is not a heading."""
@@ -142,7 +133,6 @@ def heading_text(line: str) -> str | None:
     if rest and rest[0] not in " \t":
         return None
     return rest.strip(" \t")
-
 
 def _label_end(line: str, start: int) -> int | None:
     if start >= len(line) or line[start] != "[":
@@ -165,7 +155,6 @@ def _label_end(line: str, start: int) -> int | None:
         index += 1
     return None
 
-
 def _replace_inline_labels(text: str) -> str:
     visible: list[str] = []
     index = 0
@@ -182,7 +171,6 @@ def _replace_inline_labels(text: str) -> str:
         index += 1
     return "".join(visible)
 
-
 def _is_escaped(text: str, index: int) -> bool:
     slashes = 0
     index -= 1
@@ -191,15 +179,32 @@ def _is_escaped(text: str, index: int) -> bool:
         index -= 1
     return slashes % 2 == 1
 
+def _replace_reference_labels(text: str) -> str:
+    visible: list[str] = []
+    index = 0
+    while index < len(text):
+        label_start = index
+        if text[index] == "!" and index + 1 < len(text) and text[index + 1] == "[":
+            label_start = index + 1
+        if text[label_start] == "[" and not _is_escaped(text, label_start):
+            label_end = _label_end(text, label_start)
+            if label_end is not None:
+                reference_end = _label_end(text, label_end)
+                if reference_end is not None:
+                    visible.append(text[label_start + 1:label_end - 1])
+                    index = reference_end
+                    continue
+        visible.append(text[index])
+        index += 1
+    return "".join(visible)
 
 def _visible_text(heading: str) -> str:
     text = _strip_closing_hashes(heading)
     text = _replace_inline_labels(text)
-    text = REFERENCE_HEADING_PATTERN.sub(r"\1", text)
+    text = _replace_reference_labels(text)
     text = HTML_TAG_PATTERN.sub("", text)
     text = html.unescape(text)
     return re.sub(r"[`*~]|(?<![0-9A-Za-z])_|_(?![0-9A-Za-z])", "", text)
-
 
 def slugify(heading: str) -> str:
     """Return the anchor slug emitted for one ATX heading's raw text."""
@@ -212,7 +217,6 @@ def slugify(heading: str) -> str:
     if not slug:
         raise ValidationError(f"heading produces an empty anchor slug: {heading!r}")
     return slug
-
 
 def _fence_delimiter(line: str) -> tuple[str, int, str] | None:
     """Return the (character, length, trailing text) of one valid fence line."""
@@ -233,11 +237,9 @@ def _fence_delimiter(line: str) -> tuple[str, int, str] | None:
         return None
     return marker, length, trailing
 
-
 def _closes_fence(line: str, fence: tuple[str, int]) -> bool:
     marker = _fence_delimiter(line)
     return marker is not None and marker[0] == fence[0] and marker[1] >= fence[1] and not marker[2]
-
 
 def _content_lines(markdown: str) -> list[str]:
     """Return lines outside correctly matched Markdown fenced code blocks."""
@@ -257,7 +259,6 @@ def _content_lines(markdown: str) -> list[str]:
         lines.append("")
     return lines
 
-
 def _backtick_runs(line: str) -> list[tuple[int, int]]:
     """Return the half-open bounds of every maximal backtick run."""
     runs: list[tuple[int, int]] = []
@@ -272,7 +273,6 @@ def _backtick_runs(line: str) -> list[tuple[int, int]]:
         runs.append((index, end))
         index = end
     return runs
-
 
 def strip_code_spans(line: str) -> str:
     """Blank inline code spans using equal-width maximal backtick runs."""
@@ -297,7 +297,6 @@ def strip_code_spans(line: str) -> str:
         index = closing + 1
     return "".join(characters)
 
-
 def emitted_anchors(markdown: str) -> list[str]:
     """Return every anchor emitted by the ATX headings of one document, in order."""
     anchors: list[str] = []
@@ -317,14 +316,12 @@ def emitted_anchors(markdown: str) -> list[str]:
         anchors.append(candidate)
     return anchors
 
-
 def validated_repository(candidate: Path | str) -> Path:
     """Return one existing Git working tree, rejecting every other argument value."""
     resolved = Path(candidate).resolve()
     if not resolved.is_dir() or not (resolved / ".git").exists():
         raise ValidationError("--repository must name an existing Git working tree")
     return resolved
-
 
 def tracked_files(root: Path | str) -> list[str]:
     repository = validated_repository(root)
@@ -337,7 +334,6 @@ def tracked_files(root: Path | str) -> list[str]:
         return [item for item in result.stdout.decode("utf-8").split("\0") if item]
     except UnicodeDecodeError as error:
         raise ValidationError("tracked paths are not valid UTF-8") from error
-
 
 def _destination(line: str, start: int) -> tuple[str, int] | None:
     """Read one inline destination that starts just after `(`, honouring nesting."""
@@ -354,7 +350,6 @@ def _destination(line: str, start: int) -> tuple[str, int] | None:
         index += 1
     return None
 
-
 def _inline_target(raw: str) -> str:
     """Return the link destination of one inline `(...)` body without its title."""
     text = raw.strip()
@@ -362,7 +357,6 @@ def _inline_target(raw: str) -> str:
         end = text.find(">")
         return text[1:end] if end != -1 else ""
     return text.split(" ", 1)[0].split("\t", 1)[0]
-
 
 def inline_links(line: str) -> list[str]:
     """Return every inline link destination on one content line."""
@@ -389,7 +383,6 @@ def inline_links(line: str) -> list[str]:
         index = destination[1]
     return targets
 
-
 def _reference_target(raw: str) -> str:
     """Return one normalized reference-definition destination or an invalid sentinel."""
     text = raw.strip(" \t")
@@ -401,7 +394,6 @@ def _reference_target(raw: str) -> str:
     target = text.split(" ", 1)[0].split("\t", 1)[0]
     return target or INVALID_REFERENCE_TARGET
 
-
 def _reference_definitions(lines: Sequence[str]) -> dict[str, tuple[str, int]]:
     """Return the first definition of every reference label, as CommonMark requires."""
     definitions: dict[str, tuple[str, int]] = {}
@@ -411,7 +403,6 @@ def _reference_definitions(lines: Sequence[str]) -> dict[str, tuple[str, int]]:
             label = " ".join(match.group(1).split()).casefold()
             definitions.setdefault(label, (_reference_target(match.group(2)), number))
     return definitions
-
 
 def _line_links(
     number: int, raw_line: str, definitions: dict[str, tuple[str, int]],
@@ -426,7 +417,6 @@ def _line_links(
         links.append((number, definitions.get(label, (INVALID_REFERENCE_TARGET, 0))[0]))
     return links
 
-
 def extract_links(markdown: str) -> list[tuple[int, str]]:
     """Return every (line number, raw target) link outside fenced code."""
     lines = _content_lines(markdown)
@@ -435,7 +425,6 @@ def extract_links(markdown: str) -> list[tuple[int, str]]:
     for number, raw_line in enumerate(lines, 1):
         links.extend(_line_links(number, raw_line, definitions))
     return links
-
 
 def read_markdown(root: Path, relative_path: str) -> str:
     """Read one tracked Markdown file, failing closed on I/O and encoding errors."""
@@ -446,12 +435,10 @@ def read_markdown(root: Path, relative_path: str) -> str:
     except UnicodeDecodeError as error:
         raise ValidationError(f"{relative_path} is not valid UTF-8") from error
 
-
 def _anchor_set(root: Path, relative_path: str, cache: dict[str, set[str]]) -> set[str]:
     if relative_path not in cache:
         cache[relative_path] = set(emitted_anchors(read_markdown(root, relative_path)))
     return cache[relative_path]
-
 
 def _check_target(
     root: Path, source: str, target: str, files: set[str], directories: set[str],
@@ -482,7 +469,6 @@ def _check_target(
         return "missing anchor"
     return None
 
-
 def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
     """Return every link finding for the tracked Markdown files of one repository."""
     root = Path(root)
@@ -510,13 +496,11 @@ def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-
 def parse_arguments(arguments: Sequence[str] | None, description: str | None = None) -> None:
     """Accept no option: a validator always checks its own repository."""
     argparse.ArgumentParser(
         description=description or __doc__, allow_abbrev=False
     ).parse_args(arguments)
-
 
 def run_validator(
     prefix: str, check: Callable[[Path, Sequence[str]], list[object]], repository: Path,
@@ -536,7 +520,6 @@ def run_validator(
         print(f"{prefix}: {finding}", file=stdout)
     print(f"{prefix}: {len(findings)} finding(s)", file=stdout)
     return 1 if findings else 0
-
 
 def main(
     arguments: Sequence[str] | None = None, stdout: TextIO = sys.stdout,

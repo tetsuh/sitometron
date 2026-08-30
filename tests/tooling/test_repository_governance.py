@@ -87,11 +87,9 @@ def issue_form(fields: list[tuple[str, str]], *, required: bool = True,
             ]
     return "\n".join(lines) + "\n"
 
-
 class GovernancePresenceTest(unittest.TestCase):
     def test_validator_exists(self) -> None:
         self.assertTrue(VALIDATOR.is_file(), "tools/check_repository_governance.py is absent")
-
 
 @unittest.skipUnless(VALIDATOR.is_file(), "governance validator is not implemented")
 class IssueFormParserTest(unittest.TestCase):
@@ -147,7 +145,6 @@ class IssueFormParserTest(unittest.TestCase):
         )
         blocks = self.module.parse_issue_form(text)
         self.assertEqual(list(blocks), ["summary"])
-
 
 @unittest.skipUnless(VALIDATOR.is_file(), "governance validator is not implemented")
 class GovernanceCheckTest(unittest.TestCase):
@@ -347,6 +344,19 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write("docs/99_example.md",
                    "# Example\n\n```markdown\n> " + BANNER.replace("> ", "").splitlines()[0] + "\n```\n")
         self.assertEqual(self.check(), [])
+
+    def test_reports_issue_form_contract_drift(self) -> None:
+        path = ".github/ISSUE_TEMPLATE/feature.yml"
+        conforming = self.form(path)
+        self.write(path, conforming.replace("label: Summary\n", "label: Summary drift\n", 1))
+        self.assertTrue(any("expected 'Summary'" in f.reason for f in self.check()))
+
+        self.write(path, conforming.replace("- type: input\n    id: phase", "- type: textarea\n    id: phase", 1))
+        self.assertTrue(any("field 'phase' has kind" in f.reason for f in self.check()))
+
+        duplicate = conforming.replace("label: Acceptance criteria", "label: Summary", 1)
+        self.write(path, duplicate)
+        self.assertTrue(any("duplicate expected field label 'Summary'" in f.reason for f in self.check()))
 
     def test_requires_expected_fields_to_be_required(self) -> None:
         self.write(".github/ISSUE_TEMPLATE/feature.yml", self.form(".github/ISSUE_TEMPLATE/feature.yml", required=False))
