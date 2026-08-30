@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import unicodedata
+from bisect import bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -29,6 +30,7 @@ REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(.*)\Z")
 MAX_LABEL_DEPTH = 8
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
 MAX_DESTINATION_DEPTH = 8
+MAX_LINK_LINES = 4
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
 PERCENT_PATTERN = re.compile(r"%(..?|\Z)", re.DOTALL)
 VALID_ESCAPE_PATTERN = re.compile(r"\A[0-9A-Fa-f]{2}\Z")
@@ -197,13 +199,36 @@ def _replace_reference_labels(text: str) -> str:
         index += 1
     return "".join(visible)
 
+def _is_word_character(character: str) -> bool:
+    """Report whether one character is a Unicode letter, number, or mark."""
+    return unicodedata.category(character)[0] in KEPT_CATEGORIES
+
+
+def _drop_emphasis(text: str) -> str:
+    """Remove underscores used as emphasis delimiters, keeping intraword ones.
+
+    A word character on both sides is intraword for every script, so `café_漢`
+    and `snake_case` keep their underscore while `_emphasis_` loses both.
+    """
+    kept: list[str] = []
+    for index, character in enumerate(text):
+        if character != "_":
+            kept.append(character)
+            continue
+        before = text[index - 1] if index else ""
+        after = text[index + 1] if index + 1 < len(text) else ""
+        if before and after and _is_word_character(before) and _is_word_character(after):
+            kept.append(character)
+    return "".join(kept)
+
+
 def _visible_text(heading: str) -> str:
     text = _strip_closing_hashes(heading)
     text = _replace_inline_labels(text)
     text = _replace_reference_labels(text)
     text = HTML_TAG_PATTERN.sub("", text)
     text = html.unescape(text)
-    return re.sub(r"[`*~]|(?<![0-9A-Za-z])_|_(?![0-9A-Za-z])", "", text)
+    return _drop_emphasis(re.sub(r"[`*~]", "", text))
 
 def slugify(heading: str) -> str:
     """Return the anchor slug emitted for one ATX heading's raw text."""
@@ -355,7 +380,7 @@ def _inline_target(raw: str) -> str:
     if text.startswith("<"):
         end = text.find(">")
         return text[1:end] if end != -1 else ""
-    return text.split(" ", 1)[0].split("\t", 1)[0]
+    return text.split()[0] if text.split() else ""
 
 def _normalized_label(text: str) -> str:
     """Return one CommonMark-normalized reference label."""
@@ -379,32 +404,45 @@ def _reference_use(
     return (target[0] if target is not None else None), label_end
 
 
-def line_targets(line: str, definitions: Mapping[str, tuple[str, int]]) -> list[str]:
-    """Return every inline and reference link destination on one content line."""
-    targets: list[str] = []
+def _within_line_budget(text: str, start: int, end: int) -> bool:
+    """Report whether one link spans no more than the permitted number of lines."""
+    return text.count("\n", start, end) <= MAX_LINK_LINES
+
+
+def document_targets(
+    text: str, definitions: Mapping[str, tuple[str, int]],
+) -> list[tuple[int, str]]:
+    """Return every (offset, destination) link in one document, including multiline links."""
+    targets: list[tuple[int, str]] = []
     index = 0
-    while index < len(line):
-        if line[index] != "[" or _is_escaped(line, index):
+    while index < len(text):
+        if text[index] != "[" or _is_escaped(text, index):
             index += 1
             continue
-        end = _label_end(line, index)
-        if end is None:
+        end = _label_end(text, index)
+        if end is None or not _within_line_budget(text, index, end):
             index += 1
             continue
-        if end < len(line) and line[end] == "(":
-            destination = _destination(line, end + 1)
-            if destination is None:
+        if end < len(text) and text[end] == "(":
+            destination = _destination(text, end + 1)
+            if destination is None or not _within_line_budget(text, index, destination[1]):
                 index = end + 1
                 continue
             target = _inline_target(destination[0])
             if target:
-                targets.append(target)
+                targets.append((index, target))
             index = destination[1]
             continue
-        target, index = _reference_use(line, index, end, definitions)
-        if target is not None:
-            targets.append(target)
+        target, next_index = _reference_use(text, index, end, definitions)
+        if target is not None and _within_line_budget(text, index, next_index):
+            targets.append((index, target))
+        index = max(next_index, index + 1)
     return targets
+
+
+def line_targets(line: str, definitions: Mapping[str, tuple[str, int]]) -> list[str]:
+    """Return every inline and reference link destination on one content line."""
+    return [target for _, target in document_targets(line, definitions)]
 
 
 def _reference_target(raw: str) -> str:
@@ -428,23 +466,35 @@ def _reference_definitions(lines: Sequence[str]) -> dict[str, tuple[str, int]]:
             definitions.setdefault(label, (_reference_target(match.group(2)), number))
     return definitions
 
-def _line_links(
-    number: int, raw_line: str, definitions: Mapping[str, tuple[str, int]],
-) -> list[tuple[int, str]]:
-    definition = REFERENCE_DEFINITION_PATTERN.match(raw_line)
-    if definition is not None:
-        return [(number, _reference_target(definition.group(2)))]
-    return [(number, target) for target in line_targets(strip_code_spans(raw_line), definitions)]
+def _line_numbers(lines: Sequence[str]) -> list[int]:
+    """Return the document offset at which every content line starts."""
+    starts: list[int] = []
+    offset = 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line) + 1
+    return starts
 
 
 def extract_links(markdown: str) -> list[tuple[int, str]]:
     """Return every (line number, raw target) link outside fenced code."""
     lines = _content_lines(markdown)
     definitions = _reference_definitions(lines)
-    links: list[tuple[int, str]] = []
-    for number, raw_line in enumerate(lines, 1):
-        links.extend(_line_links(number, raw_line, definitions))
-    return links
+    scannable = [
+        "" if REFERENCE_DEFINITION_PATTERN.match(line) else strip_code_spans(line)
+        for line in lines
+    ]
+    starts = _line_numbers(scannable)
+    links = [
+        (bisect_right(starts, offset), target)
+        for offset, target in document_targets("\n".join(scannable), definitions)
+    ]
+    for number, line in enumerate(lines, 1):
+        definition = REFERENCE_DEFINITION_PATTERN.match(line)
+        if definition is not None:
+            links.append((number, _reference_target(definition.group(2))))
+    return sorted(links)
+
 
 def read_markdown(root: Path, relative_path: str) -> str:
     """Read one tracked Markdown file, failing closed on I/O and encoding errors."""

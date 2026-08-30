@@ -289,8 +289,11 @@ def _adr_decision_date(body: str, relative_path: str) -> list[Finding]:
     candidates = DATE_PATTERN.findall(body)
     if not candidates:
         return [Finding(relative_path, "ADR status carries no ISO-8601 decision date")]
-    if len(set(candidates)) > 1:
-        return [Finding(relative_path, "ADR status carries more than one decision date")]
+    if len(candidates) != 1:
+        return [Finding(
+            relative_path,
+            f"ADR status carries {len(candidates)} decision-date occurrences; exactly one is required",
+        )]
     try:
         date.fromisoformat(candidates[0])
     except ValueError:

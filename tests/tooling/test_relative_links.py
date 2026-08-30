@@ -73,6 +73,14 @@ class SlugTest(unittest.TestCase):
         self.assertEqual(self.slugs("## Use `NFR-005` now\n"), ["use-nfr-005-now"])
         self.assertEqual(self.slugs("## *Emphasis* and _under_ and **strong**\n"),
                          ["emphasis-and-under-and-strong"])
+    def test_retains_intraword_underscores_in_every_script(self) -> None:
+        self.assertEqual(self.slugs("## café_漢\n"), ["café_漢"])
+        self.assertEqual(self.slugs("## 漢_字\n"), ["漢_字"])
+        self.assertEqual(self.slugs("## snake_case_name\n"), ["snake_case_name"])
+        self.assertEqual(self.slugs("## _emphasis_ text\n"), ["emphasis-text"])
+        self.assertEqual(self.slugs("## trail_ and _lead\n"), ["trail-and-lead"])
+        self.assertEqual(self.slugs("## `NFR_005` café_漢\n"), ["nfr_005-café_漢"])
+
     def test_normalizes_unicode_and_case(self) -> None:
         composed = "## Cafe\u0301 MIXED\n"
         self.assertEqual(self.slugs(composed), ["café-mixed"])
@@ -369,6 +377,20 @@ class RepositoryCheckTest(unittest.TestCase):
         ))
         findings = self.check()
         self.assertEqual([f.line for f in findings], [5])
+
+    def test_validates_links_whose_label_spans_lines(self) -> None:
+        self.write("docs/target.md", "# Target\n")
+        self.write("README.md", (
+            "see [ok\nlabel](docs/target.md) here\n"
+            "and [broken\nlabel](docs/absent.md) there\n"
+        ))
+        findings = self.check()
+        self.assertEqual([(f.line, f.target) for f in findings], [(3, "docs/absent.md")],
+                         "a multiline link is reported at the line its label opens on")
+
+    def test_bounds_how_far_a_link_may_span(self) -> None:
+        self.write("README.md", "[a\n\n\n\n\nb](absent.md)\n")
+        self.assertEqual(self.check(), [], "a link beyond the line budget is not treated as a link")
 
     def test_reports_unreadable_markdown_as_a_validation_error(self) -> None:
         (self.root / "bad.md").write_bytes(b"# Title\n\xff\n")

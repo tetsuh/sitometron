@@ -265,6 +265,8 @@ class GovernanceCheckTest(unittest.TestCase):
             "non-leap February 29": "Accepted — 2026-02-29.",
             "impossible month": "Accepted — 2026-13-01.",
             "two different dates": "Accepted — 2026-01-01 and 2026-02-02.",
+            "same date twice": "Accepted — 2026-08-30, restated 2026-08-30.",
+            "three occurrences": "Accepted — 2026-08-30 2026-08-30 2026-08-30.",
         }
         for label, status in rejected.items():
             with self.subTest(case=label):
