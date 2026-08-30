@@ -33,11 +33,9 @@ class SlugTest(unittest.TestCase):
 
     def slugs(self, markdown: str) -> list[str]:
         return self.module.emitted_anchors(markdown)
-
     def test_accepts_atx_headings_at_every_permitted_indent_and_depth(self) -> None:
         markdown = "# One\n ## Two\n  ### Three\n   #### Four\n##### Five\n###### Six\n"
         self.assertEqual(self.slugs(markdown), ["one", "two", "three", "four", "five", "six"])
-
     def test_rejects_non_atx_and_malformed_headings(self) -> None:
         cases = {
             "four leading spaces": "    # Indented\n",
@@ -49,65 +47,52 @@ class SlugTest(unittest.TestCase):
         for label, markdown in cases.items():
             with self.subTest(case=label):
                 self.assertEqual(self.slugs(markdown), [])
-
     def test_rejects_a_bare_hash_heading_as_an_empty_slug(self) -> None:
         with self.assertRaises(self.module.ValidationError):
             self.slugs("#\n")
-
     def test_removes_optional_closing_hash_sequence(self) -> None:
         self.assertEqual(self.slugs("## Closing ##\n"), ["closing"])
         self.assertEqual(self.slugs("## Sharp # Inside\n"), ["sharp--inside"])
-
     def test_uses_visible_label_of_links_and_images(self) -> None:
-        markdown = "## See [the guide](docs/guide.md) and ![icon](icon.png)\n"
-        self.assertEqual(self.slugs(markdown), ["see-the-guide-and-icon"])
-
+        markdown = ("## See [the guide](docs/guide.md) and ![icon](icon.png)\n"
+                    "## [Guide][manual]\n## ![Icon][image]\n## [Guide again][]\n## ![Icon again][]\n")
+        self.assertEqual(self.slugs(markdown), ["see-the-guide-and-icon", "guide", "icon", "guide-again", "icon-again"])
     def test_removes_html_tags_and_unescapes_entities(self) -> None:
         self.assertEqual(self.slugs("## <b>Bold</b> &amp; more\n"), ["bold--more"])
         self.assertEqual(self.slugs("## Caf&#233;\n"), ["café"])
-
     def test_retains_inline_code_text_without_delimiters(self) -> None:
         self.assertEqual(self.slugs("## Use `NFR-005` now\n"), ["use-nfr-005-now"])
         self.assertEqual(self.slugs("## *Emphasis* and _under_ and **strong**\n"),
                          ["emphasis-and-under-and-strong"])
-
     def test_normalizes_unicode_and_case(self) -> None:
         composed = "## Cafe\u0301 MIXED\n"
         self.assertEqual(self.slugs(composed), ["café-mixed"])
         self.assertEqual(self.slugs("## Café MIXED\n"), self.slugs(composed))
         self.assertEqual(self.slugs("## Straße\n"), ["strasse"])
-
     def test_collapses_whitespace_runs_and_drops_other_punctuation(self) -> None:
         self.assertEqual(self.slugs("##   Spaced \t out  \n"), ["spaced-out"])
         self.assertEqual(self.slugs("## Punct: ,.;!?() kept-and_kept\n"), ["punct--kept-and_kept"])
-
     def test_appends_numeric_suffixes_to_colliding_slugs(self) -> None:
         markdown = "# Same\n# Same\n# Same\n# Other\n# Same\n"
         self.assertEqual(self.slugs(markdown), ["same", "same-1", "same-2", "other", "same-3"])
-
     def test_avoids_collisions_between_natural_and_generated_suffixes(self) -> None:
         self.assertEqual(self.slugs("# X\n# X-1\n# X\n"), ["x", "x-1", "x-2"])
-
     def test_rejects_headings_whose_slug_would_be_empty(self) -> None:
         with self.assertRaises(self.module.ValidationError):
             self.slugs("## ...\n")
         with self.assertRaises(self.module.ValidationError):
             self.slugs("## <b></b>\n")
-
     def test_ignores_fenced_code_contents(self) -> None:
         markdown = "# Real\n```text\n# Fake\n```\n~~~\n## Also fake\n~~~\n## Second real\n"
         self.assertEqual(self.slugs(markdown), ["real", "second-real"])
-
     def test_rejects_backticks_only_in_backtick_fence_info(self) -> None:
         self.assertEqual(self.slugs("``` language `option`\n# Visible\n"), ["visible"])
         self.assertEqual(self.slugs("~~~ language `option`\n# Hidden\n~~~\n"), [])
-
     def test_does_not_close_fences_with_non_ascii_trailing_whitespace(self) -> None:
         for marker in ("```", "~~~"):
             with self.subTest(marker=marker):
                 markdown = f"{marker}\n# Hidden\n{marker}\u00a0\n## Still hidden\n{marker}\n# Visible\n"
                 self.assertEqual(self.slugs(markdown), ["visible"])
-
     def test_handles_crlf_and_lf_identically(self) -> None:
         self.assertEqual(self.slugs("# One\r\n## Two\r\n"), self.slugs("# One\n## Two\n"))
 
@@ -116,7 +101,6 @@ class SlugTest(unittest.TestCase):
 class TargetTest(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_validator()
-
     def test_ignores_exactly_the_three_external_schemes_case_insensitively(self) -> None:
         for target in [
             "http://example.com/x", "HTTPS://example.com/x", "MailTo:person@example.com",
@@ -127,7 +111,6 @@ class TargetTest(unittest.TestCase):
         for target in ["docs/guide.md", "#anchor", "./guide.md"]:
             with self.subTest(target=target):
                 self.assertFalse(self.module.is_external(target))
-
     def test_rejects_every_other_scheme(self) -> None:
         for target in [
             "ftp://example.com/x", "file:///etc/passwd", "javascript:alert(1)",
@@ -136,19 +119,16 @@ class TargetTest(unittest.TestCase):
             with self.subTest(target=target):
                 with self.assertRaises(self.module.ValidationError):
                     self.module.split_local_target(target)
-
     def test_splits_path_query_and_fragment_before_decoding(self) -> None:
         self.assertEqual(self.module.split_local_target("docs/a.md#sec"), ("docs/a.md", "sec"))
         self.assertEqual(self.module.split_local_target("docs/a.md"), ("docs/a.md", ""))
         self.assertEqual(self.module.split_local_target("#sec"), ("", "sec"))
         self.assertEqual(self.module.split_local_target("docs/a.md#a%2Db"), ("docs/a.md", "a-b"))
-
     def test_rejects_any_query_on_a_local_target(self) -> None:
         for target in ["docs/a.md?x=1", "docs/a.md?", "docs/a.md?x=1#sec", "?x=1"]:
             with self.subTest(target=target):
                 with self.assertRaises(self.module.ValidationError):
                     self.module.split_local_target(target)
-
     def test_rejects_malformed_or_ambiguous_percent_encoding(self) -> None:
         for target in [
             "docs/%zz.md", "docs/%2.md", "docs/%.md", "docs/a%2Fb.md", "docs/a%2fb.md",
@@ -158,7 +138,6 @@ class TargetTest(unittest.TestCase):
             with self.subTest(target=target):
                 with self.assertRaises(self.module.ValidationError):
                     self.module.split_local_target(target)
-
     def test_rejects_non_posix_relative_shapes(self) -> None:
         for target in [
             "/docs/a.md", "//server/share/a.md", "C:/docs/a.md", "c:\\docs\\a.md",
@@ -167,13 +146,11 @@ class TargetTest(unittest.TestCase):
             with self.subTest(target=target):
                 with self.assertRaises(self.module.ValidationError):
                     self.module.resolve_local_path("docs/source.md", target)
-
     def test_resolves_relative_paths_against_the_containing_directory(self) -> None:
         self.assertEqual(self.module.resolve_local_path("docs/a.md", "b.md"), "docs/b.md")
         self.assertEqual(self.module.resolve_local_path("docs/a.md", "../README.md"), "README.md")
         self.assertEqual(self.module.resolve_local_path("docs/adr/a.md", "../b.md"), "docs/b.md")
         self.assertEqual(self.module.resolve_local_path("README.md", "docs/a.md"), "docs/a.md")
-
     def test_rejects_escaping_the_repository_root(self) -> None:
         for source, target in [("README.md", "../outside.md"), ("docs/a.md", "../../outside.md")]:
             with self.subTest(source=source, target=target):

@@ -56,6 +56,7 @@ ADR_LEGACY_SECTIONS = ADR_SECTIONS[:4]
 DATE_PATTERN = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 MATURITY_VALUES = ("Planned", "Normative", "Deprecated", "Superseded")
 REGISTRY_COLUMNS = 5
+REGISTRY_HEADER = ("Contract surface", "Maturity", "Implementation", "Normative or design authority", "Owner")
 IMPLEMENTATION_VALUES = ("Planned", "In progress", "Implemented", "Removed")
 
 FEATURE_FIELDS = (
@@ -87,6 +88,11 @@ FORM_ITEM_PATTERN = re.compile(r"\A {2}- type: (\w+)\Z")
 FORM_ID_PATTERN = re.compile(r"\A {4}id: (\w+)\Z")
 FORM_LABEL_PATTERN = re.compile(r"\A {6}label: (\S.*)\Z")
 FORM_REQUIRED_PATTERN = re.compile(r"\A( +)required: (true|false)\Z")
+FORM_CONTRACTS = {
+    FEATURE_FORM: dict(zip(FEATURE_FIELDS, zip("Summary|Phase and Gate Issue|Reference documents and applicable sections|Requirement IDs or N/A|Target files or components|Dependencies and blockers|Contract Registry rows and transitions or N/A|ADR required?|ADR link and decision, or explicit not-required reason|Acceptance criteria|Clean-room confirmation".split("|"), "textarea|input|textarea|textarea|textarea|textarea|textarea|dropdown|textarea|textarea|checkboxes".split("|")))),
+    ADR_FORM: dict(zip(ADR_FIELDS, zip("Context and decision to make|Phase and Gate Issue|Reference documents and applicable sections|Target component or contract surface|Dependencies and blockers|Requirement IDs or N/A|Contract Registry rows and intended transitions|Options requiring owner decision|Acceptance criteria|Clean-room confirmation".split("|"), "textarea|input|textarea|textarea|textarea|textarea|textarea|textarea|textarea|checkboxes".split("|")))),
+    GATE_FORM: dict(zip(GATE_FIELDS, zip("Phase and Milestone|Requirement IDs or N/A|Entry gate|Horizontal design review|Planned-section authority banners|Contract Registry disposition or N/A|ADR decisions or N/A|Exit gate|Evidence|Clean-room confirmation".split("|"), "input|textarea|textarea|textarea|checkboxes|textarea|textarea|textarea|textarea|checkboxes".split("|")))),
+}
 TEXT_REQUIRED_INDENT = 6
 CHECKBOX_REQUIRED_INDENT = 10
 
@@ -326,7 +332,8 @@ def _registry_rows(text: str) -> tuple[list[list[str]], list[int]]:
         if not line.startswith("|"):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if set("".join(cells)) <= set("-: ") or (len(cells) > 1 and cells[1] == "Maturity"):
+        if tuple(cells) == REGISTRY_HEADER or (
+                len(cells) == REGISTRY_COLUMNS and all(set(cell) <= set("-: ") for cell in cells)):
             continue
         if len(cells) != REGISTRY_COLUMNS:
             malformed.append(number)
@@ -368,7 +375,9 @@ def check_banners(root: Path, tracked: Sequence[str]) -> list[Finding]:
     findings: list[Finding] = []
     for path in sorted(path for path in tracked if path.endswith(".md")):
         for number, line in enumerate(_content_lines(_read(root, path)), 1):
-            if BANNER_MARKER not in line or BANNER_SPECIMEN in line:
+            if BANNER_MARKER not in line or (
+                    path == "docs/development_workflow.md" and number == 236 and
+                    line == "> **Planned, not yet normative:** Issue/ADR #NN owns this mechanism. Implementers must not treat"):
                 continue
             if not _names_authority(path, line, tracked):
                 findings.append(Finding(
@@ -385,11 +394,21 @@ def _check_form(root: Path, relative_path: str, expected: Sequence[str],
     except ValidationError as error:
         return [Finding(relative_path, str(error))]
     findings: list[Finding] = []
+    contract = FORM_CONTRACTS[relative_path]
+    for label in {label for label, _ in contract.values()}:
+        if sum(block.label == label for block in blocks.values()) > 1:
+            findings.append(Finding(relative_path, f"duplicate expected field label {label!r}"))
     for identifier in expected:
         block = blocks.get(identifier)
         if block is None:
             findings.append(Finding(relative_path, f"missing required field {identifier!r}"))
-        elif not block.required:
+            continue
+        label, kind = contract[identifier]
+        if block.label != label:
+            findings.append(Finding(relative_path, f"field {identifier!r} has label {block.label!r}, expected {label!r}"))
+        if block.kind != kind:
+            findings.append(Finding(relative_path, f"field {identifier!r} has kind {block.kind!r}, expected {kind!r}"))
+        if not block.required:
             findings.append(Finding(relative_path, f"field {identifier!r} is not required: true"))
     return findings
 

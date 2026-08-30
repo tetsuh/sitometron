@@ -26,6 +26,7 @@ EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
 SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
 REFERENCE_USE_PATTERN = re.compile(r"(?<!\!)\[([^\]]+)\]\[([^\]]*)\]")
+REFERENCE_HEADING_PATTERN = re.compile(r"!?\[([^\]]+)\]\[[^\]]*\]")
 REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(.*)\Z")
 MAX_LABEL_DEPTH = 8
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
@@ -194,6 +195,7 @@ def _is_escaped(text: str, index: int) -> bool:
 def _visible_text(heading: str) -> str:
     text = _strip_closing_hashes(heading)
     text = _replace_inline_labels(text)
+    text = REFERENCE_HEADING_PATTERN.sub(r"\1", text)
     text = HTML_TAG_PATTERN.sub("", text)
     text = html.unescape(text)
     return re.sub(r"[`*~]|(?<![0-9A-Za-z])_|_(?![0-9A-Za-z])", "", text)

@@ -97,7 +97,6 @@ class GovernancePresenceTest(unittest.TestCase):
 class IssueFormParserTest(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_validator()
-
     def test_parses_ids_labels_and_required_flags(self) -> None:
         text = issue_form([("summary", "Summary"), ("provenance", "Clean-room confirmation")])
         blocks = self.module.parse_issue_form(text)
@@ -107,12 +106,10 @@ class IssueFormParserTest(unittest.TestCase):
         self.assertEqual(blocks["summary"].kind, "textarea")
         self.assertEqual(blocks["provenance"].kind, "checkboxes")
         self.assertTrue(blocks["provenance"].required)
-
     def test_rejects_duplicate_identifiers(self) -> None:
         text = issue_form([("summary", "Summary"), ("summary", "Duplicate")])
         with self.assertRaises(self.module.ValidationError):
             self.module.parse_issue_form(text)
-
     def test_reads_required_only_from_the_correct_block(self) -> None:
         misplaced = (
             "name: Example\nbody:\n"
@@ -121,12 +118,10 @@ class IssueFormParserTest(unittest.TestCase):
         )
         blocks = self.module.parse_issue_form(misplaced)
         self.assertFalse(blocks["summary"].required)
-
     def test_rejects_non_lf_or_non_utf8_forms(self) -> None:
         text = issue_form([("summary", "Summary")])
         with self.assertRaises(self.module.ValidationError):
             self.module.parse_issue_form(text.replace("\n", "\r\n"))
-
     def test_rejects_required_flags_in_the_wrong_kind_specific_block(self) -> None:
         textarea_options = ("name: Example\nbody:\n  - type: textarea\n    id: summary\n"
                             "    attributes:\n      label: Summary\n      options:\n      required: true\n")
@@ -135,7 +130,6 @@ class IssueFormParserTest(unittest.TestCase):
                                 "          required: true\n")
         for text, identifier in ((textarea_options, "summary"), (checkbox_validations, "provenance")):
             self.assertFalse(self.module.parse_issue_form(text)[identifier].required)
-
     def test_rejects_a_block_without_an_identifier_or_label(self) -> None:
         for text in [
             issue_form([("valid", "Valid")])
@@ -145,7 +139,6 @@ class IssueFormParserTest(unittest.TestCase):
             with self.subTest(text=text):
                 with self.assertRaises(self.module.ValidationError):
                     self.module.parse_issue_form(text)
-
     def test_allows_markdown_help_without_an_identifier(self) -> None:
         text = (
             "name: Example\nbody:\n"
@@ -165,13 +158,9 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write("docs/adr/0009-example.md", ADR_TEMPLATE)
         self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE)
         self.write("docs/10_adr_process.md", "# ADR process\n")
-        self.write(".github/ISSUE_TEMPLATE/feature.yml",
-                   issue_form([(i, i.title()) for i in self.module.FEATURE_FIELDS]))
-        self.write(".github/ISSUE_TEMPLATE/adr.yml",
-                   issue_form([(i, i.title()) for i in self.module.ADR_FIELDS]))
-        self.write(".github/ISSUE_TEMPLATE/gate.yml",
-                   issue_form([(i, i.title()) for i in self.module.GATE_FIELDS],
-                              checkbox_ids=("provenance", "planned_banners")))
+        self.write(".github/ISSUE_TEMPLATE/feature.yml", self.form(".github/ISSUE_TEMPLATE/feature.yml"))
+        self.write(".github/ISSUE_TEMPLATE/adr.yml", self.form(".github/ISSUE_TEMPLATE/adr.yml"))
+        self.write(".github/ISSUE_TEMPLATE/gate.yml", self.form(".github/ISSUE_TEMPLATE/gate.yml"))
         self.write(".github/pull_request_template.md",
                    "".join(f"- {field}:\n" for field in self.module.PULL_REQUEST_FIELDS))
 
@@ -192,16 +181,21 @@ class GovernanceCheckTest(unittest.TestCase):
     def check(self) -> list:
         return self.module.check_repository(self.root, self.tracked())
 
+    def form(self, path: str, *, required: bool = True) -> str:
+        contract = self.module.FORM_CONTRACTS[path]
+        fields = [(identifier, label) for identifier, (label, _) in contract.items()]
+        kinds = tuple(identifier for identifier, (_, kind) in contract.items() if kind == "checkboxes")
+        text = issue_form(fields, required=required, checkbox_ids=kinds)
+        text = text.replace("  - type: textarea\n    id: phase", "  - type: input\n    id: phase")
+        return text.replace("  - type: textarea\n    id: adr\n", "  - type: dropdown\n    id: adr\n") if path.endswith("feature.yml") else text
     def test_accepts_a_conforming_repository(self) -> None:
         self.assertEqual(self.check(), [])
-
     def test_rejects_unknown_adr_status_values(self) -> None:
         for status in ["Draft", "accepted", "Approved", ""]:
             with self.subTest(status=status):
                 self.write("docs/adr/0009-example.md",
                            ADR_TEMPLATE.replace("Accepted on 2026-08-28.", status or "\n"))
                 self.assertTrue(any("status" in f.reason.lower() for f in self.check()))
-
     def test_requires_all_six_adr_metadata_sections_for_non_legacy_adrs(self) -> None:
         for section in self.module.ADR_SECTIONS:
             with self.subTest(section=section):
@@ -210,21 +204,30 @@ class GovernanceCheckTest(unittest.TestCase):
                 self.assertTrue(any(section in f.reason for f in self.check()),
                                 f"missing {section} must be reported")
         self.write("docs/adr/0009-example.md", ADR_TEMPLATE)
-
     def test_allows_only_the_two_omitted_sections_on_legacy_adr(self) -> None:
         legacy = ADR_TEMPLATE.replace("0009-example", "0001-bootstrap-a-stdlib-only-cpp20-core")
-        for section, passage in (
-            ("Options considered", "\n## Options considered\n\nOptions text.\n"),
-            ("References", "\n## References\n\n- [the ADR process](../10_adr_process.md)\n"),
-        ):
+        optional = ("\n## Options considered\n\nOptions text.\n", "\n## References\n\n- [the ADR process](../10_adr_process.md)\n")
+        for passage in optional:
             self.write("docs/adr/0001-bootstrap-a-stdlib-only-cpp20-core.md", legacy.replace(passage, ""))
-            self.assertEqual(self.check(), [], f"legacy ADR may omit {section}")
+            self.assertEqual(self.check(), [])
+        both = legacy.replace(optional[0], "").replace(optional[1], "")
+        self.write("docs/adr/0001-bootstrap-a-stdlib-only-cpp20-core.md", both)
+        self.assertEqual(self.check(), [])
+        sections = {"Status": "Accepted on 2026-08-28.", "Context": "Context text.",
+                    "Decision": "Decision text.", "Consequences": "Consequences text."}
+        for section, body in sections.items():
+            with self.subTest(section=section):
+                missing = legacy.replace(f"## {section}\n\n{body}\n", "")
+                self.write("docs/adr/0001-bootstrap-a-stdlib-only-cpp20-core.md", missing)
+                self.assertTrue(any(section in f.reason for f in self.check()))
         self.write("docs/adr/0001-bootstrap-a-stdlib-only-cpp20-core.md", legacy)
-
     def test_ignores_fenced_registry_rows(self) -> None:
         self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE +
                    "\n```text\n| Fake | Invalid | Invalid | no authority | none |\n```\n")
         self.assertEqual(self.check(), [])
+        self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE +
+                   "\n| Hidden invalid | Maturity | Invalid | no authority | nobody |\n")
+        self.assertTrue(any("vocabulary" in f.reason for f in self.check()))
 
     def test_requires_normative_authority_to_resolve_an_accepted_tracked_adr(self) -> None:
         rejected = ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Rejected on 2026-08-28.")
@@ -254,7 +257,9 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Accepted."))
         self.assertTrue(any("date" in f.reason.lower() for f in self.check()))
         self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Proposed."))
-        self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE.replace("Normative", "Planned"))
+        self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE.replace(
+            "| Implemented surface | Normative |", "| Implemented surface | Planned |").replace(
+            "| Normative but unbuilt surface | Normative |", "| Normative but unbuilt surface | Planned |"))
         self.assertEqual(self.check(), [], "a Proposed ADR needs no decision date")
 
     def test_reports_an_adr_directory_without_decision_records(self) -> None:
@@ -294,6 +299,8 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write("docs/99_planned.md", "# Planned\n\n" + BANNER.replace(
             "[Issue #35](https://github.com/tetsuh/sitometron/issues/35)", "someone"))
         self.assertTrue(any("banner" in f.reason.lower() for f in self.check()))
+        self.write("docs/99_bypass.md", "> **Planned, not yet normative:** Issue/ADR #NN has no owner.\n")
+        self.assertTrue(any("banner" in f.reason.lower() for f in self.check()))
 
     def test_requires_every_expected_issue_form_field(self) -> None:
         forms = {
@@ -304,14 +311,13 @@ class GovernanceCheckTest(unittest.TestCase):
         for path, fields in forms.items():
             for omitted in fields:
                 with self.subTest(path=path, omitted=omitted):
-                    kept = [(i, i.title()) for i in fields if i != omitted]
-                    self.write(path, issue_form(
-                        kept, checkbox_ids=("provenance", "planned_banners")))
+                    kept = [(i, self.module.FORM_CONTRACTS[path][i][0]) for i in fields if i != omitted]
+                    self.write(path, issue_form(kept, checkbox_ids=tuple(
+                        i for i in fields if i != omitted and self.module.FORM_CONTRACTS[path][i][1] == "checkboxes")))
                     self.assertTrue(
                         any(omitted in f.reason for f in self.check()),
                         f"omitting {omitted} from {path} must be reported")
-            self.write(path, issue_form([(i, i.title()) for i in fields],
-                                        checkbox_ids=("provenance", "planned_banners")))
+            self.write(path, self.form(path))
 
     def test_ignores_form_blocks_that_declare_no_identifier(self) -> None:
         text = ("name: X\ndescription: Y\nbody:\n"
@@ -343,8 +349,7 @@ class GovernanceCheckTest(unittest.TestCase):
         self.assertEqual(self.check(), [])
 
     def test_requires_expected_fields_to_be_required(self) -> None:
-        self.write(".github/ISSUE_TEMPLATE/feature.yml", issue_form(
-            [(i, i.title()) for i in self.module.FEATURE_FIELDS], required=False))
+        self.write(".github/ISSUE_TEMPLATE/feature.yml", self.form(".github/ISSUE_TEMPLATE/feature.yml", required=False))
         self.assertTrue(any("required" in f.reason.lower() for f in self.check()))
 
     def test_requires_every_pull_request_template_field(self) -> None:
