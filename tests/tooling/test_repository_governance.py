@@ -388,6 +388,19 @@ class GovernanceCheckTest(unittest.TestCase):
                            "".join(f"- {field}:\n" for field in kept))
                 self.assertTrue(any(omitted in f.reason for f in self.check()))
 
+    def test_rejects_indented_pull_request_field_lines(self) -> None:
+        fields = list(self.module.PULL_REQUEST_FIELDS)
+        spoofed = fields[0]
+        body = "".join(f"- {field}:\n" for field in fields[1:])
+        for indent in [" ", "  ", "   ", "    ", "\t"]:
+            with self.subTest(indent=repr(indent)):
+                self.write(".github/pull_request_template.md",
+                           f"{indent}- {spoofed}:\n" + body)
+                self.assertTrue(any(spoofed in f.reason for f in self.check()),
+                                "an indented copy is not the required top-level field")
+        self.write(".github/pull_request_template.md", f"- {spoofed}:\n" + body)
+        self.assertEqual(self.check(), [])
+
     def test_rejects_prose_spoofed_duplicated_or_fenced_field_lines(self) -> None:
         fields = list(self.module.PULL_REQUEST_FIELDS)
         spoofed = fields[0]
@@ -409,9 +422,14 @@ class GovernanceCheckTest(unittest.TestCase):
         for path in [".github/pull_request_template.md", ".github/ISSUE_TEMPLATE/gate.yml",
                      "docs/08_contract_registry.md"]:
             with self.subTest(path=path):
-                (self.root / path).unlink()
-                self.assertTrue(self.check())
-                self.setUp()
+                target = self.root / path
+                saved = target.read_bytes()
+                target.unlink()
+                try:
+                    self.assertTrue(self.check())
+                finally:
+                    target.write_bytes(saved)
+        self.assertEqual(self.check(), [], "every fixture is restored")
 
     def test_main_returns_zero_when_clean_and_one_otherwise(self) -> None:
         with mock.patch.object(self.module, "tracked_files", lambda root: self.tracked()):

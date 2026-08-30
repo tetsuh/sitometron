@@ -445,14 +445,17 @@ def check_issue_forms(root: Path, tracked: Sequence[str]) -> list[Finding]:
 def check_pull_request_template(root: Path, tracked: Sequence[str]) -> list[Finding]:
     if PULL_REQUEST_TEMPLATE not in tracked:
         return [Finding(PULL_REQUEST_TEMPLATE, "the pull-request template is not tracked")]
-    lines = [line.strip() for line in _content_lines(_read(root, PULL_REQUEST_TEMPLATE))]
+    # Field lines are matched raw: a four-space indent makes the line an indented code block,
+    # so an indented copy must not substitute for the required top-level field.
+    lines = [line.rstrip() for line in _content_lines(_read(root, PULL_REQUEST_TEMPLATE))]
     findings: list[Finding] = []
     for field in PULL_REQUEST_FIELDS:
         occurrences = lines.count(f"- {field}:")
         if occurrences == 0:
             findings.append(Finding(
                 PULL_REQUEST_TEMPLATE,
-                f"missing required field line {f'- {field}:'!r}; prose mentions do not count"))
+                f"missing required field line {f'- {field}:'!r}; "
+                "indented, prose, and fenced copies do not count"))
         elif occurrences > 1:
             findings.append(Finding(
                 PULL_REQUEST_TEMPLATE, f"required field {field!r} is declared {occurrences} times"))

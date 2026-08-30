@@ -388,9 +388,19 @@ class RepositoryCheckTest(unittest.TestCase):
         self.assertEqual([(f.line, f.target) for f in findings], [(3, "docs/absent.md")],
                          "a multiline link is reported at the line its label opens on")
 
-    def test_bounds_how_far_a_link_may_span(self) -> None:
-        self.write("README.md", "[a\n\n\n\n\nb](absent.md)\n")
-        self.assertEqual(self.check(), [], "a link beyond the line budget is not treated as a link")
+    def test_validates_a_link_however_many_lines_its_paragraph_spans(self) -> None:
+        for lines in [2, 5, 6, 12]:
+            with self.subTest(lines=lines):
+                label = "\n".join(f"word{index}" for index in range(lines))
+                self.write("README.md", f"see [{label}](docs/absent.md) here\n")
+                self.assertEqual([f.target for f in self.check()], ["docs/absent.md"],
+                                 "no line count may silently skip a link")
+
+    def test_treats_a_blank_line_as_ending_a_candidate_link(self) -> None:
+        self.write("README.md", "see [a\n\nb](docs/absent.md) here\n")
+        self.assertEqual(self.check(), [], "a label cannot contain a blank line")
+        self.write("README.md", "[a](\n\ndocs/absent.md)\n")
+        self.assertEqual(self.check(), [], "a destination cannot contain a blank line")
 
     def test_reports_unreadable_markdown_as_a_validation_error(self) -> None:
         (self.root / "bad.md").write_bytes(b"# Title\n\xff\n")

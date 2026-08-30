@@ -30,7 +30,6 @@ REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(.*)\Z")
 MAX_LABEL_DEPTH = 8
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
 MAX_DESTINATION_DEPTH = 8
-MAX_LINK_LINES = 4
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
 PERCENT_PATTERN = re.compile(r"%(..?|\Z)", re.DOTALL)
 VALID_ESCAPE_PATTERN = re.compile(r"\A[0-9A-Fa-f]{2}\Z")
@@ -404,9 +403,15 @@ def _reference_use(
     return (target[0] if target is not None else None), label_end
 
 
-def _within_line_budget(text: str, start: int, end: int) -> bool:
-    """Report whether one link spans no more than the permitted number of lines."""
-    return text.count("\n", start, end) <= MAX_LINK_LINES
+def _paragraph_end(text: str, start: int) -> int:
+    """Return the offset at which the paragraph containing `start` ends.
+
+    A CommonMark link label and destination cannot contain a blank line, so the
+    paragraph is the natural bound. Using it leaves no line-count cutoff that
+    could silently skip a long same-paragraph link.
+    """
+    break_offset = text.find("\n\n", start)
+    return len(text) if break_offset == -1 else break_offset
 
 
 def document_targets(
@@ -419,13 +424,14 @@ def document_targets(
         if text[index] != "[" or _is_escaped(text, index):
             index += 1
             continue
-        end = _label_end(text, index)
-        if end is None or not _within_line_budget(text, index, end):
+        paragraph = text[:_paragraph_end(text, index)]
+        end = _label_end(paragraph, index)
+        if end is None:
             index += 1
             continue
-        if end < len(text) and text[end] == "(":
-            destination = _destination(text, end + 1)
-            if destination is None or not _within_line_budget(text, index, destination[1]):
+        if end < len(paragraph) and paragraph[end] == "(":
+            destination = _destination(paragraph, end + 1)
+            if destination is None:
                 index = end + 1
                 continue
             target = _inline_target(destination[0])
@@ -433,8 +439,8 @@ def document_targets(
                 targets.append((index, target))
             index = destination[1]
             continue
-        target, next_index = _reference_use(text, index, end, definitions)
-        if target is not None and _within_line_budget(text, index, next_index):
+        target, next_index = _reference_use(paragraph, index, end, definitions)
+        if target is not None:
             targets.append((index, target))
         index = max(next_index, index + 1)
     return targets
