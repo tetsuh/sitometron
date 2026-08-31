@@ -158,8 +158,7 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write(".github/ISSUE_TEMPLATE/feature.yml", self.form(".github/ISSUE_TEMPLATE/feature.yml"))
         self.write(".github/ISSUE_TEMPLATE/adr.yml", self.form(".github/ISSUE_TEMPLATE/adr.yml"))
         self.write(".github/ISSUE_TEMPLATE/gate.yml", self.form(".github/ISSUE_TEMPLATE/gate.yml"))
-        self.write(".github/pull_request_template.md",
-                   "".join(f"- {field}:\n" for field in self.module.PULL_REQUEST_FIELDS))
+        self.write(".github/pull_request_template.md", self.pull_request_template())
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
@@ -168,6 +167,13 @@ class GovernanceCheckTest(unittest.TestCase):
         path = self.root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(text.encode("utf-8"))
+
+    def pull_request_template(self, fields: list[str] | None = None,
+                              sections: list[str] | None = None) -> str:
+        chosen = self.module.PULL_REQUEST_FIELDS if fields is None else fields
+        headings = self.module.PULL_REQUEST_SECTIONS if sections is None else sections
+        return ("".join(f"- {field}:\n" for field in chosen)
+                + "".join(f"## {name}\n" for name in headings))
 
     def tracked(self) -> list[str]:
         return sorted(
@@ -385,7 +391,7 @@ class GovernanceCheckTest(unittest.TestCase):
             with self.subTest(omitted=omitted):
                 kept = [f for f in self.module.PULL_REQUEST_FIELDS if f != omitted]
                 self.write(".github/pull_request_template.md",
-                           "".join(f"- {field}:\n" for field in kept))
+                           self.pull_request_template(fields=kept))
                 self.assertTrue(any(omitted in f.reason for f in self.check()))
 
     def test_rejects_indented_pull_request_field_lines(self) -> None:
@@ -395,10 +401,10 @@ class GovernanceCheckTest(unittest.TestCase):
         for indent in [" ", "  ", "   ", "    ", "\t"]:
             with self.subTest(indent=repr(indent)):
                 self.write(".github/pull_request_template.md",
-                           f"{indent}- {spoofed}:\n" + body)
+                           f"{indent}- {spoofed}:\n" + body + self.pull_request_template(fields=[]))
                 self.assertTrue(any(spoofed in f.reason for f in self.check()),
                                 "an indented copy is not the required top-level field")
-        self.write(".github/pull_request_template.md", f"- {spoofed}:\n" + body)
+        self.write(".github/pull_request_template.md", self.pull_request_template())
         self.assertEqual(self.check(), [])
 
     def test_rejects_prose_spoofed_duplicated_or_fenced_field_lines(self) -> None:
@@ -412,11 +418,35 @@ class GovernanceCheckTest(unittest.TestCase):
         }
         for label, text in cases.items():
             with self.subTest(case=label):
-                self.write(".github/pull_request_template.md", text)
+                self.write(".github/pull_request_template.md",
+                           text + self.pull_request_template(fields=[]))
                 self.assertTrue(any(spoofed in f.reason for f in self.check()), label)
         self.write(".github/pull_request_template.md",
-                   f"- {spoofed}:\n" + body + f"- {spoofed}:\n")
+                   f"- {spoofed}:\n" + body + f"- {spoofed}:\n"
+                   + self.pull_request_template(fields=[]))
         self.assertTrue(any("declared 2 times" in f.reason for f in self.check()))
+
+    def test_requires_the_validation_and_risks_section_headings(self) -> None:
+        for name in self.module.PULL_REQUEST_SECTIONS:
+            others = [n for n in self.module.PULL_REQUEST_SECTIONS if n != name]
+            spoofs = {
+                "missing": "",
+                "indented": f"    ## {name}\n",
+                "deeper heading": f"### {name}\n",
+                "prose": f"See the {name} section below.\n",
+                "fenced": f"```markdown\n## {name}\n```\n",
+            }
+            for label, replacement in spoofs.items():
+                with self.subTest(section=name, case=label):
+                    self.write(".github/pull_request_template.md",
+                               self.pull_request_template(sections=others) + replacement)
+                    self.assertTrue(any(name in f.reason for f in self.check()), label)
+            with self.subTest(section=name, case="duplicated"):
+                self.write(".github/pull_request_template.md",
+                           self.pull_request_template() + f"## {name}\n")
+                self.assertTrue(any("declared 2 times" in f.reason for f in self.check()))
+        self.write(".github/pull_request_template.md", self.pull_request_template())
+        self.assertEqual(self.check(), [])
 
     def test_reports_missing_governance_sources(self) -> None:
         for path in [".github/pull_request_template.md", ".github/ISSUE_TEMPLATE/gate.yml",

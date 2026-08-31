@@ -78,6 +78,7 @@ PULL_REQUEST_FIELDS = (
     "REFACTOR command and result, or N/A with reason",
     "Exact-head owner authorization", "Selected merge method", "Auto-merge not enabled",
 )
+PULL_REQUEST_SECTIONS = ("Verification", "Risks and follow-up")
 
 BANNER_MARKER = "**Planned, not yet normative:**"
 BANNER_SPECIMEN = "Issue/ADR #NN"
@@ -448,17 +449,27 @@ def check_pull_request_template(root: Path, tracked: Sequence[str]) -> list[Find
     # Field lines are matched raw: a four-space indent makes the line an indented code block,
     # so an indented copy must not substitute for the required top-level field.
     lines = [line.rstrip() for line in _content_lines(_read(root, PULL_REQUEST_TEMPLATE))]
+    findings = _required_lines(lines, [f"- {field}:" for field in PULL_REQUEST_FIELDS], "field")
+    # The frozen boundary requires validation and risks sections, which are headings, not bullets.
+    findings.extend(_required_lines(lines, [f"## {name}" for name in PULL_REQUEST_SECTIONS],
+                                    "section heading"))
+    return findings
+
+
+def _required_lines(lines: Sequence[str], required: Sequence[str], kind: str) -> list[Finding]:
+    """Require each entry as one exact, unindented, unique line outside fenced code."""
     findings: list[Finding] = []
-    for field in PULL_REQUEST_FIELDS:
-        occurrences = lines.count(f"- {field}:")
+    for expected in required:
+        occurrences = lines.count(expected)
         if occurrences == 0:
             findings.append(Finding(
                 PULL_REQUEST_TEMPLATE,
-                f"missing required field line {f'- {field}:'!r}; "
+                f"missing required {kind} line {expected!r}; "
                 "indented, prose, and fenced copies do not count"))
         elif occurrences > 1:
             findings.append(Finding(
-                PULL_REQUEST_TEMPLATE, f"required field {field!r} is declared {occurrences} times"))
+                PULL_REQUEST_TEMPLATE,
+                f"required {kind} {expected!r} is declared {occurrences} times"))
     return findings
 
 
