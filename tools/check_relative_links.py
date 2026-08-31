@@ -372,7 +372,6 @@ def _destination(line: str, start: int) -> tuple[str, int] | None:
     than skipped, so no depth can silently remove a link from validation.
     """
     depth = 1
-    index = start
     for index in range(start, len(line)):
         character = line[index]
         if character == "(":
