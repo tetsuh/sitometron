@@ -402,6 +402,52 @@ class RepositoryCheckTest(unittest.TestCase):
         self.write("README.md", "[a](\n\ndocs/absent.md)\n")
         self.assertEqual(self.check(), [], "a destination cannot contain a blank line")
 
+    def test_honours_escapes_in_reference_definition_labels(self) -> None:
+        self.write("docs/target.md", "# Target\n")
+        self.write("README.md", (
+            "[a\\]b]: docs/absent.md\n"
+            "\n"
+            "use [a\\]b]\n"
+        ))
+        findings = self.check()
+        self.assertEqual([(f.line, f.target) for f in findings],
+                         [(1, "docs/absent.md"), (3, "docs/absent.md")],
+                         "an escaped bracket must not hide the definition or its use")
+
+    def test_treats_whitespace_only_lines_as_blank(self) -> None:
+        for separator in ["   ", "\t", " \t "]:
+            with self.subTest(separator=repr(separator)):
+                self.write("README.md", f"see [a\n{separator}\nb](docs/absent.md) here\n")
+                self.assertEqual(self.check(), [],
+                                 "a whitespace-only line ends the paragraph, so this is not a link")
+        self.write("docs/target.md", "# Target\n")
+        self.write("README.md", "see [a\nb](docs/target.md) here\n")
+        self.assertEqual(self.check(), [])
+
+    def test_blanks_code_spans_that_close_on_a_later_line(self) -> None:
+        self.write("README.md", (
+            "Write `[a](docs/absent.md)\n"
+            "still code` here\n"
+            "and ``[b](docs/absent.md)\n"
+            "more`` there\n"
+        ))
+        self.assertEqual(self.check(), [])
+        self.write("README.md", "real [x](docs/absent.md)\n")
+        self.assertEqual(len(self.check()), 1)
+
+    def test_reports_destinations_nested_beyond_the_supported_depth(self) -> None:
+        self.write("docs/a((((((())))))).md", "# Deep\n")
+        self.write("README.md", "[ok](docs/a((((((())))))).md)\n")
+        self.assertEqual(self.check(), [], "a destination inside the depth bound is validated")
+        for depth in [8, 9, 20]:
+            with self.subTest(depth=depth):
+                destination = "docs/a" + "(" * depth + ")" * depth + ".md"
+                self.write("README.md", f"[deep]({destination})\n")
+                findings = self.check()
+                self.assertEqual(len(findings), 1, findings)
+                self.assertIn("nests deeper", findings[0].reason,
+                              "an unsupported depth fails closed instead of being skipped")
+
     def test_reports_unreadable_markdown_as_a_validation_error(self) -> None:
         (self.root / "bad.md").write_bytes(b"# Title\n\xff\n")
         self.files["bad.md"] = ""

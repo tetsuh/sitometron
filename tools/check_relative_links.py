@@ -26,9 +26,10 @@ from typing import TextIO
 EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
 SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
-REFERENCE_DEFINITION_PATTERN = re.compile(r"\A {0,3}\[([^\]]+)\]:[ \t]*(.*)\Z")
 MAX_LABEL_DEPTH = 8
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
+UNSUPPORTED_DESTINATION_TARGET = "<unsupported-destination>"
+BLANK_LINE_PATTERN = re.compile(r"\n[ \t]*\n")
 MAX_DESTINATION_DEPTH = 8
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
 PERCENT_PATTERN = re.compile(r"%(..?|\Z)", re.DOTALL)
@@ -298,7 +299,11 @@ def _backtick_runs(line: str) -> list[tuple[int, int]]:
     return runs
 
 def strip_code_spans(line: str) -> str:
-    """Blank inline code spans using equal-width maximal backtick runs."""
+    """Blank code spans using equal-width maximal backtick runs.
+
+    Newlines inside a span are preserved so document offsets and line numbers
+    stay aligned while the span contents are removed.
+    """
     runs = _backtick_runs(line)
     next_matching: list[int | None] = [None] * len(runs)
     latest: dict[int, int] = {}
@@ -316,7 +321,9 @@ def strip_code_spans(line: str) -> str:
             continue
         start = runs[index][0]
         end = runs[closing][1]
-        characters[start:end] = " " * (end - start)
+        characters[start:end] = [
+            "\n" if character == "\n" else " " for character in line[start:end]
+        ]
         index = closing + 1
     return "".join(characters)
 
@@ -359,22 +366,30 @@ def tracked_files(root: Path | str) -> list[str]:
         raise ValidationError("tracked paths are not valid UTF-8") from error
 
 def _destination(line: str, start: int) -> tuple[str, int] | None:
-    """Read one inline destination that starts just after `(`, honouring nesting."""
+    """Read one inline destination that starts just after `(`, honouring nesting.
+
+    A destination nested deeper than the bound is reported as unsupported rather
+    than skipped, so no depth can silently remove a link from validation.
+    """
     depth = 1
     index = start
-    while index < len(line) and depth <= MAX_DESTINATION_DEPTH:
+    for index in range(start, len(line)):
         character = line[index]
         if character == "(":
             depth += 1
+            if depth > MAX_DESTINATION_DEPTH:
+                closing = line.find(")", index)
+                return UNSUPPORTED_DESTINATION_TARGET, (len(line) if closing == -1 else closing + 1)
         elif character == ")":
             depth -= 1
             if depth == 0:
                 return line[start:index], index + 1
-        index += 1
     return None
 
 def _inline_target(raw: str) -> str:
     """Return the link destination of one inline `(...)` body without its title."""
+    if raw == UNSUPPORTED_DESTINATION_TARGET:
+        return raw
     text = raw.strip()
     if text.startswith("<"):
         end = text.find(">")
@@ -410,8 +425,8 @@ def _paragraph_end(text: str, start: int) -> int:
     paragraph is the natural bound. Using it leaves no line-count cutoff that
     could silently skip a long same-paragraph link.
     """
-    break_offset = text.find("\n\n", start)
-    return len(text) if break_offset == -1 else break_offset
+    match = BLANK_LINE_PATTERN.search(text, start)
+    return len(text) if match is None else match.start()
 
 
 def document_targets(
@@ -462,14 +477,25 @@ def _reference_target(raw: str) -> str:
     target = text.split(" ", 1)[0].split("\t", 1)[0]
     return target or INVALID_REFERENCE_TARGET
 
+def parse_reference_definition(line: str) -> tuple[str, str] | None:
+    """Parse one reference definition, honouring escaped brackets inside its label."""
+    indent = len(line) - len(line.lstrip(" "))
+    if indent > MAX_HEADING_INDENT or line[indent:indent + 1] != "[":
+        return None
+    end = _label_end(line, indent)
+    if end is None or line[end:end + 1] != ":":
+        return None
+    label = _normalized_label(line[indent + 1:end - 1])
+    return (label, line[end + 1:].strip(" \t")) if label else None
+
+
 def _reference_definitions(lines: Sequence[str]) -> dict[str, tuple[str, int]]:
     """Return the first definition of every reference label, as CommonMark requires."""
     definitions: dict[str, tuple[str, int]] = {}
     for number, line in enumerate(lines, 1):
-        match = REFERENCE_DEFINITION_PATTERN.match(line)
-        if match is not None:
-            label = _normalized_label(match.group(1))
-            definitions.setdefault(label, (_reference_target(match.group(2)), number))
+        parsed = parse_reference_definition(line)
+        if parsed is not None:
+            definitions.setdefault(parsed[0], (_reference_target(parsed[1]), number))
     return definitions
 
 def _line_numbers(lines: Sequence[str]) -> list[int]:
@@ -486,19 +512,19 @@ def extract_links(markdown: str) -> list[tuple[int, str]]:
     """Return every (line number, raw target) link outside fenced code."""
     lines = _content_lines(markdown)
     definitions = _reference_definitions(lines)
-    scannable = [
-        "" if REFERENCE_DEFINITION_PATTERN.match(line) else strip_code_spans(line)
-        for line in lines
-    ]
+    scannable = ["" if parse_reference_definition(line) else line for line in lines]
     starts = _line_numbers(scannable)
+    # Code spans are blanked over the joined document so a span that opens on one
+    # line and closes on the next cannot leave a link-like token behind.
+    document = strip_code_spans("\n".join(scannable))
     links = [
         (bisect_right(starts, offset), target)
-        for offset, target in document_targets("\n".join(scannable), definitions)
+        for offset, target in document_targets(document, definitions)
     ]
     for number, line in enumerate(lines, 1):
-        definition = REFERENCE_DEFINITION_PATTERN.match(line)
+        definition = parse_reference_definition(line)
         if definition is not None:
-            links.append((number, _reference_target(definition.group(2))))
+            links.append((number, _reference_target(definition[1])))
     return sorted(links)
 
 
@@ -522,6 +548,8 @@ def _check_target(
 ) -> str | None:
     if target == INVALID_REFERENCE_TARGET:
         return "missing or malformed reference definition"
+    if target == UNSUPPORTED_DESTINATION_TARGET:
+        return "link destination nests deeper than the validator supports"
     path_part, fragment = split_local_target(target)
     if path_part == "":
         resolved = source
