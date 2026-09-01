@@ -448,6 +448,37 @@ class RepositoryCheckTest(unittest.TestCase):
                 self.assertIn("nests deeper", findings[0].reason,
                               "an unsupported depth fails closed instead of being skipped")
 
+    def test_reads_angle_destinations_containing_parentheses(self) -> None:
+        self.write("docs/a(1).md", "# Deep\n")
+        self.write("docs/b)2.md", "# Other\n")
+        self.write("README.md", (
+            "[paren](<docs/a(1).md>)\n"
+            "[close](<docs/b)2.md>)\n"
+        ))
+        self.assertEqual(self.check(), [],
+                         "parentheses inside an angle destination are literal")
+        self.write("README.md", "[missing](<docs/absent(1.md>)\n")
+        findings = self.check()
+        self.assertEqual([f.target for f in findings], ["docs/absent(1.md"],
+                         "a missing angle destination must not disappear from extraction")
+
+    def test_reports_labels_nested_beyond_the_supported_depth(self) -> None:
+        self.write("docs/target.md", "# Target\n")
+        opening, closing = "[" * 9, "]" * 9
+        forms = {
+            "inline": f"{opening}x{closing}(docs/absent.md)\n",
+            "image": f"!{opening}x{closing}(docs/absent.md)\n",
+            "definition": f"{opening}label{closing}: docs/absent.md\n",
+            "reference use": f"[r]: docs/target.md\n\nuse [t]{opening}x{closing}\n",
+        }
+        for label, text in forms.items():
+            with self.subTest(form=label):
+                self.write("README.md", text)
+                findings = [f for f in self.check() if "nests deeper" in f.reason]
+                self.assertEqual(len(findings), 1, f"{label}: {self.check()}")
+        self.write("README.md", "[" * 8 + "x" + "]" * 8 + "(docs/target.md)\n")
+        self.assertEqual(self.check(), [], "a label inside the bound is validated normally")
+
     def test_reports_unreadable_markdown_as_a_validation_error(self) -> None:
         (self.root / "bad.md").write_bytes(b"# Title\n\xff\n")
         self.files["bad.md"] = ""

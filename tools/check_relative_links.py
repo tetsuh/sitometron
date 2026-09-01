@@ -29,6 +29,7 @@ SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
 MAX_LABEL_DEPTH = 8
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
 UNSUPPORTED_DESTINATION_TARGET = "<unsupported-destination>"
+UNSUPPORTED_LABEL_TARGET = "<unsupported-label>"
 BLANK_LINE_PATTERN = re.compile(r"\n[ \t]*\n")
 MAX_DESTINATION_DEPTH = 8
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
@@ -135,6 +136,9 @@ def heading_text(line: str) -> str | None:
         return None
     return rest.strip(" \t")
 
+UNSUPPORTED_LABEL_DEPTH = -1
+
+
 def _label_end(line: str, start: int) -> int | None:
     if start >= len(line) or line[start] != "[":
         return None
@@ -148,7 +152,7 @@ def _label_end(line: str, start: int) -> int | None:
         if character == "[":
             depth += 1
             if depth > MAX_LABEL_DEPTH:
-                return None
+                return UNSUPPORTED_LABEL_DEPTH
         elif character == "]":
             depth -= 1
             if depth == 0:
@@ -162,7 +166,7 @@ def _replace_inline_labels(text: str) -> str:
     while index < len(text):
         if text[index] == "[" and not _is_escaped(text, index):
             end = _label_end(text, index)
-            if end is not None and end < len(text) and text[end] == "(":
+            if end not in (None, UNSUPPORTED_LABEL_DEPTH) and end < len(text) and text[end] == "(":
                 destination = _destination(text, end + 1)
                 if destination is not None:
                     visible.append(text[index + 1:end - 1])
@@ -189,9 +193,9 @@ def _replace_reference_labels(text: str) -> str:
             label_start = index + 1
         if text[label_start] == "[" and not _is_escaped(text, label_start):
             label_end = _label_end(text, label_start)
-            if label_end is not None:
+            if label_end not in (None, UNSUPPORTED_LABEL_DEPTH):
                 reference_end = _label_end(text, label_end)
-                if reference_end is not None:
+                if reference_end not in (None, UNSUPPORTED_LABEL_DEPTH):
                     visible.append(text[label_start + 1:label_end - 1])
                     index = reference_end
                     continue
@@ -371,6 +375,11 @@ def _destination(line: str, start: int) -> tuple[str, int] | None:
     A destination nested deeper than the bound is reported as unsupported rather
     than skipped, so no depth can silently remove a link from validation.
     """
+    opening = start
+    while opening < len(line) and line[opening] in " \t":
+        opening += 1
+    if line[opening:opening + 1] == "<":
+        return _angle_destination(line, opening)
     depth = 1
     for index in range(start, len(line)):
         character = line[index]
@@ -383,6 +392,24 @@ def _destination(line: str, start: int) -> tuple[str, int] | None:
             depth -= 1
             if depth == 0:
                 return line[start:index], index + 1
+    return None
+
+
+def _angle_destination(line: str, opening: int) -> tuple[str, int] | None:
+    """Read one `<...>` destination, where parentheses and spaces are literal."""
+    index = opening + 1
+    while index < len(line):
+        character = line[index]
+        if character == "\\":
+            index += 2
+            continue
+        if character in "<\n":
+            return None
+        if character == ">":
+            closing = line.find(")", index + 1)
+            return (None if closing == -1
+                    else (f"<{line[opening + 1:index]}>", closing + 1))
+        index += 1
     return None
 
 def _inline_target(raw: str) -> str:
@@ -407,6 +434,11 @@ def _reference_use(
     label = _normalized_label(line[label_start + 1:label_end - 1])
     if label_end < len(line) and line[label_end] == "[":
         second = _label_end(line, label_end)
+        if second == UNSUPPORTED_LABEL_DEPTH:
+            run = label_end
+            while run < len(line) and line[run] == "[":
+                run += 1
+            return UNSUPPORTED_LABEL_TARGET, run
         if second is None:
             return None, label_end
         explicit = _normalized_label(line[label_end + 1:second - 1])
@@ -440,6 +472,12 @@ def document_targets(
             continue
         paragraph = text[:_paragraph_end(text, index)]
         end = _label_end(paragraph, index)
+        if end == UNSUPPORTED_LABEL_DEPTH:
+            targets.append((index, UNSUPPORTED_LABEL_TARGET))
+            # Skip the whole opening run so one over-nested label reports once.
+            while index < len(text) and text[index] == "[":
+                index += 1
+            continue
         if end is None:
             index += 1
             continue
@@ -482,7 +520,7 @@ def parse_reference_definition(line: str) -> tuple[str, str] | None:
     if indent > MAX_HEADING_INDENT or line[indent:indent + 1] != "[":
         return None
     end = _label_end(line, indent)
-    if end is None or line[end:end + 1] != ":":
+    if end is None or end == UNSUPPORTED_LABEL_DEPTH or line[end:end + 1] != ":":
         return None
     label = _normalized_label(line[indent + 1:end - 1])
     return (label, line[end + 1:].strip(" \t")) if label else None
@@ -549,6 +587,8 @@ def _check_target(
         return "missing or malformed reference definition"
     if target == UNSUPPORTED_DESTINATION_TARGET:
         return "link destination nests deeper than the validator supports"
+    if target == UNSUPPORTED_LABEL_TARGET:
+        return "link label nests deeper than the validator supports"
     path_part, fragment = split_local_target(target)
     if path_part == "":
         resolved = source
