@@ -380,18 +380,23 @@ def _destination(line: str, start: int) -> tuple[str, int] | None:
         opening += 1
     if line[opening:opening + 1] == "<":
         return _angle_destination(line, opening)
+    return _bare_destination(line, start)
+
+
+def _bare_destination(line: str, start: int) -> tuple[str, int] | None:
+    """Read one destination without angle delimiters, balancing its parentheses."""
     depth = 1
     for index in range(start, len(line)):
         character = line[index]
-        if character == "(":
+        if character == ")":
+            depth -= 1
+            if depth == 0:
+                return line[start:index], index + 1
+        elif character == "(":
             depth += 1
             if depth > MAX_DESTINATION_DEPTH:
                 closing = line.find(")", index)
                 return UNSUPPORTED_DESTINATION_TARGET, (len(line) if closing == -1 else closing + 1)
-        elif character == ")":
-            depth -= 1
-            if depth == 0:
-                return line[start:index], index + 1
     return None
 
 
