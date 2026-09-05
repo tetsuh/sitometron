@@ -101,6 +101,9 @@ class SlugTest(unittest.TestCase):
         self.assertEqual(self.slugs("## \\\\`_x_`\n"), ["_x_"],
                          "an escaped backslash still leaves a real code span")
         self.assertEqual(self.slugs("## `_x_`\n"), ["_x_"])
+        self.assertEqual(self.slugs("## `_x_\\`\n"), ["_x_"],
+                         "a backslash inside a span is literal and the span still closes")
+        self.assertEqual(self.slugs("## `__init__\\`\n"), ["__init__"])
 
     def test_normalizes_unicode_and_case(self) -> None:
         composed = "## Cafe\u0301 MIXED\n"
@@ -478,19 +481,21 @@ class RepositoryCheckTest(unittest.TestCase):
         self.assertEqual([f.reason for f in findings], ["missing anchor", "missing anchor"],
                          "an emphasis-stripped fragment is not accepted")
 
-    def test_treats_escaped_backticks_as_literal_text(self) -> None:
+    def test_treats_escaped_opening_backticks_as_literal_text(self) -> None:
         self.write("docs/target.md", "# Target\n")
         exposed = {
             "escaped opening run": "\\`[x](docs/absent.md)`\n",
-            "escaped closing run": "`[x](docs/absent.md)\\`\n",
+            "escaped lone run then a real link": "\\`x\\` [x](docs/absent.md)\n",
+            "unclosed span before a link": "`open [x](docs/absent.md)\n",
         }
         for label, markdown in exposed.items():
             with self.subTest(label):
                 self.write("README.md", markdown)
                 self.assertEqual([f.target for f in self.check()], ["docs/absent.md"],
-                                 "an escaped backtick cannot delimit a code span")
+                                 "an escaped backtick cannot open a code span")
         spans = {
             "escaped backslash before a real run": "\\\\`[x](docs/absent.md)`\n",
+            "backslash before the closer is literal": "`[x](docs/absent.md)\\`\n",
             "single-backtick span": "`[x](docs/absent.md)`\n",
             "double-backtick span": "``[x](docs/absent.md)``\n",
             "multiline span": "`opens\n[x](docs/absent.md)\ncloses`\n",
@@ -499,7 +504,11 @@ class RepositoryCheckTest(unittest.TestCase):
         for label, markdown in spans.items():
             with self.subTest(label):
                 self.write("README.md", markdown)
-                self.assertEqual(self.check(), [], "a genuine code span is still ignored")
+                self.assertEqual(self.check(), [],
+                                 "backslashes inside an open span are literal, so it still closes")
+        # CommonMark 0.31.2: `foo\`bar` renders <code>foo\</code>bar, leaving the tail as text.
+        self.write("README.md", "`foo\\`bar [x](docs/absent.md)\n")
+        self.assertEqual([f.target for f in self.check()], ["docs/absent.md"])
         self.write("README.md", "[ok](docs/target.md)\n")
         self.assertEqual(self.check(), [])
 

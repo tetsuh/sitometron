@@ -315,12 +315,7 @@ def _content_lines(markdown: str) -> list[str]:
     return lines
 
 def _backtick_runs(line: str) -> list[tuple[int, int]]:
-    """Return the half-open bounds of every maximal unescaped backtick run.
-
-    A backslash escapes only the first backtick it precedes, so an escaped run
-    contributes its remaining backticks and an escaped lone backtick contributes
-    none. An escaped delimiter can neither open nor close a code span.
-    """
+    """Return the half-open bounds of every maximal backtick run."""
     runs: list[tuple[int, int]] = []
     index = 0
     while index < len(line):
@@ -330,31 +325,37 @@ def _backtick_runs(line: str) -> list[tuple[int, int]]:
         end = index + 1
         while end < len(line) and line[end] == "`":
             end += 1
-        start = index + 1 if _is_escaped(line, index) else index
-        if start < end:
-            runs.append((start, end))
+        runs.append((index, end))
         index = end
     return runs
 
 def _code_spans(line: str) -> list[tuple[int, int, int, int]]:
-    """Return (open, content start, content end, close) for each matched code span."""
+    """Return (open, content start, content end, close) for each matched code span.
+
+    Opening is escape-aware: a backslash makes the first backtick of a run
+    literal, so only the remainder can open. Backslashes inside an open span are
+    literal, so the next maximal run of equal width closes it whatever precedes
+    it, as CommonMark specifies for code spans.
+    """
     runs = _backtick_runs(line)
-    next_matching: list[int | None] = [None] * len(runs)
-    latest: dict[int, int] = {}
-    for index in range(len(runs) - 1, -1, -1):
-        width = runs[index][1] - runs[index][0]
-        next_matching[index] = latest.get(width)
-        latest[width] = index
+    by_width: dict[int, list[int]] = {}
+    for position, (start, end) in enumerate(runs):
+        by_width.setdefault(end - start, []).append(position)
 
     spans: list[tuple[int, int, int, int]] = []
     index = 0
     while index < len(runs):
-        closing = next_matching[index]
-        if closing is None:
+        start, end = runs[index]
+        if _is_escaped(line, start):
+            start += 1
+        same_width = by_width.get(end - start, [])
+        following = bisect_right(same_width, index)
+        if following == len(same_width):
             index += 1
             continue
-        spans.append((runs[index][0], runs[index][1], runs[closing][0], runs[closing][1]))
-        index = closing + 1
+        closing = runs[same_width[following]]
+        spans.append((start, end, closing[0], closing[1]))
+        index = same_width[following] + 1
     return spans
 
 
