@@ -210,15 +210,40 @@ def _is_word_character(character: str) -> bool:
     return unicodedata.category(character)[0] in KEPT_CATEGORIES
 
 
-def _drop_emphasis(text: str) -> str:
+def _strip_delimiters(text: str) -> tuple[str, list[bool]]:
+    """Drop code and emphasis delimiters, flagging characters that came from inline code.
+
+    The frozen slug algorithm retains inline-code text, so ``__init__`` in a code
+    span must keep the underscores emphasis removal would otherwise strip.
+    """
+    spans = {span[0]: span for span in _code_spans(text)}
+    kept: list[str] = []
+    inside: list[bool] = []
+    index = 0
+    while index < len(text):
+        span = spans.get(index)
+        if span is not None:
+            kept.extend(text[span[1]:span[2]])
+            inside.extend([True] * (span[2] - span[1]))
+            index = span[3]
+            continue
+        if text[index] not in "`*~":
+            kept.append(text[index])
+            inside.append(False)
+        index += 1
+    return "".join(kept), inside
+
+
+def _drop_emphasis(text: str, inside_code: Sequence[bool]) -> str:
     """Remove underscores used as emphasis delimiters, keeping intraword ones.
 
     A word character on both sides is intraword for every script, so `café_漢`
-    and `snake_case` keep their underscore while `_emphasis_` loses both.
+    and `snake_case` keep their underscore while `_emphasis_` loses both. An
+    underscore that came from inline code is never an emphasis delimiter.
     """
     kept: list[str] = []
     for index, character in enumerate(text):
-        if character != "_":
+        if character != "_" or inside_code[index]:
             kept.append(character)
             continue
         before = text[index - 1] if index else ""
@@ -234,7 +259,7 @@ def _visible_text(heading: str) -> str:
     text = _replace_reference_labels(text)
     text = HTML_TAG_PATTERN.sub("", text)
     text = html.unescape(text)
-    return _drop_emphasis(re.sub(r"[`*~]", "", text))
+    return _drop_emphasis(*_strip_delimiters(text))
 
 def slugify(heading: str) -> str:
     """Return the anchor slug emitted for one ATX heading's raw text."""
@@ -304,12 +329,8 @@ def _backtick_runs(line: str) -> list[tuple[int, int]]:
         index = end
     return runs
 
-def strip_code_spans(line: str) -> str:
-    """Blank code spans using equal-width maximal backtick runs.
-
-    Newlines inside a span are preserved so document offsets and line numbers
-    stay aligned while the span contents are removed.
-    """
+def _code_spans(line: str) -> list[tuple[int, int, int, int]]:
+    """Return (open, content start, content end, close) for each matched code span."""
     runs = _backtick_runs(line)
     next_matching: list[int | None] = [None] * len(runs)
     latest: dict[int, int] = {}
@@ -318,19 +339,29 @@ def strip_code_spans(line: str) -> str:
         next_matching[index] = latest.get(width)
         latest[width] = index
 
-    characters = list(line)
+    spans: list[tuple[int, int, int, int]] = []
     index = 0
     while index < len(runs):
         closing = next_matching[index]
         if closing is None:
             index += 1
             continue
-        start = runs[index][0]
-        end = runs[closing][1]
+        spans.append((runs[index][0], runs[index][1], runs[closing][0], runs[closing][1]))
+        index = closing + 1
+    return spans
+
+
+def strip_code_spans(line: str) -> str:
+    """Blank code spans using equal-width maximal backtick runs.
+
+    Newlines inside a span are preserved so document offsets and line numbers
+    stay aligned while the span contents are removed.
+    """
+    characters = list(line)
+    for start, _, _, end in _code_spans(line):
         characters[start:end] = [
             "\n" if character == "\n" else " " for character in line[start:end]
         ]
-        index = closing + 1
     return "".join(characters)
 
 def emitted_anchors(markdown: str) -> list[str]:

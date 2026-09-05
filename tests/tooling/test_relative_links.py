@@ -87,6 +87,14 @@ class SlugTest(unittest.TestCase):
         self.assertEqual(self.slugs("## trail_ and _lead\n"), ["trail-and-lead"])
         self.assertEqual(self.slugs("## `NFR_005` café_漢\n"), ["nfr_005-café_漢"])
 
+    def test_retains_inline_code_underscores_as_the_frozen_algorithm_requires(self) -> None:
+        self.assertEqual(self.slugs("## `_x_`\n"), ["_x_"])
+        self.assertEqual(self.slugs("## `__init__`\n"), ["__init__"])
+        self.assertEqual(self.slugs("## a `_x_` b\n"), ["a-_x_-b"])
+        self.assertEqual(self.slugs("## _x_\n"), ["x"],
+                         "an emphasis delimiter outside code is still removed")
+        self.assertEqual(self.slugs("## *em* `_y_`\n"), ["em-_y_"])
+
     def test_normalizes_unicode_and_case(self) -> None:
         composed = "## Cafe\u0301 MIXED\n"
         self.assertEqual(self.slugs(composed), ["café-mixed"])
@@ -453,6 +461,15 @@ class RepositoryCheckTest(unittest.TestCase):
                 self.write("README.md", f"[bad](<docs/absent.md> {title})\n")
                 self.assertEqual([f.target for f in self.check()], ["docs/absent.md"],
                                  "an angle destination is bounded before its title")
+
+    def test_resolves_fragments_against_inline_code_headings(self) -> None:
+        self.write("docs/a.md", "# Top\n\n## `__init__`\n\n## `_x_`\n")
+        self.write("README.md", "[a](docs/a.md#__init__)\n[b](docs/a.md#_x_)\n")
+        self.assertEqual(self.check(), [], "a correct inline-code fragment is not rejected")
+        self.write("README.md", "[a](docs/a.md#init)\n[b](docs/a.md#x)\n")
+        findings = self.check()
+        self.assertEqual([f.reason for f in findings], ["missing anchor", "missing anchor"],
+                         "an emphasis-stripped fragment is not accepted")
 
     def test_reports_destinations_nested_beyond_the_supported_depth(self) -> None:
         self.write("docs/a((((((())))))).md", "# Deep\n")
