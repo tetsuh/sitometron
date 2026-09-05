@@ -10,6 +10,13 @@ body:
     validations:
       required: true
   - type: textarea
+    id: requirements
+    attributes:
+      label: Requirement IDs or N/A
+      description: List every Requirement ID this Gate qualifies, or give an explicit N/A reason.
+    validations:
+      required: true
+  - type: textarea
     id: entry
     attributes:
       label: Entry gate
@@ -31,6 +38,20 @@ body:
         - label: Every Planned or non-normative specification section names its owning Issue or ADR in the required authority banner.
           required: true
   - type: textarea
+    id: contracts
+    attributes:
+      label: Contract Registry disposition or N/A
+      description: Name every affected row with its maturity and implementation disposition, or give an explicit N/A reason.
+    validations:
+      required: true
+  - type: textarea
+    id: adr
+    attributes:
+      label: ADR decisions or N/A
+      description: Link every Accepted ADR this Gate depends on, or give an explicit ADR-not-required reason.
+    validations:
+      required: true
+  - type: textarea
     id: exit
     attributes:
       label: Exit gate
@@ -44,3 +65,10 @@ body:
       description: Link owner acceptance, finding dispositions, ADRs, Contract Registry rows, CI runs, and qualification reports.
     validations:
       required: true
+  - type: checkboxes
+    id: provenance
+    attributes:
+      label: Clean-room confirmation
+      options:
+        - label: This Issue contains no proprietary implementation material.
+          required: true

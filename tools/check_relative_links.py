@@ -1,0 +1,752 @@
+#!/usr/bin/env python3
+"""Validate repository-relative Markdown links and anchors without network access.
+
+The validator resolves every local link against Git-tracked paths using a
+platform-independent POSIX grammar, requires exact repository spelling on every
+platform, and compares fragments against anchors emitted by an ATX-only heading
+slug algorithm. Only the `http`, `https`, and `mailto` schemes are ignored;
+every other scheme, any query on a local target, and every malformed or
+ambiguous percent-escape fail closed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import re
+import subprocess
+import sys
+import unicodedata
+from bisect import bisect_right
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import TextIO
+
+EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
+MARKDOWN_SUFFIX = ".md"
+SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
+MAX_LABEL_DEPTH = 8
+INVALID_REFERENCE_TARGET = "<invalid-reference>"
+UNSUPPORTED_DESTINATION_TARGET = "<unsupported-destination>"
+UNSUPPORTED_LABEL_TARGET = "<unsupported-label>"
+BLANK_LINE_PATTERN = re.compile(r"\n[ \t]*\n")
+MAX_DESTINATION_DEPTH = 8
+LINK_WHITESPACE = " \t\n"
+TITLE_DELIMITERS = {'"': '"', "'": "'", "(": ")"}
+HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
+PERCENT_PATTERN = re.compile(r"%(..?|\Z)", re.DOTALL)
+VALID_ESCAPE_PATTERN = re.compile(r"\A[0-9A-Fa-f]{2}\Z")
+DRIVE_PATTERN = re.compile(r"\A[A-Za-z]:")
+MAX_HEADING_LEVEL = 6
+MAX_HEADING_INDENT = 3
+FORBIDDEN_DECODED = frozenset({"/", "\\"})
+KEPT_CATEGORIES = ("L", "N", "M")
+KEPT_CHARACTERS = frozenset({"-", "_"})
+
+class ValidationError(RuntimeError):
+    """A fail-closed link or anchor validation error."""
+
+@dataclass(frozen=True)
+class Finding:
+    file: str
+    line: int
+    target: str
+    reason: str
+
+    def __str__(self) -> str:
+        return f"{self.file}:{self.line}: {self.reason}: {self.target!r}"
+
+def is_external(target: str) -> bool:
+    match = SCHEME_PATTERN.match(target)
+    return match is not None and match.group(1).lower() in EXTERNAL_SCHEMES
+
+def _decode_once(raw: str, what: str) -> str:
+    escapes = PERCENT_PATTERN.findall(raw)
+    for escape in escapes:
+        if VALID_ESCAPE_PATTERN.match(escape) is None:
+            raise ValidationError(f"{what} contains a malformed percent-escape")
+    for escape in escapes:
+        if chr(int(escape, 16)) in FORBIDDEN_DECODED:
+            raise ValidationError(f"{what} encodes a path separator")
+    try:
+        decoded = re.sub(
+            rb"%([0-9A-Fa-f]{2})", lambda match: bytes([int(match.group(1), 16)]),
+            raw.encode("utf-8"),
+        ).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValidationError(f"{what} is not valid UTF-8 after decoding") from error
+    if any(unicodedata.category(character) == "Cc" for character in decoded):
+        raise ValidationError(f"{what} contains a control character")
+    if PERCENT_PATTERN.search(decoded) is not None:
+        raise ValidationError(f"{what} remains percent-encoded after one decoding")
+    return decoded
+
+def split_local_target(target: str) -> tuple[str, str]:
+    """Split one local target into a decoded (path, fragment) pair."""
+    if is_external(target):
+        raise ValidationError("target uses an ignored external scheme")
+    if SCHEME_PATTERN.match(target) is not None:
+        raise ValidationError("target uses an unsupported scheme")
+    path_part, _, fragment_part = target.partition("#")
+    if "?" in path_part or "?" in fragment_part:
+        raise ValidationError("local target must not carry a query")
+    return _decode_once(path_part, "path"), _decode_once(fragment_part, "fragment")
+
+def resolve_local_path(source: str, target: str) -> str:
+    """Resolve one decoded local path against its containing directory."""
+    path, _ = split_local_target(target)
+    if not path:
+        return source
+    if "\\" in path:
+        raise ValidationError("local path contains a backslash")
+    if path.startswith("/") or DRIVE_PATTERN.match(path) is not None:
+        raise ValidationError("local path is absolute, a drive path, or a UNC path")
+    components = path[:-1].split("/") if path.endswith("/") else path.split("/")
+    if any(component in {"", "."} for component in components):
+        raise ValidationError("local path contains an empty or dot component")
+    parts = list(PurePosixPath(source).parent.parts)
+    for component in components:
+        if component == "..":
+            if not parts:
+                raise ValidationError("local path escapes the repository root")
+            parts.pop()
+        else:
+            parts.append(component)
+    if not parts:
+        raise ValidationError("local path resolves to the repository root")
+    return "/".join(parts)
+
+def _strip_closing_hashes(heading: str) -> str:
+    text = heading.rstrip(" \t")
+    stripped = text.rstrip("#")
+    if stripped != text and (not stripped or stripped[-1] in " \t"):
+        return stripped.rstrip(" \t")
+    return text
+
+def heading_text(line: str) -> str | None:
+    """Return the raw text of one ATX heading line, or None when it is not a heading."""
+    indent = len(line) - len(line.lstrip(" "))
+    if indent > MAX_HEADING_INDENT:
+        return None
+    rest = line[indent:]
+    level = len(rest) - len(rest.lstrip("#"))
+    if not 1 <= level <= MAX_HEADING_LEVEL:
+        return None
+    rest = rest[level:]
+    if rest and rest[0] not in " \t":
+        return None
+    return rest.strip(" \t")
+
+UNSUPPORTED_LABEL_DEPTH = -1
+
+
+def _label_end(line: str, start: int) -> int | None:
+    if start >= len(line) or line[start] != "[":
+        return None
+    depth = 1
+    index = start + 1
+    while index < len(line):
+        character = line[index]
+        if character == "\\":
+            index += 2
+            continue
+        if character == "[":
+            depth += 1
+            if depth > MAX_LABEL_DEPTH:
+                return UNSUPPORTED_LABEL_DEPTH
+        elif character == "]":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+def _replace_inline_labels(text: str) -> str:
+    visible: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] == "[" and not _is_escaped(text, index):
+            end = _label_end(text, index)
+            if end not in (None, UNSUPPORTED_LABEL_DEPTH) and end < len(text) and text[end] == "(":
+                destination = _destination(text, end + 1)
+                if destination is not None:
+                    visible.append(text[index + 1:end - 1])
+                    index = destination[1]
+                    continue
+        visible.append(text[index])
+        index += 1
+    return "".join(visible)
+
+def _is_escaped(text: str, index: int) -> bool:
+    slashes = 0
+    index -= 1
+    while index >= 0 and text[index] == "\\":
+        slashes += 1
+        index -= 1
+    return slashes % 2 == 1
+
+def _replace_reference_labels(text: str) -> str:
+    visible: list[str] = []
+    index = 0
+    while index < len(text):
+        label_start = index
+        if text[index] == "!" and index + 1 < len(text) and text[index + 1] == "[":
+            label_start = index + 1
+        if text[label_start] == "[" and not _is_escaped(text, label_start):
+            label_end = _label_end(text, label_start)
+            if label_end not in (None, UNSUPPORTED_LABEL_DEPTH):
+                reference_end = _label_end(text, label_end)
+                if reference_end not in (None, UNSUPPORTED_LABEL_DEPTH):
+                    visible.append(text[label_start + 1:label_end - 1])
+                    index = reference_end
+                    continue
+        visible.append(text[index])
+        index += 1
+    return "".join(visible)
+
+def _is_word_character(character: str) -> bool:
+    """Report whether one character is a Unicode letter, number, or mark."""
+    return unicodedata.category(character)[0] in KEPT_CATEGORIES
+
+
+def _strip_delimiters(text: str) -> tuple[str, list[bool]]:
+    """Drop code and emphasis delimiters, flagging characters that came from inline code.
+
+    The frozen slug algorithm retains inline-code text, so ``__init__`` in a code
+    span must keep the underscores emphasis removal would otherwise strip.
+    """
+    spans = {span[0]: span for span in _code_spans(text)}
+    kept: list[str] = []
+    inside: list[bool] = []
+    index = 0
+    while index < len(text):
+        span = spans.get(index)
+        if span is not None:
+            kept.extend(text[span[1]:span[2]])
+            inside.extend([True] * (span[2] - span[1]))
+            index = span[3]
+            continue
+        if text[index] not in "`*~":
+            kept.append(text[index])
+            inside.append(False)
+        index += 1
+    return "".join(kept), inside
+
+
+def _drop_emphasis(text: str, inside_code: Sequence[bool]) -> str:
+    """Remove underscores used as emphasis delimiters, keeping intraword ones.
+
+    A word character on both sides is intraword for every script, so `café_漢`
+    and `snake_case` keep their underscore while `_emphasis_` loses both. An
+    underscore that came from inline code is never an emphasis delimiter.
+    """
+    kept: list[str] = []
+    for index, character in enumerate(text):
+        if character != "_" or inside_code[index]:
+            kept.append(character)
+            continue
+        before = text[index - 1] if index else ""
+        after = text[index + 1] if index + 1 < len(text) else ""
+        if before and after and _is_word_character(before) and _is_word_character(after):
+            kept.append(character)
+    return "".join(kept)
+
+
+def _visible_text(heading: str) -> str:
+    text = _strip_closing_hashes(heading)
+    text = _replace_inline_labels(text)
+    text = _replace_reference_labels(text)
+    text = HTML_TAG_PATTERN.sub("", text)
+    text = html.unescape(text)
+    return _drop_emphasis(*_strip_delimiters(text))
+
+def slugify(heading: str) -> str:
+    """Return the anchor slug emitted for one ATX heading's raw text."""
+    text = unicodedata.normalize("NFC", _visible_text(heading)).casefold()
+    text = re.sub(r"\s+", "-", text.strip())
+    slug = "".join(
+        character for character in text
+        if unicodedata.category(character)[0] in KEPT_CATEGORIES or character in KEPT_CHARACTERS
+    )
+    if not slug:
+        raise ValidationError(f"heading produces an empty anchor slug: {heading!r}")
+    return slug
+
+def _fence_delimiter(line: str) -> tuple[str, int, str] | None:
+    """Return the (character, length, trailing text) of one valid fence line."""
+    indent = len(line) - len(line.lstrip(" "))
+    if indent > MAX_HEADING_INDENT or indent == len(line):
+        return None
+    marker = line[indent]
+    if marker not in "`~":
+        return None
+    end = indent
+    while end < len(line) and line[end] == marker:
+        end += 1
+    length = end - indent
+    if length < 3:
+        return None
+    trailing = line[end:].strip(" \t")
+    if marker == "`" and "`" in trailing:
+        return None
+    return marker, length, trailing
+
+def _closes_fence(line: str, fence: tuple[str, int]) -> bool:
+    marker = _fence_delimiter(line)
+    return marker is not None and marker[0] == fence[0] and marker[1] >= fence[1] and not marker[2]
+
+def _content_lines(markdown: str) -> list[str]:
+    """Return lines outside correctly matched Markdown fenced code blocks."""
+    lines: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if fence is not None:
+            if _closes_fence(line, fence):
+                fence = None
+            lines.append("")
+            continue
+        marker = _fence_delimiter(line)
+        if marker is None:
+            lines.append(line)
+            continue
+        fence = (marker[0], marker[1])
+        lines.append("")
+    return lines
+
+def _backtick_runs(line: str) -> list[tuple[int, int]]:
+    """Return the half-open bounds of every maximal backtick run."""
+    runs: list[tuple[int, int]] = []
+    index = 0
+    while index < len(line):
+        if line[index] != "`":
+            index += 1
+            continue
+        end = index + 1
+        while end < len(line) and line[end] == "`":
+            end += 1
+        runs.append((index, end))
+        index = end
+    return runs
+
+def _code_spans(line: str) -> list[tuple[int, int, int, int]]:
+    """Return (open, content start, content end, close) for each matched code span.
+
+    Opening is escape-aware: a backslash makes the first backtick of a run
+    literal, so only the remainder can open. Backslashes inside an open span are
+    literal, so the next maximal run of equal width closes it whatever precedes
+    it, as CommonMark specifies for code spans.
+    """
+    runs = _backtick_runs(line)
+    by_width: dict[int, list[int]] = {}
+    for position, (start, end) in enumerate(runs):
+        by_width.setdefault(end - start, []).append(position)
+
+    spans: list[tuple[int, int, int, int]] = []
+    index = 0
+    while index < len(runs):
+        start, end = runs[index]
+        if _is_escaped(line, start):
+            start += 1
+        same_width = by_width.get(end - start, [])
+        following = bisect_right(same_width, index)
+        if following == len(same_width):
+            index += 1
+            continue
+        closing = runs[same_width[following]]
+        spans.append((start, end, closing[0], closing[1]))
+        index = same_width[following] + 1
+    return spans
+
+
+def strip_code_spans(line: str) -> str:
+    """Blank code spans using equal-width maximal backtick runs.
+
+    Newlines inside a span are preserved so document offsets and line numbers
+    stay aligned while the span contents are removed.
+    """
+    characters = list(line)
+    for start, _, _, end in _code_spans(line):
+        characters[start:end] = [
+            "\n" if character == "\n" else " " for character in line[start:end]
+        ]
+    return "".join(characters)
+
+def emitted_anchors(markdown: str) -> list[str]:
+    """Return every anchor emitted by the ATX headings of one document, in order."""
+    anchors: list[str] = []
+    counts: dict[str, int] = {}
+    for line in _content_lines(markdown):
+        raw = heading_text(line)
+        if raw is None:
+            continue
+        slug = slugify(raw)
+        suffix = counts.get(slug, 0)
+        candidate = slug if suffix == 0 else f"{slug}-{suffix}"
+        used = set(anchors)
+        while candidate in used:
+            suffix += 1
+            candidate = f"{slug}-{suffix}"
+        counts[slug] = suffix + 1
+        anchors.append(candidate)
+    return anchors
+
+def validated_repository(candidate: Path | str) -> Path:
+    """Return one existing Git working tree, rejecting every other argument value."""
+    resolved = Path(candidate).resolve()
+    if not resolved.is_dir() or not (resolved / ".git").exists():
+        raise ValidationError("--repository must name an existing Git working tree")
+    return resolved
+
+def tracked_files(root: Path | str) -> list[str]:
+    repository = validated_repository(root)
+    result = subprocess.run(
+        ["git", "-C", str(repository), "ls-files", "-z"], capture_output=True, check=False
+    )
+    if result.returncode != 0:
+        raise ValidationError(f"git ls-files failed with exit {result.returncode}")
+    try:
+        return [item for item in result.stdout.decode("utf-8").split("\0") if item]
+    except UnicodeDecodeError as error:
+        raise ValidationError("tracked paths are not valid UTF-8") from error
+
+def _destination(line: str, start: int) -> tuple[str, int] | None:
+    """Read one inline destination that starts just after `(`, honouring nesting.
+
+    The destination, its optional title, and the closing `)` are separate bounded
+    components, so title punctuation can never redirect destination parsing. A
+    destination nested deeper than the bound is reported as unsupported rather
+    than skipped, so no depth can silently remove a link from validation.
+    """
+    opening = start
+    while opening < len(line) and line[opening] in LINK_WHITESPACE:
+        opening += 1
+    if line[opening:opening + 1] == "<":
+        parsed = _angle_destination(line, opening)
+    else:
+        parsed = _bare_destination(line, opening)
+    if parsed is None or parsed[0] == UNSUPPORTED_DESTINATION_TARGET:
+        return parsed
+    end = _link_tail(line, parsed[1])
+    return None if end is None else (parsed[0], end)
+
+
+def _bare_destination(line: str, start: int) -> tuple[str, int] | None:
+    """Read one destination without angle delimiters, stopping before its title."""
+    depth = 1
+    for index in range(start, len(line)):
+        character = line[index]
+        if character in LINK_WHITESPACE:
+            return line[start:index], index
+        if character == ")":
+            depth -= 1
+            if depth == 0:
+                return line[start:index], index
+        elif character == "(":
+            depth += 1
+            if depth > MAX_DESTINATION_DEPTH:
+                return _unsupported_destination(line, index)
+    return None
+
+
+def _unsupported_destination(line: str, index: int) -> tuple[str, int]:
+    """Return the fail-closed result for a destination nested beyond the bound."""
+    closing = line.find(")", index)
+    return UNSUPPORTED_DESTINATION_TARGET, len(line) if closing == -1 else closing + 1
+
+
+def _angle_destination(line: str, opening: int) -> tuple[str, int] | None:
+    """Read one `<...>` destination, where parentheses and spaces are literal."""
+    index = opening + 1
+    while index < len(line):
+        character = line[index]
+        if character == "\\":
+            index += 2
+            continue
+        if character in "<\n":
+            return None
+        if character == ">":
+            return f"<{line[opening + 1:index]}>", index + 1
+        index += 1
+    return None
+
+
+def _link_tail(line: str, start: int) -> int | None:
+    """Return the offset after the `)` that closes a link, skipping any title."""
+    index = start
+    while index < len(line) and line[index] in LINK_WHITESPACE:
+        index += 1
+    closing = TITLE_DELIMITERS.get(line[index:index + 1])
+    if closing is not None:
+        index += 1
+        while index < len(line) and line[index] != closing:
+            index += 2 if line[index] == "\\" else 1
+        if index == len(line):
+            return None
+        index += 1
+        while index < len(line) and line[index] in LINK_WHITESPACE:
+            index += 1
+    return index + 1 if line[index:index + 1] == ")" else None
+
+def _inline_target(raw: str) -> str:
+    """Return the link destination of one inline `(...)` body without its title."""
+    if raw == UNSUPPORTED_DESTINATION_TARGET:
+        return raw
+    text = raw.strip()
+    if text.startswith("<"):
+        end = text.find(">")
+        return text[1:end] if end != -1 else ""
+    return text.split()[0] if text.split() else ""
+
+def _normalized_label(text: str) -> str:
+    """Return one CommonMark-normalized reference label."""
+    return " ".join(text.split()).casefold()
+
+
+def _reference_use(
+    line: str, label_start: int, label_end: int, definitions: Mapping[str, tuple[str, int]],
+) -> tuple[str | None, int]:
+    """Resolve one full, collapsed, or shortcut reference that ends at `label_end`."""
+    label = _normalized_label(line[label_start + 1:label_end - 1])
+    if label_end < len(line) and line[label_end] == "[":
+        second = _label_end(line, label_end)
+        if second == UNSUPPORTED_LABEL_DEPTH:
+            run = label_end
+            while run < len(line) and line[run] == "[":
+                run += 1
+            return UNSUPPORTED_LABEL_TARGET, run
+        if second is None:
+            return None, label_end
+        explicit = _normalized_label(line[label_end + 1:second - 1])
+        target = definitions.get(explicit or label)
+        return (target[0] if target is not None else INVALID_REFERENCE_TARGET), second
+    # A shortcut reference is a link only when its label is defined; otherwise it is plain text.
+    target = definitions.get(label)
+    return (target[0] if target is not None else None), label_end
+
+
+def _paragraph_end(text: str, start: int) -> int:
+    """Return the offset at which the paragraph containing `start` ends.
+
+    A CommonMark link label and destination cannot contain a blank line, so the
+    paragraph is the natural bound. Using it leaves no line-count cutoff that
+    could silently skip a long same-paragraph link.
+    """
+    match = BLANK_LINE_PATTERN.search(text, start)
+    return len(text) if match is None else match.start()
+
+
+def document_targets(
+    text: str, definitions: Mapping[str, tuple[str, int]],
+) -> list[tuple[int, str]]:
+    """Return every (offset, destination) link in one document, including multiline links."""
+    targets: list[tuple[int, str]] = []
+    index = 0
+    while index < len(text):
+        if text[index] != "[" or _is_escaped(text, index):
+            index += 1
+            continue
+        paragraph = text[:_paragraph_end(text, index)]
+        end = _label_end(paragraph, index)
+        if end == UNSUPPORTED_LABEL_DEPTH:
+            targets.append((index, UNSUPPORTED_LABEL_TARGET))
+            # Skip the whole opening run so one over-nested label reports once.
+            while index < len(text) and text[index] == "[":
+                index += 1
+            continue
+        if end is None:
+            index += 1
+            continue
+        if end < len(paragraph) and paragraph[end] == "(":
+            destination = _destination(paragraph, end + 1)
+            if destination is None:
+                index = end + 1
+                continue
+            target = _inline_target(destination[0])
+            if target:
+                targets.append((index, target))
+            index = destination[1]
+            continue
+        target, next_index = _reference_use(paragraph, index, end, definitions)
+        if target is not None:
+            targets.append((index, target))
+        index = max(next_index, index + 1)
+    return targets
+
+
+def line_targets(line: str, definitions: Mapping[str, tuple[str, int]]) -> list[str]:
+    """Return every inline and reference link destination on one content line."""
+    return [target for _, target in document_targets(line, definitions)]
+
+
+def _reference_target(raw: str) -> str:
+    """Return one normalized reference-definition destination or an invalid sentinel."""
+    text = raw.strip(" \t")
+    if text.startswith("<"):
+        end = text.find(">")
+        if end <= 1:
+            return INVALID_REFERENCE_TARGET
+        return text[1:end]
+    target = text.split(" ", 1)[0].split("\t", 1)[0]
+    return target or INVALID_REFERENCE_TARGET
+
+def parse_reference_definition(line: str) -> tuple[str, str] | None:
+    """Parse one reference definition, honouring escaped brackets inside its label."""
+    indent = len(line) - len(line.lstrip(" "))
+    if indent > MAX_HEADING_INDENT or line[indent:indent + 1] != "[":
+        return None
+    end = _label_end(line, indent)
+    if end is None or end == UNSUPPORTED_LABEL_DEPTH or line[end:end + 1] != ":":
+        return None
+    label = _normalized_label(line[indent + 1:end - 1])
+    return (label, line[end + 1:].strip(" \t")) if label else None
+
+
+def _reference_definitions(lines: Sequence[str]) -> dict[str, tuple[str, int]]:
+    """Return the first definition of every reference label, as CommonMark requires."""
+    definitions: dict[str, tuple[str, int]] = {}
+    for number, line in enumerate(lines, 1):
+        parsed = parse_reference_definition(line)
+        if parsed is not None:
+            definitions.setdefault(parsed[0], (_reference_target(parsed[1]), number))
+    return definitions
+
+def _line_numbers(lines: Sequence[str]) -> list[int]:
+    """Return the document offset at which every content line starts."""
+    starts: list[int] = []
+    offset = 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line) + 1
+    return starts
+
+
+def extract_links(markdown: str) -> list[tuple[int, str]]:
+    """Return every (line number, raw target) link outside fenced code."""
+    lines = _content_lines(markdown)
+    definitions = _reference_definitions(lines)
+    scannable = ["" if parse_reference_definition(line) else line for line in lines]
+    starts = _line_numbers(scannable)
+    # Code spans are blanked over the joined document so a span that opens on one
+    # line and closes on the next cannot leave a link-like token behind.
+    document = strip_code_spans("\n".join(scannable))
+    links = [
+        (bisect_right(starts, offset), target)
+        for offset, target in document_targets(document, definitions)
+    ]
+    for number, line in enumerate(lines, 1):
+        definition = parse_reference_definition(line)
+        if definition is not None:
+            links.append((number, _reference_target(definition[1])))
+    return sorted(links)
+
+
+def read_markdown(root: Path, relative_path: str) -> str:
+    """Read one tracked Markdown file, failing closed on I/O and encoding errors."""
+    try:
+        return (root / relative_path).read_bytes().decode("utf-8")
+    except OSError as error:
+        raise ValidationError(f"cannot read {relative_path}: {error.strerror}") from error
+    except UnicodeDecodeError as error:
+        raise ValidationError(f"{relative_path} is not valid UTF-8") from error
+
+def _anchor_set(root: Path, relative_path: str, cache: dict[str, set[str]]) -> set[str]:
+    if relative_path not in cache:
+        cache[relative_path] = set(emitted_anchors(read_markdown(root, relative_path)))
+    return cache[relative_path]
+
+def _check_target(
+    root: Path, source: str, target: str, files: set[str], directories: set[str],
+    cache: dict[str, set[str]],
+) -> str | None:
+    if target == INVALID_REFERENCE_TARGET:
+        return "missing or malformed reference definition"
+    if target == UNSUPPORTED_DESTINATION_TARGET:
+        return "link destination nests deeper than the validator supports"
+    if target == UNSUPPORTED_LABEL_TARGET:
+        return "link label nests deeper than the validator supports"
+    path_part, fragment = split_local_target(target)
+    if path_part == "":
+        resolved = source
+    else:
+        resolved = resolve_local_path(source, target)
+        if path_part.endswith("/"):
+            if resolved not in directories:
+                return "missing tracked directory"
+            if fragment:
+                return "directory link must not carry a fragment"
+            return None
+        if resolved not in files:
+            return "missing tracked file"
+    if not fragment:
+        return None
+    if not resolved.lower().endswith(MARKDOWN_SUFFIX):
+        return "fragment target is not a Markdown file"
+    # Fragments are compared byte-exactly: a decomposed or differently cased fragment does not
+    # resolve on GitHub either, so normalizing here would accept a genuinely broken link.
+    if fragment not in _anchor_set(root, resolved, cache):
+        return "missing anchor"
+    return None
+
+def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
+    """Return every link finding for the tracked Markdown files of one repository."""
+    root = Path(root)
+    files = set(tracked)
+    directories = {
+        parent.as_posix() for path in tracked for parent in PurePosixPath(path).parents
+        if parent.as_posix() != "."
+    }
+    cache: dict[str, set[str]] = {}
+    findings: list[Finding] = []
+    for source in sorted(path for path in tracked if path.lower().endswith(MARKDOWN_SUFFIX)):
+        _anchor_set(root, source, cache)
+        text = read_markdown(root, source)
+        for line, target in extract_links(text):
+            if is_external(target):
+                continue
+            try:
+                reason = _check_target(root, source, target, files, directories, cache)
+            except ValidationError as error:
+                reason = str(error)
+            if reason is not None:
+                findings.append(Finding(file=source, line=line, target=target, reason=reason))
+    return findings
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+def parse_arguments(arguments: Sequence[str] | None, description: str | None = None) -> None:
+    """Accept no option: a validator always checks its own repository."""
+    argparse.ArgumentParser(
+        description=description or __doc__, allow_abbrev=False
+    ).parse_args(arguments)
+
+def run_validator(
+    prefix: str, check: Callable[[Path, Sequence[str]], list[object]], repository: Path,
+    stdout: TextIO, enumerate_tracked: Callable[[Path], list[str]],
+) -> int:
+    """Run one repository validator and map its findings to a process exit code.
+
+    Shared by `check_repository_governance.py` so that both validators keep one
+    Git enumeration, one argument contract, and one reporting format.
+    """
+    try:
+        findings = check(repository, enumerate_tracked(repository))
+    except ValidationError as error:
+        print(f"{prefix}: ERROR {error}", file=sys.stderr)
+        return 1
+    for finding in findings:
+        print(f"{prefix}: {finding}", file=stdout)
+    print(f"{prefix}: {len(findings)} finding(s)", file=stdout)
+    return 1 if findings else 0
+
+def main(
+    arguments: Sequence[str] | None = None, stdout: TextIO = sys.stdout,
+    repository: Path = REPOSITORY_ROOT,
+) -> int:
+    parse_arguments(arguments)
+    return run_validator("relative-links", check_repository, repository, stdout, tracked_files)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
