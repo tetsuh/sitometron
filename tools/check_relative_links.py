@@ -406,9 +406,14 @@ def _bare_destination(line: str, start: int) -> tuple[str, int] | None:
         elif character == "(":
             depth += 1
             if depth > MAX_DESTINATION_DEPTH:
-                closing = line.find(")", index)
-                return UNSUPPORTED_DESTINATION_TARGET, (len(line) if closing == -1 else closing + 1)
+                return _unsupported_destination(line, index)
     return None
+
+
+def _unsupported_destination(line: str, index: int) -> tuple[str, int]:
+    """Return the fail-closed result for a destination nested beyond the bound."""
+    closing = line.find(")", index)
+    return UNSUPPORTED_DESTINATION_TARGET, len(line) if closing == -1 else closing + 1
 
 
 def _angle_destination(line: str, opening: int) -> tuple[str, int] | None:
