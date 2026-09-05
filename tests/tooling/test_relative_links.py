@@ -95,6 +95,13 @@ class SlugTest(unittest.TestCase):
                          "an emphasis delimiter outside code is still removed")
         self.assertEqual(self.slugs("## *em* `_y_`\n"), ["em-_y_"])
 
+    def test_escaped_backticks_do_not_protect_emphasis(self) -> None:
+        self.assertEqual(self.slugs("## \\`_x_`\n"), ["x"],
+                         "an escaped opening backtick cannot open a code span")
+        self.assertEqual(self.slugs("## \\\\`_x_`\n"), ["_x_"],
+                         "an escaped backslash still leaves a real code span")
+        self.assertEqual(self.slugs("## `_x_`\n"), ["_x_"])
+
     def test_normalizes_unicode_and_case(self) -> None:
         composed = "## Cafe\u0301 MIXED\n"
         self.assertEqual(self.slugs(composed), ["café-mixed"])
@@ -470,6 +477,31 @@ class RepositoryCheckTest(unittest.TestCase):
         findings = self.check()
         self.assertEqual([f.reason for f in findings], ["missing anchor", "missing anchor"],
                          "an emphasis-stripped fragment is not accepted")
+
+    def test_treats_escaped_backticks_as_literal_text(self) -> None:
+        self.write("docs/target.md", "# Target\n")
+        exposed = {
+            "escaped opening run": "\\`[x](docs/absent.md)`\n",
+            "escaped closing run": "`[x](docs/absent.md)\\`\n",
+        }
+        for label, markdown in exposed.items():
+            with self.subTest(label):
+                self.write("README.md", markdown)
+                self.assertEqual([f.target for f in self.check()], ["docs/absent.md"],
+                                 "an escaped backtick cannot delimit a code span")
+        spans = {
+            "escaped backslash before a real run": "\\\\`[x](docs/absent.md)`\n",
+            "single-backtick span": "`[x](docs/absent.md)`\n",
+            "double-backtick span": "``[x](docs/absent.md)``\n",
+            "multiline span": "`opens\n[x](docs/absent.md)\ncloses`\n",
+            "escaped first backtick of a run of two": "\\``[x](docs/absent.md)`\n",
+        }
+        for label, markdown in spans.items():
+            with self.subTest(label):
+                self.write("README.md", markdown)
+                self.assertEqual(self.check(), [], "a genuine code span is still ignored")
+        self.write("README.md", "[ok](docs/target.md)\n")
+        self.assertEqual(self.check(), [])
 
     def test_reports_destinations_nested_beyond_the_supported_depth(self) -> None:
         self.write("docs/a((((((())))))).md", "# Deep\n")

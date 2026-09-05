@@ -315,7 +315,12 @@ def _content_lines(markdown: str) -> list[str]:
     return lines
 
 def _backtick_runs(line: str) -> list[tuple[int, int]]:
-    """Return the half-open bounds of every maximal backtick run."""
+    """Return the half-open bounds of every maximal unescaped backtick run.
+
+    A backslash escapes only the first backtick it precedes, so an escaped run
+    contributes its remaining backticks and an escaped lone backtick contributes
+    none. An escaped delimiter can neither open nor close a code span.
+    """
     runs: list[tuple[int, int]] = []
     index = 0
     while index < len(line):
@@ -325,7 +330,9 @@ def _backtick_runs(line: str) -> list[tuple[int, int]]:
         end = index + 1
         while end < len(line) and line[end] == "`":
             end += 1
-        runs.append((index, end))
+        start = index + 1 if _is_escaped(line, index) else index
+        if start < end:
+            runs.append((start, end))
         index = end
     return runs
 
