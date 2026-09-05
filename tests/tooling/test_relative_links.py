@@ -31,6 +31,12 @@ class SlugTest(unittest.TestCase):
 
     def slugs(self, markdown: str) -> list[str]:
         return self.module.emitted_anchors(markdown)
+    def test_drops_link_titles_containing_parentheses_from_anchors(self) -> None:
+        for title in ['"t ("', '"t )"', "'t ('", "(t)"]:
+            with self.subTest(title=title):
+                self.assertEqual(self.slugs(f"## [x](docs/a.md {title})\n"), ["x"])
+                self.assertEqual(self.slugs(f"## [x](<docs/a.md> {title})\n"), ["x"])
+
     def test_accepts_atx_headings_at_every_permitted_indent_and_depth(self) -> None:
         markdown = "# One\n ## Two\n  ### Three\n   #### Four\n##### Five\n###### Six\n"
         self.assertEqual(self.slugs(markdown), ["one", "two", "three", "four", "five", "six"])
@@ -434,6 +440,19 @@ class RepositoryCheckTest(unittest.TestCase):
         self.assertEqual(self.check(), [])
         self.write("README.md", "real [x](docs/absent.md)\n")
         self.assertEqual(len(self.check()), 1)
+
+    def test_reads_destinations_whose_title_contains_parentheses(self) -> None:
+        self.write("docs/plain.md", "# Plain\n")
+        for title in ['"t ("', '"t )"', "'t ('", "(t)"]:
+            with self.subTest(title=title):
+                self.write("README.md", f"[ok](docs/plain.md {title})\n")
+                self.assertEqual(self.check(), [], "a title never hides a resolved destination")
+                self.write("README.md", f"[bad](docs/absent.md {title})\n")
+                self.assertEqual([f.target for f in self.check()], ["docs/absent.md"],
+                                 "a title never hides a missing destination")
+                self.write("README.md", f"[bad](<docs/absent.md> {title})\n")
+                self.assertEqual([f.target for f in self.check()], ["docs/absent.md"],
+                                 "an angle destination is bounded before its title")
 
     def test_reports_destinations_nested_beyond_the_supported_depth(self) -> None:
         self.write("docs/a((((((())))))).md", "# Deep\n")

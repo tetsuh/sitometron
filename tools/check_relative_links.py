@@ -32,6 +32,8 @@ UNSUPPORTED_DESTINATION_TARGET = "<unsupported-destination>"
 UNSUPPORTED_LABEL_TARGET = "<unsupported-label>"
 BLANK_LINE_PATTERN = re.compile(r"\n[ \t]*\n")
 MAX_DESTINATION_DEPTH = 8
+LINK_WHITESPACE = " \t\n"
+TITLE_DELIMITERS = {'"': '"', "'": "'", "(": ")"}
 HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
 PERCENT_PATTERN = re.compile(r"%(..?|\Z)", re.DOTALL)
 VALID_ESCAPE_PATTERN = re.compile(r"\A[0-9A-Fa-f]{2}\Z")
@@ -372,26 +374,35 @@ def tracked_files(root: Path | str) -> list[str]:
 def _destination(line: str, start: int) -> tuple[str, int] | None:
     """Read one inline destination that starts just after `(`, honouring nesting.
 
-    A destination nested deeper than the bound is reported as unsupported rather
+    The destination, its optional title, and the closing `)` are separate bounded
+    components, so title punctuation can never redirect destination parsing. A
+    destination nested deeper than the bound is reported as unsupported rather
     than skipped, so no depth can silently remove a link from validation.
     """
     opening = start
-    while opening < len(line) and line[opening] in " \t":
+    while opening < len(line) and line[opening] in LINK_WHITESPACE:
         opening += 1
     if line[opening:opening + 1] == "<":
-        return _angle_destination(line, opening)
-    return _bare_destination(line, start)
+        parsed = _angle_destination(line, opening)
+    else:
+        parsed = _bare_destination(line, opening)
+    if parsed is None or parsed[0] == UNSUPPORTED_DESTINATION_TARGET:
+        return parsed
+    end = _link_tail(line, parsed[1])
+    return None if end is None else (parsed[0], end)
 
 
 def _bare_destination(line: str, start: int) -> tuple[str, int] | None:
-    """Read one destination without angle delimiters, balancing its parentheses."""
+    """Read one destination without angle delimiters, stopping before its title."""
     depth = 1
     for index in range(start, len(line)):
         character = line[index]
+        if character in LINK_WHITESPACE:
+            return line[start:index], index
         if character == ")":
             depth -= 1
             if depth == 0:
-                return line[start:index], index + 1
+                return line[start:index], index
         elif character == "(":
             depth += 1
             if depth > MAX_DESTINATION_DEPTH:
@@ -411,11 +422,27 @@ def _angle_destination(line: str, opening: int) -> tuple[str, int] | None:
         if character in "<\n":
             return None
         if character == ">":
-            closing = line.find(")", index + 1)
-            return (None if closing == -1
-                    else (f"<{line[opening + 1:index]}>", closing + 1))
+            return f"<{line[opening + 1:index]}>", index + 1
         index += 1
     return None
+
+
+def _link_tail(line: str, start: int) -> int | None:
+    """Return the offset after the `)` that closes a link, skipping any title."""
+    index = start
+    while index < len(line) and line[index] in LINK_WHITESPACE:
+        index += 1
+    closing = TITLE_DELIMITERS.get(line[index:index + 1])
+    if closing is not None:
+        index += 1
+        while index < len(line) and line[index] != closing:
+            index += 2 if line[index] == "\\" else 1
+        if index == len(line):
+            return None
+        index += 1
+        while index < len(line) and line[index] in LINK_WHITESPACE:
+            index += 1
+    return index + 1 if line[index:index + 1] == ")" else None
 
 def _inline_target(raw: str) -> str:
     """Return the link destination of one inline `(...)` body without its title."""
