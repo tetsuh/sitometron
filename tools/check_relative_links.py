@@ -128,22 +128,30 @@ def _strip_closing_hashes(heading: str) -> str:
 UNSUPPORTED_LABEL_DEPTH = -1
 
 
+def _label_special_end(line: str, index: int, state) -> int | None:
+    """Skip one escape or parser-owned code span inside a link label."""
+    if line[index] == "\\":
+        return index + 2
+    if line[index] != "`" or state is None:
+        return None
+    saved = state.pos
+    state.pos = index
+    backtick(state, True)
+    index, state.pos = state.pos, saved
+    return index
+
+
 def _label_end(line: str, start: int, state=None) -> int | None:
     if start >= len(line) or line[start] != "[":
         return None
     depth = 1
     index = start + 1
     while index < len(line):
+        special_end = _label_special_end(line, index, state)
+        if special_end is not None:
+            index = special_end
+            continue
         character = line[index]
-        if character == "\\":
-            index += 2
-            continue
-        if character == "`" and state is not None:
-            saved = state.pos
-            state.pos = index
-            backtick(state, True)
-            index, state.pos = state.pos, saved
-            continue
         if character == "[":
             depth += 1
             if depth > MAX_LABEL_DEPTH:
@@ -374,6 +382,23 @@ def _policy_target(state, start: int) -> tuple[str, int, str] | None:
     return None
 
 
+def _record_source_lines(tokens: Sequence, source: str, start: int) -> None:
+    """Attach the source line to native link/image tokens emitted by one rule."""
+    source_line = source.count("\n", 0, start)
+    for token in tokens:
+        if token.type in {"link_open", "image"}:
+            token.meta.setdefault("source_line", source_line)
+
+
+def _push_policy_finding(state, policy: tuple[str, int, str], start: int) -> None:
+    """Emit one repository-policy token after native syntax declines a target."""
+    token = state.push("policy_finding", "", 0)
+    token.attrs = {"target": policy[0]}
+    token.content = policy[2]
+    token.meta["source_line"] = state.src.count("\n", 0, start)
+    state.pos = policy[1]
+
+
 def _link_rule(native):
     prefix = {markdown_image: "![", markdown_link: "[", markdown_autolink: "<"}[native]
     def parse(state, silent):
@@ -383,21 +408,15 @@ def _link_rule(native):
         # Depth failures must be reported even when the library's own nesting
         # limit would otherwise turn a link into ordinary text.
         policy = _policy_target(state, start)
-        limited = policy and policy[0] != INVALID_REFERENCE_TARGET
+        limited = policy is not None and policy[0] != INVALID_REFERENCE_TARGET
         if not limited and native(state, silent):
             if not silent:
-                for token in state.tokens[first:]:
-                    if token.type in {"link_open", "image"}:
-                        token.meta.setdefault("source_line", state.src.count("\n", 0, start))
+                _record_source_lines(state.tokens[first:], state.src, start)
             return True
-        if policy and not silent:
-            token = state.push("policy_finding", "", 0)
-            token.attrs = {"target": policy[0]}
-            token.content = policy[2]
-            token.meta["source_line"] = state.src.count("\n", 0, start)
-            state.pos = policy[1]
-            return True
-        return False
+        if policy is None or silent:
+            return False
+        _push_policy_finding(state, policy, start)
+        return True
     return parse
 
 
@@ -451,28 +470,34 @@ def _markdown_parser() -> MarkdownIt:
     return parser
 
 
+def _token_target(token) -> str | None:
+    """Return the raw destination attribute for one parser link token."""
+    attribute = {"link_open": "href", "image": "src", "policy_finding": "target"}.get(token.type)
+    return token.attrGet(attribute) if attribute is not None else None
+
+
+def _collect_link_tokens(tokens: Sequence, base: int) -> list[tuple[int, str]]:
+    """Collect targets recursively while preserving image-child line offsets."""
+    links: list[tuple[int, str]] = []
+    for token in tokens:
+        source_line = token.meta.get("source_line", 0)
+        target = _token_target(token)
+        if target:
+            links.append((base + source_line, target))
+        if token.children:
+            child_base = base + source_line if token.type == "image" else base
+            links.extend(_collect_link_tokens(token.children, child_base))
+    return links
+
+
 def extract_links(markdown: str) -> list[tuple[int, str]]:
     """Extract native links/images and every definition with their source lines."""
-    links = []
-    def collect(tokens: Sequence, base: int) -> None:
-        for token in tokens:
-            target = None
-            if token.type == "link_open":
-                target = token.attrGet("href")
-            elif token.type == "image":
-                target = token.attrGet("src")
-            elif token.type == "policy_finding":
-                target = token.attrGet("target")
-            if target:
-                links.append((base + token.meta.get("source_line", 0), target))
-            if token.children:
-                child_base = base + token.meta.get("source_line", 0) if token.type == "image" else base
-                collect(token.children, child_base)
+    links: list[tuple[int, str]] = []
     for token in _markdown_parser().parse(markdown):
         if token.type == "definition":
             links.append((token.map[0] + 1, token.meta["url"]))
         elif token.type == "inline":
-            collect(token.children or [], token.map[0] + 1)
+            links.extend(_collect_link_tokens(token.children or [], token.map[0] + 1))
     return sorted(links)
 
 
