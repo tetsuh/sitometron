@@ -325,10 +325,10 @@ class GovernanceCheckTest(unittest.TestCase):
 
     def test_checks_planned_banners_for_every_markdown_suffix_case(self) -> None:
         invalid = "> **Planned, not yet normative:** [owner](not-an-authority.txt)\n"
-        for suffix in (".md", ".Md", ".mD", ".MD"):
-            # Distinct stems avoid case-insensitive filesystem collisions on Windows.
-            stem = suffix[1:]
-            path = f"docs/99_suffix_{stem}{suffix}"
+        suffixes = (".md", ".Md", ".mD", ".MD")
+        paths = [f"docs/99_suffix_{index}{suffix}" for index, suffix in enumerate(suffixes)]
+        self.assertEqual(len({path.casefold() for path in paths}), len(paths))
+        for suffix, path in zip(suffixes, paths):
             with self.subTest(suffix=suffix):
                 self.write(path, invalid)
                 findings = self.check()
