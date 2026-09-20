@@ -334,8 +334,8 @@ def _normalized_label(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
-def parse_reference_definition(line: str) -> tuple[str, str] | None:
-    """Parse one reference definition, honouring escaped brackets inside its label."""
+def parse_reference_definition(line: str) -> tuple[str, str, int] | None:
+    """Parse one reference definition and return its label-ending line count."""
     indent = len(line) - len(line.lstrip(" "))
     if indent > MAX_HEADING_INDENT or line[indent:indent + 1] != "[":
         return None
@@ -343,7 +343,7 @@ def parse_reference_definition(line: str) -> tuple[str, str] | None:
     if end is None or end == UNSUPPORTED_LABEL_DEPTH or line[end:end + 1] != ":":
         return None
     label = _normalized_label(line[indent + 1:end - 1])
-    return (label, line[end + 1:].strip(" \t")) if label else None
+    return (label, line[end + 1:].strip(" \t"), line.count("\n", 0, end) + 1) if label else None
 
 
 def _policy_target(state, start: int) -> tuple[str, int, str] | None:
@@ -427,19 +427,19 @@ def _invalid_reference_end(state, start: int, end: int) -> int | None:
     previous_parent = state.parentType
     state.parentType = "reference"
     try:
-        while True:
-            candidate = state.getLines(start, next_line, state.blkIndent, False).strip()
-            if parse_reference_definition(candidate) is not None:
-                return next_line
-            if next_line >= end or state.isEmpty(next_line):
-                return None
+        while next_line < end and not state.isEmpty(next_line):
             if (state.sCount[next_line] - state.blkIndent > MAX_HEADING_INDENT or
                     state.sCount[next_line] < 0):
+                # Native reference parsing treats these as lazy continuation
+                # after a paragraph rather than as new indented/code blocks.
                 next_line += 1
                 continue
             if any(rule(state, next_line, end, True) for rule in terminators):
-                return None
+                break
             next_line += 1
+        candidate = state.getLines(start, next_line, state.blkIndent, False).strip()
+        definition = parse_reference_definition(candidate)
+        return None if definition is None else start + definition[2]
     finally:
         state.parentType = previous_parent
 

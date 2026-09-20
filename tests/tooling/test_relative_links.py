@@ -319,12 +319,26 @@ class RepositoryCheckTest(unittest.TestCase):
 
     def test_rejects_a_multiline_reference_label_with_an_invalid_destination(self) -> None:
         destination = "(" * 33 + "target" + ")" * 33
-        self.write("README.md", f"[multi\nline]: {destination}\n")
-        findings = self.check()
-        self.assertEqual([(finding.line, finding.target) for finding in findings],
-                         [(1, self.module.INVALID_REFERENCE_TARGET)])
+        for continuation in ("line", "    line"):
+            with self.subTest(continuation=continuation):
+                self.write("README.md", f"[multi\n{continuation}]: {destination}\n")
+                findings = self.check()
+                self.assertEqual([(finding.line, finding.target) for finding in findings],
+                                 [(1, self.module.INVALID_REFERENCE_TARGET)])
         self.write("README.md", f"[multi\n# Block boundary\nline]: {destination}\n")
         self.assertEqual(self.check(), [])
+
+    def test_accepts_an_indented_lazy_continuation_in_a_reference_label(self) -> None:
+        self.write("docs/target.md", "# Target\n")
+        self.write("README.md", "[multi\n    line]: docs/target.md\n\n[use][multi line]\n")
+        self.assertEqual(self.check(), [])
+
+    def test_scans_each_reference_candidate_once(self) -> None:
+        markdown = "[ordinary\n" + "continuation\n" * 64
+        parse = self.module.parse_reference_definition
+        with mock.patch.object(self.module, "parse_reference_definition", wraps=parse) as wrapped:
+            self.module._markdown_parser().parse(markdown)
+        self.assertEqual(wrapped.call_count, 1)
 
     def test_rejects_repeated_trailing_directory_markers(self) -> None:
         self.write("docs/keep.txt", "data\n")
