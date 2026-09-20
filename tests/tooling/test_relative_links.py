@@ -40,6 +40,12 @@ class SlugTest(unittest.TestCase):
     def test_accepts_atx_headings_at_every_permitted_indent_and_depth(self) -> None:
         markdown = "# One\n ## Two\n  ### Three\n   #### Four\n##### Five\n###### Six\n"
         self.assertEqual(self.slugs(markdown), ["one", "two", "three", "four", "five", "six"])
+
+    def test_commonmark_parser_owns_heading_boundaries(self) -> None:
+        self.assertEqual(self.slugs("    # Indented code\n"), [])
+        self.assertEqual(self.slugs("<div>\n# Raw HTML\n</div>\n"), [])
+        self.assertEqual(self.slugs("> # Quoted\n- # Listed\n"), ["quoted", "listed"])
+
     def test_rejects_non_atx_and_malformed_headings(self) -> None:
         cases = {
             "four leading spaces": "    # Indented\n",
@@ -104,6 +110,10 @@ class SlugTest(unittest.TestCase):
         self.assertEqual(self.slugs("## `_x_\\`\n"), ["_x_"],
                          "a backslash inside a span is literal and the span still closes")
         self.assertEqual(self.slugs("## `__init__\\`\n"), ["__init__"])
+
+    def test_unescapes_heading_entities_once_and_keeps_reference_code(self) -> None:
+        self.assertEqual(self.slugs("## &amp;#95;\n"), ["95"])
+        self.assertEqual(self.slugs("## [`_x_`][ref]\n"), ["_x_"])
 
     def test_normalizes_unicode_and_case(self) -> None:
         composed = "## Cafe\u0301 MIXED\n"
@@ -319,6 +329,50 @@ class RepositoryCheckTest(unittest.TestCase):
         findings = self.check()
         self.assertEqual(len(findings), 2, findings)
 
+    def test_code_spans_do_not_cross_block_boundaries(self) -> None:
+        cases = (
+            "`\n\n[x](absent.md)\n\n`\n",
+            "`\n# Heading\n[x](absent.md)\n`\n",
+            "- `one\n- [x](absent.md)`\n",
+        )
+        for markdown in cases:
+            with self.subTest(markdown=markdown):
+                self.write("README.md", markdown)
+                self.assertEqual([f.target for f in self.check()], ["absent.md"])
+
+    def test_backticks_in_link_titles_do_not_hide_destinations(self) -> None:
+        for title in ('"`"', "'`'", '(tick `)'):
+            with self.subTest(title=title):
+                self.write("README.md", f'[x](absent.md {title}) and `tail`\n')
+                self.assertEqual([f.target for f in self.check()], ["absent.md"])
+                self.write("README.md", f'[x](README.md {title}) and `tail`\n')
+                self.assertEqual(self.check(), [])
+
+    def test_parser_preserves_raw_targets_for_repository_policy(self) -> None:
+        targets = ("javascript:alert(1)", "data:payload", "ftp://example.invalid/x",
+                   "docs/x%zz.md", "docs/x%252F.md", "docs/x\\_.md", "docs/x&amp;y.md")
+        for target in targets:
+            with self.subTest(target=target):
+                self.write("README.md", f"[x]({target})\n\n[r]: {target}\n\n[r]\n")
+                self.assertEqual([f.target for f in self.check()], [target] * 3)
+
+    def test_code_brackets_in_labels_do_not_count_as_nesting(self) -> None:
+        self.write("README.md", "[`[[[[[[[[[`](README.md)\n")
+        self.assertEqual(self.check(), [])
+
+    def test_reports_source_line_inside_multiline_image_labels(self) -> None:
+        self.write("README.md", "text\n![alt\n [label](absent.md)](README.md)\n")
+        self.assertEqual([(f.line, f.target) for f in self.check()], [(3, "absent.md")])
+
+    def test_reports_autolink_source_line(self) -> None:
+        self.write("README.md", "text\n<ftp://example.invalid/absent>\n")
+        self.assertEqual([f.line for f in self.check()], [2])
+
+    def test_parser_block_nesting_limit_fails_closed(self) -> None:
+        self.write("README.md", "> " * 30 + "[x](absent.md)\n")
+        with self.assertRaises(self.module.ValidationError):
+            self.check()
+
     def test_ignores_link_syntax_inside_inline_code_spans(self) -> None:
         self.write("README.md", (
             "Write `[a](absent.md)` in a doc.\n"
@@ -510,6 +564,11 @@ class RepositoryCheckTest(unittest.TestCase):
         self.write("README.md", "`foo\\`bar [x](docs/absent.md)\n")
         self.assertEqual([f.target for f in self.check()], ["docs/absent.md"])
         self.write("README.md", "[ok](docs/target.md)\n")
+        self.assertEqual(self.check(), [])
+
+    def test_escaped_parentheses_do_not_consume_destination_depth(self) -> None:
+        target = "https://example.invalid/" + r"\(" * 20
+        self.write("README.md", f"[external]({target})\n")
         self.assertEqual(self.check(), [])
 
     def test_reports_destinations_nested_beyond_the_supported_depth(self) -> None:

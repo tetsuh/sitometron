@@ -83,6 +83,17 @@ NFC, casefolds, maps each whitespace run to one `-`, keeps Unicode letters, numb
 `-` and `_`, and appends `-1`, `-2`, and so on to later collisions. Setext headings and raw HTML
 `id`/`name` anchors are not anchor sources, and fenced-code contents are ignored.
 
+The development-only `docs` dependency group supplies `markdown-it-py` in CommonMark mode for
+block and inline structure. Code spans are bounded by their containing block; link titles are not
+rescanned as Markdown. Fenced and indented code, and raw HTML blocks, are not Markdown link sources;
+HTML attributes are not crawled. Inline links, images, autolinks, and references are checked, including
+unused or duplicate definitions. URLs reach repository policy without normalization or scheme
+filtering; character escapes in destinations are not silently rewritten into another tracked path.
+Undefined full/collapsed references and malformed definition candidates fail closed; undefined
+shortcut labels remain text. Labels nest at most eight levels, inline bare destinations at most seven
+parenthesis levels, and exceeding the parser's structural nesting limit is a validation error.
+The existing ATX slug, path, and governance policies remain repository-owned.
+
 `tools/check_repository_governance.py` validates repository-owned governance invariants only: the
 ADR status vocabulary with its core metadata sections and decision date, the independent Contract
 Registry maturity and implementation vocabularies, an Accepted ADR authority on every Normative row,
@@ -111,12 +122,14 @@ configuring the source checkout. CTest `unit_tests_reject_real_sleep` fail-close
 through Git. It rejects the frozen C/C++, PowerShell, shell, and Python sleep tokens in normalized
 raw text, including comments and strings, and self-qualifies negative and benign fixtures.
 
-Development-time schema checks run with Python 3.12.13 and dependencies frozen by `uv.lock`:
+Development-time Python checks run with Python 3.12.13 and dependencies frozen by `uv.lock`:
 
 ```text
-uv sync --frozen --only-group schema
-uv run --frozen --only-group schema python -m unittest discover -s tests/tooling -p 'test_*.py' -v
+uv sync --frozen --only-group schema --only-group docs
+uv run --frozen --only-group schema --only-group docs python -m unittest discover -s tests/tooling -p 'test_*.py' -v
 uv run --frozen --only-group schema python tools/validate_core_contract.py
+uv run --frozen --no-build --only-group docs python tools/check_relative_links.py
+uv run --frozen --no-build --only-group docs python tools/check_repository_governance.py
 ```
 
 `tools/json_schema_validator.py` checks Draft 2020-12 schema definitions, an explicit local-only

@@ -10,5 +10,9 @@ schema = [
   "jsonschema[format-nongpl]==4.26.0",
 ]
 
+docs = [
+  "markdown-it-py==3.0.0",
+]
+
 [tool.uv]
 package = false

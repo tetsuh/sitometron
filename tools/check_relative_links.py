@@ -12,16 +12,21 @@ ambiguous percent-escape fail closed.
 from __future__ import annotations
 
 import argparse
-import html
 import re
 import subprocess
 import sys
 import unicodedata
-from bisect import bisect_right
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import TextIO
+
+from markdown_it import MarkdownIt
+from markdown_it.rules_block import reference as markdown_reference
+from markdown_it.rules_inline import (
+    autolink as markdown_autolink, backtick, image as markdown_image, link as markdown_link,
+)
 
 EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
@@ -30,15 +35,11 @@ MAX_LABEL_DEPTH = 8
 INVALID_REFERENCE_TARGET = "<invalid-reference>"
 UNSUPPORTED_DESTINATION_TARGET = "<unsupported-destination>"
 UNSUPPORTED_LABEL_TARGET = "<unsupported-label>"
-BLANK_LINE_PATTERN = re.compile(r"\n[ \t]*\n")
 MAX_DESTINATION_DEPTH = 8
 LINK_WHITESPACE = " \t\n"
-TITLE_DELIMITERS = {'"': '"', "'": "'", "(": ")"}
-HTML_TAG_PATTERN = re.compile(r"<[^>]*>")
 PERCENT_PATTERN = re.compile(r"%(..?|\Z)", re.DOTALL)
 VALID_ESCAPE_PATTERN = re.compile(r"\A[0-9A-Fa-f]{2}\Z")
 DRIVE_PATTERN = re.compile(r"\A[A-Za-z]:")
-MAX_HEADING_LEVEL = 6
 MAX_HEADING_INDENT = 3
 FORBIDDEN_DECODED = frozenset({"/", "\\"})
 KEPT_CATEGORIES = ("L", "N", "M")
@@ -124,24 +125,10 @@ def _strip_closing_hashes(heading: str) -> str:
         return stripped.rstrip(" \t")
     return text
 
-def heading_text(line: str) -> str | None:
-    """Return the raw text of one ATX heading line, or None when it is not a heading."""
-    indent = len(line) - len(line.lstrip(" "))
-    if indent > MAX_HEADING_INDENT:
-        return None
-    rest = line[indent:]
-    level = len(rest) - len(rest.lstrip("#"))
-    if not 1 <= level <= MAX_HEADING_LEVEL:
-        return None
-    rest = rest[level:]
-    if rest and rest[0] not in " \t":
-        return None
-    return rest.strip(" \t")
-
 UNSUPPORTED_LABEL_DEPTH = -1
 
 
-def _label_end(line: str, start: int) -> int | None:
+def _label_end(line: str, start: int, state=None) -> int | None:
     if start >= len(line) or line[start] != "[":
         return None
     depth = 1
@@ -150,6 +137,12 @@ def _label_end(line: str, start: int) -> int | None:
         character = line[index]
         if character == "\\":
             index += 2
+            continue
+        if character == "`" and state is not None:
+            saved = state.pos
+            state.pos = index
+            backtick(state, True)
+            index, state.pos = state.pos, saved
             continue
         if character == "[":
             depth += 1
@@ -162,88 +155,21 @@ def _label_end(line: str, start: int) -> int | None:
         index += 1
     return None
 
-def _replace_inline_labels(text: str) -> str:
-    visible: list[str] = []
-    index = 0
-    while index < len(text):
-        if text[index] == "[" and not _is_escaped(text, index):
-            end = _label_end(text, index)
-            if end not in (None, UNSUPPORTED_LABEL_DEPTH) and end < len(text) and text[end] == "(":
-                destination = _destination(text, end + 1)
-                if destination is not None:
-                    visible.append(text[index + 1:end - 1])
-                    index = destination[1]
-                    continue
-        visible.append(text[index])
-        index += 1
-    return "".join(visible)
-
-def _is_escaped(text: str, index: int) -> bool:
-    slashes = 0
-    index -= 1
-    while index >= 0 and text[index] == "\\":
-        slashes += 1
-        index -= 1
-    return slashes % 2 == 1
-
-def _replace_reference_labels(text: str) -> str:
-    visible: list[str] = []
-    index = 0
-    while index < len(text):
-        label_start = index
-        if text[index] == "!" and index + 1 < len(text) and text[index + 1] == "[":
-            label_start = index + 1
-        if text[label_start] == "[" and not _is_escaped(text, label_start):
-            label_end = _label_end(text, label_start)
-            if label_end not in (None, UNSUPPORTED_LABEL_DEPTH):
-                reference_end = _label_end(text, label_end)
-                if reference_end not in (None, UNSUPPORTED_LABEL_DEPTH):
-                    visible.append(text[label_start + 1:label_end - 1])
-                    index = reference_end
-                    continue
-        visible.append(text[index])
-        index += 1
-    return "".join(visible)
-
 def _is_word_character(character: str) -> bool:
     """Report whether one character is a Unicode letter, number, or mark."""
     return unicodedata.category(character)[0] in KEPT_CATEGORIES
 
 
-def _strip_delimiters(text: str) -> tuple[str, list[bool]]:
-    """Drop code and emphasis delimiters, flagging characters that came from inline code.
-
-    The frozen slug algorithm retains inline-code text, so ``__init__`` in a code
-    span must keep the underscores emphasis removal would otherwise strip.
-    """
-    spans = {span[0]: span for span in _code_spans(text)}
-    kept: list[str] = []
-    inside: list[bool] = []
-    index = 0
-    while index < len(text):
-        span = spans.get(index)
-        if span is not None:
-            kept.extend(text[span[1]:span[2]])
-            inside.extend([True] * (span[2] - span[1]))
-            index = span[3]
-            continue
-        if text[index] not in "`*~":
-            kept.append(text[index])
-            inside.append(False)
-        index += 1
-    return "".join(kept), inside
-
-
-def _drop_emphasis(text: str, inside_code: Sequence[bool]) -> str:
+def _drop_emphasis(text: str) -> str:
     """Remove underscores used as emphasis delimiters, keeping intraword ones.
 
     A word character on both sides is intraword for every script, so `café_漢`
-    and `snake_case` keep their underscore while `_emphasis_` loses both. An
-    underscore that came from inline code is never an emphasis delimiter.
+    and `snake_case` keep their underscore while `_emphasis_` loses both.
+    Inline-code tokens bypass this function.
     """
     kept: list[str] = []
     for index, character in enumerate(text):
-        if character != "_" or inside_code[index]:
+        if character != "_":
             kept.append(character)
             continue
         before = text[index - 1] if index else ""
@@ -254,12 +180,26 @@ def _drop_emphasis(text: str, inside_code: Sequence[bool]) -> str:
 
 
 def _visible_text(heading: str) -> str:
-    text = _strip_closing_hashes(heading)
-    text = _replace_inline_labels(text)
-    text = _replace_reference_labels(text)
-    text = HTML_TAG_PATTERN.sub("", text)
-    text = html.unescape(text)
-    return _drop_emphasis(*_strip_delimiters(text))
+    """Apply the frozen visible-text policy to parsed inline content."""
+    tokens = _markdown_parser().parseInline(_strip_closing_hashes(heading))[0].children or []
+    def visible(items: Sequence) -> str:
+        parts = []
+        for token in items:
+            if token.type == "code_inline":
+                parts.append(token.content)
+            elif token.type == "policy_finding":
+                nested = _markdown_parser().parseInline(token.content)[0].children or []
+                parts.append(visible(nested))
+            elif token.type == "text":
+                text = token.content
+                text = re.sub(r"[`*~]", "", text)
+                parts.append(_drop_emphasis(text))
+            elif token.type in {"softbreak", "hardbreak"}:
+                parts.append(" ")
+            elif token.children:
+                parts.append(visible(token.children))
+        return "".join(parts)
+    return visible(tokens)
 
 def slugify(heading: str) -> str:
     """Return the anchor slug emitted for one ATX heading's raw text."""
@@ -292,9 +232,11 @@ def _fence_delimiter(line: str) -> tuple[str, int, str] | None:
         return None
     return marker, length, trailing
 
+
 def _closes_fence(line: str, fence: tuple[str, int]) -> bool:
     marker = _fence_delimiter(line)
     return marker is not None and marker[0] == fence[0] and marker[1] >= fence[1] and not marker[2]
+
 
 def _content_lines(markdown: str) -> list[str]:
     """Return lines outside correctly matched Markdown fenced code blocks."""
@@ -314,73 +256,18 @@ def _content_lines(markdown: str) -> list[str]:
         lines.append("")
     return lines
 
-def _backtick_runs(line: str) -> list[tuple[int, int]]:
-    """Return the half-open bounds of every maximal backtick run."""
-    runs: list[tuple[int, int]] = []
-    index = 0
-    while index < len(line):
-        if line[index] != "`":
-            index += 1
-            continue
-        end = index + 1
-        while end < len(line) and line[end] == "`":
-            end += 1
-        runs.append((index, end))
-        index = end
-    return runs
-
-def _code_spans(line: str) -> list[tuple[int, int, int, int]]:
-    """Return (open, content start, content end, close) for each matched code span.
-
-    Opening is escape-aware: a backslash makes the first backtick of a run
-    literal, so only the remainder can open. Backslashes inside an open span are
-    literal, so the next maximal run of equal width closes it whatever precedes
-    it, as CommonMark specifies for code spans.
-    """
-    runs = _backtick_runs(line)
-    by_width: dict[int, list[int]] = {}
-    for position, (start, end) in enumerate(runs):
-        by_width.setdefault(end - start, []).append(position)
-
-    spans: list[tuple[int, int, int, int]] = []
-    index = 0
-    while index < len(runs):
-        start, end = runs[index]
-        if _is_escaped(line, start):
-            start += 1
-        same_width = by_width.get(end - start, [])
-        following = bisect_right(same_width, index)
-        if following == len(same_width):
-            index += 1
-            continue
-        closing = runs[same_width[following]]
-        spans.append((start, end, closing[0], closing[1]))
-        index = same_width[following] + 1
-    return spans
-
-
-def strip_code_spans(line: str) -> str:
-    """Blank code spans using equal-width maximal backtick runs.
-
-    Newlines inside a span are preserved so document offsets and line numbers
-    stay aligned while the span contents are removed.
-    """
-    characters = list(line)
-    for start, _, _, end in _code_spans(line):
-        characters[start:end] = [
-            "\n" if character == "\n" else " " for character in line[start:end]
-        ]
-    return "".join(characters)
 
 def emitted_anchors(markdown: str) -> list[str]:
-    """Return every anchor emitted by the ATX headings of one document, in order."""
+    """Return anchors for native CommonMark ATX headings in document order."""
     anchors: list[str] = []
     counts: dict[str, int] = {}
-    for line in _content_lines(markdown):
-        raw = heading_text(line)
-        if raw is None:
+    tokens = _markdown_parser().parse(markdown)
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open" or not token.markup.startswith("#"):
             continue
-        slug = slugify(raw)
+        if index + 1 >= len(tokens) or tokens[index + 1].type != "inline":
+            raise ValidationError("Markdown heading has no inline content token")
+        slug = slugify(tokens[index + 1].content)
         suffix = counts.get(slug, 0)
         candidate = slug if suffix == 0 else f"{slug}-{suffix}"
         used = set(anchors)
@@ -410,185 +297,34 @@ def tracked_files(root: Path | str) -> list[str]:
     except UnicodeDecodeError as error:
         raise ValidationError("tracked paths are not valid UTF-8") from error
 
-def _destination(line: str, start: int) -> tuple[str, int] | None:
-    """Read one inline destination that starts just after `(`, honouring nesting.
-
-    The destination, its optional title, and the closing `)` are separate bounded
-    components, so title punctuation can never redirect destination parsing. A
-    destination nested deeper than the bound is reported as unsupported rather
-    than skipped, so no depth can silently remove a link from validation.
-    """
-    opening = start
-    while opening < len(line) and line[opening] in LINK_WHITESPACE:
-        opening += 1
-    if line[opening:opening + 1] == "<":
-        parsed = _angle_destination(line, opening)
-    else:
-        parsed = _bare_destination(line, opening)
-    if parsed is None or parsed[0] == UNSUPPORTED_DESTINATION_TARGET:
-        return parsed
-    end = _link_tail(line, parsed[1])
-    return None if end is None else (parsed[0], end)
-
-
-def _bare_destination(line: str, start: int) -> tuple[str, int] | None:
-    """Read one destination without angle delimiters, stopping before its title."""
+def _destination_limit(text: str, start: int) -> int | None:
+    """Bound bare-destination parentheses; native rules own all other syntax."""
+    while start < len(text) and text[start] in LINK_WHITESPACE:
+        start += 1
+    if text[start:start + 1] == "<":
+        return None
     depth = 1
-    for index in range(start, len(line)):
-        character = line[index]
+    index = start
+    while index < len(text):
+        character = text[index]
         if character in LINK_WHITESPACE:
-            return line[start:index], index
-        if character == ")":
-            depth -= 1
-            if depth == 0:
-                return line[start:index], index
-        elif character == "(":
-            depth += 1
-            if depth > MAX_DESTINATION_DEPTH:
-                return _unsupported_destination(line, index)
-    return None
-
-
-def _unsupported_destination(line: str, index: int) -> tuple[str, int]:
-    """Return the fail-closed result for a destination nested beyond the bound."""
-    closing = line.find(")", index)
-    return UNSUPPORTED_DESTINATION_TARGET, len(line) if closing == -1 else closing + 1
-
-
-def _angle_destination(line: str, opening: int) -> tuple[str, int] | None:
-    """Read one `<...>` destination, where parentheses and spaces are literal."""
-    index = opening + 1
-    while index < len(line):
-        character = line[index]
+            break
         if character == "\\":
             index += 2
             continue
-        if character in "<\n":
-            return None
-        if character == ">":
-            return f"<{line[opening + 1:index]}>", index + 1
+        depth += (character == "(") - (character == ")")
+        if depth == 0:
+            break
+        if depth > MAX_DESTINATION_DEPTH:
+            return index + 1
         index += 1
     return None
 
-
-def _link_tail(line: str, start: int) -> int | None:
-    """Return the offset after the `)` that closes a link, skipping any title."""
-    index = start
-    while index < len(line) and line[index] in LINK_WHITESPACE:
-        index += 1
-    closing = TITLE_DELIMITERS.get(line[index:index + 1])
-    if closing is not None:
-        index += 1
-        while index < len(line) and line[index] != closing:
-            index += 2 if line[index] == "\\" else 1
-        if index == len(line):
-            return None
-        index += 1
-        while index < len(line) and line[index] in LINK_WHITESPACE:
-            index += 1
-    return index + 1 if line[index:index + 1] == ")" else None
-
-def _inline_target(raw: str) -> str:
-    """Return the link destination of one inline `(...)` body without its title."""
-    if raw == UNSUPPORTED_DESTINATION_TARGET:
-        return raw
-    text = raw.strip()
-    if text.startswith("<"):
-        end = text.find(">")
-        return text[1:end] if end != -1 else ""
-    return text.split()[0] if text.split() else ""
 
 def _normalized_label(text: str) -> str:
     """Return one CommonMark-normalized reference label."""
     return " ".join(text.split()).casefold()
 
-
-def _reference_use(
-    line: str, label_start: int, label_end: int, definitions: Mapping[str, tuple[str, int]],
-) -> tuple[str | None, int]:
-    """Resolve one full, collapsed, or shortcut reference that ends at `label_end`."""
-    label = _normalized_label(line[label_start + 1:label_end - 1])
-    if label_end < len(line) and line[label_end] == "[":
-        second = _label_end(line, label_end)
-        if second == UNSUPPORTED_LABEL_DEPTH:
-            run = label_end
-            while run < len(line) and line[run] == "[":
-                run += 1
-            return UNSUPPORTED_LABEL_TARGET, run
-        if second is None:
-            return None, label_end
-        explicit = _normalized_label(line[label_end + 1:second - 1])
-        target = definitions.get(explicit or label)
-        return (target[0] if target is not None else INVALID_REFERENCE_TARGET), second
-    # A shortcut reference is a link only when its label is defined; otherwise it is plain text.
-    target = definitions.get(label)
-    return (target[0] if target is not None else None), label_end
-
-
-def _paragraph_end(text: str, start: int) -> int:
-    """Return the offset at which the paragraph containing `start` ends.
-
-    A CommonMark link label and destination cannot contain a blank line, so the
-    paragraph is the natural bound. Using it leaves no line-count cutoff that
-    could silently skip a long same-paragraph link.
-    """
-    match = BLANK_LINE_PATTERN.search(text, start)
-    return len(text) if match is None else match.start()
-
-
-def document_targets(
-    text: str, definitions: Mapping[str, tuple[str, int]],
-) -> list[tuple[int, str]]:
-    """Return every (offset, destination) link in one document, including multiline links."""
-    targets: list[tuple[int, str]] = []
-    index = 0
-    while index < len(text):
-        if text[index] != "[" or _is_escaped(text, index):
-            index += 1
-            continue
-        paragraph = text[:_paragraph_end(text, index)]
-        end = _label_end(paragraph, index)
-        if end == UNSUPPORTED_LABEL_DEPTH:
-            targets.append((index, UNSUPPORTED_LABEL_TARGET))
-            # Skip the whole opening run so one over-nested label reports once.
-            while index < len(text) and text[index] == "[":
-                index += 1
-            continue
-        if end is None:
-            index += 1
-            continue
-        if end < len(paragraph) and paragraph[end] == "(":
-            destination = _destination(paragraph, end + 1)
-            if destination is None:
-                index = end + 1
-                continue
-            target = _inline_target(destination[0])
-            if target:
-                targets.append((index, target))
-            index = destination[1]
-            continue
-        target, next_index = _reference_use(paragraph, index, end, definitions)
-        if target is not None:
-            targets.append((index, target))
-        index = max(next_index, index + 1)
-    return targets
-
-
-def line_targets(line: str, definitions: Mapping[str, tuple[str, int]]) -> list[str]:
-    """Return every inline and reference link destination on one content line."""
-    return [target for _, target in document_targets(line, definitions)]
-
-
-def _reference_target(raw: str) -> str:
-    """Return one normalized reference-definition destination or an invalid sentinel."""
-    text = raw.strip(" \t")
-    if text.startswith("<"):
-        end = text.find(">")
-        if end <= 1:
-            return INVALID_REFERENCE_TARGET
-        return text[1:end]
-    target = text.split(" ", 1)[0].split("\t", 1)[0]
-    return target or INVALID_REFERENCE_TARGET
 
 def parse_reference_definition(line: str) -> tuple[str, str] | None:
     """Parse one reference definition, honouring escaped brackets inside its label."""
@@ -602,42 +338,141 @@ def parse_reference_definition(line: str) -> tuple[str, str] | None:
     return (label, line[end + 1:].strip(" \t")) if label else None
 
 
-def _reference_definitions(lines: Sequence[str]) -> dict[str, tuple[str, int]]:
-    """Return the first definition of every reference label, as CommonMark requires."""
-    definitions: dict[str, tuple[str, int]] = {}
-    for number, line in enumerate(lines, 1):
-        parsed = parse_reference_definition(line)
-        if parsed is not None:
-            definitions.setdefault(parsed[0], (_reference_target(parsed[1]), number))
-    return definitions
+def _policy_target(state, start: int) -> tuple[str, int, str] | None:
+    """Reject only repository-specific unsupported/undefined link forms.
 
-def _line_numbers(lines: Sequence[str]) -> list[int]:
-    """Return the document offset at which every content line starts."""
-    starts: list[int] = []
-    offset = 0
-    for line in lines:
-        starts.append(offset)
-        offset += len(line) + 1
-    return starts
+    Called at the parser's current inline position: code, HTML, and link titles
+    have already been consumed by their own rules and cannot be scanned here.
+    """
+    text = state.src[:state.posMax]
+    label_start = start + (text[start:start + 2] == "![")
+    if text[label_start:label_start + 1] != "[":
+        return None
+    end = _label_end(text, label_start, state)
+    if end == UNSUPPORTED_LABEL_DEPTH:
+        run = label_start
+        while text[run:run + 1] == "[":
+            run += 1
+        return UNSUPPORTED_LABEL_TARGET, run, ""
+    if end is None:
+        return None
+    label = text[label_start + 1:end - 1]
+    if text[end:end + 1] == "(":
+        overflow = _destination_limit(text, end + 1)
+        if overflow is not None:
+            return UNSUPPORTED_DESTINATION_TARGET, overflow, label
+    second = _label_end(text, end)
+    if second == UNSUPPORTED_LABEL_DEPTH:
+        run = end
+        while text[run:run + 1] == "[":
+            run += 1
+        return UNSUPPORTED_LABEL_TARGET, run, label
+    if second is not None:
+        # Native parsing has first refusal; only unresolved explicit references
+        # reach this fallback. Undefined shortcuts remain ordinary text.
+        return INVALID_REFERENCE_TARGET, second, label
+    return None
+
+
+def _link_rule(native):
+    prefix = {markdown_image: "![", markdown_link: "[", markdown_autolink: "<"}[native]
+    def parse(state, silent):
+        start, first = state.pos, len(state.tokens)
+        if not state.src.startswith(prefix, start):
+            return False
+        # Depth failures must be reported even when the library's own nesting
+        # limit would otherwise turn a link into ordinary text.
+        policy = _policy_target(state, start)
+        limited = policy and policy[0] != INVALID_REFERENCE_TARGET
+        if not limited and native(state, silent):
+            if not silent:
+                for token in state.tokens[first:]:
+                    if token.type in {"link_open", "image"}:
+                        token.meta.setdefault("source_line", state.src.count("\n", 0, start))
+            return True
+        if policy and not silent:
+            token = state.push("policy_finding", "", 0)
+            token.attrs = {"target": policy[0]}
+            token.content = policy[2]
+            token.meta["source_line"] = state.src.count("\n", 0, start)
+            state.pos = policy[1]
+            return True
+        return False
+    return parse
+
+
+def _markdown_parser() -> MarkdownIt:
+    """Parse structure without rendering, URL normalization, or scheme filtering."""
+    parser = MarkdownIt("commonmark", {"inline_definitions": True})
+    def bounded(native):
+        def checked(state, *args):
+            if state.level >= parser.options.maxNesting:
+                raise ValidationError("Markdown nesting exceeds the parser limit")
+            return native(state, *args)
+        return checked
+
+    # The library otherwise skips content silently when its nesting limit is hit.
+    parser.block.tokenize = bounded(parser.block.tokenize)
+    parser.inline.tokenize = bounded(parser.inline.tokenize)
+    parser.inline.skipToken = bounded(parser.inline.skipToken)
+    parser.normalizeLink = lambda value: value
+    parser.validateLink = lambda value: True
+    original_destination = parser.helpers.parseLinkDestination
+
+    def raw_destination(text, start, maximum):
+        result = original_destination(text, start, maximum)
+        if result.ok:
+            raw = text[start:result.pos]
+            result.str = raw[1:-1] if raw.startswith("<") else raw
+        return result
+
+    # Helpers are copied per instance: never modify markdown-it's shared module.
+    parser.helpers = SimpleNamespace(**vars(parser.helpers))
+    parser.helpers.parseLinkDestination = raw_destination
+    parser.inline.ruler.at("link", _link_rule(markdown_link))
+    parser.inline.ruler.at("image", _link_rule(markdown_image))
+    parser.inline.ruler.at("autolink", _link_rule(markdown_autolink))
+
+    def reference(state, start, end, silent):
+        if markdown_reference(state, start, end, silent):
+            return True
+        if state.is_code_block(start):
+            return False
+        line = state.src[state.bMarks[start]:state.eMarks[start]]
+        definition = parse_reference_definition(line)
+        if definition is None or silent:
+            return False
+        token = state.push("definition", "", 0)
+        token.meta["url"] = INVALID_REFERENCE_TARGET
+        token.map = [start, start + 1]
+        state.line = start + 1
+        return True
+    parser.block.ruler.at("reference", reference)
+    return parser
 
 
 def extract_links(markdown: str) -> list[tuple[int, str]]:
-    """Return every (line number, raw target) link outside fenced code."""
-    lines = _content_lines(markdown)
-    definitions = _reference_definitions(lines)
-    scannable = ["" if parse_reference_definition(line) else line for line in lines]
-    starts = _line_numbers(scannable)
-    # Code spans are blanked over the joined document so a span that opens on one
-    # line and closes on the next cannot leave a link-like token behind.
-    document = strip_code_spans("\n".join(scannable))
-    links = [
-        (bisect_right(starts, offset), target)
-        for offset, target in document_targets(document, definitions)
-    ]
-    for number, line in enumerate(lines, 1):
-        definition = parse_reference_definition(line)
-        if definition is not None:
-            links.append((number, _reference_target(definition[1])))
+    """Extract native links/images and every definition with their source lines."""
+    links = []
+    def collect(tokens: Sequence, base: int) -> None:
+        for token in tokens:
+            target = None
+            if token.type == "link_open":
+                target = token.attrGet("href")
+            elif token.type == "image":
+                target = token.attrGet("src")
+            elif token.type == "policy_finding":
+                target = token.attrGet("target")
+            if target:
+                links.append((base + token.meta.get("source_line", 0), target))
+            if token.children:
+                child_base = base + token.meta.get("source_line", 0) if token.type == "image" else base
+                collect(token.children, child_base)
+    for token in _markdown_parser().parse(markdown):
+        if token.type == "definition":
+            links.append((token.map[0] + 1, token.meta["url"]))
+        elif token.type == "inline":
+            collect(token.children or [], token.map[0] + 1)
     return sorted(links)
 
 
