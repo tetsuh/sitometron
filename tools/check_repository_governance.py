@@ -127,7 +127,8 @@ def _authority_links(text: str) -> list[tuple[str, str]]:
                 continue
             destination = destination[1:end]
         else:
-            destination = destination.split(None, 1)[0]
+            parts = destination.split(None, 1)
+            destination = parts[0] if parts else ""
         if destination:
             links.append((label.strip(), destination))
     return links
@@ -397,7 +398,7 @@ def check_banners(root: Path, tracked: Sequence[str]) -> list[Finding]:
     for path in sorted(path for path in tracked if path.endswith(".md")):
         for number, line in enumerate(_content_lines(_read(root, path)), 1):
             if BANNER_MARKER not in line or (
-                    path == "docs/development_workflow.md" and number == 236 and
+                    path == "docs/development_workflow.md" and
                     line == "> **Planned, not yet normative:** Issue/ADR #NN owns this mechanism. Implementers must not treat"):
                 continue
             if not _names_authority(path, line, tracked):

@@ -323,6 +323,16 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write("docs/99_bypass.md", "> **Planned, not yet normative:** Issue/ADR #NN has no owner.\n")
         self.assertTrue(any("banner" in f.reason.lower() for f in self.check()))
 
+    def test_empty_authority_destination_is_a_finding_not_an_exception(self) -> None:
+        self.write("docs/99_empty.md", "> **Planned, not yet normative:** [empty](   )\n")
+        self.assertTrue(any("banner" in finding.reason.lower() for finding in self.check()))
+
+    def test_exempts_the_exact_workflow_banner_specimen_at_any_line(self) -> None:
+        specimen = ("> **Planned, not yet normative:** Issue/ADR #NN owns this mechanism. "
+                    "Implementers must not treat")
+        self.write("docs/development_workflow.md", "# Workflow\n\n" + specimen + "\n")
+        self.assertEqual(self.check(), [])
+
     def test_requires_every_expected_issue_form_field(self) -> None:
         forms = {
             ".github/ISSUE_TEMPLATE/feature.yml": self.module.FEATURE_FIELDS,
