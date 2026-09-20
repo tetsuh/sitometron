@@ -317,6 +317,15 @@ class RepositoryCheckTest(unittest.TestCase):
                 self.assertEqual(len(findings), 2, findings)
                 self.assertEqual([finding.line for finding in findings], [1, 3])
 
+    def test_rejects_a_multiline_reference_label_with_an_invalid_destination(self) -> None:
+        destination = "(" * 33 + "target" + ")" * 33
+        self.write("README.md", f"[multi\nline]: {destination}\n")
+        findings = self.check()
+        self.assertEqual([(finding.line, finding.target) for finding in findings],
+                         [(1, self.module.INVALID_REFERENCE_TARGET)])
+        self.write("README.md", f"[multi\n# Block boundary\nline]: {destination}\n")
+        self.assertEqual(self.check(), [])
+
     def test_rejects_repeated_trailing_directory_markers(self) -> None:
         self.write("docs/keep.txt", "data\n")
         self.write("README.md", "[double](docs//)\n[triple](docs///)\n")

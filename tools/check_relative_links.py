@@ -420,6 +420,30 @@ def _link_rule(native):
     return parse
 
 
+def _invalid_reference_end(state, start: int, end: int) -> int | None:
+    """Find a rejected definition within its native block boundaries."""
+    next_line = start + 1
+    terminators = state.md.block.ruler.getRules("reference")
+    previous_parent = state.parentType
+    state.parentType = "reference"
+    try:
+        while True:
+            candidate = state.getLines(start, next_line, state.blkIndent, False).strip()
+            if parse_reference_definition(candidate) is not None:
+                return next_line
+            if next_line >= end or state.isEmpty(next_line):
+                return None
+            if (state.sCount[next_line] - state.blkIndent > MAX_HEADING_INDENT or
+                    state.sCount[next_line] < 0):
+                next_line += 1
+                continue
+            if any(rule(state, next_line, end, True) for rule in terminators):
+                return None
+            next_line += 1
+    finally:
+        state.parentType = previous_parent
+
+
 def _markdown_parser() -> MarkdownIt:
     """Parse structure without rendering, URL normalization, or scheme filtering."""
     parser = MarkdownIt("commonmark", {"inline_definitions": True})
@@ -457,14 +481,13 @@ def _markdown_parser() -> MarkdownIt:
             return True
         if state.is_code_block(start):
             return False
-        line = state.src[state.bMarks[start]:state.eMarks[start]]
-        definition = parse_reference_definition(line)
-        if definition is None or silent:
+        definition_end = _invalid_reference_end(state, start, end)
+        if definition_end is None or silent:
             return False
         token = state.push("definition", "", 0)
         token.meta["url"] = INVALID_REFERENCE_TARGET
-        token.map = [start, start + 1]
-        state.line = start + 1
+        token.map = [start, definition_end]
+        state.line = definition_end
         return True
     parser.block.ruler.at("reference", reference)
     return parser
