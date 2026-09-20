@@ -323,6 +323,17 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write("docs/99_bypass.md", "> **Planned, not yet normative:** Issue/ADR #NN has no owner.\n")
         self.assertTrue(any("banner" in f.reason.lower() for f in self.check()))
 
+    def test_checks_planned_banners_for_every_markdown_suffix_case(self) -> None:
+        invalid = "> **Planned, not yet normative:** [owner](not-an-authority.txt)\n"
+        for suffix in (".md", ".Md", ".mD", ".MD"):
+            path = f"docs/99_suffix{suffix}"
+            with self.subTest(suffix=suffix):
+                self.write(path, invalid)
+                findings = self.check()
+                self.assertTrue(any(f.source == f"{path}:1" for f in findings), findings)
+                self.write(path, BANNER)
+                self.assertFalse(any(f.source == f"{path}:1" for f in self.check()))
+
     def test_empty_authority_destination_is_a_finding_not_an_exception(self) -> None:
         self.write("docs/99_empty.md", "> **Planned, not yet normative:** [empty](   )\n")
         self.assertTrue(any("banner" in finding.reason.lower() for finding in self.check()))

@@ -395,7 +395,7 @@ def check_registry(root: Path, tracked: Sequence[str]) -> list[Finding]:
 
 def check_banners(root: Path, tracked: Sequence[str]) -> list[Finding]:
     findings: list[Finding] = []
-    for path in sorted(path for path in tracked if path.endswith(".md")):
+    for path in sorted(path for path in tracked if path.lower().endswith(".md")):
         for number, line in enumerate(_content_lines(_read(root, path)), 1):
             if BANNER_MARKER not in line or (
                     path == "docs/development_workflow.md" and

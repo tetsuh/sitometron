@@ -93,6 +93,22 @@ class SlugTest(unittest.TestCase):
         self.assertEqual(self.slugs("## trail_ and _lead\n"), ["trail-and-lead"])
         self.assertEqual(self.slugs("## `NFR_005` café_漢\n"), ["nfr_005-café_漢"])
 
+    def test_retains_escaped_and_entity_underscores_in_every_visible_label(self) -> None:
+        forms = {
+            "plain heading": "## {label}\n",
+            "inline link": "## [{label}](target.md)\n",
+            "image": "## ![{label}](target.png)\n",
+            "full reference": "## [{label}][ref]\n\n[ref]: target.md\n",
+            "collapsed reference": "## [{label}][]\n\n[{label}]: target.md\n",
+            "shortcut reference": "## [{label}]\n\n[{label}]: target.md\n",
+        }
+        for source, template in forms.items():
+            for origin, label in (("escape", r"\_x\_"), ("entity", "&#95;x&#95;")):
+                with self.subTest(source=source, origin=origin):
+                    self.assertEqual(self.slugs(template.format(label=label)), ["_x_"])
+        self.assertEqual(self.slugs("## _x_\n"), ["x"])
+        self.assertEqual(self.slugs("## a_x_b\n"), ["a_x_b"])
+
     def test_retains_inline_code_underscores_as_the_frozen_algorithm_requires(self) -> None:
         self.assertEqual(self.slugs("## `_x_`\n"), ["_x_"])
         self.assertEqual(self.slugs("## `__init__`\n"), ["__init__"])
@@ -557,6 +573,26 @@ class RepositoryCheckTest(unittest.TestCase):
         findings = self.check()
         self.assertEqual([f.reason for f in findings], ["missing anchor", "missing anchor"],
                          "an emphasis-stripped fragment is not accepted")
+
+    def test_resolves_literal_underscore_fragments_for_every_visible_label(self) -> None:
+        forms = {
+            "plain heading": "## {label}\n",
+            "inline link": "## [{label}](source.md)\n",
+            "image": "## ![{label}](source.md)\n",
+            "full reference": "## [{label}][ref]\n\n[ref]: source.md\n",
+            "collapsed reference": "## [{label}][]\n\n[{label}]: source.md\n",
+            "shortcut reference": "## [{label}]\n\n[{label}]: source.md\n",
+        }
+        for source, template in forms.items():
+            for origin, label in (("escape", r"\_x\_"), ("entity", "&#95;x&#95;")):
+                with self.subTest(source=source, origin=origin):
+                    self.write("docs/source.md", template.format(label=label))
+                    self.write("README.md", (
+                        "[correct](docs/source.md#_x_)\n"
+                        "[wrong](docs/source.md#x)\n"
+                    ))
+                    findings = self.check()
+                    self.assertEqual([finding.target for finding in findings], ["docs/source.md#x"])
 
     def test_treats_escaped_opening_backticks_as_literal_text(self) -> None:
         self.write("docs/target.md", "# Target\n")

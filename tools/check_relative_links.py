@@ -168,13 +168,17 @@ def _is_word_character(character: str) -> bool:
     return unicodedata.category(character)[0] in KEPT_CATEGORIES
 
 
-def _drop_emphasis(text: str) -> str:
-    """Remove underscores used as emphasis delimiters, keeping intraword ones.
+def _drop_emphasis(text: str, preserve_underscores: bool = False) -> str:
+    """Remove emphasis delimiters while retaining literal underscores.
 
     A word character on both sides is intraword for every script, so `café_漢`
     and `snake_case` keep their underscore while `_emphasis_` loses both.
+    Escaped/entity-origin underscores are represented by text tokens with
+    parser markup and must be retained even at the edges of the token.
     Inline-code tokens bypass this function.
     """
+    if preserve_underscores:
+        return text
     kept: list[str] = []
     for index, character in enumerate(text):
         if character != "_":
@@ -187,39 +191,48 @@ def _drop_emphasis(text: str) -> str:
     return "".join(kept)
 
 
-def _visible_text(heading: str) -> str:
-    """Apply the frozen visible-text policy to parsed inline content."""
-    tokens = _markdown_parser().parseInline(_strip_closing_hashes(heading))[0].children or []
-    def visible(items: Sequence) -> str:
-        parts = []
-        for token in items:
-            if token.type == "code_inline":
-                parts.append(token.content)
-            elif token.type == "policy_finding":
-                nested = _markdown_parser().parseInline(token.content)[0].children or []
-                parts.append(visible(nested))
-            elif token.type == "text":
-                text = token.content
-                text = re.sub(r"[`*~]", "", text)
-                parts.append(_drop_emphasis(text))
-            elif token.type in {"softbreak", "hardbreak"}:
-                parts.append(" ")
-            elif token.children:
-                parts.append(visible(token.children))
-        return "".join(parts)
-    return visible(tokens)
+def _visible_tokens(tokens: Sequence) -> str:
+    """Apply the frozen visible-text policy to already parsed inline tokens."""
+    parts = []
+    for token in tokens:
+        if token.type == "code_inline":
+            parts.append(token.content)
+        elif token.type == "policy_finding":
+            nested = _markdown_parser().parseInline(token.content)[0].children or []
+            parts.append(_visible_tokens(nested))
+        elif token.type == "text":
+            text = re.sub(r"[`*~]", "", token.content)
+            parts.append(_drop_emphasis(text, preserve_underscores=bool(token.markup)))
+        elif token.type == "text_special":
+            parts.append(token.content)
+        elif token.type in {"softbreak", "hardbreak"}:
+            parts.append(" ")
+        elif token.children:
+            parts.append(_visible_tokens(token.children))
+    return "".join(parts)
 
-def slugify(heading: str) -> str:
-    """Return the anchor slug emitted for one ATX heading's raw text."""
-    text = unicodedata.normalize("NFC", _visible_text(heading)).casefold()
+
+def _visible_text(heading: str) -> str:
+    """Apply the frozen visible-text policy to raw inline content."""
+    tokens = _markdown_parser().parseInline(_strip_closing_hashes(heading))[0].children or []
+    return _visible_tokens(tokens)
+
+
+def _slugify_visible(text: str, source: str) -> str:
+    text = unicodedata.normalize("NFC", text).casefold()
     text = re.sub(r"\s+", "-", text.strip())
     slug = "".join(
         character for character in text
         if unicodedata.category(character)[0] in KEPT_CATEGORIES or character in KEPT_CHARACTERS
     )
     if not slug:
-        raise ValidationError(f"heading produces an empty anchor slug: {heading!r}")
+        raise ValidationError(f"heading produces an empty anchor slug: {source!r}")
     return slug
+
+
+def slugify(heading: str) -> str:
+    """Return the anchor slug emitted for one ATX heading's raw text."""
+    return _slugify_visible(_visible_text(heading), heading)
 
 def _fence_delimiter(line: str) -> tuple[str, int, str] | None:
     """Return the (character, length, trailing text) of one valid fence line."""
@@ -275,7 +288,8 @@ def emitted_anchors(markdown: str) -> list[str]:
             continue
         if index + 1 >= len(tokens) or tokens[index + 1].type != "inline":
             raise ValidationError("Markdown heading has no inline content token")
-        slug = slugify(tokens[index + 1].content)
+        inline = tokens[index + 1]
+        slug = _slugify_visible(_visible_tokens(inline.children or []), inline.content)
         suffix = counts.get(slug, 0)
         candidate = slug if suffix == 0 else f"{slug}-{suffix}"
         used = set(anchors)
