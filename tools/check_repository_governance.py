@@ -12,9 +12,7 @@ and the fields that the Issue forms and the pull-request template must declare.
 It never calls a GitHub API and never infers human authorization, provenance, or
 Gate evidence; those remain human and provider review evidence.
 """
-
 from __future__ import annotations
-
 import re
 import sys
 from datetime import date
@@ -22,11 +20,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TextIO
-
+from markdown_it import MarkdownIt
 TOOLS_DIRECTORY = Path(__file__).resolve().parent
 if str(TOOLS_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIRECTORY))
-
 from check_relative_links import (  # noqa: E402
     REPOSITORY_ROOT,
     ValidationError,
@@ -38,9 +35,7 @@ from check_relative_links import (  # noqa: E402
     split_local_target,
     _content_lines,
 )
-
 __all__ = ["ValidationError", "tracked_files", "validated_repository"]
-
 ADR_DIRECTORY = "docs/adr"
 ADR_TEMPLATE = f"{ADR_DIRECTORY}/template.md"
 ADR_INDEX = f"{ADR_DIRECTORY}/README.md"
@@ -49,7 +44,6 @@ FEATURE_FORM = ".github/ISSUE_TEMPLATE/feature.yml"
 ADR_FORM = ".github/ISSUE_TEMPLATE/adr.yml"
 GATE_FORM = ".github/ISSUE_TEMPLATE/gate.yml"
 PULL_REQUEST_TEMPLATE = ".github/pull_request_template.md"
-
 ADR_STATUSES = ("Proposed", "Accepted", "Rejected", "Deprecated", "Superseded")
 ADR_SECTIONS = ("Status", "Context", "Decision", "Consequences", "Options considered", "References")
 ADR_LEGACY_PATH = f"{ADR_DIRECTORY}/0001-bootstrap-a-stdlib-only-cpp20-core.md"
@@ -59,7 +53,6 @@ MATURITY_VALUES = ("Planned", "Normative", "Deprecated", "Superseded")
 REGISTRY_COLUMNS = 5
 REGISTRY_HEADER = ("Contract surface", "Maturity", "Implementation", "Normative or design authority", "Owner")
 IMPLEMENTATION_VALUES = ("Planned", "In progress", "Implemented", "Removed")
-
 FEATURE_FIELDS = (
     "summary", "phase", "references", "requirements", "targets", "dependencies", "contracts",
     "adr", "adr_authority", "acceptance", "provenance",
@@ -79,8 +72,8 @@ PULL_REQUEST_FIELDS = (
     "Exact-head owner authorization", "Selected merge method", "Auto-merge not enabled",
 )
 PULL_REQUEST_SECTIONS = ("Verification", "Risks and follow-up")
-
 BANNER_MARKER = "**Planned, not yet normative:**"
+BANNER_TEXT = "Planned, not yet normative:"
 BANNER_SPECIMEN = "Issue/ADR #NN"
 LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]*)\)")
 ISSUE_URL_PATTERN = re.compile(r"\Ahttps://github\.com/tetsuh/sitometron/issues/[1-9][0-9]*\Z")
@@ -98,46 +91,37 @@ FORM_CONTRACTS = {
 }
 TEXT_REQUIRED_INDENT = 6
 CHECKBOX_REQUIRED_INDENT = 10
-
-
 @dataclass(frozen=True)
 class Finding:
     source: str
     reason: str
-
     def __str__(self) -> str:
         return f"{self.source}: {self.reason}"
-
-
 @dataclass(frozen=True)
 class FormBlock:
     identifier: str
     kind: str
     label: str
     required: bool
-
-
 def _authority_links(text: str) -> list[tuple[str, str]]:
     links: list[tuple[str, str]] = []
-    for label, raw_destination in LINK_PATTERN.findall(text):
-        destination = raw_destination.strip()
-        if destination.startswith("<"):
-            end = destination.find(">")
-            if end <= 1:
-                continue
-            destination = destination[1:end]
-        else:
-            parts = destination.split(None, 1)
-            destination = parts[0] if parts else ""
-        if destination:
-            links.append((label.strip(), destination))
+    inline = MarkdownIt("commonmark").parseInline(text)
+    children = inline[0].children or []
+    for index, token in enumerate(children):
+        if token.type != "link_open":
+            continue
+        close = next((position for position in range(index + 1, len(children))
+                      if children[position].type == "link_close"), None)
+        if close is None:
+            continue
+        label = "".join(child.content for child in children[index + 1:close]
+                        if child.type in {"text", "code_inline"}).strip()
+        destination = token.attrGet("href")
+        if label and destination:
+            links.append((label, destination))
     return links
-
-
 def _is_issue_authority(destination: str) -> bool:
     return ISSUE_URL_PATTERN.fullmatch(destination) is not None
-
-
 def _resolve_adr(source: str, destination: str, tracked: Sequence[str]) -> str | None:
     try:
         path, fragment = split_local_target(destination)
@@ -147,13 +131,9 @@ def _resolve_adr(source: str, destination: str, tracked: Sequence[str]) -> str |
     except ValidationError:
         return None
     return resolved if ADR_PATH_PATTERN.fullmatch(resolved) and resolved in tracked else None
-
-
 def _names_authority(source: str, text: str, tracked: Sequence[str]) -> bool:
     return any(_is_issue_authority(destination) or _resolve_adr(source, destination, tracked) is not None
                for _, destination in _authority_links(text))
-
-
 def _accepted_adr_authority(source: str, text: str, root: Path, tracked: Sequence[str]) -> bool:
     for label, destination in _authority_links(text):
         if not ADR_LABEL_PATTERN.fullmatch(label):
@@ -166,8 +146,6 @@ def _accepted_adr_authority(source: str, text: str, root: Path, tracked: Sequenc
         if (match := STATUS_PATTERN.match(status)) is not None and match.group(0) == "Accepted":
             return True
     return False
-
-
 def _read(root: Path, relative_path: str) -> str:
     try:
         data = (root / relative_path).read_bytes()
@@ -177,11 +155,8 @@ def _read(root: Path, relative_path: str) -> str:
         return data.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValidationError(f"{relative_path} is not valid UTF-8") from error
-
-
 class _FormBlockBuilder:
     """Accumulate one Issue-form block while its lines are read."""
-
     def __init__(self, kind: str) -> None:
         self.kind = kind
         self.identifier: str | None = None
@@ -189,11 +164,9 @@ class _FormBlockBuilder:
         self.required = False
         self.validation_context: str | None = None
         self.in_option = False
-
     @property
     def required_indent(self) -> int:
         return CHECKBOX_REQUIRED_INDENT if self.kind == "checkboxes" else TEXT_REQUIRED_INDENT
-
     def read(self, line: str) -> None:
         if (match := FORM_ID_PATTERN.match(line)) is not None:
             self.identifier = match.group(1)
@@ -225,7 +198,6 @@ class _FormBlockBuilder:
         elif indent <= 4:
             self.validation_context = None
             self.in_option = False
-
     def build(self) -> FormBlock | None:
         if self.identifier is None:
             if self.kind == "markdown":
@@ -235,15 +207,12 @@ class _FormBlockBuilder:
         if self.label is None:
             raise ValidationError(f"issue form block {self.identifier} has no label")
         return FormBlock(self.identifier, self.kind, self.label, self.required)
-
-
 def parse_issue_form(text: str) -> dict[str, FormBlock]:
     """Parse one repository-format Issue form into its expected id/label/required blocks."""
     if "\r" in text:
         raise ValidationError("issue form must use LF line endings")
     blocks: dict[str, FormBlock] = {}
     builder: _FormBlockBuilder | None = None
-
     def close(current: _FormBlockBuilder | None) -> None:
         if current is None:
             return
@@ -253,7 +222,6 @@ def parse_issue_form(text: str) -> dict[str, FormBlock]:
         if block.identifier in blocks:
             raise ValidationError(f"issue form declares duplicate id {block.identifier}")
         blocks[block.identifier] = block
-
     for line in text.split("\n"):
         item = FORM_ITEM_PATTERN.match(line)
         if item is not None:
@@ -265,8 +233,6 @@ def parse_issue_form(text: str) -> dict[str, FormBlock]:
     if not blocks:
         raise ValidationError("issue form declares no block")
     return blocks
-
-
 def _adr_status(text: str, relative_path: str) -> list[Finding]:
     findings: list[Finding] = []
     sections = _sections(text)
@@ -284,8 +250,6 @@ def _adr_status(text: str, relative_path: str) -> list[Finding]:
         return findings
     findings.extend(_adr_decision_date(body, relative_path))
     return findings
-
-
 def _adr_decision_date(body: str, relative_path: str) -> list[Finding]:
     """Every ADR status carries exactly one real ISO-8601 calendar decision date."""
     candidates = DATE_PATTERN.findall(body)
@@ -302,8 +266,6 @@ def _adr_decision_date(body: str, relative_path: str) -> list[Finding]:
         return [Finding(
             relative_path, f"ADR decision date {candidates[0]!r} is not a real calendar date")]
     return []
-
-
 def _heading_text(line: str) -> str | None:
     indent = len(line) - len(line.lstrip(" "))
     if indent > 3:
@@ -316,22 +278,27 @@ def _heading_text(line: str) -> str | None:
     if not rest or rest[0] not in " \t":
         return None
     return rest.strip(" \t").rstrip("#").strip(" \t") or None
-
-
 def _sections(text: str) -> dict[str, str]:
-    sections: dict[str, str] = {}
-    current: str | None = None
-    for line in _content_lines(text):
-        heading = _heading_text(line)
-        if heading is not None:
-            current = heading
-            sections.setdefault(current, "")
+    """Return sections from parser-owned headings, excluding code and raw HTML."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    headings: list[tuple[int, str, int]] = []
+    tokens = MarkdownIt("commonmark").parse(text)
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open" or token.map is None:
             continue
-        if current is not None:
-            sections[current] += line + "\n"
+        inline = tokens[index + 1] if index + 1 < len(tokens) else None
+        if inline is None or inline.type != "inline":
+            continue
+        label = "".join(child.content for child in (inline.children or [])
+                        if child.type in {"text", "code_inline"}).strip()
+        if label:
+            headings.append((token.map[0], label, token.map[1]))
+    sections: dict[str, str] = {}
+    for index, (start, heading, end) in enumerate(headings):
+        next_start = headings[index + 1][0] if index + 1 < len(headings) else len(lines)
+        sections.setdefault(heading, "")
+        sections[heading] += "\n".join(lines[end:next_start]) + "\n"
     return sections
-
-
 def check_adrs(root: Path, tracked: Sequence[str]) -> list[Finding]:
     findings: list[Finding] = []
     decisions = sorted(
@@ -344,14 +311,17 @@ def check_adrs(root: Path, tracked: Sequence[str]) -> list[Finding]:
     for path in decisions:
         findings.extend(_adr_status(_read(root, path), path))
     return findings
-
-
 def _registry_rows(text: str) -> tuple[list[list[str]], list[int]]:
-    """Return the surface rows of the Registry table and the lines that are malformed."""
+    """Return parser-visible Registry rows, excluding code and raw HTML blocks."""
     rows: list[list[str]] = []
     malformed: list[int] = []
-    for number, line in enumerate(_content_lines(text), 1):
-        if not line.startswith("|"):
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    semantic_lines: set[int] = set()
+    for token in MarkdownIt("commonmark").parse(text):
+        if token.type == "inline" and token.map is not None:
+            semantic_lines.update(range(token.map[0], token.map[1]))
+    for number, line in enumerate(lines, 1):
+        if number - 1 not in semantic_lines or not line.startswith("|"):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
         if tuple(cells) == REGISTRY_HEADER or (
@@ -362,8 +332,6 @@ def _registry_rows(text: str) -> tuple[list[list[str]], list[int]]:
             continue
         rows.append(cells)
     return rows, malformed
-
-
 def check_registry(root: Path, tracked: Sequence[str]) -> list[Finding]:
     if REGISTRY_PATH not in tracked:
         return [Finding(REGISTRY_PATH, "the Contract Registry is not tracked")]
@@ -391,22 +359,43 @@ def check_registry(root: Path, tracked: Sequence[str]) -> list[Finding]:
             findings.append(Finding(
                 where, "Planned-maturity row does not name a traceable Issue or design authority"))
     return findings
-
-
+def _visible_inline_text(tokens) -> str:
+    """Return visible text while excluding code, HTML, and image alt text."""
+    visible: list[str] = []
+    for token in tokens or []:
+        if token.type == "text":
+            visible.append(token.content)
+        elif token.type in {"softbreak", "hardbreak"}:
+            visible.append("\n")
+        elif token.type not in {"code_inline", "html_inline", "image"} and token.children:
+            visible.append(_visible_inline_text(token.children))
+    return "".join(visible)
+def _semantic_banner_lines(text: str) -> set[int]:
+    lines: set[int] = set()
+    source_lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for token in MarkdownIt("commonmark").parse(text):
+        if token.type != "inline" or token.map is None:
+            continue
+        if BANNER_TEXT not in _visible_inline_text(token.children):
+            continue
+        for number in range(token.map[0], token.map[1]):
+            if BANNER_MARKER in source_lines[number]:
+                lines.add(number)
+    return lines
 def check_banners(root: Path, tracked: Sequence[str]) -> list[Finding]:
     findings: list[Finding] = []
     for path in sorted(path for path in tracked if path.lower().endswith(".md")):
-        for number, line in enumerate(_content_lines(_read(root, path)), 1):
-            if BANNER_MARKER not in line or (
-                    path == "docs/development_workflow.md" and
+        text = _read(root, path)
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        for number in sorted(_semantic_banner_lines(text)):
+            line = lines[number]
+            if (path == "docs/development_workflow.md" and
                     line == "> **Planned, not yet normative:** Issue/ADR #NN owns this mechanism. Implementers must not treat"):
                 continue
             if not _names_authority(path, line, tracked):
                 findings.append(Finding(
-                    f"{path}:{number}", "Planned banner does not name an owning Issue or ADR"))
+                    f"{path}:{number + 1}", "Planned banner does not name an owning Issue or ADR"))
     return findings
-
-
 def _check_form(root: Path, relative_path: str, expected: Sequence[str],
                 tracked: Sequence[str]) -> list[Finding]:
     if relative_path not in tracked:
@@ -433,8 +422,6 @@ def _check_form(root: Path, relative_path: str, expected: Sequence[str],
         if not block.required:
             findings.append(Finding(relative_path, f"field {identifier!r} is not required: true"))
     return findings
-
-
 def check_issue_forms(root: Path, tracked: Sequence[str]) -> list[Finding]:
     findings: list[Finding] = []
     for relative_path, expected in (
@@ -442,8 +429,6 @@ def check_issue_forms(root: Path, tracked: Sequence[str]) -> list[Finding]:
     ):
         findings.extend(_check_form(root, relative_path, expected, tracked))
     return findings
-
-
 def check_pull_request_template(root: Path, tracked: Sequence[str]) -> list[Finding]:
     if PULL_REQUEST_TEMPLATE not in tracked:
         return [Finding(PULL_REQUEST_TEMPLATE, "the pull-request template is not tracked")]
@@ -455,8 +440,6 @@ def check_pull_request_template(root: Path, tracked: Sequence[str]) -> list[Find
     findings.extend(_required_lines(lines, [f"## {name}" for name in PULL_REQUEST_SECTIONS],
                                     "section heading"))
     return findings
-
-
 def _required_lines(lines: Sequence[str], required: Sequence[str], kind: str) -> list[Finding]:
     """Require each entry as one exact, unindented, unique line outside fenced code."""
     findings: list[Finding] = []
@@ -472,8 +455,6 @@ def _required_lines(lines: Sequence[str], required: Sequence[str], kind: str) ->
                 PULL_REQUEST_TEMPLATE,
                 f"required {kind} {expected!r} is declared {occurrences} times"))
     return findings
-
-
 def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
     """Return every governance finding for one repository."""
     root = Path(root)
@@ -485,15 +466,11 @@ def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
         except ValidationError as error:
             findings.append(Finding(check.__name__, str(error)))
     return findings
-
-
 def main(
     arguments: Sequence[str] | None = None, stdout: TextIO = sys.stdout,
     repository: Path = REPOSITORY_ROOT,
 ) -> int:
     parse_arguments(arguments, __doc__)
     return run_validator("governance", check_repository, repository, stdout, tracked_files)
-
-
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -6,10 +6,8 @@ import unittest
 from pathlib import Path
 from types import ModuleType
 from unittest import mock
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = REPOSITORY_ROOT / "tools" / "check_repository_governance.py"
-
 ADR_TEMPLATE = """# ADR-0009: Example decision
 
 ## Status
@@ -36,7 +34,6 @@ Options text.
 
 - [the ADR process](../10_adr_process.md)
 """
-
 REGISTRY_TEMPLATE = """# Contract Registry
 
 Contract maturity values are `Planned`, `Normative`, `Deprecated`, and `Superseded`. Implementation
@@ -50,14 +47,11 @@ values are `Planned`, `In progress`, `Implemented`, and `Removed`.
 | Normative but unbuilt surface | Normative | Planned | Accepted [ADR-0009](adr/0009-example.md) | Phase 0B |
 | Future surface | Planned | Planned | [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment | Phase 1 |
 """
-
 BANNER = (
     "> **Planned, not yet normative:** [Issue #35](https://github.com/tetsuh/sitometron/issues/35)\n"
     "> tracks assignment of the future Design Issue and ADR that will own this mechanism.\n"
     "> Implementers must not treat this outline as a finalized contract.\n"
 )
-
-
 def load_validator() -> ModuleType:
     spec = importlib.util.spec_from_file_location("check_repository_governance", VALIDATOR)
     if spec is None or spec.loader is None:
@@ -66,8 +60,6 @@ def load_validator() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
 def issue_form(fields: list[tuple[str, str]], *, required: bool = True,
                checkbox_ids: tuple[str, ...] = ("provenance",)) -> str:
     lines = ["name: Example", "description: Example form", "body:"]
@@ -86,11 +78,9 @@ def issue_form(fields: list[tuple[str, str]], *, required: bool = True,
                 f"      required: {'true' if required else 'false'}",
             ]
     return "\n".join(lines) + "\n"
-
 class GovernancePresenceTest(unittest.TestCase):
     def test_validator_exists(self) -> None:
         self.assertTrue(VALIDATOR.is_file(), "tools/check_repository_governance.py is absent")
-
 @unittest.skipUnless(VALIDATOR.is_file(), "governance validator is not implemented")
 class IssueFormParserTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -145,7 +135,6 @@ class IssueFormParserTest(unittest.TestCase):
         )
         blocks = self.module.parse_issue_form(text)
         self.assertEqual(list(blocks), ["summary"])
-
 @unittest.skipUnless(VALIDATOR.is_file(), "governance validator is not implemented")
 class GovernanceCheckTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -159,31 +148,25 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write(".github/ISSUE_TEMPLATE/adr.yml", self.form(".github/ISSUE_TEMPLATE/adr.yml"))
         self.write(".github/ISSUE_TEMPLATE/gate.yml", self.form(".github/ISSUE_TEMPLATE/gate.yml"))
         self.write(".github/pull_request_template.md", self.pull_request_template())
-
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
-
     def write(self, relative_path: str, text: str) -> None:
         path = self.root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(text.encode("utf-8"))
-
     def pull_request_template(self, fields: list[str] | None = None,
                               sections: list[str] | None = None) -> str:
         chosen = self.module.PULL_REQUEST_FIELDS if fields is None else fields
         headings = self.module.PULL_REQUEST_SECTIONS if sections is None else sections
         return ("".join(f"- {field}:\n" for field in chosen)
                 + "".join(f"## {name}\n" for name in headings))
-
     def tracked(self) -> list[str]:
         return sorted(
             str(p.relative_to(self.root)).replace("\\", "/")
             for p in self.root.rglob("*") if p.is_file()
         )
-
     def check(self) -> list:
         return self.module.check_repository(self.root, self.tracked())
-
     def form(self, path: str, *, required: bool = True) -> str:
         contract = self.module.FORM_CONTRACTS[path]
         fields = [(identifier, label) for identifier, (label, _) in contract.items()]
@@ -193,7 +176,35 @@ class GovernanceCheckTest(unittest.TestCase):
         return text.replace("  - type: textarea\n    id: adr\n", "  - type: dropdown\n    id: adr\n") if path.endswith("feature.yml") else text
     def test_accepts_a_conforming_repository(self) -> None:
         self.assertEqual(self.check(), [])
-
+    def test_ignores_nonsemantic_markdown_for_authority_and_structure(self) -> None:
+        authority = "https://github.com/tetsuh/sitometron/issues/35"
+        self.assertEqual(self.module._authority_links(
+            f"![image]({authority}) `code [fake]({authority})` "
+            f"\\[escaped]({authority}) <!-- [comment]({authority}) --> <a href=\"{authority}\">html</a>"
+        ), [])
+        sections = self.module._sections(
+            "## Real\nreal\n<!-- ## Hidden comment\nhidden -->\n"
+            "<div>\n## Hidden HTML\nhidden\n</div>\n```text\n## Hidden code\n```\n"
+        )
+        self.assertEqual(set(sections), {"Real"})
+        rows, malformed = self.module._registry_rows(
+            "| Contract surface | Maturity | Implementation | Normative or design authority | Owner |\n"
+            "|---|---|---|---|---|\n"
+            "| Real | Planned | Planned | [Issue #35](https://github.com/tetsuh/sitometron/issues/35) | Phase 1 |\n"
+            "<!-- | Hidden comment | Invalid | Invalid | no authority | nobody | -->\n"
+            "<div>\n| Hidden HTML | Invalid | Invalid | no authority | nobody |\n</div>\n"
+            "```text\n| Hidden code | Invalid | Invalid | no authority | nobody |\n```\n"
+        )
+        self.assertEqual(malformed, [])
+        self.assertEqual(rows, [[
+            "Real", "Planned", "Planned",
+            "[Issue #35](https://github.com/tetsuh/sitometron/issues/35)", "Phase 1",
+        ]])
+        self.write("docs/99_planned.md", "<!-- **Planned, not yet normative:** ![image](" + authority + ") -->\n")
+        self.assertEqual(self.module.check_banners(self.root, self.tracked()), [])
+        self.write("docs/99_planned.md", "> **Planned, not yet normative:** ![image](" + authority + ")\n")
+        findings = self.module.check_banners(self.root, self.tracked())
+        self.assertEqual([finding.source for finding in findings], ["docs/99_planned.md:1"])
     def test_locks_the_pre_40_seventeen_finding_baseline(self) -> None: planned_surfaces=["External REST v1","Application Registry schema","Worker HTTP v1 routes and JSON schemas","ResourceProfile and ExecutionPolicy schemas","Sitos adapter boundary","Artifact REST and manifest schemas"]; registry_rows="\n".join(f"| {surface} | Planned | Planned | To be decided | Phase 1 |" for surface in planned_surfaces); current_row="| Future surface | Planned | Planned | [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment | Phase 1 |"; self.write("docs/08_contract_registry.md",REGISTRY_TEMPLATE.replace(current_row,registry_rows)); invalid_banner="> **Planned, not yet normative:** [owner](not-an-authority.txt)\n"; banner_paths=["docs/01_requirements.md","docs/06_build_test_packaging.md","docs/07_issue_breakdown.md","docs/development_workflow.md"]; [self.write(path,invalid_banner) for path in banner_paths]; gate_fields=[field for field in self.module.GATE_FIELDS if field not in {"requirements","contracts","adr","provenance"}]; gate_form=issue_form([(identifier,self.module.FORM_CONTRACTS[self.module.GATE_FORM][identifier][0]) for identifier in gate_fields],checkbox_ids=("planned_banners",)).replace("  - type: textarea\n    id: phase","  - type: input\n    id: phase"); self.write(".github/ISSUE_TEMPLATE/gate.yml",gate_form); pr_fields=[field for field in self.module.PULL_REQUEST_FIELDS if field not in {"Exact-head owner authorization","Selected merge method","Auto-merge not enabled"}]; self.write(".github/pull_request_template.md",self.pull_request_template(fields=pr_fields)); findings=self.check(); registry_findings=[finding for finding in findings if finding.source.startswith("docs/08_contract_registry.md [")]; self.assertEqual([finding.source for finding in registry_findings],[f"docs/08_contract_registry.md [{surface}]" for surface in planned_surfaces]); self.assertEqual([finding.source for finding in findings if finding.source.rsplit(":",1)[0] in banner_paths],[f"{path}:1" for path in banner_paths]); self.assertEqual([finding.reason for finding in findings if finding.source==self.module.GATE_FORM],[f"missing required field {field!r}" for field in ("requirements","contracts","adr","provenance")]); self.assertEqual([finding.reason for finding in findings if finding.source==self.module.PULL_REQUEST_TEMPLATE],[f"missing required field line {field!r}; indented, prose, and fenced copies do not count" for field in ("- Exact-head owner authorization:","- Selected merge method:","- Auto-merge not enabled:")]); self.assertEqual(len(findings),17)
     def test_locks_the_post_40_seven_template_findings(self) -> None: gate_missing=("requirements","contracts","adr","provenance"); gate_fields=[field for field in self.module.GATE_FIELDS if field not in gate_missing]; gate_form=issue_form([(identifier,self.module.FORM_CONTRACTS[self.module.GATE_FORM][identifier][0]) for identifier in gate_fields],checkbox_ids=("planned_banners","provenance")).replace("  - type: textarea\n    id: phase","  - type: input\n    id: phase"); self.write(".github/ISSUE_TEMPLATE/gate.yml",gate_form); pr_missing=("Exact-head owner authorization","Selected merge method","Auto-merge not enabled"); self.write(".github/pull_request_template.md",self.pull_request_template(fields=[field for field in self.module.PULL_REQUEST_FIELDS if field not in pr_missing])); findings=self.check(); self.assertEqual(len(findings),7); self.assertEqual([finding.reason for finding in findings if finding.source==self.module.GATE_FORM],[f"missing required field {field!r}" for field in gate_missing]); self.assertEqual([finding.reason for finding in findings if finding.source==self.module.PULL_REQUEST_TEMPLATE],[f"missing required field line {('- '+field+':')!r}; indented, prose, and fenced copies do not count" for field in pr_missing])
     def test_locks_the_journal_logical_and_physical_phase_split(self) -> None: journal_row="| JobJournal envelope and event schemas | Normative | Implemented | Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) for the logical contract; Issue #11 implements the owned C++ envelope and logical fake; Issue #12 implements complete logical envelope construction, non-wrapping sequence allocation, and commit ordering; [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment of future Phase 0B physical encoding, production-adapter, durability implementation and qualification, replay/recovery/pruning, and additional-mechanics authority | Phase 0A / 0B |"; self.write("docs/08_contract_registry.md","\n".join(["# Contract Registry","","| Contract surface | Maturity | Implementation | Normative or design authority | Owner |","|---|---|---|---|---|",journal_row,""])); rows,malformed=self.module._registry_rows((self.root/"docs/08_contract_registry.md").read_text(encoding="utf-8")); self.assertEqual(malformed,[]); journal=[row for row in rows if row[0]=="JobJournal envelope and event schemas"]; self.assertEqual(journal,[["JobJournal envelope and event schemas","Normative","Implemented","Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) for the logical contract; Issue #11 implements the owned C++ envelope and logical fake; Issue #12 implements complete logical envelope construction, non-wrapping sequence allocation, and commit ordering; [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment of future Phase 0B physical encoding, production-adapter, durability implementation and qualification, replay/recovery/pruning, and additional-mechanics authority","Phase 0A / 0B"]])
@@ -235,7 +246,6 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE +
                    "\n| Hidden invalid | Maturity | Invalid | no authority | nobody |\n")
         self.assertTrue(any("vocabulary" in f.reason for f in self.check()))
-
     def test_requires_normative_authority_to_resolve_an_accepted_tracked_adr(self) -> None:
         rejected = ADR_TEMPLATE.replace("Accepted on 2026-08-28.", "Rejected on 2026-08-28.")
         self.write("docs/adr/0009-example.md", rejected)
@@ -249,7 +259,6 @@ class GovernanceCheckTest(unittest.TestCase):
                                              "[ADR-0009](https://example.test/adr/0009.md)")
         self.write("docs/08_contract_registry.md", external)
         self.assertTrue(any("normative" in f.reason.lower() for f in self.check()))
-
     def test_rejects_authority_substring_spoofs(self) -> None:
         spoof = REGISTRY_TEMPLATE.replace("[Issue #35](https://github.com/tetsuh/sitometron/issues/35)",
                                           "[fake](not-an-adrift.txt)")
@@ -259,12 +268,10 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write("docs/99_planned.md", BANNER.replace("[Issue #35](https://github.com/tetsuh/sitometron/issues/35)",
                                                         "[fake](not-an-adrift.txt)"))
         self.assertTrue(any("banner" in f.reason.lower() for f in self.check()))
-
     def date_findings(self, status: str) -> list:
         self.write("docs/adr/0009-example.md",
                    ADR_TEMPLATE.replace("Accepted on 2026-08-28.", status))
         return [f for f in self.check() if "date" in f.reason]
-
     def test_requires_one_real_calendar_decision_date_for_every_status(self) -> None:
         rejected = {
             "no date on Accepted": "Accepted.",
@@ -286,11 +293,9 @@ class GovernanceCheckTest(unittest.TestCase):
             with self.subTest(accepted=status):
                 self.assertEqual(self.date_findings(status), [], status)
         self.write("docs/adr/0009-example.md", ADR_TEMPLATE)
-
     def test_reports_an_adr_directory_without_decision_records(self) -> None:
         (self.root / "docs/adr/0009-example.md").unlink()
         self.assertTrue(self.check())
-
     def test_rejects_unknown_registry_vocabulary(self) -> None:
         for original, replacement in [
             ("| Implemented surface | Normative |", "| Implemented surface | Final |"),
@@ -301,13 +306,11 @@ class GovernanceCheckTest(unittest.TestCase):
                            REGISTRY_TEMPLATE.replace(original, replacement))
                 self.assertTrue(any("vocabulary" in f.reason.lower() or "value" in f.reason.lower()
                                     for f in self.check()))
-
     def test_requires_accepted_adr_authority_on_normative_rows(self) -> None:
         self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE.replace(
             "| Implemented surface | Normative | Implemented | Accepted [ADR-0009](adr/0009-example.md) |",
             "| Implemented surface | Normative | Implemented | Owner decision |"))
         self.assertTrue(any("normative" in f.reason.lower() for f in self.check()))
-
     def test_requires_traceable_authority_only_for_planned_maturity(self) -> None:
         self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE.replace(
             "| Future surface | Planned | Planned | [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment |",
@@ -317,7 +320,6 @@ class GovernanceCheckTest(unittest.TestCase):
         self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE)
         self.assertEqual(self.check(), [],
                          "an implementation status of Planned on a Normative row is not a finding")
-
     def test_requires_an_authority_link_in_every_planned_banner(self) -> None:
         self.write("docs/99_planned.md", "# Planned\n\n" + BANNER)
         self.assertEqual(self.check(), [])
@@ -326,7 +328,6 @@ class GovernanceCheckTest(unittest.TestCase):
         self.assertTrue(any("banner" in f.reason.lower() for f in self.check()))
         self.write("docs/99_bypass.md", "> **Planned, not yet normative:** Issue/ADR #NN has no owner.\n")
         self.assertTrue(any("banner" in f.reason.lower() for f in self.check()))
-
     def test_checks_planned_banners_for_every_markdown_suffix_case(self) -> None:
         invalid = "> **Planned, not yet normative:** [owner](not-an-authority.txt)\n"
         suffixes = (".md", ".Md", ".mD", ".MD")
@@ -339,17 +340,14 @@ class GovernanceCheckTest(unittest.TestCase):
                 self.assertTrue(any(f.source == f"{path}:1" for f in findings), findings)
                 self.write(path, BANNER)
                 self.assertFalse(any(f.source == f"{path}:1" for f in self.check()))
-
     def test_empty_authority_destination_is_a_finding_not_an_exception(self) -> None:
         self.write("docs/99_empty.md", "> **Planned, not yet normative:** [empty](   )\n")
         self.assertTrue(any("banner" in finding.reason.lower() for finding in self.check()))
-
     def test_exempts_the_exact_workflow_banner_specimen_at_any_line(self) -> None:
         specimen = ("> **Planned, not yet normative:** Issue/ADR #NN owns this mechanism. "
                     "Implementers must not treat")
         self.write("docs/development_workflow.md", "# Workflow\n\n" + specimen + "\n")
         self.assertEqual(self.check(), [])
-
     def test_requires_every_expected_issue_form_field(self) -> None:
         forms = {
             ".github/ISSUE_TEMPLATE/feature.yml": self.module.FEATURE_FIELDS,
@@ -366,7 +364,6 @@ class GovernanceCheckTest(unittest.TestCase):
                         any(omitted in f.reason for f in self.check()),
                         f"omitting {omitted} from {path} must be reported")
             self.write(path, self.form(path))
-
     def test_ignores_form_blocks_that_declare_no_identifier(self) -> None:
         text = ("name: X\ndescription: Y\nbody:\n"
                 "  - type: markdown\n    attributes:\n      value: Intro text.\n"
@@ -375,7 +372,6 @@ class GovernanceCheckTest(unittest.TestCase):
         blocks = self.module.parse_issue_form(text)
         self.assertEqual(sorted(blocks), ["summary"])
         self.assertTrue(blocks["summary"].required)
-
     def test_treats_a_checkbox_block_as_required_when_any_option_is(self) -> None:
         text = ("name: X\nbody:\n  - type: checkboxes\n    id: provenance\n    attributes:\n"
                 "      label: L\n      options:\n        - label: A\n          required: true\n"
@@ -383,36 +379,29 @@ class GovernanceCheckTest(unittest.TestCase):
         self.assertTrue(self.module.parse_issue_form(text)["provenance"].required)
         relaxed = text.replace("required: true", "required: false")
         self.assertFalse(self.module.parse_issue_form(relaxed)["provenance"].required)
-
     def test_reports_a_registry_row_with_the_wrong_column_count(self) -> None:
         self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE.replace(
             "| Future surface | Planned | Planned | [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment | Phase 1 |",
             "| Future surface | Planned | [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment | Phase 1 |"))
         findings = self.check()
         self.assertTrue(any("columns" in f.reason for f in findings), findings)
-
     def test_ignores_a_banner_shown_inside_fenced_code(self) -> None:
         self.write("docs/99_example.md",
                    "# Example\n\n```markdown\n> " + BANNER.replace("> ", "").splitlines()[0] + "\n```\n")
         self.assertEqual(self.check(), [])
-
     def test_reports_issue_form_contract_drift(self) -> None:
         path = ".github/ISSUE_TEMPLATE/feature.yml"
         conforming = self.form(path)
         self.write(path, conforming.replace("label: Summary\n", "label: Summary drift\n", 1))
         self.assertTrue(any("expected 'Summary'" in f.reason for f in self.check()))
-
         self.write(path, conforming.replace("- type: input\n    id: phase", "- type: textarea\n    id: phase", 1))
         self.assertTrue(any("field 'phase' has kind" in f.reason for f in self.check()))
-
         duplicate = conforming.replace("label: Acceptance criteria", "label: Summary", 1)
         self.write(path, duplicate)
         self.assertTrue(any("duplicate expected field label 'Summary'" in f.reason for f in self.check()))
-
     def test_requires_expected_fields_to_be_required(self) -> None:
         self.write(".github/ISSUE_TEMPLATE/feature.yml", self.form(".github/ISSUE_TEMPLATE/feature.yml", required=False))
         self.assertTrue(any("required" in f.reason.lower() for f in self.check()))
-
     def test_requires_every_pull_request_template_field(self) -> None:
         for omitted in self.module.PULL_REQUEST_FIELDS:
             with self.subTest(omitted=omitted):
@@ -420,7 +409,6 @@ class GovernanceCheckTest(unittest.TestCase):
                 self.write(".github/pull_request_template.md",
                            self.pull_request_template(fields=kept))
                 self.assertTrue(any(omitted in f.reason for f in self.check()))
-
     def test_rejects_indented_pull_request_field_lines(self) -> None:
         fields = list(self.module.PULL_REQUEST_FIELDS)
         spoofed = fields[0]
@@ -433,7 +421,6 @@ class GovernanceCheckTest(unittest.TestCase):
                                 "an indented copy is not the required top-level field")
         self.write(".github/pull_request_template.md", self.pull_request_template())
         self.assertEqual(self.check(), [])
-
     def test_rejects_prose_spoofed_duplicated_or_fenced_field_lines(self) -> None:
         fields = list(self.module.PULL_REQUEST_FIELDS)
         spoofed = fields[0]
@@ -452,7 +439,6 @@ class GovernanceCheckTest(unittest.TestCase):
                    f"- {spoofed}:\n" + body + f"- {spoofed}:\n"
                    + self.pull_request_template(fields=[]))
         self.assertTrue(any("declared 2 times" in f.reason for f in self.check()))
-
     def test_requires_the_validation_and_risks_section_headings(self) -> None:
         for name in self.module.PULL_REQUEST_SECTIONS:
             others = [n for n in self.module.PULL_REQUEST_SECTIONS if n != name]
@@ -474,7 +460,6 @@ class GovernanceCheckTest(unittest.TestCase):
                 self.assertTrue(any("declared 2 times" in f.reason for f in self.check()))
         self.write(".github/pull_request_template.md", self.pull_request_template())
         self.assertEqual(self.check(), [])
-
     def test_reports_missing_governance_sources(self) -> None:
         for path in [".github/pull_request_template.md", ".github/ISSUE_TEMPLATE/gate.yml",
                      "docs/08_contract_registry.md"]:
@@ -487,37 +472,29 @@ class GovernanceCheckTest(unittest.TestCase):
                 finally:
                     target.write_bytes(saved)
         self.assertEqual(self.check(), [], "every fixture is restored")
-
     def test_main_returns_zero_when_clean_and_one_otherwise(self) -> None:
         with mock.patch.object(self.module, "tracked_files", lambda root: self.tracked()):
             self.assertEqual(self.module.main([], io.StringIO(), self.root), 0)
             self.write("docs/adr/0009-example.md", ADR_TEMPLATE.replace("Accepted on", "Draft on"))
             self.assertEqual(self.module.main([], io.StringIO(), self.root), 1)
-
     def test_main_fails_closed_when_git_enumeration_fails(self) -> None:
         def failing(root: object) -> list[str]:
             raise self.module.ValidationError("git ls-files failed")
-
         with mock.patch.object(self.module, "tracked_files", failing):
             self.assertEqual(self.module.main([], io.StringIO(), self.root), 1)
-
     def test_main_rejects_unknown_arguments(self) -> None:
         for arguments in [["--repository", str(self.root)], ["--unknown"], ["extra"], ["-h"]]:
             with self.subTest(arguments=arguments):
                 with self.assertRaises(SystemExit):
                     self.module.main(arguments, io.StringIO(), self.root)
-
-
 @unittest.skipUnless(VALIDATOR.is_file(), "governance validator is not implemented")
 class RepositoryBaselineTest(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_validator()
-
     def test_repository_satisfies_every_governance_invariant(self) -> None:
         tracked = self.module.tracked_files(REPOSITORY_ROOT)
         findings = self.module.check_repository(REPOSITORY_ROOT, tracked)
         self.assertEqual(findings, [], f"repository governance findings: {findings}")
-
     def test_repository_templates_declare_the_frozen_fields(self) -> None:
         root = REPOSITORY_ROOT
         gate = self.module.parse_issue_form(
@@ -528,7 +505,5 @@ class RepositoryBaselineTest(unittest.TestCase):
         pull_request = (root / ".github/pull_request_template.md").read_text(encoding="utf-8")
         for field in self.module.PULL_REQUEST_FIELDS:
             self.assertIn(field, pull_request)
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -8,9 +8,7 @@ slug algorithm. Only the `http`, `https`, and `mailto` schemes are ignored;
 every other scheme, any query on a local target, and every malformed or
 ambiguous percent-escape fail closed.
 """
-
 from __future__ import annotations
-
 import argparse
 import re
 import subprocess
@@ -21,13 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import TextIO
-
 from markdown_it import MarkdownIt
 from markdown_it.rules_block import reference as markdown_reference
 from markdown_it.rules_inline import (
     autolink as markdown_autolink, backtick, image as markdown_image, link as markdown_link,
 )
-
 EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto"})
 MARKDOWN_SUFFIX = ".md"
 SCHEME_PATTERN = re.compile(r"\A(\w[\w+.-]*):")
@@ -44,24 +40,19 @@ MAX_HEADING_INDENT = 3
 FORBIDDEN_DECODED = frozenset({"/", "\\"})
 KEPT_CATEGORIES = ("L", "N", "M")
 KEPT_CHARACTERS = frozenset({"-", "_"})
-
 class ValidationError(RuntimeError):
     """A fail-closed link or anchor validation error."""
-
 @dataclass(frozen=True)
 class Finding:
     file: str
     line: int
     target: str
     reason: str
-
     def __str__(self) -> str:
         return f"{self.file}:{self.line}: {self.reason}: {self.target!r}"
-
 def is_external(target: str) -> bool:
     match = SCHEME_PATTERN.match(target)
     return match is not None and match.group(1).lower() in EXTERNAL_SCHEMES
-
 def _decode_once(raw: str, what: str) -> str:
     escapes = PERCENT_PATTERN.findall(raw)
     for escape in escapes:
@@ -82,7 +73,6 @@ def _decode_once(raw: str, what: str) -> str:
     if PERCENT_PATTERN.search(decoded) is not None:
         raise ValidationError(f"{what} remains percent-encoded after one decoding")
     return decoded
-
 def split_local_target(target: str) -> tuple[str, str]:
     """Split one local target into a decoded (path, fragment) pair."""
     if is_external(target):
@@ -93,7 +83,6 @@ def split_local_target(target: str) -> tuple[str, str]:
     if "?" in path_part or "?" in fragment_part:
         raise ValidationError("local target must not carry a query")
     return _decode_once(path_part, "path"), _decode_once(fragment_part, "fragment")
-
 def resolve_local_path(source: str, target: str) -> str:
     """Resolve one decoded local path against its containing directory."""
     path, _ = split_local_target(target)
@@ -117,17 +106,13 @@ def resolve_local_path(source: str, target: str) -> str:
     if not parts:
         raise ValidationError("local path resolves to the repository root")
     return "/".join(parts)
-
 def _strip_closing_hashes(heading: str) -> str:
     text = heading.rstrip(" \t")
     stripped = text.rstrip("#")
     if stripped != text and (not stripped or stripped[-1] in " \t"):
         return stripped.rstrip(" \t")
     return text
-
 UNSUPPORTED_LABEL_DEPTH = -1
-
-
 def _label_special_end(line: str, index: int, state) -> int | None:
     """Skip one escape or parser-owned code span inside a link label."""
     if line[index] == "\\":
@@ -139,8 +124,6 @@ def _label_special_end(line: str, index: int, state) -> int | None:
     backtick(state, True)
     index, state.pos = state.pos, saved
     return index
-
-
 def _label_end(line: str, start: int, state=None) -> int | None:
     if start >= len(line) or line[start] != "[":
         return None
@@ -162,12 +145,9 @@ def _label_end(line: str, start: int, state=None) -> int | None:
                 return index + 1
         index += 1
     return None
-
 def _is_word_character(character: str) -> bool:
     """Report whether one character is a Unicode letter, number, or mark."""
     return unicodedata.category(character)[0] in KEPT_CATEGORIES
-
-
 def _drop_emphasis(text: str, preserve_underscores: bool = False) -> str:
     """Remove emphasis delimiters while retaining literal underscores.
 
@@ -189,8 +169,6 @@ def _drop_emphasis(text: str, preserve_underscores: bool = False) -> str:
         if before and after and _is_word_character(before) and _is_word_character(after):
             kept.append(character)
     return "".join(kept)
-
-
 def _visible_tokens(tokens: Sequence) -> str:
     """Apply the frozen visible-text policy to already parsed inline tokens."""
     parts = []
@@ -210,14 +188,10 @@ def _visible_tokens(tokens: Sequence) -> str:
         elif token.children:
             parts.append(_visible_tokens(token.children))
     return "".join(parts)
-
-
 def _visible_text(heading: str) -> str:
     """Apply the frozen visible-text policy to raw inline content."""
     tokens = _markdown_parser().parseInline(_strip_closing_hashes(heading))[0].children or []
     return _visible_tokens(tokens)
-
-
 def _slugify_visible(text: str, source: str) -> str:
     text = unicodedata.normalize("NFC", text).casefold()
     text = re.sub(r"\s+", "-", text.strip())
@@ -228,12 +202,9 @@ def _slugify_visible(text: str, source: str) -> str:
     if not slug:
         raise ValidationError(f"heading produces an empty anchor slug: {source!r}")
     return slug
-
-
 def slugify(heading: str) -> str:
     """Return the anchor slug emitted for one ATX heading's raw text."""
     return _slugify_visible(_visible_text(heading), heading)
-
 def _fence_delimiter(line: str) -> tuple[str, int, str] | None:
     """Return the (character, length, trailing text) of one valid fence line."""
     indent = len(line) - len(line.lstrip(" "))
@@ -252,13 +223,9 @@ def _fence_delimiter(line: str) -> tuple[str, int, str] | None:
     if marker == "`" and "`" in trailing:
         return None
     return marker, length, trailing
-
-
 def _closes_fence(line: str, fence: tuple[str, int]) -> bool:
     marker = _fence_delimiter(line)
     return marker is not None and marker[0] == fence[0] and marker[1] >= fence[1] and not marker[2]
-
-
 def _content_lines(markdown: str) -> list[str]:
     """Return lines outside correctly matched Markdown fenced code blocks."""
     lines: list[str] = []
@@ -276,8 +243,6 @@ def _content_lines(markdown: str) -> list[str]:
         fence = (marker[0], marker[1])
         lines.append("")
     return lines
-
-
 def emitted_anchors(markdown: str) -> list[str]:
     """Return anchors for native CommonMark ATX headings in document order."""
     anchors: list[str] = []
@@ -299,14 +264,12 @@ def emitted_anchors(markdown: str) -> list[str]:
         counts[slug] = suffix + 1
         anchors.append(candidate)
     return anchors
-
 def validated_repository(candidate: Path | str) -> Path:
     """Return one existing Git working tree, rejecting every other argument value."""
     resolved = Path(candidate).resolve()
     if not resolved.is_dir() or not (resolved / ".git").exists():
         raise ValidationError("--repository must name an existing Git working tree")
     return resolved
-
 def tracked_files(root: Path | str) -> list[str]:
     repository = validated_repository(root)
     result = subprocess.run(
@@ -318,7 +281,6 @@ def tracked_files(root: Path | str) -> list[str]:
         return [item for item in result.stdout.decode("utf-8").split("\0") if item]
     except UnicodeDecodeError as error:
         raise ValidationError("tracked paths are not valid UTF-8") from error
-
 def _destination_limit(text: str, start: int) -> int | None:
     """Bound bare-destination parentheses; native rules own all other syntax."""
     while start < len(text) and text[start] in LINK_WHITESPACE:
@@ -341,13 +303,9 @@ def _destination_limit(text: str, start: int) -> int | None:
             return index + 1
         index += 1
     return None
-
-
 def _normalized_label(text: str) -> str:
     """Return one CommonMark-normalized reference label."""
     return " ".join(text.split()).casefold()
-
-
 def parse_reference_definition(line: str) -> tuple[str, str, int] | None:
     """Parse one reference definition and return its label-ending line count."""
     indent = len(line) - len(line.lstrip(" "))
@@ -358,8 +316,6 @@ def parse_reference_definition(line: str) -> tuple[str, str, int] | None:
         return None
     label = _normalized_label(line[indent + 1:end - 1])
     return (label, line[end + 1:].strip(" \t"), line.count("\n", 0, end) + 1) if label else None
-
-
 def _policy_target(state, start: int) -> tuple[str, int, str] | None:
     """Reject only repository-specific unsupported/undefined link forms.
 
@@ -394,16 +350,12 @@ def _policy_target(state, start: int) -> tuple[str, int, str] | None:
         # reach this fallback. Undefined shortcuts remain ordinary text.
         return INVALID_REFERENCE_TARGET, second, label
     return None
-
-
 def _record_source_lines(tokens: Sequence, source: str, start: int) -> None:
     """Attach the source line to native link/image tokens emitted by one rule."""
     source_line = source.count("\n", 0, start)
     for token in tokens:
         if token.type in {"link_open", "image"}:
             token.meta.setdefault("source_line", source_line)
-
-
 def _push_policy_finding(state, policy: tuple[str, int, str], start: int) -> None:
     """Emit one repository-policy token after native syntax declines a target."""
     token = state.push("policy_finding", "", 0)
@@ -411,8 +363,23 @@ def _push_policy_finding(state, policy: tuple[str, int, str], start: int) -> Non
     token.content = policy[2]
     token.meta["source_line"] = state.src.count("\n", 0, start)
     state.pos = policy[1]
-
-
+_IMAGE_LABEL_CONTEXT = "_sitometron_image_label_context"
+def _in_link_label(state) -> bool:
+    """Return whether native parsing currently owns this label's syntax."""
+    return state.linkLevel > 0 or state.env.get(_IMAGE_LABEL_CONTEXT, 0) > 0
+def _native_link_parse(native, state, silent):
+    """Run an image's native child parser under an explicit label context."""
+    if native is not markdown_image:
+        return native(state, silent)
+    depth = state.env.get(_IMAGE_LABEL_CONTEXT, 0)
+    state.env[_IMAGE_LABEL_CONTEXT] = depth + 1
+    try:
+        return native(state, silent)
+    finally:
+        if depth:
+            state.env[_IMAGE_LABEL_CONTEXT] = depth
+        else:
+            state.env.pop(_IMAGE_LABEL_CONTEXT, None)
 def _link_rule(native):
     prefix = {markdown_image: "![", markdown_link: "[", markdown_autolink: "<"}[native]
     def parse(state, silent):
@@ -422,8 +389,11 @@ def _link_rule(native):
         # Depth failures must be reported even when the library's own nesting
         # limit would otherwise turn a link into ordinary text.
         policy = _policy_target(state, start)
+        if (policy is not None and policy[0] == INVALID_REFERENCE_TARGET
+                and _in_link_label(state)):
+            policy = None
         limited = policy is not None and policy[0] != INVALID_REFERENCE_TARGET
-        if not limited and native(state, silent):
+        if not limited and _native_link_parse(native, state, silent):
             if not silent:
                 _record_source_lines(state.tokens[first:], state.src, start)
             return True
@@ -432,8 +402,6 @@ def _link_rule(native):
         _push_policy_finding(state, policy, start)
         return True
     return parse
-
-
 def _invalid_reference_end(state, start: int, end: int) -> int | None:
     """Find a rejected definition within its native block boundaries."""
     next_line = start + 1
@@ -456,8 +424,6 @@ def _invalid_reference_end(state, start: int, end: int) -> int | None:
         return None if definition is None else start + definition[2]
     finally:
         state.parentType = previous_parent
-
-
 def _markdown_parser() -> MarkdownIt:
     """Parse structure without rendering, URL normalization, or scheme filtering."""
     parser = MarkdownIt("commonmark", {"inline_definitions": True})
@@ -467,7 +433,6 @@ def _markdown_parser() -> MarkdownIt:
                 raise ValidationError("Markdown nesting exceeds the parser limit")
             return native(state, *args)
         return checked
-
     # The library otherwise skips content silently when its nesting limit is hit.
     parser.block.tokenize = bounded(parser.block.tokenize)
     parser.inline.tokenize = bounded(parser.inline.tokenize)
@@ -475,21 +440,18 @@ def _markdown_parser() -> MarkdownIt:
     parser.normalizeLink = lambda value: value
     parser.validateLink = lambda value: True
     original_destination = parser.helpers.parseLinkDestination
-
     def raw_destination(text, start, maximum):
         result = original_destination(text, start, maximum)
         if result.ok:
             raw = text[start:result.pos]
             result.str = raw[1:-1] if raw.startswith("<") else raw
         return result
-
     # Helpers are copied per instance: never modify markdown-it's shared module.
     parser.helpers = SimpleNamespace(**vars(parser.helpers))
     parser.helpers.parseLinkDestination = raw_destination
     parser.inline.ruler.at("link", _link_rule(markdown_link))
     parser.inline.ruler.at("image", _link_rule(markdown_image))
     parser.inline.ruler.at("autolink", _link_rule(markdown_autolink))
-
     def reference(state, start, end, silent):
         if markdown_reference(state, start, end, silent):
             return True
@@ -505,14 +467,10 @@ def _markdown_parser() -> MarkdownIt:
         return True
     parser.block.ruler.at("reference", reference)
     return parser
-
-
 def _token_target(token) -> str | None:
     """Return the raw destination attribute for one parser link token."""
     attribute = {"link_open": "href", "image": "src", "policy_finding": "target"}.get(token.type)
     return token.attrGet(attribute) if attribute is not None else None
-
-
 def _collect_link_tokens(tokens: Sequence, base: int) -> list[tuple[int, str]]:
     """Collect targets recursively while preserving image-child line offsets."""
     links: list[tuple[int, str]] = []
@@ -525,8 +483,6 @@ def _collect_link_tokens(tokens: Sequence, base: int) -> list[tuple[int, str]]:
             child_base = base + source_line if token.type == "image" else base
             links.extend(_collect_link_tokens(token.children, child_base))
     return links
-
-
 def extract_links(markdown: str) -> list[tuple[int, str]]:
     """Extract native links/images and every definition with their source lines."""
     links: list[tuple[int, str]] = []
@@ -536,8 +492,6 @@ def extract_links(markdown: str) -> list[tuple[int, str]]:
         elif token.type == "inline":
             links.extend(_collect_link_tokens(token.children or [], token.map[0] + 1))
     return sorted(links)
-
-
 def read_markdown(root: Path, relative_path: str) -> str:
     """Read one tracked Markdown file, failing closed on I/O and encoding errors."""
     try:
@@ -546,12 +500,10 @@ def read_markdown(root: Path, relative_path: str) -> str:
         raise ValidationError(f"cannot read {relative_path}: {error.strerror}") from error
     except UnicodeDecodeError as error:
         raise ValidationError(f"{relative_path} is not valid UTF-8") from error
-
 def _anchor_set(root: Path, relative_path: str, cache: dict[str, set[str]]) -> set[str]:
     if relative_path not in cache:
         cache[relative_path] = set(emitted_anchors(read_markdown(root, relative_path)))
     return cache[relative_path]
-
 def _check_target(
     root: Path, source: str, target: str, files: set[str], directories: set[str],
     cache: dict[str, set[str]],
@@ -584,7 +536,6 @@ def _check_target(
     if fragment not in _anchor_set(root, resolved, cache):
         return "missing anchor"
     return None
-
 def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
     """Return every link finding for the tracked Markdown files of one repository."""
     root = Path(root)
@@ -608,16 +559,12 @@ def check_repository(root: Path | str, tracked: Sequence[str]) -> list[Finding]:
             if reason is not None:
                 findings.append(Finding(file=source, line=line, target=target, reason=reason))
     return findings
-
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-
 def parse_arguments(arguments: Sequence[str] | None, description: str | None = None) -> None:
     """Accept no option: a validator always checks its own repository."""
     argparse.ArgumentParser(
         description=description or __doc__, allow_abbrev=False
     ).parse_args(arguments)
-
 def run_validator(
     prefix: str, check: Callable[[Path, Sequence[str]], list[object]], repository: Path,
     stdout: TextIO, enumerate_tracked: Callable[[Path], list[str]],
@@ -636,14 +583,11 @@ def run_validator(
         print(f"{prefix}: {finding}", file=stdout)
     print(f"{prefix}: {len(findings)} finding(s)", file=stdout)
     return 1 if findings else 0
-
 def main(
     arguments: Sequence[str] | None = None, stdout: TextIO = sys.stdout,
     repository: Path = REPOSITORY_ROOT,
 ) -> int:
     parse_arguments(arguments)
     return run_validator("relative-links", check_repository, repository, stdout, tracked_files)
-
-
 if __name__ == "__main__":
     raise SystemExit(main())
