@@ -193,6 +193,109 @@ class GovernanceCheckTest(unittest.TestCase):
         return text.replace("  - type: textarea\n    id: adr\n", "  - type: dropdown\n    id: adr\n") if path.endswith("feature.yml") else text
     def test_accepts_a_conforming_repository(self) -> None:
         self.assertEqual(self.check(), [])
+
+    def test_locks_the_pre_40_seventeen_finding_baseline(self) -> None:
+        planned_surfaces = [
+            "External REST v1", "Application Registry schema",
+            "Worker HTTP v1 routes and JSON schemas", "ResourceProfile and ExecutionPolicy schemas",
+            "Sitos adapter boundary", "Artifact REST and manifest schemas",
+        ]
+        registry_rows = "\n".join(
+            f"| {surface} | Planned | Planned | To be decided | Phase 1 |"
+            for surface in planned_surfaces
+        )
+        current_row = "| Future surface | Planned | Planned | [Issue #35](https://github.com/tetsuh/sitometron/issues/35) tracks assignment | Phase 1 |"
+        self.write("docs/08_contract_registry.md", REGISTRY_TEMPLATE.replace(current_row, registry_rows))
+        invalid_banner = "> **Planned, not yet normative:** [owner](not-an-authority.txt)\n"
+        banner_paths = [
+            "docs/01_requirements.md", "docs/06_build_test_packaging.md",
+            "docs/07_issue_breakdown.md", "docs/development_workflow.md",
+        ]
+        for path in banner_paths:
+            self.write(path, invalid_banner)
+
+        gate_fields = [field for field in self.module.GATE_FIELDS
+                       if field not in {"requirements", "contracts", "adr", "provenance"}]
+        gate_form = issue_form(
+            [(identifier, self.module.FORM_CONTRACTS[self.module.GATE_FORM][identifier][0]) for identifier in gate_fields],
+            checkbox_ids=("planned_banners",),
+        ).replace("  - type: textarea\n    id: phase", "  - type: input\n    id: phase")
+        self.write(".github/ISSUE_TEMPLATE/gate.yml", gate_form)
+        pr_fields = [field for field in self.module.PULL_REQUEST_FIELDS if field not in {
+            "Exact-head owner authorization", "Selected merge method", "Auto-merge not enabled",
+        }]
+        self.write(".github/pull_request_template.md", self.pull_request_template(fields=pr_fields))
+
+        findings = self.check()
+        registry_findings = [finding for finding in findings if finding.source.startswith("docs/08_contract_registry.md [")]
+        self.assertEqual(
+            [finding.source for finding in registry_findings],
+            [f"docs/08_contract_registry.md [{surface}]" for surface in planned_surfaces],
+        )
+        self.assertEqual(
+            [finding.source for finding in findings if finding.source.rsplit(":", 1)[0] in banner_paths],
+            [f"{path}:1" for path in banner_paths],
+        )
+        self.assertEqual(
+            [finding.reason for finding in findings if finding.source == self.module.GATE_FORM],
+            [f"missing required field {field!r}" for field in ("requirements", "contracts", "adr", "provenance")],
+        )
+        self.assertEqual(
+            [finding.reason for finding in findings if finding.source == self.module.PULL_REQUEST_TEMPLATE],
+            [f"missing required field line {field!r}; indented, prose, and fenced copies do not count"
+             for field in ("- Exact-head owner authorization:", "- Selected merge method:", "- Auto-merge not enabled:")],
+        )
+        self.assertEqual(len(findings), 17)
+
+    def test_locks_the_post_40_seven_template_findings(self) -> None:
+        gate_missing = ("requirements", "contracts", "adr", "provenance")
+        gate_fields = [field for field in self.module.GATE_FIELDS if field not in gate_missing]
+        gate_form = issue_form(
+            [(identifier, self.module.FORM_CONTRACTS[self.module.GATE_FORM][identifier][0]) for identifier in gate_fields],
+            checkbox_ids=("planned_banners", "provenance"),
+        ).replace("  - type: textarea\n    id: phase", "  - type: input\n    id: phase")
+        self.write(".github/ISSUE_TEMPLATE/gate.yml", gate_form)
+        pr_missing = ("Exact-head owner authorization", "Selected merge method", "Auto-merge not enabled")
+        self.write(".github/pull_request_template.md", self.pull_request_template(
+            fields=[field for field in self.module.PULL_REQUEST_FIELDS if field not in pr_missing],
+        ))
+        findings = self.check()
+        self.assertEqual(len(findings), 7)
+        self.assertEqual(
+            [finding.reason for finding in findings if finding.source == self.module.GATE_FORM],
+            [f"missing required field {field!r}" for field in gate_missing],
+        )
+        self.assertEqual(
+            [finding.reason for finding in findings if finding.source == self.module.PULL_REQUEST_TEMPLATE],
+            [f"missing required field line {('- ' + field + ':')!r}; indented, prose, and fenced copies do not count"
+             for field in pr_missing],
+        )
+
+    def test_locks_the_journal_logical_and_physical_phase_split(self) -> None:
+        journal_row = (
+            "| JobJournal envelope and event schemas | Normative | Implemented | "
+            "Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) for the logical contract; "
+            "Issue #11 implements the owned C++ envelope and logical fake; Issue #12 implements complete logical "
+            "envelope construction, non-wrapping sequence allocation, and commit ordering; [Issue #35](https://github.com/tetsuh/sitometron/issues/35) "
+            "tracks assignment of future Phase 0B physical encoding, production-adapter, durability implementation "
+            "and qualification, replay/recovery/pruning, and additional-mechanics authority | Phase 0A / 0B |"
+        )
+        self.write("docs/08_contract_registry.md", "\n".join([
+            "# Contract Registry", "", "| Contract surface | Maturity | Implementation | Normative or design authority | Owner |",
+            "|---|---|---|---|---|", journal_row, "",
+        ]))
+        rows, malformed = self.module._registry_rows(
+            (self.root / "docs/08_contract_registry.md").read_text(encoding="utf-8"))
+        self.assertEqual(malformed, [])
+        journal = [row for row in rows if row[0] == "JobJournal envelope and event schemas"]
+        self.assertEqual(journal, [[
+            "JobJournal envelope and event schemas", "Normative", "Implemented",
+            "Accepted [ADR-0002](adr/0002-define-core-job-reducer-contract.md) for the logical contract; "
+            "Issue #11 implements the owned C++ envelope and logical fake; Issue #12 implements complete logical "
+            "envelope construction, non-wrapping sequence allocation, and commit ordering; [Issue #35](https://github.com/tetsuh/sitometron/issues/35) "
+            "tracks assignment of future Phase 0B physical encoding, production-adapter, durability implementation "
+            "and qualification, replay/recovery/pruning, and additional-mechanics authority", "Phase 0A / 0B",
+        ]])
     def test_rejects_unknown_adr_status_values(self) -> None:
         for status in ["Draft", "accepted", "Approved", ""]:
             with self.subTest(status=status):
