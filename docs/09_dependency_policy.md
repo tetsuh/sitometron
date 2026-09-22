@@ -37,13 +37,19 @@ Python dependencies use `pyproject.toml` plus a committed `uv.lock`. They are no
 or Conan. CI provisions the exact `uv` and Python versions outside project CMake, then uses
 `uv sync --frozen`; dependency resolution or lock-file updates are never implicit build steps.
 
-Phase 0A permits repository-owned Python standard-library development-analysis and governance
-scripts in addition to the pinned development-time Draft 2020-12 schema environment. These scripts
-use the interpreter already provisioned by CI, add no package, and cannot become a project-CMake,
-runtime, product-build, adapter, or acquisition dependency. Issue #37 owns the clang-tidy
-analysis helper, Issue #38 owns the Gitleaks acquisition and secret-scan helpers, and Issue #39
-owns later governance-validator implementation. Runtime or product-build use requires a
-separately reviewed decision.
+Phase 0A permits repository-owned Python standard-library development-analysis scripts,
+the pinned development-time Draft 2020-12 `schema` group, and a separate `docs` group for
+Issue #39's documentation/governance validators. The `docs` group pins `markdown-it-py==3.0.0`
+(MIT) for CommonMark structure; its `mdurl` dependency (MIT) belongs to the same development-only
+closure. Both groups use `pyproject.toml` and the committed `uv.lock`; CI installs only the groups
+needed by each command. Validators run offline after provisioning and never invoke an installer.
+
+This exception supersedes the standard-library-only restriction for Issue #39's validators and
+their shared helper. It does not authorize another parser, renderer, plugin, or runtime dependency.
+Issue #37's clang-tidy analysis helper and Issue #38's Gitleaks acquisition and secret-scan helpers
+remain standard-library-only. None of these tools or Python groups may become a project-CMake,
+runtime, product-build, adapter, or acquisition dependency. Such use requires a separately reviewed
+decision. Parser and lock updates require reviewed Linux and Windows validation.
 
 ## Development-time security tooling
 

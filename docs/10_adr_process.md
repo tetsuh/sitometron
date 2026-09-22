@@ -28,6 +28,11 @@ Use [the template](adr/template.md) with:
 - Options considered;
 - References.
 
+The legacy ADR [`0001-bootstrap-a-stdlib-only-cpp20-core.md`](adr/0001-bootstrap-a-stdlib-only-cpp20-core.md)
+may omit only `Options considered` and `References` because it predates this structure. Every other
+current and future ADR must contain all six sections; this exception does not authorize rewriting
+ADR-0001 or inventing retrospective sections.
+
 ## 4. Status transitions
 
 ```text
