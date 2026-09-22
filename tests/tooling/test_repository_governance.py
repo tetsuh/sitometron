@@ -135,6 +135,20 @@ class IssueFormParserTest(unittest.TestCase):
         )
         blocks = self.module.parse_issue_form(text)
         self.assertEqual(list(blocks), ["summary"])
+    def test_ignores_issue_form_looking_items_inside_description_scalar(self) -> None:
+        text = (
+            "name: Example\n"
+            "description: |\n"
+            "  - type: textarea\n"
+            "    id: summary\n"
+            "    attributes:\n"
+            "      label: Summary\n"
+            "    validations:\n"
+            "      required: true\n"
+            "body: []\n"
+        )
+        with self.assertRaises(self.module.ValidationError):
+            self.module.parse_issue_form(text)
 @unittest.skipUnless(VALIDATOR.is_file(), "governance validator is not implemented")
 class GovernanceCheckTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -222,6 +236,22 @@ class GovernanceCheckTest(unittest.TestCase):
                 self.assertTrue(any(section in f.reason for f in self.check()),
                                 f"missing {section} must be reported")
         self.write("docs/adr/0009-example.md", ADR_TEMPLATE)
+    def test_rejects_adr_sections_with_wrong_heading_depth_or_container(self) -> None:
+        text = (
+            "# ADR-0009: Example decision\n\n"
+            "## Status\n\nAccepted on 2026-08-28.\n\n"
+            "### Context\n\ncontext\n\n"
+            "###### Decision\n\ndecision\n\n"
+            "> ## Consequences\n>\n> consequences\n\n"
+            "- ## Options considered\n\n"
+            "<div>\n## References\n</div>\n"
+        )
+        findings = self.module._adr_status(text, "docs/adr/0009-example.md")
+        self.assertEqual(
+            {section for section in self.module.ADR_SECTIONS
+             if any(f"missing required ADR section {section!r}" in f.reason for f in findings)},
+            set(self.module.ADR_SECTIONS[1:]),
+        )
     def test_allows_only_the_two_omitted_sections_on_legacy_adr(self) -> None:
         legacy = ADR_TEMPLATE.replace("0009-example", "0001-bootstrap-a-stdlib-only-cpp20-core")
         optional = ("\n## Options considered\n\nOptions text.\n", "\n## References\n\n- [the ADR process](../10_adr_process.md)\n")
@@ -439,6 +469,18 @@ class GovernanceCheckTest(unittest.TestCase):
                    f"- {spoofed}:\n" + body + f"- {spoofed}:\n"
                    + self.pull_request_template(fields=[]))
         self.assertTrue(any("declared 2 times" in f.reason for f in self.check()))
+    def test_rejects_required_pull_request_content_inside_comments_and_raw_html(self) -> None:
+        fields = "".join(f"- {field}:\n" for field in self.module.PULL_REQUEST_FIELDS)
+        sections = "".join(f"## {name}\n" for name in self.module.PULL_REQUEST_SECTIONS)
+        self.write(
+            ".github/pull_request_template.md",
+            "<!--\n" + fields + "-->\n<div>\n" + sections + "</div>\n",
+        )
+        findings = self.check()
+        for expected in self.module.PULL_REQUEST_FIELDS:
+            self.assertTrue(any(expected in finding.reason for finding in findings))
+        for expected in self.module.PULL_REQUEST_SECTIONS:
+            self.assertTrue(any(expected in finding.reason for finding in findings))
     def test_requires_the_validation_and_risks_section_headings(self) -> None:
         for name in self.module.PULL_REQUEST_SECTIONS:
             others = [n for n in self.module.PULL_REQUEST_SECTIONS if n != name]

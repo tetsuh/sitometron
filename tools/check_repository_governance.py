@@ -222,8 +222,19 @@ def parse_issue_form(text: str) -> dict[str, FormBlock]:
         if block.identifier in blocks:
             raise ValidationError(f"issue form declares duplicate id {block.identifier}")
         blocks[block.identifier] = block
+    in_body = False
     for line in text.split("\n"):
-        item = FORM_ITEM_PATTERN.match(line)
+        if line == "body:":
+            close(builder)
+            builder = None
+            in_body = True
+            continue
+        if line and not line[0].isspace() and re.match(r"[A-Za-z_][A-Za-z0-9_-]*:", line):
+            close(builder)
+            builder = None
+            in_body = False
+            continue
+        item = FORM_ITEM_PATTERN.match(line) if in_body else None
         if item is not None:
             close(builder)
             builder = _FormBlockBuilder(item.group(1))
@@ -284,7 +295,8 @@ def _sections(text: str) -> dict[str, str]:
     headings: list[tuple[int, str, int]] = []
     tokens = MarkdownIt("commonmark").parse(text)
     for index, token in enumerate(tokens):
-        if token.type != "heading_open" or token.map is None:
+        if (token.type != "heading_open" or token.tag != "h2" or token.level != 0
+                or token.map is None):
             continue
         inline = tokens[index + 1] if index + 1 < len(tokens) else None
         if inline is None or inline.type != "inline":
@@ -429,15 +441,31 @@ def check_issue_forms(root: Path, tracked: Sequence[str]) -> list[Finding]:
     ):
         findings.extend(_check_form(root, relative_path, expected, tracked))
     return findings
+def _pull_request_semantic_lines(text: str) -> tuple[list[str], list[str]]:
+    """Return top-level list and H2 lines, excluding comments, raw HTML, and nested blocks."""
+    lines = [line.rstrip() for line in _content_lines(text)]
+    field_lines: set[int] = set()
+    heading_lines: set[int] = set()
+    for token in MarkdownIt("commonmark").parse(text):
+        if token.map is None:
+            continue
+        if token.type == "inline" and token.level == 3:
+            field_lines.update(range(token.map[0], token.map[1]))
+        elif token.type == "heading_open" and token.tag == "h2" and token.level == 0:
+            heading_lines.add(token.map[0])
+    return (
+        [line if index in field_lines and line.startswith("-") else ""
+         for index, line in enumerate(lines)],
+        [line if index in heading_lines else "" for index, line in enumerate(lines)],
+    )
+
 def check_pull_request_template(root: Path, tracked: Sequence[str]) -> list[Finding]:
     if PULL_REQUEST_TEMPLATE not in tracked:
         return [Finding(PULL_REQUEST_TEMPLATE, "the pull-request template is not tracked")]
-    # Field lines are matched raw: a four-space indent makes the line an indented code block,
-    # so an indented copy must not substitute for the required top-level field.
-    lines = [line.rstrip() for line in _content_lines(_read(root, PULL_REQUEST_TEMPLATE))]
-    findings = _required_lines(lines, [f"- {field}:" for field in PULL_REQUEST_FIELDS], "field")
-    # The frozen boundary requires validation and risks sections, which are headings, not bullets.
-    findings.extend(_required_lines(lines, [f"## {name}" for name in PULL_REQUEST_SECTIONS],
+    field_lines, heading_lines = _pull_request_semantic_lines(_read(root, PULL_REQUEST_TEMPLATE))
+    findings = _required_lines(field_lines, [f"- {field}:" for field in PULL_REQUEST_FIELDS], "field")
+    # The frozen boundary requires validation and risks sections, which are top-level H2 headings.
+    findings.extend(_required_lines(heading_lines, [f"## {name}" for name in PULL_REQUEST_SECTIONS],
                                     "section heading"))
     return findings
 def _required_lines(lines: Sequence[str], required: Sequence[str], kind: str) -> list[Finding]:
