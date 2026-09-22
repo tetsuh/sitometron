@@ -481,6 +481,28 @@ class GovernanceCheckTest(unittest.TestCase):
             self.assertTrue(any(expected in finding.reason for finding in findings))
         for expected in self.module.PULL_REQUEST_SECTIONS:
             self.assertTrue(any(expected in finding.reason for finding in findings))
+    def test_rejects_unclosed_comment_boundary_spoof_in_list_container(self) -> None:
+        fields = "".join(f"- {field}:\n" for field in self.module.PULL_REQUEST_FIELDS)
+        sections = "".join(f"## {name}\n" for name in self.module.PULL_REQUEST_SECTIONS)
+        self.write(".github/pull_request_template.md", "- <!--\n" + fields + sections)
+        findings = self.check()
+        expected = [
+            f"missing required field line {('- ' + field + ':')!r}; indented, prose, and fenced copies do not count"
+            for field in self.module.PULL_REQUEST_FIELDS
+        ] + [
+            f"missing required section heading line {('## ' + section)!r}; indented, prose, and fenced copies do not count"
+            for section in self.module.PULL_REQUEST_SECTIONS
+        ]
+        self.assertEqual(
+            [(finding.source, finding.reason) for finding in findings],
+            [(self.module.PULL_REQUEST_TEMPLATE, reason) for reason in expected],
+        )
+        self.write(
+            ".github/pull_request_template.md",
+            "- <!-- closed -->\n" + self.pull_request_template(),
+        )
+        self.assertEqual(self.check(), [])
+
     def test_requires_the_validation_and_risks_section_headings(self) -> None:
         for name in self.module.PULL_REQUEST_SECTIONS:
             others = [n for n in self.module.PULL_REQUEST_SECTIONS if n != name]

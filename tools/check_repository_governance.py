@@ -441,22 +441,50 @@ def check_issue_forms(root: Path, tracked: Sequence[str]) -> list[Finding]:
     ):
         findings.extend(_check_form(root, relative_path, expected, tracked))
     return findings
+def _unclosed_html_comment_lines(text: str, tokens) -> set[int]:
+    """Return source lines hidden by an HTML comment split at a block boundary."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    hidden: set[int] = set()
+    for token in tokens:
+        if token.type != "html_block" or token.map is None:
+            continue
+        search = 0
+        while True:
+            opening = token.content.find("<!--", search)
+            if opening < 0:
+                break
+            closing = token.content.find("-->", opening + 4)
+            if closing >= 0:
+                search = closing + 3
+                continue
+            start = token.map[0] + token.content[:opening].count("\n")
+            source_start = sum(len(line) + 1 for line in lines[:start])
+            source_closing = text.find("-->", source_start + opening + 4)
+            end = (text.count("\n", 0, source_closing) + 1
+                   if source_closing >= 0 else len(lines))
+            hidden.update(range(start, end))
+            break
+    return hidden
+
 def _pull_request_semantic_lines(text: str) -> tuple[list[str], list[str]]:
     """Return top-level list and H2 lines, excluding comments, raw HTML, and nested blocks."""
     lines = [line.rstrip() for line in _content_lines(text)]
     field_lines: set[int] = set()
     heading_lines: set[int] = set()
-    for token in MarkdownIt("commonmark").parse(text):
+    tokens = MarkdownIt("commonmark").parse(text)
+    for token in tokens:
         if token.map is None:
             continue
         if token.type == "inline" and token.level == 3:
             field_lines.update(range(token.map[0], token.map[1]))
         elif token.type == "heading_open" and token.tag == "h2" and token.level == 0:
             heading_lines.add(token.map[0])
+    hidden = _unclosed_html_comment_lines(text, tokens)
     return (
-        [line if index in field_lines and line.startswith("-") else ""
+        [line if index in field_lines and index not in hidden and line.startswith("-") else ""
          for index, line in enumerate(lines)],
-        [line if index in heading_lines else "" for index, line in enumerate(lines)],
+        [line if index in heading_lines and index not in hidden else ""
+         for index, line in enumerate(lines)],
     )
 
 def check_pull_request_template(root: Path, tracked: Sequence[str]) -> list[Finding]:
