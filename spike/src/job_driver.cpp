@@ -205,12 +205,19 @@ void JobDriver::Run(std::string job_id) {
   // 3. spawn the real process and report what the runner observed
   LaunchSpec spec = record->spec;
   if (spec.working_directory.empty()) spec.working_directory = config_.working_directory;
-  const auto spawned = ProcessRunner::Spawn(spec);
-  const bool started = spawned.pid > 0;
+  // Spawn and publish the pid under the same lock that Shutdown() scans with, so a shutdown
+  // either refuses the launch before it happens or sees the pid it has to signal.
+  SpawnResult spawned;
   {
     std::lock_guard lock(mutex_);
-    jobs_[job_id].pid = spawned.pid;
+    if (stopping_) {
+      spawned.error = "shutdown began before launch";
+    } else {
+      spawned = ProcessRunner::Spawn(spec);
+      jobs_[job_id].pid = spawned.pid;
+    }
   }
+  const bool started = spawned.pid > 0;
   if (!step("worker_launch_observed",
             {{"operation_id", operation}, {"outcome", started ? "started" : "failed"}}))
     return;

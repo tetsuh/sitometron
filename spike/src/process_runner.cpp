@@ -55,18 +55,27 @@ SpawnResult ProcessRunner::Spawn(const LaunchSpec& spec) {
   for (auto& item : owned) argv.push_back(item.data());
   argv.push_back(nullptr);
 
-  posix_spawn_file_actions_t actions;
-  posix_spawn_file_actions_init(&actions);
-  if (!spec.working_directory.empty())
-    posix_spawn_file_actions_addchdir_np(&actions, spec.working_directory.c_str());
-
   SpawnResult result;
+  posix_spawn_file_actions_t actions;
+  if (const int status = posix_spawn_file_actions_init(&actions); status != 0) {
+    result.error = std::string("posix_spawn_file_actions_init: ") + std::strerror(status);
+    return result;
+  }
+  if (!spec.working_directory.empty()) {
+    if (const int status =
+            posix_spawn_file_actions_addchdir_np(&actions, spec.working_directory.c_str());
+        status != 0) {
+      posix_spawn_file_actions_destroy(&actions);
+      result.error = std::string("posix_spawn_file_actions_addchdir_np: ") + std::strerror(status);
+      return result;
+    }
+  }
   const int status =
       posix_spawnp(&result.pid, spec.executable.c_str(), &actions, nullptr, argv.data(), environ);
   posix_spawn_file_actions_destroy(&actions);
   if (status != 0) {
     result.pid = -1;
-    result.error = std::strerror(status);
+    result.error = std::string("posix_spawnp: ") + std::strerror(status);
   }
   return result;
 }
