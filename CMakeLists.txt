@@ -13,6 +13,7 @@ option(SITOMETRON_ENABLE_HWLOC "Build the hwloc topology adapter" OFF)
 option(SITOMETRON_ENABLE_QUILL "Build the Quill logging adapter" OFF)
 option(SITOMETRON_ENABLE_ASAN_UBSAN "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(SITOMETRON_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
+option(SITOMETRON_BUILD_SPIKE "Build the non-normative walking skeleton (Issue #48)" OFF)
 
 if(SITOMETRON_ENABLE_ASAN_UBSAN AND SITOMETRON_ENABLE_TSAN)
   message(FATAL_ERROR "ASan/UBSan and TSan cannot be enabled together")
@@ -263,4 +264,8 @@ if(SITOMETRON_BUILD_TESTS)
       "-DSITOMETRON_BINARY_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}"
       "-DSITOMETRON_POLICY_SCRATCH_ROOT:PATH=${CMAKE_CURRENT_BINARY_DIR}/policy-probes"
       -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_unit_tests_reject_real_sleep.cmake)
+endif()
+
+if(SITOMETRON_BUILD_SPIKE)
+  add_subdirectory(spike)
 endif()
