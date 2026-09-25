@@ -2,6 +2,7 @@
 #define SITOMETRON_SPIKE_FILE_JOURNAL_HPP_
 
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -26,6 +27,9 @@ class FileJournal final : public core::JobJournalPort {
       const core::LogicalJobEvent& event) noexcept override;
   [[nodiscard]] std::size_t committed_count() const noexcept;
   [[nodiscard]] std::size_t lines_on_open() const noexcept { return lines_on_open_; }
+  // Highest logical sequence found in the existing file (0 when empty). The writer continues
+  // from the next value so a restart never reuses a sequence number.
+  [[nodiscard]] std::uint64_t last_sequence() const noexcept { return last_sequence_; }
 
   static nlohmann::json ToJson(const core::LogicalJobEvent& event);
 
@@ -33,6 +37,7 @@ class FileJournal final : public core::JobJournalPort {
   std::string path_;
   int fd_ = -1;
   std::size_t lines_on_open_ = 0;
+  std::uint64_t last_sequence_ = 0;
   std::size_t committed_ = 0;
   mutable std::mutex mutex_;
 };

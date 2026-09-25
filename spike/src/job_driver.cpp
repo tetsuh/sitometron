@@ -49,6 +49,8 @@ JobDriver::JobDriver(DriverConfig config, FileJournal& journal)
     : config_(std::move(config)), journal_(journal) {
   core::internal::Config orchestration;
   orchestration.max_jobs = config_.max_jobs;
+  // Continue the logical sequence after the last durable record; no replay (README finding 7).
+  orchestration.initial_journal_sequence = journal_.last_sequence() + 1;
   orchestration.normal_capacity = 64;
   orchestration.trace_capacity = config_.trace_capacity;
   // The writer validates its bounds: completions and trace must cover the whole FIFO

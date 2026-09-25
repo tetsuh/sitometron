@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fstream>
@@ -130,7 +131,18 @@ bool FileJournal::Open(std::string& error) {
   {
     std::ifstream existing(path_);
     std::string line;
-    while (std::getline(existing, line)) ++lines_on_open_;
+    while (std::getline(existing, line)) {
+      ++lines_on_open_;
+      try {
+        const auto record = json::parse(line);
+        if (record.contains("sequence") && record["sequence"].is_number_unsigned())
+          last_sequence_ = std::max(last_sequence_, record["sequence"].get<std::uint64_t>());
+      } catch (const json::exception& e) {
+        error =
+            "journal line " + std::to_string(lines_on_open_) + " is not valid JSON: " + e.what();
+        return false;
+      }
+    }
   }
   fd_ = ::open(path_.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
   if (fd_ < 0) {

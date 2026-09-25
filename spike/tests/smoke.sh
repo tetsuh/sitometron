@@ -13,6 +13,12 @@ log="$scratch/daemon.log"
 
 command -v curl >/dev/null || { echo "curl is required"; exit 2; }
 
+# Non-loopback listen addresses are refused before anything is bound.
+if "$binary" --listen 0.0.0.0:0 --journal "$scratch/unused.jsonl" >"$scratch/refused.log" 2>&1; then
+  echo "expected non-loopback listen to be refused"; exit 1
+fi
+grep -q 'loopback' "$scratch/refused.log"
+
 "$binary" --listen 127.0.0.1:0 --journal "$journal" --workdir "$scratch" >"$log" 2>&1 &
 daemon=$!
 trap 'kill -TERM "$daemon" 2>/dev/null || true; wait "$daemon" 2>/dev/null || true' EXIT
@@ -100,4 +106,25 @@ wait "$daemon"
 grep -q 'shutting down' "$log"
 lines=$(wc -l <"$journal")
 [[ "$lines" -eq 52 ]] || { echo "expected 52 journal lines after shutdown, got $lines"; exit 1; }
+
+# Restart on the same Journal: the logical sequence continues after the last durable record.
+"$binary" --listen 127.0.0.1:0 --journal "$journal" --workdir "$scratch" >"$log" 2>&1 &
+daemon=$!
+port=''
+for _ in $(seq 1 100); do
+  port=$(sed -n 's/.*listening on http:\/\/127\.0\.0\.1:\([0-9]*\).*/\1/p' "$log" | head -n1)
+  [[ -n "$port" ]] && break
+  read -r -t 0.1 <> <(:) || true
+done
+[[ -n "$port" ]] || { echo "restarted daemon did not report a port"; cat "$log"; exit 1; }
+base="http://127.0.0.1:$port"
+grep -q 'existing lines: 52' "$log"
+again=$(curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' -d '{"executable":"/bin/true"}')
+again_id=$(printf '%s' "$again" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+wait_terminal "$again_id" >/dev/null
+kill -TERM "$daemon"
+wait "$daemon"
+lines=$(wc -l <"$journal")
+[[ "$lines" -eq 65 ]] || { echo "expected 65 journal lines after restart, got $lines"; exit 1; }
+tail -n1 "$journal" | grep -q '"sequence":65' || { echo "sequence did not continue: $(tail -n1 "$journal")"; exit 1; }
 echo "smoke ok: $lines journal lines, port $port"

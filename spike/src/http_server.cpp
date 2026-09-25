@@ -146,6 +146,11 @@ bool HttpServer::Start(std::string& error) {
     error = "listen address must be an IPv4 literal";
     return false;
   }
+  // The surface launches arbitrary processes without authentication: loopback only, by design.
+  if ((ntohl(address.sin_addr.s_addr) >> 24) != 127U) {
+    error = "listen address must be a loopback address (127.0.0.0/8)";
+    return false;
+  }
   if (::bind(listen_fd_, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0 ||
       ::listen(listen_fd_, 16) != 0) {
     error = std::strerror(errno);

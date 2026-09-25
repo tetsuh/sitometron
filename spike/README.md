@@ -28,7 +28,9 @@ build/dev-linux/spike/sitometron_spike --listen 127.0.0.1:8080 \
     --journal /tmp/sitometron-journal.jsonl --workdir /tmp
 ```
 
-Options: `--listen HOST:PORT` (port `0` picks an ephemeral port and prints it), `--journal PATH`,
+Options: `--listen HOST:PORT` (loopback addresses only; port `0` picks an ephemeral port and prints
+it), `--journal PATH` (an existing file is appended to and the logical sequence continues after its
+last record),
 `--workdir DIR` (default working directory for children), `--max-jobs N` (default 32, see
 [Findings](#findings-for-phase-0b12)), `--trace-capacity N` (default 4096).
 
@@ -112,7 +114,8 @@ authorities, not decisions.
    by hand here. Phase 0B should own one serializer (and its inverse for replay) next to the schema.
 7. **Replay is feasible with the pure reducer.** Because `Apply` is pure, restart recovery can fold
    the Journal file through the reducer to rebuild snapshots. The skeleton does not do it; it only
-   counts existing lines.
+   reads the last sequence so that new records continue the numbering, and Jobs from a previous
+   run are invisible to the API after a restart.
 8. **Per-record `fsync` costs ~4–6 ms on WSL/ext4** (see `recorded_at` deltas), so one Job spends
    60–80 ms in durability alone. Group commit or a dedicated Journal thread is a Phase 0B topic.
 9. **Two facts, one process.** For a plain child process, "the Worker completed" and "the process
