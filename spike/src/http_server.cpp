@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -173,6 +174,10 @@ void HttpServer::Serve() {
     if (ready <= 0) continue;
     const int client = ::accept4(listen_fd_, nullptr, nullptr, SOCK_CLOEXEC);
     if (client < 0) continue;
+    // A client that stops sending must not pin the single server thread (and shutdown) forever.
+    const timeval receive_timeout{5, 0};
+    ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof receive_timeout);
+    ::setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &receive_timeout, sizeof receive_timeout);
     HandleConnection(client);
     ::close(client);
   }

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <utility>
 
 namespace sitometron::spike {
@@ -15,6 +16,7 @@ using nlohmann::json;
 // The spike has no resource model. It commits one empty allocation so that the reducer's
 // resource axis is exercised. sha256("{}") is the digest the core fixtures use for "{}".
 constexpr const char* k_allocation_id = "spike-empty-allocation";
+constexpr int k_shutdown_grace_seconds = 3;
 constexpr const char* k_allocation_digest =
     "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
 // Bundle provenance is not computed by the skeleton; the value only has to be a hex digest.
@@ -219,6 +221,7 @@ void JobDriver::Run(std::string job_id) {
     {
       std::lock_guard lock(mutex_);
       jobs_[job_id].exit = exit;
+      exited_.notify_all();
     }
     worker_succeeded = exit.exited_normally && exit.exit_code == 0;
     worker_event = Candidate(job_id, worker_succeeded ? "worker_completed" : "worker_failed",
@@ -321,11 +324,22 @@ json JobDriver::Stats() const {
 void JobDriver::Shutdown() {
   std::vector<std::thread> threads;
   {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
     if (stopping_) return;
     stopping_ = true;
-    for (auto& [id, record] : jobs_)
+    auto live = [this] {
+      for (const auto& [id, record] : jobs_)
+        if (record.pid > 0 && !record.exit) return true;
+      return false;
+    };
+    for (const auto& [id, record] : jobs_)
       if (record.pid > 0 && !record.exit) ProcessRunner::Signal(record.pid, SIGTERM);
+    // Cooperative grace period, then force: a child ignoring SIGTERM must not block shutdown.
+    if (!exited_.wait_for(lock, std::chrono::seconds(k_shutdown_grace_seconds),
+                          [&] { return !live(); })) {
+      for (const auto& [id, record] : jobs_)
+        if (record.pid > 0 && !record.exit) ProcessRunner::Signal(record.pid, SIGKILL);
+    }
     threads.swap(threads_);
   }
   for (auto& thread : threads)

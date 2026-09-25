@@ -3,6 +3,7 @@
 
 #include <sys/types.h>
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -81,6 +82,7 @@ class JobDriver {
   std::unique_ptr<core::internal::JobOrchestrator> orchestrator_;
 
   mutable std::mutex mutex_;
+  std::condition_variable exited_;  // signalled whenever a child's exit status is recorded
   std::mutex create_mutex_;
   std::map<std::string, JobRecord> jobs_;
   std::vector<std::string> order_;

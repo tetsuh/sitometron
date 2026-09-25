@@ -63,7 +63,7 @@ bad_body=$(wait_terminal "$bad_id")
 printf '%s\n' "$bad_body" | grep -q '"state":"failed"' || { echo "expected failed: $bad_body"; exit 1; }
 printf '%s\n' "$bad_body" | grep -q '"exit_code":3' || { echo "expected exit 3: $bad_body"; exit 1; }
 
-# Journal: 13 records per Job (job_created .. cleanup_status_recorded), all for known Jobs.
+# Journal so far: 13 records per Job (job_created .. cleanup_status_recorded).
 lines=$(wc -l <"$journal")
 [[ "$lines" -eq 26 ]] || { echo "expected 26 journal lines, got $lines"; cat "$journal"; exit 1; }
 grep -c "\"job_id\":\"$ok_id\"" "$journal" | grep -qx 13
@@ -72,9 +72,32 @@ grep -q '"event_type":"worker_failed"' "$journal"
 grep -q '"outcome":"succeeded"' "$journal"
 
 curl -sS -X POST "$base/jobs" -d '{"executable":""}' -o /dev/null -w '%{http_code}\n' | grep -qx 400
+curl -sS -X POST "$base/jobs" -d '{"executable":"/bin/true","workdir":7}' -o /dev/null -w '%{http_code}\n' | grep -qx 400
+
+# A child killed by a signal is a failed Worker with the signal recorded.
+sig=$(curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' \
+  -d '{"executable":"/bin/sh","args":["-c","kill -9 $$"]}')
+sig_id=$(printf '%s' "$sig" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+sig_body=$(wait_terminal "$sig_id")
+printf '%s\n' "$sig_body" | grep -q '"state":"failed"' || { echo "expected failed: $sig_body"; exit 1; }
+printf '%s\n' "$sig_body" | grep -q '"signal":9' || { echo "expected signal 9: $sig_body"; exit 1; }
+
+# Listing names every Job with its state.
+listing=$(curl -fsS "$base/jobs")
+for id in "$ok_id" "$bad_id" "$sig_id"; do
+  printf '%s' "$listing" | grep -q "\"job_id\":\"$id\"" || { echo "listing lacks $id: $listing"; exit 1; }
+done
+printf '%s' "$listing" | grep -q '"state":"succeeded"'
+printf '%s' "$listing" | grep -q '"state":"failed"'
+
+# A child that ignores SIGTERM must not block shutdown: it is killed after the grace period.
+curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' \
+  -d '{"executable":"/bin/sh","args":["-c","trap \"\" TERM; while :; do sleep 1; done"]}' >/dev/null
 curl -sS "$base/jobs/nope" -o /dev/null -w '%{http_code}\n' | grep -qx 404
 
 kill -TERM "$daemon"
 wait "$daemon"
 grep -q 'shutting down' "$log"
+lines=$(wc -l <"$journal")
+[[ "$lines" -eq 52 ]] || { echo "expected 52 journal lines after shutdown, got $lines"; exit 1; }
 echo "smoke ok: $lines journal lines, port $port"

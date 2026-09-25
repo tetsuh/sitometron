@@ -5,14 +5,14 @@
 // Composes the Phase 0A core (reducer + single writer) with real adapters: a file Journal, a
 // posix_spawn process runner, a loopback HTTP surface, and system clock/identity sources.
 
+#include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
 
-#include <condition_variable>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -27,13 +27,14 @@ using nlohmann::json;
 using sitometron::spike::HttpRequest;
 using sitometron::spike::HttpResponse;
 
-std::mutex g_signal_mutex;
-std::condition_variable g_signal_cv;
+// Self-pipe: the handler only records the signal and writes one byte, both async-signal-safe.
+int g_signal_pipe[2] = {-1, -1};
 volatile sig_atomic_t g_signal = 0;
 
 void OnSignal(int signal) {
   g_signal = signal;
-  g_signal_cv.notify_all();
+  const char byte = 1;
+  (void)!::write(g_signal_pipe[1], &byte, 1);
 }
 
 struct Options {
@@ -133,8 +134,11 @@ HttpResponse Route(sitometron::spike::JobDriver& driver, const HttpRequest& requ
         spec.arguments.push_back(item.get<std::string>());
       }
     }
-    if (body.contains("workdir") && body["workdir"].is_string())
+    if (body.contains("workdir")) {
+      if (!body["workdir"].is_string())
+        return Json(400, {{"error", "\"workdir\" must be a string"}});
       spec.working_directory = body["workdir"].get<std::string>();
+    }
     std::string error;
     const auto id = driver.Submit(std::move(spec), error);
     if (!id) return Json(503, {{"error", error}});
@@ -181,6 +185,10 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  if (::pipe2(g_signal_pipe, O_CLOEXEC) != 0) {
+    std::cerr << "error: cannot create the signal pipe: " << std::strerror(errno) << '\n';
+    return 1;
+  }
   struct sigaction action {};
   action.sa_handler = OnSignal;
   sigaction(SIGINT, &action, nullptr);
@@ -191,9 +199,10 @@ int main(int argc, char** argv) {
             << " (existing lines: " << journal.lines_on_open() << ")\n"
             << std::flush;
 
-  {
-    std::unique_lock lock(g_signal_mutex);
-    g_signal_cv.wait(lock, [] { return g_signal != 0; });
+  for (;;) {
+    char byte = 0;
+    const auto count = ::read(g_signal_pipe[0], &byte, 1);
+    if (count == 1 || (count < 0 && errno != EINTR)) break;
   }
   std::cout << "signal " << static_cast<int>(g_signal) << ": shutting down\n" << std::flush;
   server.Stop();
