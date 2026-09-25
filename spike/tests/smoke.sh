@@ -103,6 +103,19 @@ done
 printf '%s' "$listing" | grep -q '"state":"succeeded"'
 printf '%s' "$listing" | grep -q '"state":"failed"'
 
+# A malformed Content-Length is rejected with 400 and never starts a Job.
+before=$(curl -fsS "$base/jobs" | grep -o '"job_id"' | wc -l)
+malformed=$(
+  trap '' PIPE
+  exec 3<>"/dev/tcp/127.0.0.1/$port" || exit 0
+  printf 'POST /jobs HTTP/1.1\r\nHost: x\r\nContent-Length: 25junk\r\n\r\n{"executable":"/bin/true"}' >&3
+  timeout 5 head -c 200 <&3 || true
+  exec 3>&- 3<&- || true
+)
+printf '%s' "$malformed" | grep -q '^HTTP/1.1 400' || { echo "expected 400 for malformed Content-Length: $malformed"; exit 1; }
+after=$(curl -fsS "$base/jobs" | grep -o '"job_id"' | wc -l)
+[[ "$before" -eq "$after" ]] || { echo "malformed request started a Job"; exit 1; }
+
 # A client that trickles bytes is cut off by the total request deadline (408 or closed socket),
 # and the server keeps serving afterwards.
 trickle_start=$(date +%s)

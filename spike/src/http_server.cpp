@@ -116,12 +116,16 @@ bool ReadRequest(int fd, HttpRequest& request, int& status) {
   }
   std::size_t content_length = 0;
   if (const auto found = request.headers.find("content-length"); found != request.headers.end()) {
-    try {
-      content_length = std::stoul(found->second);
-    } catch (...) {
+    // Strict decimal token: "25junk" must be rejected, not read as 25.
+    const auto& text = found->second;
+    const bool decimal =
+        !text.empty() && text.size() <= 10 &&
+        std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+    if (!decimal) {
       status = 400;
       return false;
     }
+    content_length = std::stoul(text);
   }
   if (content_length > k_max_request_bytes) {
     status = 413;
