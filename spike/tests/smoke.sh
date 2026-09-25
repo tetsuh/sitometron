@@ -19,6 +19,13 @@ if "$binary" --listen 0.0.0.0:0 --journal "$scratch/unused.jsonl" >"$scratch/ref
 fi
 grep -q 'loopback' "$scratch/refused.log"
 
+# An existing Journal whose last record lacks its LF is refused rather than appended onto.
+printf '{"sequence":1}' >"$scratch/torn.jsonl"
+if "$binary" --listen 127.0.0.1:0 --journal "$scratch/torn.jsonl" >"$scratch/torn.log" 2>&1; then
+  echo "expected a torn journal to be refused"; exit 1
+fi
+grep -q 'newline' "$scratch/torn.log"
+
 "$binary" --listen 127.0.0.1:0 --journal "$journal" --workdir "$scratch" >"$log" 2>&1 &
 daemon=$!
 trap 'kill -TERM "$daemon" 2>/dev/null || true; wait "$daemon" 2>/dev/null || true' EXIT

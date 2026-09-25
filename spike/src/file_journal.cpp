@@ -144,6 +144,18 @@ bool FileJournal::Open(std::string& error) {
       }
     }
   }
+  {
+    // O_APPEND concatenates onto the last line, so an existing file must end with LF.
+    std::ifstream tail(path_, std::ios::binary | std::ios::ate);
+    if (tail && tail.tellg() > 0) {
+      tail.seekg(-1, std::ios::end);
+      char last = 0;
+      if (!tail.get(last) || last != '\n') {
+        error = "journal does not end with a newline; refusing to append to a torn record";
+        return false;
+      }
+    }
+  }
   fd_ = ::open(path_.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
   if (fd_ < 0) {
     error = std::strerror(errno);
