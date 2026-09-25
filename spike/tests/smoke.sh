@@ -103,6 +103,19 @@ done
 printf '%s' "$listing" | grep -q '"state":"succeeded"'
 printf '%s' "$listing" | grep -q '"state":"failed"'
 
+# A client that trickles bytes is cut off by the total request deadline (408 or closed socket),
+# and the server keeps serving afterwards.
+trickle_start=$(date +%s)
+(
+  trap '' PIPE
+  exec 3<>"/dev/tcp/127.0.0.1/$port" || exit 0
+  for _ in $(seq 1 12); do printf 'G' >&3 2>/dev/null || break; read -r -t 1 <> <(:) || true; done
+  exec 3>&- 3<&- || true
+) || true
+trickle_elapsed=$(( $(date +%s) - trickle_start ))
+[[ "$trickle_elapsed" -le 10 ]] || { echo "trickle client was not cut off: ${trickle_elapsed}s"; exit 1; }
+curl -fsS "$base/healthz" | grep -q '"status":"ok"'
+
 # A working directory that cannot be entered is a spawn failure: launch observed as failed, no
 # worker_running, and the Job still reaches a terminal state.
 nodir=$(curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' \

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <sstream>
 #include <utility>
@@ -18,6 +19,10 @@ namespace sitometron::spike {
 namespace {
 
 constexpr std::size_t k_max_request_bytes = 64 * 1024;
+// Per-recv socket timeout and a total deadline per request: a client that trickles one byte at a
+// time must not hold the single server thread (and therefore Stop()) open indefinitely.
+constexpr int k_receive_timeout_seconds = 2;
+constexpr auto k_request_deadline = std::chrono::seconds(6);
 
 std::string_view ReasonPhrase(int status) {
   switch (status) {
@@ -29,6 +34,8 @@ std::string_view ReasonPhrase(int status) {
       return "Bad Request";
     case 404:
       return "Not Found";
+    case 408:
+      return "Request Timeout";
     case 405:
       return "Method Not Allowed";
     case 413:
@@ -64,10 +71,17 @@ void Respond(int fd, const HttpResponse& response) {
 
 // Returns false when the request is malformed or too large; `status` carries the reason.
 bool ReadRequest(int fd, HttpRequest& request, int& status) {
+  const auto deadline = std::chrono::steady_clock::now() + k_request_deadline;
+  auto expired = [&] {
+    if (std::chrono::steady_clock::now() < deadline) return false;
+    status = 408;
+    return true;
+  };
   std::string buffer;
   std::size_t header_end = std::string::npos;
   char chunk[4096];
   while (header_end == std::string::npos) {
+    if (expired()) return false;
     const auto count = ::recv(fd, chunk, sizeof chunk, 0);
     if (count < 0 && errno == EINTR) continue;
     if (count <= 0) return false;
@@ -115,6 +129,7 @@ bool ReadRequest(int fd, HttpRequest& request, int& status) {
   }
   request.body = buffer.substr(header_end + 4);
   while (request.body.size() < content_length) {
+    if (expired()) return false;
     const auto count = ::recv(fd, chunk, sizeof chunk, 0);
     if (count < 0 && errno == EINTR) continue;
     if (count <= 0) return false;
@@ -180,7 +195,7 @@ void HttpServer::Serve() {
     const int client = ::accept4(listen_fd_, nullptr, nullptr, SOCK_CLOEXEC);
     if (client < 0) continue;
     // A client that stops sending must not pin the single server thread (and shutdown) forever.
-    const timeval receive_timeout{5, 0};
+    const timeval receive_timeout{k_receive_timeout_seconds, 0};
     ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof receive_timeout);
     ::setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &receive_timeout, sizeof receive_timeout);
     HandleConnection(client);
