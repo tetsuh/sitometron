@@ -132,7 +132,7 @@ bool FileJournal::Open(std::string& error) {
     std::string line;
     while (std::getline(existing, line)) ++lines_on_open_;
   }
-  fd_ = ::open(path_.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
+  fd_ = ::open(path_.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
   if (fd_ < 0) {
     error = std::strerror(errno);
     return false;

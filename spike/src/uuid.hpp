@@ -10,26 +10,25 @@
 namespace sitometron::spike {
 
 // Hand-rolled RFC 9562 UUIDs. Boost.UUID stays private to sitometron_core; the spike does not
-// need to widen that boundary for two generators.
+// need to widen that boundary for two generators. Random bits come straight from the OS entropy
+// source; a UUID per Job does not need a fast PRNG.
 class UuidGenerator {
  public:
-  UuidGenerator() : engine_(std::random_device{}()) {}
-
   std::string V7() {
     std::lock_guard lock(mutex_);
     const auto millis =
         static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                        std::chrono::system_clock::now().time_since_epoch())
                                        .count());
-    std::uint64_t high = (millis << 16) | (0x7000U | (engine_() & 0x0FFFU));
-    std::uint64_t low = (engine_() & 0x3FFFFFFFFFFFFFFFULL) | 0x8000000000000000ULL;
+    const std::uint64_t high = (millis << 16) | (0x7000U | (Random64() & 0x0FFFU));
+    const std::uint64_t low = (Random64() & 0x3FFFFFFFFFFFFFFFULL) | 0x8000000000000000ULL;
     return Format(high, low);
   }
 
   std::string V4() {
     std::lock_guard lock(mutex_);
-    std::uint64_t high = (engine_() & 0xFFFFFFFFFFFF0FFFULL) | 0x0000000000004000ULL;
-    std::uint64_t low = (engine_() & 0x3FFFFFFFFFFFFFFFULL) | 0x8000000000000000ULL;
+    const std::uint64_t high = (Random64() & 0xFFFFFFFFFFFF0FFFULL) | 0x0000000000004000ULL;
+    const std::uint64_t low = (Random64() & 0x3FFFFFFFFFFFFFFFULL) | 0x8000000000000000ULL;
     return Format(high, low);
   }
 
@@ -57,8 +56,12 @@ class UuidGenerator {
     return out;
   }
 
+  std::uint64_t Random64() {
+    return (static_cast<std::uint64_t>(entropy_()) << 32) ^ static_cast<std::uint64_t>(entropy_());
+  }
+
   std::mutex mutex_;
-  std::mt19937_64 engine_;
+  std::random_device entropy_;
 };
 
 }  // namespace sitometron::spike
