@@ -172,7 +172,7 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `JRN-005` | C++ tests `job_physical_disk_sync_order`, `journal_segment_creation_durable` | Planned under Proposed ADR-0006 under Issue #51; normative on acceptance |
 | `JRN-006` | C++ tests `journal_commit_result_classification`, `journal_adapter_poisoned_after_failure`, `job_physical_commit_failure_fail_closed` | Planned under Proposed ADR-0006 under Issue #51; normative on acceptance |
 | `JRN-007` | C++ tests `journal_directory_exclusive_lock`, `journal_daemon_never_rewrites` | Planned under Proposed ADR-0006 under Issue #51; normative on acceptance |
-| `OPS-002` | C++ tests `journal_startup_torn_tail_refusal`, `journal_startup_corruption_refusal`, `journal_startup_capacity_refusal` | Planned under Proposed ADR-0006 under Issue #51; normative on acceptance |
+| `OPS-002` | C++ tests `journal_startup_torn_tail_refusal`, `journal_startup_corruption_refusal`, `journal_startup_capacity_refusal`, `journal_startup_sequence_exhausted_refusal`, `journal_startup_empty_active_segment` | Planned under Proposed ADR-0006 under Issue #51; normative on acceptance |
 | `OPS-003` | C++ tests `journal_replay_reproduces_vectors`, `journal_replay_dispatches_no_effects`, `journal_replay_sequence_continuation` | Planned under Proposed ADR-0006 under Issue #51; normative on acceptance |
 | `OPS-004` | C++ test `journal_unresolved_jobs_block_admission` | Planned under Proposed ADR-0006 under Issue #51; normative on acceptance |
 | `OPS-005` | C++ tests `journal_prune_prefix_only`, `journal_prune_refuses_open_jobs` | Planned under Proposed ADR-0006 under Issue #51; normative on acceptance |

@@ -62,7 +62,7 @@ sequence decodes to an equal event.
   Journal path.
 - The directory holds append-only segment files named `journal-<S>.ndjson`, where `<S>` is the first
   record's sequence as 20 zero-padded decimal digits. Segments sort lexically in sequence order.
-- Exactly one segment, the one with the highest first sequence, is active. The adapter rotates at a
+- Exactly one segment, the one with the highest name, is active. The adapter rotates at a
   record boundary when the active segment would exceed its configured size limit. The default limit
   is 67,108,864 bytes. Earlier segments are sealed and never modified by the daemon.
 - The daemon holds an exclusive advisory lock on `journal.lock` in the directory for its whole
@@ -120,6 +120,15 @@ never modifies the Journal on its own.
   segment boundaries. The daemon refuses to start and reports `journal_corrupt` with the location.
 - **Capacity**: replay would create more resident Jobs than the configured maximum. The daemon
   refuses to start and reports `journal_capacity_exceeded`.
+- **Sequence exhaustion**: the last replayed sequence is the maximum unsigned 64-bit value, so no
+  next sequence exists. Following ADR-0003's exhaustion rule, the daemon refuses to start and reports
+  `journal_sequence_exhausted`.
+
+An empty segment is valid only as the highest segment, and only when its name equals the next
+sequence: the last replayed sequence plus one, or one for a Journal with no records. It is the
+expected result of a crash after a rotation made the segment durable and before its first record
+committed. The daemon keeps it as the active segment and appends the next record to it. An empty
+segment in any other position, or one whose name differs from the next sequence, is corruption.
 
 An offline operator tool may remove a torn tail. It moves the removed bytes into a quarantine file
 next to the segment and never touches a complete record. No tool repairs corruption in v1.
