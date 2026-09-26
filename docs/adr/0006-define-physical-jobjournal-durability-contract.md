@@ -124,9 +124,9 @@ never modifies the Journal on its own.
   committed. The daemon refuses to start and reports `journal_torn_tail` with the segment name and
   byte offset.
 - **Corruption**: a record that is not valid JSON, fails schema validation, breaks sequence
-  continuity, or is rejected during replay. Continuity means the first retained record's sequence
-  equals its segment name, and each later record is exactly one greater than the previous one across
-  segment boundaries. The daemon refuses to start and reports `journal_corrupt` with the location.
+  continuity, or is rejected during replay. Continuity means the first record of every non-empty
+  segment has a sequence equal to that segment's name, and each later record is exactly one greater
+  than the previous one, within and across segment boundaries. The daemon refuses to start and reports `journal_corrupt` with the location.
 - **Capacity**: replay would create more resident Jobs than the configured maximum. The daemon
   refuses to start and reports `journal_capacity_exceeded`.
 - **Sequence exhaustion**: the last replayed sequence is the maximum unsigned 64-bit value, so no
@@ -181,7 +181,8 @@ records under the global sequence. v1 adds no per-Job sequence.
 - An offline operator operation may archive or delete a prefix of sealed segments while holding the
   Journal lock. A prefix is prunable only when every Job with a record in it has a terminal outcome,
   released resources, and a recorded cleanup status within the prefix, and has no record in any
-  retained segment.
+  retained segment. The prefix never includes the highest non-empty segment, so the retained Journal
+  always holds the last committed record and an empty active segment still names the next sequence.
 - After pruning, replay starts at the first retained segment and continuity is checked from its first
   sequence. Sequences are never reset or reused.
 - A later event for a pruned Job reaches the reducer as an event for an absent Job and is decided by
