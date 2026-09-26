@@ -80,8 +80,17 @@ For each `Commit()` call, the adapter performs these steps on the calling writer
 3. complete a data sync of that file: `fdatasync` on POSIX, `FlushFileBuffers` on Windows;
 4. return `kCommitted`.
 
-Creating a segment is durable before its first record is committed: the adapter syncs the new file
-and, on POSIX, the directory entry.
+Creating a segment is durable before its first record is committed. The adapter syncs the new file
+and then the directory that holds its entry:
+
+- on POSIX, `fsync` on the directory opened read-only;
+- on Windows, `FlushFileBuffers` on the directory opened with `FILE_FLAG_BACKUP_SEMANTICS`. The
+  supported Journal file system on Windows is NTFS, and Phase 6 qualifies the behavior.
+
+If either sync fails, or the platform or file system cannot perform it, the adapter writes no record
+to that segment and the pending `Commit()` returns `kDefiniteFailure`. A crash after the directory
+sync and before the first record leaves an empty highest segment, which startup accepts under
+Section 5.
 
 A record is committed if and only if its complete bytes and LF are durable. A complete record that
 reached disk before a crash is committed even when its `Commit()` never returned. That is the case
