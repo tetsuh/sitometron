@@ -2,10 +2,10 @@
 
 Accepted ADR-0002 makes the Phase 0A core Job contract normative. Issue #9 implements the
 dependency-minimal pure reducer, and Issue #12 implements complete logical Journal envelope
-construction plus the ADR-0003 single-writer logical-commit orchestration. Physical serialization,
-append/flush/disk-sync durability, replay, recovery, and pruning remain Planned for Phase 0B under
-Issue #51 and Proposed
-[ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md).
+construction plus the ADR-0003 single-writer logical-commit orchestration. Accepted
+[ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under Issue #51 makes
+physical serialization, append/flush/disk-sync durability, replay, recovery, and pruning normative;
+their implementation remains Planned for Phase 0B.
 
 ## 1. Source files
 
