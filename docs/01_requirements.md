@@ -72,7 +72,27 @@ Accepted ADR-0003 under Issue #10 makes these requirements binding on implementa
 | `JOB-008` | MUST | Bound ingress through one single-writer FIFO with explicit admission linearization, a fixed resident Job population, critical-reserve isolation, delivery-identity-safe coalescing, and fail-closed capacity invariants; retain each successfully created Phase 0A Job snapshot until separate Normative deletion/retention authority exists. | Accepted [ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) under [Issue #10](https://github.com/tetsuh/sitometron/issues/10) |
 | `OPS-001` | MUST | Close admission, latch persistence/readiness failure, quiesce producers and callbacks, and destroy writer state only in the bounded ingress/shutdown order defined for Phase 0A. | Accepted [ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) under [Issue #10](https://github.com/tetsuh/sitometron/issues/10) |
 
-## 7. Planned domains
+## 7. Planned Phase 0B JobJournal requirements
+
+> **Planned, not yet normative:** [Issue #51](https://github.com/tetsuh/sitometron/issues/51) owns
+> these requirements through Proposed
+> [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md). Implementers must not
+> treat this outline as a finalized contract.
+
+They become Normative only when ADR-0006 is Accepted.
+
+| ID | Level | Requirement | Authority |
+|---|---|---|---|
+| `JRN-004` | MUST | Encode each Journal event as one canonical UTF-8 NDJSON record through one serializer and its exact inverse parser, within the record size bound. | Proposed [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under [Issue #51](https://github.com/tetsuh/sitometron/issues/51) |
+| `JRN-005` | MUST | Report `kCommitted` only after the complete record and its LF are written and data-synced, and make each new segment durable before its first record commits. | Proposed [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under [Issue #51](https://github.com/tetsuh/sitometron/issues/51) |
+| `JRN-006` | MUST | Classify failures before the first written byte as definite failure and later failures as outcome unknown, never retry a failed data sync, and poison the adapter after the first non-committed result. | Proposed [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under [Issue #51](https://github.com/tetsuh/sitometron/issues/51) |
+| `JRN-007` | MUST | Hold an exclusive lock on the Journal directory for the daemon lifetime and never rewrite or delete Journal data from the daemon. | Proposed [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under [Issue #51](https://github.com/tetsuh/sitometron/issues/51) |
+| `OPS-002` | MUST | Validate every segment before the writer starts and refuse to start on a torn tail, corruption, or replay capacity overflow, without modifying the Journal. | Proposed [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under [Issue #51](https://github.com/tetsuh/sitometron/issues/51) |
+| `OPS-003` | MUST | Rebuild writer state by replaying every record through the pure reducer, require identical re-derived events, dispatch no effects, and continue at the next sequence. | Proposed [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under [Issue #51](https://github.com/tetsuh/sitometron/issues/51) |
+| `OPS-004` | MUST | Start with readiness false and admission closed while any replayed Job is unresolved, and report each such Job. | Proposed [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under [Issue #51](https://github.com/tetsuh/sitometron/issues/51) |
+| `OPS-005` | MUST | Prune only an offline prefix of sealed segments whose Jobs are fully closed within the prefix, and never reset or reuse sequences. | Proposed [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under [Issue #51](https://github.com/tetsuh/sitometron/issues/51) |
+
+## 8. Planned domains
 
 > **Planned, not yet normative:** [Issue #35](https://github.com/tetsuh/sitometron/issues/35)
 > tracks assignment of the owning future Phase Issues and ADRs for these mechanisms. Implementers
@@ -80,7 +100,5 @@ Accepted ADR-0003 under Issue #10 makes these requirements binding on implementa
 
 The remaining `ADM`, `JRN`, `WRK`, `RES`, `APP`, `PAR`, `ART`, `SEC`, and `OPS` requirements are added
 by their future design authorities before implementation. Accepted ADR-0002 owns the current
-Normative `JOB-001`–`JOB-007` and `JRN-001`–`JRN-003` requirements. Issue #35 tracks assignment of
-Phase 0B physical
-JobJournal encoding, production-adapter, durability implementation and qualification,
-replay/recovery/pruning, and additional-mechanics authority.
+Normative `JOB-001`–`JOB-007` and `JRN-001`–`JRN-003` requirements. Issue #51 owns the Phase 0B
+physical JobJournal requirements in Section 7.

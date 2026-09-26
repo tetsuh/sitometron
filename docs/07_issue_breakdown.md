@@ -4,8 +4,8 @@
 
 | Phase | GitHub Milestone | Gate status |
 |---|---|---|
-| 0A | `v0.1 / P0A Bootstrap` | [Gate #1](https://github.com/tetsuh/sitometron/issues/1) open |
-| 0B | `v0.1 / P0B Durability` | Gate Issue required before entry |
+| 0A | `v0.1 / P0A Bootstrap` | [Gate #1](https://github.com/tetsuh/sitometron/issues/1) closed on 2026-09-24 |
+| 0B | `v0.1 / P0B Durability` | [Gate #50](https://github.com/tetsuh/sitometron/issues/50) open |
 | 1 | `v0.1 / P1 REST & Admission` | Gate Issue required before entry |
 | 2 | `v0.1 / P2 Local Worker` | Gate Issue required before entry |
 | 3 | `v0.1 / P3 Resources` | Gate Issue required before entry |
@@ -21,7 +21,7 @@ then the Milestone closes.
 
 | Issue | Scope | Status |
 |---|---|---|
-| [#1](https://github.com/tetsuh/sitometron/issues/1) | Phase 0A Gate | Open; closes last |
+| [#1](https://github.com/tetsuh/sitometron/issues/1) | Phase 0A Gate | Closed on 2026-09-24 |
 | [#2](https://github.com/tetsuh/sitometron/issues/2) | Repository and dependency-free bootstrap baseline | Completed |
 | [#3](https://github.com/tetsuh/sitometron/issues/3) | Job state, event, and reducer ADR | Completed |
 | [#4](https://github.com/tetsuh/sitometron/issues/4) | Repository governance alignment | Completed |
@@ -31,7 +31,7 @@ then the Milestone closes.
 | [#11](https://github.com/tetsuh/sitometron/issues/11) | Lifecycle capability ports and deterministic fakes | Completed |
 | [#12](https://github.com/tetsuh/sitometron/issues/12) | Fake-driven Job lifecycle and private single writer | Completed |
 | [#13](https://github.com/tetsuh/sitometron/issues/13) | Deterministic adverse/race qualification | Completed |
-| [#14](https://github.com/tetsuh/sitometron/issues/14) | Final Phase 0A CI and Gate evidence | Open |
+| [#14](https://github.com/tetsuh/sitometron/issues/14) | Final Phase 0A CI and Gate evidence | Completed |
 | [#15](https://github.com/tetsuh/sitometron/issues/15) | Explicit core dependency allowlist ADR | Completed |
 | [#17](https://github.com/tetsuh/sitometron/issues/17) | Approved dependency-boundary integration | Completed |
 | [#20](https://github.com/tetsuh/sitometron/issues/20) | SonarQube Cloud automatic analysis | Completed |
@@ -39,21 +39,14 @@ then the Milestone closes.
 | [#23](https://github.com/tetsuh/sitometron/issues/23) | Post-implementation documentation alignment | Completed |
 | [#25](https://github.com/tetsuh/sitometron/issues/25) | Canonical developer bootstrap | Completed |
 | [#26](https://github.com/tetsuh/sitometron/issues/26) | Lifecycle capability-port ADR | Completed |
-| [#36](https://github.com/tetsuh/sitometron/issues/36) | Deterministic Phase 0A policy CTests | Open |
-| [#37](https://github.com/tetsuh/sitometron/issues/37) | clang-tidy and sanitizer CI | Open |
-| [#38](https://github.com/tetsuh/sitometron/issues/38) | Pinned Phase 0A secret scanning | Open |
-| [#39](https://github.com/tetsuh/sitometron/issues/39) | Phase 0A documentation and governance validation | Open |
-| [#40](https://github.com/tetsuh/sitometron/issues/40) | Post-Phase-0A Planned-authority assignment | Open; first remaining child |
-| [#41](https://github.com/tetsuh/sitometron/issues/41) | Phase 0A clang-tidy baseline cleanup | Open |
+| [#36](https://github.com/tetsuh/sitometron/issues/36) | Deterministic Phase 0A policy CTests | Completed |
+| [#37](https://github.com/tetsuh/sitometron/issues/37) | clang-tidy and sanitizer CI | Completed |
+| [#38](https://github.com/tetsuh/sitometron/issues/38) | Pinned Phase 0A secret scanning | Completed |
+| [#39](https://github.com/tetsuh/sitometron/issues/39) | Phase 0A documentation and governance validation | Completed |
+| [#40](https://github.com/tetsuh/sitometron/issues/40) | Post-Phase-0A Planned-authority assignment | Completed |
+| [#41](https://github.com/tetsuh/sitometron/issues/41) | Phase 0A clang-tidy baseline cleanup | Completed |
 
-The current remaining order is:
-
-```text
-#40 Planned-authority links -> Gate #1 horizontal-review acceptance
-  -> #36 policy CTests -> #41 clang-tidy baseline cleanup -> #37 clang-tidy/sanitizer CI
-  -> #38 secret scanning -> #39 documentation/governance validation
-  -> #14 final CI/Gate evidence -> #1 closes
-```
+All Phase 0A Issues are complete, and Gate #1 closed on 2026-09-24.
 
 Issue #35 is the milestone-external assignment/deferral tracker for post-Phase-0A Planned sections;
 it is not a Phase 0A implementation item.
@@ -91,7 +84,8 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
 > tracks assignment of each future Phase Gate and its design authorities for the mechanisms below.
 > Implementers must not treat this outline as a finalized contract.
 
-- Phase 0B owns the logger durability spike and production JobJournal foundation.
+- Phase 0B owns the logger durability spike and production JobJournal foundation. Gate #50
+  tracks it, and Issue #51 owns the physical JobJournal design through Proposed ADR-0006.
 - Phase 1 owns external REST, Admission, and Application Registry contracts.
 - Phase 2 owns Worker protocol schemas and local process containment.
 - Phase 3 owns topology, ResourceProfile, scheduling, and reservation contracts.
