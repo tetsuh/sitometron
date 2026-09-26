@@ -135,6 +135,13 @@ Replay rebuilds writer state by folding each record through the pure reducer.
 - After replay, the next sequence is the last replayed sequence plus one. An empty Journal starts at
   one.
 
+ADR-0003 forbids reusing a sequence after a failed or unknown commit. That rule governs one writer
+lifetime, and this ADR does not change it. Across a restart, the durable Journal is the only
+authority for sequence identity. A sequence with no complete durable record was never committed:
+ADR-0003 releases no response, acknowledgment, state change, or effect for it, so no party outside
+the failed process has observed it. The next process may therefore allocate that number to a new
+event. Bytes removed as a torn tail stay in the quarantine file as evidence and are never replayed.
+
 A Job is unresolved after replay when it is non-terminal, its resources are not released, or its
 cleanup status is not recorded. ADR-0002 states that the v0.1 snapshot is not a replayable launch
 checkpoint, so the daemon cannot resume or conclude such a Job alone. When any Job is unresolved,
@@ -216,6 +223,9 @@ its FIFO and critical-reserve proofs are unchanged. The added latency lengthens 
   for one event, and changing that requires amending ADR-0005.
 - **A per-Job sequence in the record**: rejected because the global sequence already orders each
   Job's records, and adding a field changes the logical schema.
+- **Persisting failed sequences across restarts**: rejected because a failed sequence is never
+  observed outside its process, and recording it needs a second durable write per commit with its
+  own failure classification and startup reconciliation.
 - **Failing unresolved Jobs automatically at startup**: rejected because the closed event set has no
   event for it and it would claim an outcome that was never observed.
 
