@@ -53,8 +53,10 @@ object followed by exactly one LF byte (`0x0A`).
 
 There is one canonical serializer and one inverse parser, owned by the production Journal adapter
 target outside `sitometron_core`. The parser accepts only what the serializer can emit. Round trip
-is exact in both directions: every schema-valid event encodes to one byte sequence, and that byte
-sequence decodes to an equal event.
+is exact in both directions for every schema-valid event whose encoding fits the size bound: the
+event encodes to one byte sequence, and that byte sequence decodes to an equal event. A schema-valid
+event that does not fit, for example through an unusually long fractional-seconds part in
+`recorded_at`, is rejected before any byte is written and returns `kDefiniteFailure`.
 
 ### 2. File layout
 
