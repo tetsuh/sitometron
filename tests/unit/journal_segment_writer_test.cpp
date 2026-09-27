@@ -409,12 +409,12 @@ int SegmentRotation() {
             "segment names are 20 zero-padded digits");
   {
     // A record larger than the limit still gets its own segment.
-    MemoryFileSystem small;
-    SegmentJournal tiny(small, SegmentJournalOptions{1});
+    MemoryFileSystem tiny_fs;
+    SegmentJournal tiny(tiny_fs, SegmentJournalOptions{1});
     result |= OpenFresh(tiny);
     result |= Check(tiny.Commit(Event(1)) == LogicalCommitResult::kCommitted &&
                         tiny.Commit(Event(2)) == LogicalCommitResult::kCommitted &&
-                        small.files.count(Segment(2)) == 1,
+                        tiny_fs.files.count(Segment(2)) == 1,
                     "a record over the segment limit is written alone");
   }
   return result;
