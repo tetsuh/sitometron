@@ -76,7 +76,7 @@ class MemoryFileSystem final : public FileSystem {
       return std::nullopt;
     }
     std::vector<std::string> names;
-    const auto prefix = directory + "/";
+    const auto prefix = JoinPath(directory, "");
     for (const auto& [path, content] : files) {
       if (path.rfind(prefix, 0) == 0) names.push_back(path.substr(prefix.size()));
     }
@@ -144,7 +144,7 @@ class MemoryFileSystem final : public FileSystem {
       fail_next_directory_sync = false;
       return IoError::kUnsupported;
     }
-    const auto prefix = directory + "/";
+    const auto prefix = JoinPath(directory, "");
     for (const auto& [path, content] : files) {
       if (path.rfind(prefix, 0) == 0) durable_entries.insert(path);
     }
@@ -159,8 +159,9 @@ class MemoryFileSystem final : public FileSystem {
   }
   [[nodiscard]] std::size_t open_handles() const { return handles_.size(); }
   [[nodiscard]] std::size_t count(std::string_view prefix) const {
-    return static_cast<std::size_t>(std::count_if(
-        log.begin(), log.end(), [&](const std::string& entry) { return entry.rfind(prefix, 0) == 0; }));
+    return static_cast<std::size_t>(
+        std::count_if(log.begin(), log.end(),
+                      [&](const std::string& entry) { return entry.rfind(prefix, 0) == 0; }));
   }
 
  private:
@@ -184,7 +185,9 @@ LogicalJobEvent Event(std::uint64_t sequence) {
                          PrincipalPayload{"operator@example"}};
 }
 
-std::string Segment(std::uint64_t first) { return k_dir + "/" + SegmentJournal::SegmentName(first); }
+std::string Segment(std::uint64_t first) {
+  return JoinPath(k_dir, SegmentJournal::SegmentName(first));
+}
 
 int OpenFresh(SegmentJournal& journal, std::uint64_t expected_next = 1) {
   const auto opened = journal.Open(k_dir);
@@ -203,8 +206,8 @@ int SegmentCreationDurable() {
     const auto create = std::find(log.begin(), log.end(), "create " + Segment(1));
     const auto file_sync = std::find(log.begin(), log.end(), "sync " + Segment(1));
     const auto dir_sync = std::find(log.begin(), log.end(), "syncdir " + k_dir);
-    const auto first_write =
-        std::find_if(log.begin(), log.end(), [](const std::string& e) { return e.rfind("write", 0) == 0; });
+    const auto first_write = std::find_if(
+        log.begin(), log.end(), [](const std::string& e) { return e.rfind("write", 0) == 0; });
     result |= Check(create != log.end() && file_sync != log.end() && dir_sync != log.end() &&
                         first_write != log.end() && create < file_sync && file_sync < dir_sync &&
                         dir_sync < first_write,
@@ -247,8 +250,9 @@ int DiskSyncOrder() {
     return e.rfind("write", 0) == 0;
   });
   const auto last_sync = std::find(fs.log.rbegin(), fs.log.rend(), "sync " + Segment(1));
-  result |= Check(last_write != fs.log.rend() && last_sync != fs.log.rend() && last_sync < last_write,
-                  "data sync follows the last byte of the record");
+  result |=
+      Check(last_write != fs.log.rend() && last_sync != fs.log.rend() && last_sync < last_write,
+            "data sync follows the last byte of the record");
   const auto syncs = fs.count("sync " + Segment(1));
   result |= Check(journal.Commit(Event(2)) == LogicalCommitResult::kCommitted, "second commit");
   result |= Check(fs.count("sync " + Segment(1)) == syncs + 1, "one data sync per record");
@@ -283,8 +287,8 @@ int CommitResultClassification() {
     const auto syncs_before = fs.count("sync ");
     c.arrange(fs);
     const auto outcome = journal.Commit(Event(2));
-    result |= Check(outcome == c.expected, c.name + ": result " +
-                                               std::to_string(static_cast<int>(outcome)));
+    result |= Check(outcome == c.expected,
+                    c.name + ": result " + std::to_string(static_cast<int>(outcome)));
     if (c.name == "data sync failure") {
       result |= Check(fs.count("sync ") == syncs_before + 1, "a failed data sync is never retried");
     }
@@ -298,9 +302,9 @@ int CommitResultClassification() {
     result |= OpenFresh(journal);
     auto bad = Event(1);
     bad.payload = WorkerRunningPayload{Uuid{"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"}};
-    result |= Check(journal.Commit(bad) == LogicalCommitResult::kDefiniteFailure &&
-                        fs.count("write") == 0,
-                    "schema-invalid event is a definite failure with no I/O");
+    result |= Check(
+        journal.Commit(bad) == LogicalCommitResult::kDefiniteFailure && fs.count("write") == 0,
+        "schema-invalid event is a definite failure with no I/O");
   }
   {
     MemoryFileSystem fs;
@@ -308,24 +312,24 @@ int CommitResultClassification() {
     result |= OpenFresh(journal);
     auto big = Event(1);
     big.recorded_at.rfc3339 = "2026-09-27T01:02:03." + std::string(max_record_bytes, '1') + "Z";
-    result |= Check(journal.Commit(big) == LogicalCommitResult::kDefiniteFailure &&
-                        fs.count("write") == 0,
-                    "oversize event is a definite failure with no I/O");
+    result |= Check(
+        journal.Commit(big) == LogicalCommitResult::kDefiniteFailure && fs.count("write") == 0,
+        "oversize event is a definite failure with no I/O");
   }
   {
     MemoryFileSystem fs;
     SegmentJournal journal(fs);
     result |= OpenFresh(journal);
-    result |= Check(journal.Commit(Event(2)) == LogicalCommitResult::kDefiniteFailure &&
-                        fs.count("write") == 0,
-                    "a sequence gap is a definite failure with no I/O");
+    result |= Check(
+        journal.Commit(Event(2)) == LogicalCommitResult::kDefiniteFailure && fs.count("write") == 0,
+        "a sequence gap is a definite failure with no I/O");
   }
   {
     MemoryFileSystem fs;
     SegmentJournal journal(fs);
-    result |= Check(journal.Commit(Event(1)) == LogicalCommitResult::kDefiniteFailure &&
-                        fs.log.empty(),
-                    "commit before Open is a definite failure with no I/O");
+    result |=
+        Check(journal.Commit(Event(1)) == LogicalCommitResult::kDefiniteFailure && fs.log.empty(),
+              "commit before Open is a definite failure with no I/O");
   }
   return result;
 }
@@ -362,9 +366,9 @@ int AdapterPoisonedAfterFailure() {
     }
     SegmentJournal reopened(fs);
     result |= OpenFresh(reopened, 2);
-    result |= Check(!reopened.poisoned() &&
-                        reopened.Commit(Event(2)) == LogicalCommitResult::kCommitted,
-                    "restart is not poisoned and reuses the never-written sequence");
+    result |=
+        Check(!reopened.poisoned() && reopened.Commit(Event(2)) == LogicalCommitResult::kCommitted,
+              "restart is not poisoned and reuses the never-written sequence");
   }
   return result;
 }
@@ -380,16 +384,16 @@ int SegmentRotation() {
                     "commit " + std::to_string(sequence));
   }
   result |= Check(fs.files.count(Segment(1)) == 1 && fs.files.count(Segment(3)) == 1 &&
-                      fs.files.count(Segment(5)) == 1 && fs.files.size() == 4,
-                  "segments start at 1, 3, 5 (plus the lock file)");
-  result |= Check(fs.files[Segment(1)].size() == record * 2 &&
-                      fs.files[Segment(5)].size() == record,
-                  "records never split across segments; limit reached exactly");
+                      fs.files.count(Segment(5)) == 1 && fs.files.size() == 3,
+                  "segments start at 1, 3, 5");
+  result |=
+      Check(fs.files[Segment(1)].size() == record * 2 && fs.files[Segment(5)].size() == record,
+            "records never split across segments; limit reached exactly");
   result |= Check(fs.open_handles() == 2, "old segment handles are closed (lock + active remain)");
-  result |= Check(SegmentJournal::SegmentName(1) == "journal-00000000000000000001.ndjson" &&
-                      SegmentJournal::SegmentName(UINT64_MAX) ==
-                          "journal-18446744073709551615.ndjson",
-                  "segment names are 20 zero-padded digits");
+  result |=
+      Check(SegmentJournal::SegmentName(1) == "journal-00000000000000000001.ndjson" &&
+                SegmentJournal::SegmentName(UINT64_MAX) == "journal-18446744073709551615.ndjson",
+            "segment names are 20 zero-padded digits");
   {
     // A record larger than the limit still gets its own segment.
     MemoryFileSystem small;
@@ -474,8 +478,9 @@ int NeverRewrites() {
     SegmentJournal journal(fs, SegmentJournalOptions{400});
     const auto opened = journal.Open(k_dir);
     result |= Check(opened.ok, "reopen: " + opened.detail);
-    fs.fail_next_sync = true;
-    result |= Check(journal.Commit(Event(5)) == LogicalCommitResult::kOutcomeUnknown, "fail 5");
+    fs.next_write_fault = {{5, IoError::kOther}};
+    result |= Check(journal.Commit(Event(5)) == LogicalCommitResult::kOutcomeUnknown,
+                    "partial write of record 5");
   }
   for (const auto& [path, content] : before) {
     const auto& now = fs.files[path];
@@ -484,10 +489,10 @@ int NeverRewrites() {
   }
   for (const auto& entry : fs.log) {
     const auto op = entry.substr(0, entry.find(' '));
-    result |= Check(op == "mkdir" || op == "lock" || op == "list" || op == "read" ||
-                        op == "create" || op == "open" || op == "write" || op == "sync" ||
-                        op == "syncdir" || op == "close",
-                    "only append-only operations are used: " + entry);
+    result |=
+        Check(op == "mkdir" || op == "lock" || op == "list" || op == "read" || op == "create" ||
+                  op == "open" || op == "write" || op == "sync" || op == "syncdir" || op == "close",
+              "only append-only operations are used: " + entry);
   }
   return result;
 }
@@ -504,8 +509,8 @@ int DirectoryExclusiveLock() {
     result |= Check(opened.ok && opened.next_sequence == 1, "first open: " + opened.detail);
     SegmentJournal second(fs);
     result |= Check(!second.Open(root.string()).ok, "second open is refused while locked");
-    result |= Check(first.Commit(Event(1)) == LogicalCommitResult::kCommitted,
-                    "real file system commit");
+    result |=
+        Check(first.Commit(Event(1)) == LogicalCommitResult::kCommitted, "real file system commit");
   }
   {
     SegmentJournal third(SystemFileSystem());

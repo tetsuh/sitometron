@@ -25,9 +25,9 @@ struct SegmentJournalOptions {
 
 struct OpenResult {
   bool ok = false;
-  std::string detail;             // reason when ok is false
+  std::string detail;               // reason when ok is false
   std::uint64_t next_sequence = 0;  // first sequence the next Commit() must carry
-  std::string active_segment;     // file name of the segment the next record goes to, if any
+  std::string active_segment;       // file name of the segment the next record goes to, if any
 };
 
 class SegmentJournal final : public core::JobJournalPort {
