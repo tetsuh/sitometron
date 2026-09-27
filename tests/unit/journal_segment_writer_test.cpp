@@ -67,6 +67,8 @@ class MemoryFileSystem final : public FileSystem {
   bool fail_next_create = false;
   bool throw_on_create = false;
   bool throw_on_write = false;
+  bool throw_on_list = false;
+  bool throw_on_read = false;
   IoError create_error = IoError::kNoSpace;
 
   IoError EnsureDirectory(const std::string& directory) override {
@@ -86,6 +88,7 @@ class MemoryFileSystem final : public FileSystem {
   std::optional<std::vector<std::string>> List(const std::string& directory,
                                                IoError& error) override {
     log.push_back("list " + directory);
+    if (throw_on_list) throw std::runtime_error("injected list exception");
     if (directories.count(directory) == 0) {
       error = IoError::kOther;
       return std::nullopt;
@@ -99,6 +102,7 @@ class MemoryFileSystem final : public FileSystem {
   }
   std::optional<std::string> ReadAll(const std::string& path, IoError& error) override {
     log.push_back("read " + path);
+    if (throw_on_read) throw std::runtime_error("injected read exception");
     const auto it = files.find(path);
     if (it == files.end()) {
       error = IoError::kOther;
@@ -528,6 +532,24 @@ int RestartContinues() {
                     "failed re-sync of an adopted segment is definite and writes nothing");
   }
   {
+    // An exception while locating segments must not leak the directory lock (RAII in Open()).
+    MemoryFileSystem throwing;
+    throwing.directories.insert(k_dir);
+    throwing.files[Segment(1)] = EncodeRecord(Event(1)).bytes;
+    for (const bool list : {true, false}) {
+      throwing.throw_on_list = list;
+      throwing.throw_on_read = !list;
+      SegmentJournal failing(throwing);
+      const auto failed = failing.Open(k_dir);
+      result |= Check(!failed.ok, std::string(list ? "list" : "read") + " exception fails Open");
+      result |= Check(throwing.OpenHandles() == 0, "no handle leaks after a throwing Open");
+    }
+    throwing.throw_on_list = false;
+    throwing.throw_on_read = false;
+    SegmentJournal retry(throwing);
+    result |= OpenFresh(retry, 2);
+  }
+  {
     MemoryFileSystem torn;
     torn.directories.insert(k_dir);
     torn.files[Segment(1)] = EncodeRecord(Event(1)).bytes + "{\"schema";
@@ -625,6 +647,37 @@ int DirectoryExclusiveLock() {
     result |= Check(opened.ok && std::filesystem::is_directory(deep) &&
                         nested.Commit(Event(1)) == LogicalCommitResult::kCommitted,
                     "journal under missing ancestors opens and commits: " + opened.detail);
+  }
+  {
+    // A trailing separator or "." must not demote the Journal directory to an ancestor created
+    // with default permissions: it is still the owner-only final directory.
+    for (const auto& spelling : {(root / "slash" / "journal").string() +
+                                     std::string(1, std::filesystem::path::preferred_separator),
+                                 (root / "dot" / "journal" / ".").string()}) {
+      SegmentJournal spelled(SystemFileSystem());
+      const auto opened = spelled.Open(spelling);
+      result |= Check(opened.ok, "open " + spelling + ": " + opened.detail);
+      auto journal_dir = std::filesystem::path(spelling).lexically_normal();
+      if (journal_dir.filename().empty()) journal_dir = journal_dir.parent_path();
+#if defined(_WIN32)
+      PSECURITY_DESCRIPTOR descriptor = nullptr;
+      PACL dacl = nullptr;
+      SECURITY_DESCRIPTOR_CONTROL control = 0;
+      DWORD revision = 0;
+      const bool read =
+          GetNamedSecurityInfoW(journal_dir.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                                nullptr, nullptr, &dacl, nullptr, &descriptor) == ERROR_SUCCESS;
+      const bool is_protected =
+          read && GetSecurityDescriptorControl(descriptor, &control, &revision) &&
+          (control & SE_DACL_PROTECTED) != 0 && dacl != nullptr && dacl->AceCount == 1;
+      if (descriptor != nullptr) LocalFree(descriptor);
+      result |= Check(is_protected, "owner-only DACL for " + spelling);
+#else
+      const auto permissions = std::filesystem::status(journal_dir).permissions();
+      result |= Check(permissions == std::filesystem::perms::owner_all,
+                      "Journal directory is 0700 for " + spelling);
+#endif
+    }
   }
   {
     SegmentJournal third(SystemFileSystem());

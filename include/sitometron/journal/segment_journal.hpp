@@ -61,6 +61,7 @@ class SegmentJournal final : public core::JobJournalPort {
     std::uint64_t active_size = 0;  // current size of `active`
   };
   Located Locate(const std::string& directory);
+  OpenResult OpenLocked(const std::string& directory);
   core::LogicalCommitResult CommitLocked(const core::LogicalJobEvent& event);
   core::LogicalCommitResult StartSegment(std::uint64_t first_sequence);
   core::LogicalCommitResult MakeActiveDurable();

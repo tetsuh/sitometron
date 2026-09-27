@@ -51,6 +51,16 @@ std::vector<std::filesystem::path> MissingDirectories(const std::filesystem::pat
   return missing;
 }
 
+// The directory named by `directory` without "." / ".." components or a trailing separator, so
+// the Journal directory itself (not a trailing empty component) is the last element created.
+std::filesystem::path NormalizedDirectory(const std::string& directory) {
+  auto path = std::filesystem::path(directory).lexically_normal();
+  if (path.filename().empty() && path.has_parent_path() && path != path.root_path()) {
+    path = path.parent_path();
+  }
+  return path;
+}
+
 std::filesystem::path ParentOf(const std::filesystem::path& path) {
   return path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
 }
@@ -148,7 +158,7 @@ class WindowsFileSystem final : public FileSystem {
  public:
   IoError EnsureDirectory(const std::string& directory) override {
     std::error_code code;
-    const std::filesystem::path path(directory);
+    const auto path = NormalizedDirectory(directory);
     if (std::filesystem::is_directory(path, code)) return IoError::kNone;
     OwnerOnlySecurity security;
     if (security.Attributes() == nullptr) return IoError::kUnsupported;
@@ -277,7 +287,7 @@ class PosixFileSystem final : public FileSystem {
  public:
   IoError EnsureDirectory(const std::string& directory) override {
     std::error_code code;
-    const std::filesystem::path path(directory);
+    const auto path = NormalizedDirectory(directory);
     if (std::filesystem::is_directory(path, code)) return IoError::kNone;
     // Create each missing directory from the outermost down, and make every new entry durable in
     // its parent before any record can live below it. Only the Journal directory itself is 0700;

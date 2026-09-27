@@ -57,6 +57,24 @@ std::optional<std::uint64_t> LastSequence(std::string_view content, std::string&
   return decoded.event.sequence;
 }
 
+// Closes a handle on scope exit unless ownership was released (exception-safe Open()).
+class HandleGuard {
+ public:
+  explicit HandleGuard(FileSystem& file_system) : file_system_(file_system) {}
+  ~HandleGuard() {
+    if (handle_.has_value()) file_system_.Close(*handle_);
+  }
+  HandleGuard(const HandleGuard&) = delete;
+  HandleGuard& operator=(const HandleGuard&) = delete;
+  void Reset(std::optional<FileHandle> handle) { handle_ = handle; }
+  [[nodiscard]] bool Holds() const { return handle_.has_value(); }
+  [[nodiscard]] std::optional<FileHandle> Release() { return std::exchange(handle_, std::nullopt); }
+
+ private:
+  FileSystem& file_system_;
+  std::optional<FileHandle> handle_;
+};
+
 }  // namespace
 
 SegmentJournal::SegmentJournal(FileSystem& file_system, SegmentJournalOptions options)
@@ -130,12 +148,24 @@ SegmentJournal::Located SegmentJournal::Locate(const std::string& directory) {
 OpenResult SegmentJournal::Open(const std::string& directory) {
   const std::lock_guard guard(mutex_);
   if (opened_ || lock_.has_value()) return OpenResult{false, "journal is already open", 0, {}};
+  try {
+    return OpenLocked(directory);
+  } catch (const std::exception& error) {
+    return OpenResult{false, std::string("cannot open the Journal: ") + error.what(), 0, {}};
+  } catch (...) {
+    return OpenResult{false, "cannot open the Journal: unexpected exception", 0, {}};
+  }
+}
+
+OpenResult SegmentJournal::OpenLocked(const std::string& directory) {
   if (file_system_.EnsureDirectory(directory) != IoError::kNone) {
     return OpenResult{false, "cannot create the Journal directory", 0, {}};
   }
   IoError error = IoError::kNone;
-  const auto lock = file_system_.Lock(JoinPath(directory, lock_name), error);
-  if (!lock.has_value()) {
+  // Both handles stay owned by guards until every step that can fail or throw has succeeded.
+  HandleGuard lock(file_system_);
+  lock.Reset(file_system_.Lock(JoinPath(directory, lock_name), error));
+  if (!lock.Holds()) {
     return OpenResult{false,
                       error == IoError::kLocked ? "Journal directory is locked by another owner"
                                                 : "cannot lock the Journal directory",
@@ -143,29 +173,28 @@ OpenResult SegmentJournal::Open(const std::string& directory) {
                       {}};
   }
   const auto located = Locate(directory);
-  if (!located.error.empty()) {
-    file_system_.Close(*lock);
-    return OpenResult{false, located.error, 0, {}};
-  }
+  if (!located.error.empty()) return OpenResult{false, located.error, 0, {}};
+  HandleGuard active(file_system_);
   if (!located.active.empty()) {
-    const auto path = JoinPath(directory, located.active);
-    const auto handle = file_system_.OpenAppend(path, false, error);
-    if (!handle.has_value()) {
-      file_system_.Close(*lock);
+    active.Reset(file_system_.OpenAppend(JoinPath(directory, located.active), false, error));
+    if (!active.Holds()) {
       return OpenResult{false, "cannot open the active segment " + located.active, 0, {}};
     }
-    active_ = handle;
-    active_size_ = located.active_size;
-    // An empty adopted segment may be left by a crash before its creation syncs completed.
-    active_durable_ = located.active_size > 0;
   }
-  directory_ = directory;
-  lock_ = lock;
+  OpenResult result{
+      true, {}, located.next, located.active.empty() ? SegmentName(located.next) : located.active};
+  std::string directory_copy = directory;
+  // No step below can throw: commit the state and hand the handles over.
+  directory_ = std::move(directory_copy);
+  active_ = active.Release();
+  active_size_ = located.active_size;
+  // An empty adopted segment may be left by a crash before its creation syncs completed.
+  active_durable_ = !active_.has_value() || located.active_size > 0;
+  lock_ = lock.Release();
   next_sequence_ = located.next;
   opened_ = true;
   poisoned_.store(false);
-  return OpenResult{
-      true, {}, located.next, located.active.empty() ? SegmentName(located.next) : located.active};
+  return result;
 }
 
 core::LogicalCommitResult SegmentJournal::Commit(const core::LogicalJobEvent& event) noexcept {
