@@ -80,7 +80,11 @@ set(SITOMETRON_CORE_LINK_TARGETS ${SITOMETRON_CORE_LINK_LIBRARIES})
 set(SITOMETRON_CORE_INTERFACE_LINK_TARGETS ${SITOMETRON_CORE_INTERFACE_LINK_LIBRARIES})
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_link_target_allowlist.cmake)
 
-add_library(sitometron_journal STATIC src/journal/record_codec.cpp)
+add_library(
+  sitometron_journal STATIC
+  src/journal/record_codec.cpp
+  src/journal/segment_journal.cpp
+  src/journal/file_system.cpp)
 add_library(sitometron::journal ALIAS sitometron_journal)
 target_include_directories(
   sitometron_journal
@@ -237,6 +241,31 @@ if(SITOMETRON_BUILD_TESTS)
       COMMAND sitometron_journal_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/schemas/core/v1/job-reducer-vectors.json
         ${_journal_check})
+  endforeach()
+
+  add_executable(sitometron_journal_segment_tests tests/unit/journal_segment_writer_test.cpp)
+  target_include_directories(sitometron_journal_segment_tests PRIVATE src/core)
+  target_link_libraries(
+    sitometron_journal_segment_tests
+    PRIVATE
+      sitometron::journal
+      sitometron::core
+      sitometron::test_support)
+  sitometron_enable_project_warnings(sitometron_journal_segment_tests)
+  sitometron_enable_sanitizers(sitometron_journal_segment_tests)
+  foreach(_journal_segment_check IN ITEMS
+      journal_segment_creation_durable
+      job_physical_disk_sync_order
+      journal_commit_result_classification
+      journal_adapter_poisoned_after_failure
+      job_physical_commit_failure_fail_closed
+      journal_directory_exclusive_lock
+      journal_daemon_never_rewrites
+      journal_segment_rotation
+      journal_segment_restart_continues)
+    add_test(
+      NAME ${_journal_segment_check}
+      COMMAND sitometron_journal_segment_tests ${_journal_segment_check})
   endforeach()
 
   add_executable(sitometron_core_dependency_api_smoke tests/unit/core_dependency_api_smoke.cpp)
