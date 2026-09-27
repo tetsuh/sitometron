@@ -35,6 +35,23 @@
 namespace sitometron::journal {
 namespace {
 
+// Directories that do not exist yet, from the outermost down to `path` inclusive.
+std::vector<std::filesystem::path> MissingDirectories(const std::filesystem::path& path) {
+  std::vector<std::filesystem::path> missing;
+  std::error_code code;
+  for (auto current = path; !current.empty() && !std::filesystem::exists(current, code);
+       current = current.parent_path()) {
+    missing.push_back(current);
+    if (current == current.parent_path()) break;
+  }
+  std::reverse(missing.begin(), missing.end());
+  return missing;
+}
+
+std::filesystem::path ParentOf(const std::filesystem::path& path) {
+  return path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
+}
+
 std::optional<std::vector<std::string>> ListRegularFiles(const std::string& directory,
                                                          IoError& error) {
   std::error_code code;
@@ -130,16 +147,22 @@ class WindowsFileSystem final : public FileSystem {
     std::error_code code;
     const std::filesystem::path path(directory);
     if (std::filesystem::is_directory(path, code)) return IoError::kNone;
-    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path(), code);
     OwnerOnlySecurity security;
     if (security.Attributes() == nullptr) return IoError::kUnsupported;
-    if (!CreateDirectoryW(path.c_str(), security.Attributes())) {
-      return GetLastError() == ERROR_ALREADY_EXISTS ? IoError::kNone : IoError::kOther;
+    // Create each missing directory from the outermost down, and make every new entry durable in
+    // its parent before any record can live below it. Only the Journal directory itself gets the
+    // owner-only DACL; created ancestors keep default permissions.
+    for (const auto& missing : MissingDirectories(path)) {
+      SECURITY_ATTRIBUTES* attributes = missing == path ? security.Attributes() : nullptr;
+      if (!CreateDirectoryW(missing.c_str(), attributes) &&
+          GetLastError() != ERROR_ALREADY_EXISTS) {
+        return IoError::kOther;
+      }
+      if (const auto synced = SyncDirectory(ParentOf(missing).string()); synced != IoError::kNone) {
+        return synced;
+      }
     }
-    // The new directory's entry in its parent must be durable before any record lives in it.
-    const auto parent =
-        path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
-    return SyncDirectory(parent.string());
+    return std::filesystem::is_directory(path, code) ? IoError::kNone : IoError::kOther;
   }
   std::optional<FileHandle> Lock(const std::string& path, IoError& error) override {
     OwnerOnlySecurity security;
@@ -253,14 +276,17 @@ class PosixFileSystem final : public FileSystem {
     std::error_code code;
     const std::filesystem::path path(directory);
     if (std::filesystem::is_directory(path, code)) return IoError::kNone;
-    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path(), code);
-    if (::mkdir(directory.c_str(), S_IRWXU) != 0) {
-      return errno == EEXIST ? IoError::kNone : FromErrno(errno);
+    // Create each missing directory from the outermost down, and make every new entry durable in
+    // its parent before any record can live below it. Only the Journal directory itself is 0700;
+    // created ancestors keep the default mode filtered by the umask.
+    for (const auto& missing : MissingDirectories(path)) {
+      const mode_t mode = missing == path ? S_IRWXU : (S_IRWXU | S_IRWXG | S_IRWXO);
+      if (::mkdir(missing.c_str(), mode) != 0 && errno != EEXIST) return FromErrno(errno);
+      if (const auto synced = SyncDirectory(ParentOf(missing).string()); synced != IoError::kNone) {
+        return synced;
+      }
     }
-    // The new directory's entry in its parent must be durable before any record lives in it.
-    const auto parent =
-        path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
-    return SyncDirectory(parent.string());
+    return std::filesystem::is_directory(path, code) ? IoError::kNone : IoError::kOther;
   }
   std::optional<FileHandle> Lock(const std::string& path, IoError& error) override {
     const int descriptor = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, S_IRUSR | S_IWUSR);

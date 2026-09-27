@@ -618,6 +618,15 @@ int DirectoryExclusiveLock() {
 #endif
   }
   {
+    // Missing ancestors are created (and synced) on the way to the Journal directory.
+    SegmentJournal nested(SystemFileSystem());
+    const auto deep = root / "nested" / "deeper" / "journal";
+    const auto opened = nested.Open(deep.string());
+    result |= Check(opened.ok && std::filesystem::is_directory(deep) &&
+                        nested.Commit(Event(1)) == LogicalCommitResult::kCommitted,
+                    "journal under missing ancestors opens and commits: " + opened.detail);
+  }
+  {
     SegmentJournal third(SystemFileSystem());
     const auto opened = third.Open(root.string());
     result |= Check(opened.ok && opened.next_sequence == 2,
