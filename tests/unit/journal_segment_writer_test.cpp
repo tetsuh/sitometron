@@ -557,9 +557,9 @@ int RestartContinues() {
                     "reopen fails closed when the parent entry cannot be re-synced");
     SegmentJournal reopened(existing);
     result |= OpenFresh(reopened, 1);
-    const auto parent_sync =
-        std::find(existing.log.begin(), existing.log.end(),
-                  "syncdir " + std::filesystem::path(k_dir).parent_path().string());
+    const auto parent_sync = std::find(
+        existing.log.begin(), existing.log.end(),
+        "syncdir " + std::filesystem::path(k_dir).lexically_normal().parent_path().string());
     const auto lock = std::find_if(existing.log.begin(), existing.log.end(),
                                    [](const std::string& e) { return e.rfind("lock", 0) == 0; });
     result |=
