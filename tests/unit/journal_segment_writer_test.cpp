@@ -702,6 +702,9 @@ int PhysicalCommitFailureFailClosed() {
       fs.next_write_fault = {{0, IoError::kNoSpace}};
     }
     const auto files_before = fs.files;
+    const auto first_job = orchestrator.LastCreated();
+    const auto first_snapshot = first_job ? orchestrator.SnapshotFor(*first_job) : std::nullopt;
+    const auto trace_before = orchestrator.CopyTrace();
     const auto second = orchestrator.Create();
     result |= Check(second.code == IngressCode::kAdmitted, "second create admitted");
     (void)orchestrator.WaitUntil(second.ingress_sequence, WriterPhase::kTurnFinished);
@@ -717,6 +720,28 @@ int PhysicalCommitFailureFailClosed() {
     result |= Check(segment.compare(0, committed.size(), committed) == 0 &&
                         (unknown ? segment.size() > committed.size() : segment == committed),
                     "only the failed record's bytes (if any) follow the committed record");
+    // Nothing from the failed turn was applied: no new resident, the first Job's snapshot is
+    // unchanged, and the trace gained the failed attempt but no commit or activation.
+    // LastCreated() reports the identity generated for the latest Create(), committed or not.
+    const auto second_job = orchestrator.LastCreated();
+    result |= Check(second_job.has_value() && second_job != first_job,
+                    "the failed Create() generated a distinct identity");
+    result |= Check(second_job.has_value() && !orchestrator.SnapshotFor(*second_job).has_value(),
+                    "failed creation leaves no snapshot for the new Job");
+    const auto first_after = first_job ? orchestrator.SnapshotFor(*first_job) : std::nullopt;
+    result |= Check(first_snapshot.has_value() && first_after.has_value() &&
+                        first_after->state == first_snapshot->state &&
+                        first_after->entity_exists == first_snapshot->entity_exists,
+                    "the committed Job's snapshot is unchanged by the failure");
+    const auto trace_after = orchestrator.CopyTrace();
+    bool applied_after_failure = false;
+    for (std::size_t i = trace_before.size(); i < trace_after.size(); ++i) {
+      applied_after_failure = applied_after_failure ||
+                              trace_after[i].kind == core::internal::TraceKind::kJournalCommitted ||
+                              trace_after[i].kind == core::internal::TraceKind::kSnapshotActivated;
+    }
+    result |= Check(trace_after.size() > trace_before.size() && !applied_after_failure,
+                    "the failed turn records an attempt but no commit or snapshot activation");
     (void)orchestrator.BeginShutdown();
   }
   return result;
