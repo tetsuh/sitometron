@@ -1,6 +1,7 @@
 #ifndef SITOMETRON_JOURNAL_SEGMENT_JOURNAL_HPP_
 #define SITOMETRON_JOURNAL_SEGMENT_JOURNAL_HPP_
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -46,8 +47,8 @@ class SegmentJournal final : public core::JobJournalPort {
   [[nodiscard]] core::LogicalCommitResult Commit(
       const core::LogicalJobEvent& event) noexcept override;
 
-  [[nodiscard]] bool poisoned() const;
-  [[nodiscard]] std::uint64_t next_sequence() const;
+  [[nodiscard]] bool Poisoned() const;
+  [[nodiscard]] std::uint64_t NextSequence() const;
 
   // Segment file name for the record with `first_sequence`.
   [[nodiscard]] static std::string SegmentName(std::uint64_t first_sequence);
@@ -66,7 +67,7 @@ class SegmentJournal final : public core::JobJournalPort {
   std::uint64_t active_size_ = 0;
   std::uint64_t next_sequence_ = 0;
   bool opened_ = false;
-  bool poisoned_ = false;
+  std::atomic<bool> poisoned_{false};
 };
 
 }  // namespace sitometron::journal

@@ -157,8 +157,8 @@ class MemoryFileSystem final : public FileSystem {
     locked_.erase(it->second);
     handles_.erase(it);
   }
-  [[nodiscard]] std::size_t open_handles() const { return handles_.size(); }
-  [[nodiscard]] std::size_t count(std::string_view prefix) const {
+  [[nodiscard]] std::size_t OpenHandles() const { return handles_.size(); }
+  [[nodiscard]] std::size_t CountOps(std::string_view prefix) const {
     return static_cast<std::size_t>(
         std::count_if(log.begin(), log.end(),
                       [&](const std::string& entry) { return entry.rfind(prefix, 0) == 0; }));
@@ -221,7 +221,7 @@ int SegmentCreationDurable() {
     fs.fail_next_directory_sync = true;
     result |= Check(journal.Commit(Event(1)) == LogicalCommitResult::kDefiniteFailure,
                     "failed directory sync is a definite failure");
-    result |= Check(fs.count("write") == 0 && fs.files[Segment(1)].empty(),
+    result |= Check(fs.CountOps("write") == 0 && fs.files[Segment(1)].empty(),
                     "no record written after a failed directory sync");
   }
   {
@@ -253,9 +253,9 @@ int DiskSyncOrder() {
   result |=
       Check(last_write != fs.log.rend() && last_sync != fs.log.rend() && last_sync < last_write,
             "data sync follows the last byte of the record");
-  const auto syncs = fs.count("sync " + Segment(1));
+  const auto syncs = fs.CountOps("sync " + Segment(1));
   result |= Check(journal.Commit(Event(2)) == LogicalCommitResult::kCommitted, "second commit");
-  result |= Check(fs.count("sync " + Segment(1)) == syncs + 1, "one data sync per record");
+  result |= Check(fs.CountOps("sync " + Segment(1)) == syncs + 1, "one data sync per record");
   return result;
 }
 
@@ -284,13 +284,14 @@ int CommitResultClassification() {
     SegmentJournal journal(fs);
     result |= OpenFresh(journal);
     result |= Check(journal.Commit(Event(1)) == LogicalCommitResult::kCommitted, c.name + " setup");
-    const auto syncs_before = fs.count("sync ");
+    const auto syncs_before = fs.CountOps("sync ");
     c.arrange(fs);
     const auto outcome = journal.Commit(Event(2));
     result |= Check(outcome == c.expected,
                     c.name + ": result " + std::to_string(static_cast<int>(outcome)));
     if (c.name == "data sync failure") {
-      result |= Check(fs.count("sync ") == syncs_before + 1, "a failed data sync is never retried");
+      result |=
+          Check(fs.CountOps("sync ") == syncs_before + 1, "a failed data sync is never retried");
     }
     const auto first = EncodeRecord(Event(1)).bytes;
     result |= Check((fs.files[Segment(1)].size() > first.size()) == c.partial_bytes,
@@ -303,7 +304,7 @@ int CommitResultClassification() {
     auto bad = Event(1);
     bad.payload = WorkerRunningPayload{Uuid{"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"}};
     result |= Check(
-        journal.Commit(bad) == LogicalCommitResult::kDefiniteFailure && fs.count("write") == 0,
+        journal.Commit(bad) == LogicalCommitResult::kDefiniteFailure && fs.CountOps("write") == 0,
         "schema-invalid event is a definite failure with no I/O");
   }
   {
@@ -313,16 +314,16 @@ int CommitResultClassification() {
     auto big = Event(1);
     big.recorded_at.rfc3339 = "2026-09-27T01:02:03." + std::string(max_record_bytes, '1') + "Z";
     result |= Check(
-        journal.Commit(big) == LogicalCommitResult::kDefiniteFailure && fs.count("write") == 0,
+        journal.Commit(big) == LogicalCommitResult::kDefiniteFailure && fs.CountOps("write") == 0,
         "oversize event is a definite failure with no I/O");
   }
   {
     MemoryFileSystem fs;
     SegmentJournal journal(fs);
     result |= OpenFresh(journal);
-    result |= Check(
-        journal.Commit(Event(2)) == LogicalCommitResult::kDefiniteFailure && fs.count("write") == 0,
-        "a sequence gap is a definite failure with no I/O");
+    result |= Check(journal.Commit(Event(2)) == LogicalCommitResult::kDefiniteFailure &&
+                        fs.CountOps("write") == 0,
+                    "a sequence gap is a definite failure with no I/O");
   }
   {
     MemoryFileSystem fs;
@@ -347,7 +348,7 @@ int AdapterPoisonedAfterFailure() {
     }
     result |= Check(journal.Commit(Event(1)) != LogicalCommitResult::kCommitted, "first fails");
     const auto ops = fs.log.size();
-    result |= Check(journal.poisoned(), "journal is poisoned");
+    result |= Check(journal.Poisoned(), "journal is poisoned");
     for (std::uint64_t sequence : {1U, 2U}) {
       result |= Check(journal.Commit(Event(sequence)) == LogicalCommitResult::kDefiniteFailure,
                       "poisoned commit is a definite failure");
@@ -367,7 +368,7 @@ int AdapterPoisonedAfterFailure() {
     SegmentJournal reopened(fs);
     result |= OpenFresh(reopened, 2);
     result |=
-        Check(!reopened.poisoned() && reopened.Commit(Event(2)) == LogicalCommitResult::kCommitted,
+        Check(!reopened.Poisoned() && reopened.Commit(Event(2)) == LogicalCommitResult::kCommitted,
               "restart is not poisoned and reuses the never-written sequence");
   }
   return result;
@@ -389,7 +390,7 @@ int SegmentRotation() {
   result |=
       Check(fs.files[Segment(1)].size() == record * 2 && fs.files[Segment(5)].size() == record,
             "records never split across segments; limit reached exactly");
-  result |= Check(fs.open_handles() == 2, "old segment handles are closed (lock + active remain)");
+  result |= Check(fs.OpenHandles() == 2, "old segment handles are closed (lock + active remain)");
   result |=
       Check(SegmentJournal::SegmentName(1) == "journal-00000000000000000001.ndjson" &&
                 SegmentJournal::SegmentName(UINT64_MAX) == "journal-18446744073709551615.ndjson",
@@ -603,7 +604,7 @@ int PhysicalCommitFailureFailClosed() {
     const auto failed = orchestrator.TakeCompletion(second.ingress_sequence);
     result |= Check(failed && failed->code == Completion::Code::kServiceFailed,
                     "physical commit failure yields service_failed");
-    result |= Check(journal.poisoned(), "journal poisoned after the physical failure");
+    result |= Check(journal.Poisoned(), "journal poisoned after the physical failure");
     const auto third = orchestrator.Create();
     result |= Check(third.code == IngressCode::kServiceFailed,
                     "the writer stays failed closed after the physical failure");

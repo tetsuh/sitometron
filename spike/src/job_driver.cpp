@@ -45,12 +45,12 @@ std::string StableApplicationId(const std::string& executable) {
 
 }  // namespace
 
-JobDriver::JobDriver(DriverConfig config, FileJournal& journal)
+JobDriver::JobDriver(DriverConfig config, journal::SegmentJournal& journal)
     : config_(std::move(config)), journal_(journal) {
   core::internal::Config orchestration;
   orchestration.max_jobs = config_.max_jobs;
-  // Continue the logical sequence after the last durable record; no replay (README finding 7).
-  orchestration.initial_journal_sequence = journal_.last_sequence() + 1;
+  // Continue the logical sequence after the last durable record; no replay yet (README finding 7).
+  orchestration.initial_journal_sequence = journal_.NextSequence();
   orchestration.normal_capacity = 64;
   orchestration.trace_capacity = config_.trace_capacity;
   // The writer validates its bounds: completions and trace must cover the whole FIFO
@@ -323,8 +323,8 @@ json JobDriver::Stats() const {
   }
   return {{"jobs", count},
           {"max_jobs", config_.max_jobs},
-          {"journal_committed", journal_.committed_count()},
-          {"journal_lines_on_open", journal_.lines_on_open()},
+          {"journal_next_sequence", journal_.NextSequence()},
+          {"journal_poisoned", journal_.Poisoned()},
           {"writer_failed", orchestrator_->failed()},
           {"trace_records", orchestrator_->CopyTrace().size()},
           {"trace_capacity", config_.trace_capacity}};

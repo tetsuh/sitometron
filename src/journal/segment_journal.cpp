@@ -154,24 +154,20 @@ OpenResult SegmentJournal::Open(const std::string& directory) {
   lock_ = lock;
   next_sequence_ = next;
   opened_ = true;
-  poisoned_ = false;
+  poisoned_.store(false);
   return OpenResult{true, {}, next, active.empty() ? SegmentName(next) : active};
 }
 
 core::LogicalCommitResult SegmentJournal::Commit(const core::LogicalJobEvent& event) noexcept {
   try {
     const std::lock_guard guard(mutex_);
-    if (!opened_ || poisoned_) return core::LogicalCommitResult::kDefiniteFailure;
+    if (!opened_ || poisoned_.load()) return core::LogicalCommitResult::kDefiniteFailure;
     const auto outcome = CommitLocked(event);
-    if (outcome != core::LogicalCommitResult::kCommitted) poisoned_ = true;
+    if (outcome != core::LogicalCommitResult::kCommitted) poisoned_.store(true);
     return outcome;
   } catch (...) {
     // Nothing observable distinguishes a pre-write failure here; poison conservatively.
-    try {
-      const std::lock_guard guard(mutex_);
-      poisoned_ = true;
-    } catch (...) {
-    }
+    poisoned_.store(true);
     return core::LogicalCommitResult::kOutcomeUnknown;
   }
 }
@@ -190,9 +186,11 @@ core::LogicalCommitResult SegmentJournal::CommitLocked(const core::LogicalJobEve
     if (started != core::LogicalCommitResult::kCommitted) return started;
   }
 
+  if (!active_) return core::LogicalCommitResult::kDefiniteFailure;
+  const FileHandle file = *active_;
   std::size_t written = 0;
   while (written < bytes.size()) {
-    const auto outcome = file_system_.Write(*active_, bytes.substr(written));
+    const auto outcome = file_system_.Write(file, bytes.substr(written));
     written += outcome.written;
     active_size_ += outcome.written;
     if (outcome.error == IoError::kInterrupted) continue;
@@ -205,7 +203,7 @@ core::LogicalCommitResult SegmentJournal::CommitLocked(const core::LogicalJobEve
                           : core::LogicalCommitResult::kOutcomeUnknown;
     }
   }
-  if (file_system_.SyncData(*active_) != IoError::kNone) {
+  if (file_system_.SyncData(file) != IoError::kNone) {
     return core::LogicalCommitResult::kOutcomeUnknown;
   }
   ++next_sequence_;
@@ -234,12 +232,9 @@ void SegmentJournal::CloseActive() noexcept {
   }
 }
 
-bool SegmentJournal::poisoned() const {
-  const std::lock_guard guard(mutex_);
-  return poisoned_;
-}
+bool SegmentJournal::Poisoned() const { return poisoned_.load(); }
 
-std::uint64_t SegmentJournal::next_sequence() const {
+std::uint64_t SegmentJournal::NextSequence() const {
   const std::lock_guard guard(mutex_);
   return next_sequence_;
 }

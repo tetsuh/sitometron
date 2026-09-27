@@ -38,12 +38,12 @@ Phase 0A PR CI requires:
 The Linux clang-tidy step resolves the absolute `clang-tidy-18` application and runs the
 standard-library-only `tools/run_clang_tidy.py` helper against
 `build/dev-linux/compile_commands.json`. The helper intersects tracked `apps/**/*.cpp`,
-`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 14-source set and
+`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 17-source set and
 LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection drift.
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the 40-test `dev-linux` baseline. It runs without suppressions using
+CTest-name parity with the 49-test `dev-linux` baseline. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -166,12 +166,12 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `JOB-008` | C++ tests `job_ingress_linearization_order`, `job_ingress_single_writer`, `job_ingress_source_classification`, `job_ingress_capacity_and_reserve`, `job_ingress_coalescing`, `job_ingress_fail_closed` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13 |
 | `OPS-001` | C++ tests `job_ingress_shutdown_quiescence`, `job_ingress_callback_lifetime`, `job_ingress_readiness_failure` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13 |
 | `JRN-001` | CTests `core_job_contract`, `job_fake_logical_commit_results`; C++ tests `job_journal_envelope_vectors`, `job_logical_sequence_exhaustion_fail_closed` | Contract, logical fake-result, complete writer-envelope construction, and non-wrapping sequence checks active; physical record encoding is active under `JRN-004` (Issue #57); segment layout is planned under `JRN-005` |
-| `JRN-002` | C++ test `job_logical_commit_order`; CTest `job_fake_effect_observation`; C++ test `job_physical_disk_sync_order` | Logical commit-before-activation/effect ordering active under Issue #12 and deterministically qualified under Issue #13; physical append/flush/disk-sync ordering is planned under `JRN-005` |
-| `JRN-003` | C++ tests `job_rejected_input_no_append`, `job_logical_commit_failure_fail_closed`, `job_physical_commit_failure_fail_closed`; CTest `job_fake_logical_commit_results` | Reducer, fake logical-result, and writer fail-closed reaction checks active with Issue #13 adverse-path qualification; physical commit-failure reaction is planned under `JRN-006` |
+| `JRN-002` | C++ test `job_logical_commit_order`; CTest `job_fake_effect_observation`; C++ test `job_physical_disk_sync_order` | Logical commit-before-activation/effect ordering active under Issue #12 and deterministically qualified under Issue #13; physical append/data-sync ordering (`job_physical_disk_sync_order`) active under Issue #59 |
+| `JRN-003` | C++ tests `job_rejected_input_no_append`, `job_logical_commit_failure_fail_closed`, `job_physical_commit_failure_fail_closed`; CTest `job_fake_logical_commit_results` | Reducer, fake logical-result, and writer fail-closed reaction checks active with Issue #13 adverse-path qualification; physical commit-failure reaction (`job_physical_commit_failure_fail_closed`) active under Issue #59 |
 | `JRN-004` | CTests `journal_record_roundtrip_vectors`, `journal_record_size_bound`, `journal_record_oversize_schema_valid_rejected`, `journal_parser_rejects_noncanonical` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #57 |
-| `JRN-005` | C++ tests `job_physical_disk_sync_order`, `journal_segment_creation_durable` | Normative under Accepted ADR-0006 under Issue #51; checks planned for Phase 0B implementation |
-| `JRN-006` | C++ tests `journal_commit_result_classification`, `journal_adapter_poisoned_after_failure`, `job_physical_commit_failure_fail_closed` | Normative under Accepted ADR-0006 under Issue #51; checks planned for Phase 0B implementation |
-| `JRN-007` | C++ tests `journal_directory_exclusive_lock`, `journal_daemon_never_rewrites` | Normative under Accepted ADR-0006 under Issue #51; checks planned for Phase 0B implementation |
+| `JRN-005` | CTests `job_physical_disk_sync_order`, `journal_segment_creation_durable`, `journal_segment_rotation`, `journal_segment_restart_continues` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #59 |
+| `JRN-006` | CTests `journal_commit_result_classification`, `journal_adapter_poisoned_after_failure`, `job_physical_commit_failure_fail_closed` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #59 |
+| `JRN-007` | CTests `journal_directory_exclusive_lock`, `journal_daemon_never_rewrites` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #59 |
 | `OPS-002` | C++ tests `journal_startup_torn_tail_refusal`, `journal_startup_corruption_refusal`, `journal_startup_segment_name_mismatch`, `journal_startup_capacity_refusal`, `journal_startup_sequence_exhausted_refusal`, `journal_startup_empty_active_segment` | Normative under Accepted ADR-0006 under Issue #51; checks planned for Phase 0B implementation |
 | `OPS-003` | C++ tests `journal_replay_reproduces_vectors`, `journal_replay_dispatches_no_effects`, `journal_replay_sequence_continuation` | Normative under Accepted ADR-0006 under Issue #51; checks planned for Phase 0B implementation |
 | `OPS-004` | C++ test `journal_unresolved_jobs_block_admission` | Normative under Accepted ADR-0006 under Issue #51; checks planned for Phase 0B implementation |

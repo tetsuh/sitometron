@@ -1,6 +1,6 @@
 // sitometron_spike: the non-normative walking skeleton (Issue #48).
 //
-//   sitometron_spike --listen 127.0.0.1:8080 --journal ./journal.jsonl --workdir /tmp/work
+//   sitometron_spike --listen 127.0.0.1:8080 --journal ./journal --workdir /tmp/work
 //
 // Composes the Phase 0A core (reducer + single writer) with real adapters: a file Journal, a
 // posix_spawn process runner, a loopback HTTP surface, and system clock/identity sources.
@@ -16,7 +16,6 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
-#include "file_journal.hpp"
 #include "http_server.hpp"
 #include "job_driver.hpp"
 #include "sitometron/core/version.hpp"
@@ -40,7 +39,7 @@ void OnSignal(int signal) {
 struct Options {
   std::string host = "127.0.0.1";
   unsigned short port = 8080;
-  std::string journal = "sitometron-spike-journal.jsonl";
+  std::string journal = "sitometron-spike-journal";
   std::string workdir;
   std::size_t max_jobs = 32;
   std::size_t trace_capacity = 4096;
@@ -70,7 +69,7 @@ bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
     } else if (flag == "--journal") {
       const char* raw = value();
       if (raw == nullptr) {
-        error = "--journal needs a path";
+        error = "--journal needs a directory";
         return false;
       }
       options.journal = raw;
@@ -160,14 +159,15 @@ int main(int argc, char** argv) {
   std::string error;
   if (!ParseOptions(argc, argv, options, error)) {
     if (!error.empty()) std::cerr << "error: " << error << '\n';
-    std::cerr << "usage: sitometron_spike [--listen HOST:PORT] [--journal PATH] [--workdir DIR]"
+    std::cerr << "usage: sitometron_spike [--listen HOST:PORT] [--journal DIR] [--workdir DIR]"
                  " [--max-jobs N] [--trace-capacity N]\n";
     return error.empty() ? 0 : 2;
   }
 
-  sitometron::spike::FileJournal journal(options.journal);
-  if (!journal.Open(error)) {
-    std::cerr << "error: cannot open journal " << options.journal << ": " << error << '\n';
+  sitometron::journal::SegmentJournal journal(sitometron::journal::SystemFileSystem());
+  const auto opened = journal.Open(options.journal);
+  if (!opened.ok) {
+    std::cerr << "error: cannot open journal " << options.journal << ": " << opened.detail << '\n';
     return 1;
   }
   sitometron::spike::DriverConfig config;
@@ -196,7 +196,7 @@ int main(int argc, char** argv) {
 
   std::cout << "sitometron_spike " << sitometron::Version() << " listening on http://"
             << options.host << ':' << server.port() << " journal=" << options.journal
-            << " (existing lines: " << journal.lines_on_open() << ")\n"
+            << " (next sequence: " << opened.next_sequence << ")\n"
             << std::flush;
 
   for (;;) {
@@ -207,6 +207,6 @@ int main(int argc, char** argv) {
   std::cout << "signal " << static_cast<int>(g_signal) << ": shutting down\n" << std::flush;
   server.Stop();
   driver.Shutdown();
-  std::cout << "journal committed " << journal.committed_count() << " events this run\n";
+  std::cout << "journal next sequence " << journal.NextSequence() << " at shutdown\n";
   return 0;
 }

@@ -15,10 +15,10 @@
 #include <thread>
 #include <vector>
 
-#include "file_journal.hpp"
 #include "job_orchestrator.hpp"
 #include "process_runner.hpp"
 #include "sitometron/core/job_ports.hpp"
+#include "sitometron/journal/segment_journal.hpp"
 #include "system_ports.hpp"
 
 namespace sitometron::spike {
@@ -47,7 +47,7 @@ struct JobRecord {
 // candidate, waits for the writer, and inspects the completion.
 class JobDriver {
  public:
-  JobDriver(DriverConfig config, FileJournal& journal);
+  JobDriver(DriverConfig config, journal::SegmentJournal& journal);
   ~JobDriver();
   JobDriver(const JobDriver&) = delete;
   JobDriver& operator=(const JobDriver&) = delete;
@@ -78,7 +78,7 @@ class JobDriver {
   LocalIdentitySource identity_;
   ProcessRunner runner_;
   NullSessionRetainer session_;
-  FileJournal& journal_;
+  journal::SegmentJournal& journal_;
   std::unique_ptr<core::internal::JobOrchestrator> orchestrator_;
 
   mutable std::mutex mutex_;

@@ -8,23 +8,26 @@ binary=$1
 scratch=$2
 rm -rf -- "$scratch"
 mkdir -p -- "$scratch"
-journal="$scratch/journal.jsonl"
+journal="$scratch/journal"
+# All records of the segmented Journal, in sequence order.
+records() { cat "$journal"/journal-*.ndjson; }
 log="$scratch/daemon.log"
 
 command -v curl >/dev/null || { echo "curl is required"; exit 2; }
 
 # Non-loopback listen addresses are refused before anything is bound.
-if "$binary" --listen 0.0.0.0:0 --journal "$scratch/unused.jsonl" >"$scratch/refused.log" 2>&1; then
+if "$binary" --listen 0.0.0.0:0 --journal "$scratch/unused" >"$scratch/refused.log" 2>&1; then
   echo "expected non-loopback listen to be refused"; exit 1
 fi
 grep -q 'loopback' "$scratch/refused.log"
 
-# An existing Journal whose last record lacks its LF is refused rather than appended onto.
-printf '{"sequence":1}' >"$scratch/torn.jsonl"
-if "$binary" --listen 127.0.0.1:0 --journal "$scratch/torn.jsonl" >"$scratch/torn.log" 2>&1; then
+# An existing Journal whose active segment ends in a torn record is refused rather than appended onto.
+mkdir -p "$scratch/torn"
+printf '{"sequence":1}' >"$scratch/torn/journal-00000000000000000001.ndjson"
+if "$binary" --listen 127.0.0.1:0 --journal "$scratch/torn" >"$scratch/torn.log" 2>&1; then
   echo "expected a torn journal to be refused"; exit 1
 fi
-grep -q 'newline' "$scratch/torn.log"
+grep -q 'torn' "$scratch/torn.log"
 
 "$binary" --listen 127.0.0.1:0 --journal "$journal" --workdir "$scratch" >"$log" 2>&1 &
 daemon=$!
@@ -77,12 +80,12 @@ printf '%s\n' "$bad_body" | grep -q '"state":"failed"' || { echo "expected faile
 printf '%s\n' "$bad_body" | grep -q '"exit_code":3' || { echo "expected exit 3: $bad_body"; exit 1; }
 
 # Journal so far: 13 records per Job (job_created .. cleanup_status_recorded).
-lines=$(wc -l <"$journal")
-[[ "$lines" -eq 26 ]] || { echo "expected 26 journal lines, got $lines"; cat "$journal"; exit 1; }
-grep -c "\"job_id\":\"$ok_id\"" "$journal" | grep -qx 13
-grep -c "\"job_id\":\"$bad_id\"" "$journal" | grep -qx 13
-grep -q '"event_type":"worker_failed"' "$journal"
-grep -q '"outcome":"succeeded"' "$journal"
+lines=$(records | wc -l)
+[[ "$lines" -eq 26 ]] || { echo "expected 26 journal lines, got $lines"; records; exit 1; }
+records | grep -c "\"job_id\":\"$ok_id\"" | grep -qx 13
+records | grep -c "\"job_id\":\"$bad_id\"" | grep -qx 13
+grep -q '"event_type":"worker_failed"' < <(records)
+grep -q '"outcome":"succeeded"' < <(records)
 
 curl -sS -X POST "$base/jobs" -d '{"executable":""}' -o /dev/null -w '%{http_code}\n' | grep -qx 400
 curl -sS -X POST "$base/jobs" -d '{"executable":"/bin/true","workdir":7}' -o /dev/null -w '%{http_code}\n' | grep -qx 400
@@ -147,7 +150,7 @@ curl -sS "$base/jobs/nope" -o /dev/null -w '%{http_code}\n' | grep -qx 404
 kill -TERM "$daemon"
 wait "$daemon"
 grep -q 'shutting down' "$log"
-lines=$(wc -l <"$journal")
+lines=$(records | wc -l)
 # 5 Jobs: 4 x 13 records plus the spawn-failure Job (11 records: no worker_running/worker_*).
 [[ "$lines" -eq 63 ]] || { echo "expected 63 journal lines after shutdown, got $lines"; exit 1; }
 
@@ -162,15 +165,15 @@ for _ in $(seq 1 100); do
 done
 [[ -n "$port" ]] || { echo "restarted daemon did not report a port"; cat "$log"; exit 1; }
 base="http://127.0.0.1:$port"
-grep -q 'existing lines: 63' "$log"
+grep -q 'next sequence: 64' "$log"
 again=$(curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' -d '{"executable":"/bin/true"}')
 again_id=$(printf '%s' "$again" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
 wait_terminal "$again_id" >/dev/null
 kill -TERM "$daemon"
 wait "$daemon"
-lines=$(wc -l <"$journal")
+lines=$(records | wc -l)
 [[ "$lines" -eq 76 ]] || { echo "expected 76 journal lines after restart, got $lines"; exit 1; }
-tail -n1 "$journal" | grep -q '"sequence":76' || { echo "sequence did not continue: $(tail -n1 "$journal")"; exit 1; }
+records | tail -n1 | grep -q '"sequence":76' || { echo "sequence did not continue: $(records | tail -n1)"; exit 1; }
 
 # Immediate shutdown right after submission must not hang: the driver either refuses the launch
 # or the shutdown sees the pid it has to signal.

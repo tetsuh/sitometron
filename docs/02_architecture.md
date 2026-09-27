@@ -25,7 +25,7 @@ I/O/framework ownership. Only `sitometrond` composes concrete adapters.
 | `sitometron_core` | Domain state, commands, pure reducer, lifecycle ports, and private single-writer orchestration | Implemented ADR-0004/`NFR-005` closed allowlist; Sitometron-owned public types only |
 | `sitometron_test_support` and private fake-support targets | Deterministic fakes, barriers, and test helpers | Tests only |
 | `sitometrond` | Composition root and daemon entry point | Core initially; adapters by Phase |
-| `sitometron_journal` | Physical JobJournal adapter: canonical record codec now, segment writer and startup validation as Phase 0B proceeds | Accepted ADR-0006; owns its own I/O and JSON dependencies; exposes Sitometron-owned types only |
+| `sitometron_journal` | Physical JobJournal adapter: canonical record codec and durable segment writer; startup validation and replay as Phase 0B proceeds | Accepted ADR-0006; owns its own I/O and JSON dependencies; exposes Sitometron-owned types only |
 
 Later adapter targets are introduced only by their owning Issues:
 
