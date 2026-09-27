@@ -6,16 +6,12 @@
 |---|---|---|
 | 0A | `v0.1 / P0A Bootstrap` | [Gate #1](https://github.com/tetsuh/sitometron/issues/1) closed on 2026-09-24 |
 | 0B | `v0.1 / P0B Durability` | [Gate #50](https://github.com/tetsuh/sitometron/issues/50) open |
-| 1 | `v0.1 / P1 REST & Admission` | Gate Issue required before entry |
-| 2 | `v0.1 / P2 Local Worker` | Gate Issue required before entry |
-| 3 | `v0.1 / P3 Resources` | Gate Issue required before entry |
-| 4 | `v0.1 / P4 Sitos Integration` | Gate Issue required before entry |
-| 5 | `v0.1 / P5 Artifact REST` | Gate Issue required before entry |
-| 6 | `v0.1 / P6 Qualification` | Gate Issue required before entry |
 
-Each Milestone contains exactly one `[Gate]` management Issue. It records Entry gate, horizontal
-design review, Exit gate, finding dispositions and owners, and evidence. The Gate Issue closes last;
-then the Milestone closes.
+Later work is planned one working increment at a time and has no Gate prepared in advance. A
+`[Gate]` Issue is created only when a contract must be frozen before implementation, as
+[the development workflow](development_workflow.md#9-phase-and-milestone-gates) states. A Gate
+records Entry gate, horizontal design review, Exit gate, finding dispositions and owners, and
+evidence; it closes last, then its Milestone closes.
 
 ## 2. Phase 0A
 
