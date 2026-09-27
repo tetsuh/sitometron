@@ -14,6 +14,18 @@
 #include <vector>
 
 #include "job_orchestrator.hpp"
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+// windows.h must precede aclapi.h.
+#include <aclapi.h>
+#endif
 #include "sitometron/core/job_ports.hpp"
 #include "sitometron/journal/file_system.hpp"
 #include "sitometron/journal/record_codec.hpp"
@@ -441,6 +453,23 @@ int RestartContinues() {
                     "next record goes to the empty highest segment");
   }
   {
+    // The active segment's size survives a restart, so rotation still honors the limit.
+    MemoryFileSystem limited;
+    const auto record = EncodeRecord(Event(1)).bytes.size();
+    {
+      SegmentJournal journal(limited, SegmentJournalOptions{record * 2});
+      result |= OpenFresh(journal);
+      result |= Check(journal.Commit(Event(1)) == LogicalCommitResult::kCommitted, "limited 1");
+    }
+    SegmentJournal journal(limited, SegmentJournalOptions{record * 2});
+    result |= OpenFresh(journal, 2);
+    result |= Check(journal.Commit(Event(2)) == LogicalCommitResult::kCommitted &&
+                        journal.Commit(Event(3)) == LogicalCommitResult::kCommitted &&
+                        limited.files[Segment(1)].size() == record * 2 &&
+                        limited.files.count(Segment(3)) == 1,
+                    "restart keeps the active size and rotates at the limit");
+  }
+  {
     MemoryFileSystem torn;
     torn.directories.insert(k_dir);
     torn.files[Segment(1)] = EncodeRecord(Event(1)).bytes + "{\"schema";
@@ -512,6 +541,23 @@ int DirectoryExclusiveLock() {
     result |= Check(!second.Open(root.string()).ok, "second open is refused while locked");
     result |=
         Check(first.Commit(Event(1)) == LogicalCommitResult::kCommitted, "real file system commit");
+#if defined(_WIN32)
+    for (const auto& target : {root, root / SegmentJournal::SegmentName(1),
+                               root / std::filesystem::path("journal.lock")}) {
+      PSECURITY_DESCRIPTOR descriptor = nullptr;
+      PACL dacl = nullptr;
+      SECURITY_DESCRIPTOR_CONTROL control = 0;
+      DWORD revision = 0;
+      const bool read =
+          GetNamedSecurityInfoW(target.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr,
+                                nullptr, &dacl, nullptr, &descriptor) == ERROR_SUCCESS;
+      const bool is_protected =
+          read && GetSecurityDescriptorControl(descriptor, &control, &revision) &&
+          (control & SE_DACL_PROTECTED) != 0 && dacl != nullptr && dacl->AceCount == 1;
+      if (descriptor != nullptr) LocalFree(descriptor);
+      result |= Check(is_protected, "owner-only protected DACL on " + target.string());
+    }
+#endif
   }
   {
     SegmentJournal third(SystemFileSystem());

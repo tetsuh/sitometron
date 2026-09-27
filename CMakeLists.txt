@@ -96,6 +96,10 @@ target_link_libraries(
   sitometron_journal
   PUBLIC sitometron::core
   PRIVATE nlohmann_json::nlohmann_json)
+if(WIN32)
+  # ConvertStringSecurityDescriptorToSecurityDescriptorW for the owner-only Journal DACL.
+  target_link_libraries(sitometron_journal PRIVATE advapi32)
+endif()
 sitometron_enable_project_warnings(sitometron_journal)
 sitometron_enable_sanitizers(sitometron_journal)
 
@@ -245,6 +249,9 @@ if(SITOMETRON_BUILD_TESTS)
 
   add_executable(sitometron_journal_segment_tests tests/unit/journal_segment_writer_test.cpp)
   target_include_directories(sitometron_journal_segment_tests PRIVATE src/core)
+  if(WIN32)
+    target_link_libraries(sitometron_journal_segment_tests PRIVATE advapi32)
+  endif()
   target_link_libraries(
     sitometron_journal_segment_tests
     PRIVATE

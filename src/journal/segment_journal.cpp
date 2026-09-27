@@ -101,7 +101,8 @@ SegmentJournal::Located SegmentJournal::Locate(const std::string& directory) {
       return Located{"active segment " + name + " holds an earlier sequence", 0, {}};
     if (*last == UINT64_MAX) return Located{"Journal sequence is exhausted", 0, {}};
     // A full active segment is left sealed; the next record starts a new one.
-    return Located{{}, *last + 1, content->size() < options_.segment_limit_bytes ? name : ""};
+    if (content->size() >= options_.segment_limit_bytes) return Located{{}, *last + 1, {}, 0};
+    return Located{{}, *last + 1, name, content->size()};
   }
 
   // An empty highest segment is valid only when named for the next sequence (ADR-0006 §5).
@@ -123,7 +124,7 @@ SegmentJournal::Located SegmentJournal::Locate(const std::string& directory) {
         0,
         {}};
   }
-  return Located{{}, first, name};
+  return Located{{}, first, name, 0};
 }
 
 OpenResult SegmentJournal::Open(const std::string& directory) {
@@ -154,8 +155,7 @@ OpenResult SegmentJournal::Open(const std::string& directory) {
       return OpenResult{false, "cannot open the active segment " + located.active, 0, {}};
     }
     active_ = handle;
-    const auto content = file_system_.ReadAll(path, error);
-    active_size_ = content.has_value() ? content->size() : 0;
+    active_size_ = located.active_size;
   }
   directory_ = directory;
   lock_ = lock;

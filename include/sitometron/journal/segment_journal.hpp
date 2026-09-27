@@ -58,6 +58,7 @@ class SegmentJournal final : public core::JobJournalPort {
     std::string error;   // non-empty when the directory cannot be appended to
     std::uint64_t next;  // first sequence of the next record
     std::string active;  // segment to append to; empty when the next record starts a new one
+    std::uint64_t active_size = 0;  // current size of `active`
   };
   Located Locate(const std::string& directory);
   core::LogicalCommitResult CommitLocked(const core::LogicalJobEvent& event);

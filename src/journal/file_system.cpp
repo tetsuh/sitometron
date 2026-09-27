@@ -21,6 +21,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+// windows.h must precede sddl.h.
+#include <sddl.h>
 #else
 #include <fcntl.h>
 #include <sys/file.h>
@@ -95,17 +97,58 @@ bool IsNtfs(HANDLE handle) {
   return std::wstring_view(name.data()) == L"NTFS";
 }
 
+// Owner-only access (ADR-0006 §2): a protected DACL whose single ACE grants full control to the
+// object's owner (OWNER RIGHTS, S-1-3-4) and is inherited by files created in the directory.
+class OwnerOnlySecurity {
+ public:
+  OwnerOnlySecurity() {
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;OICI;FA;;;OW)", SDDL_REVISION_1, &descriptor, nullptr)) {
+      descriptor_ = descriptor;
+      attributes_.nLength = sizeof(attributes_);
+      attributes_.lpSecurityDescriptor = descriptor_;
+      attributes_.bInheritHandle = FALSE;
+    }
+  }
+  ~OwnerOnlySecurity() {
+    if (descriptor_ != nullptr) LocalFree(descriptor_);
+  }
+  OwnerOnlySecurity(const OwnerOnlySecurity&) = delete;
+  OwnerOnlySecurity& operator=(const OwnerOnlySecurity&) = delete;
+  // nullptr when the descriptor could not be built; callers must then refuse to create.
+  SECURITY_ATTRIBUTES* Attributes() { return descriptor_ != nullptr ? &attributes_ : nullptr; }
+
+ private:
+  PSECURITY_DESCRIPTOR descriptor_ = nullptr;
+  SECURITY_ATTRIBUTES attributes_{};
+};
+
 class WindowsFileSystem final : public FileSystem {
  public:
   IoError EnsureDirectory(const std::string& directory) override {
     std::error_code code;
-    std::filesystem::create_directories(std::filesystem::path(directory), code);
-    return code ? IoError::kOther : IoError::kNone;
+    const std::filesystem::path path(directory);
+    if (std::filesystem::is_directory(path, code)) return IoError::kNone;
+    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path(), code);
+    OwnerOnlySecurity security;
+    if (security.Attributes() == nullptr) return IoError::kUnsupported;
+    if (!CreateDirectoryW(path.c_str(), security.Attributes()) &&
+        GetLastError() != ERROR_ALREADY_EXISTS) {
+      return IoError::kOther;
+    }
+    return std::filesystem::is_directory(path, code) ? IoError::kNone : IoError::kOther;
   }
   std::optional<FileHandle> Lock(const std::string& path, IoError& error) override {
-    const HANDLE handle = CreateFileW(
-        std::filesystem::path(path).c_str(), GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    OwnerOnlySecurity security;
+    if (security.Attributes() == nullptr) {
+      error = IoError::kUnsupported;
+      return std::nullopt;
+    }
+    const HANDLE handle =
+        CreateFileW(std::filesystem::path(path).c_str(), GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE, security.Attributes(), OPEN_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
       error = FromLastError();
       return std::nullopt;
@@ -128,9 +171,16 @@ class WindowsFileSystem final : public FileSystem {
   std::optional<FileHandle> OpenAppend(const std::string& path, bool create_new,
                                        IoError& error) override {
     // FlushFileBuffers requires GENERIC_WRITE, so the handle is opened for writing and positioned
-    // at the end; the single writer keeps every later write at the end.
+    // at the end; the single writer keeps every later write at the end. New segments get the
+    // owner-only DACL explicitly.
+    OwnerOnlySecurity security;
+    if (create_new && security.Attributes() == nullptr) {
+      error = IoError::kUnsupported;
+      return std::nullopt;
+    }
     const HANDLE handle =
-        CreateFileW(std::filesystem::path(path).c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        CreateFileW(std::filesystem::path(path).c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                    create_new ? security.Attributes() : nullptr,
                     create_new ? CREATE_NEW : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
       error = FromLastError();
