@@ -1,5 +1,6 @@
 #include <array>
 #include <cstdint>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -346,7 +347,7 @@ int RejectsNoncanonical() {
 }  // namespace
 }  // namespace sitometron::test
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   if (argc != 3) {
     std::cerr << "usage: journal_record_codec_test <job-reducer-vectors.json> <check>\n";
     return 2;
@@ -366,4 +367,10 @@ int main(int argc, char** argv) {
   if (check == "journal_parser_rejects_noncanonical") return RejectsNoncanonical();
   std::cerr << "unknown check " << check << '\n';
   return 2;
+} catch (const std::exception& error) {
+  std::cerr << "journal_record_codec: unexpected exception: " << error.what() << '\n';
+  return 1;
+} catch (...) {
+  std::cerr << "journal_record_codec: unexpected non-standard exception\n";
+  return 1;
 }

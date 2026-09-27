@@ -63,6 +63,14 @@ std::optional<Enum> ValueOf(std::string_view name,
   return std::nullopt;
 }
 
+// Name of a value already accepted by Violation(); an unlisted value yields an empty name, which
+// cannot occur on the encode path because validation runs first.
+template <typename Enum, std::size_t N>
+std::string_view ValidatedName(Enum value,
+                               const std::array<std::pair<Enum, std::string_view>, N>& t) {
+  return NameOf(value, t).value_or(std::string_view{});
+}
+
 std::optional<core::EventType> EventTypeOf(std::string_view name) {
   for (int i = 0; i < static_cast<int>(core::EventType::kInvalid); ++i) {
     const auto type = static_cast<core::EventType>(i);
@@ -462,7 +470,7 @@ void EmitPayload(Emitter& w, const core::LogicalJobEvent& e) {
       break;
     case EventType::kTimeoutExpired: {
       const auto& v = *As<core::TimeoutExpiredPayload>(p);
-      w.Key("phase").Str(*NameOf(v.phase, phase_names));
+      w.Key("phase").Str(ValidatedName(v.phase, phase_names));
       w.Key("timer_generation").Num(v.timer_generation);
       break;
     }
@@ -475,7 +483,7 @@ void EmitPayload(Emitter& w, const core::LogicalJobEvent& e) {
     }
     case EventType::kProcessExitConfirmed: {
       const auto& v = *As<core::ProcessExitConfirmedPayload>(p);
-      w.Key("completion_mode").Str(*NameOf(v.completion_mode, completion_mode_names));
+      w.Key("completion_mode").Str(ValidatedName(v.completion_mode, completion_mode_names));
       w.Key("launch_operation_id").Str(v.launch_operation_id.value);
       break;
     }
@@ -487,7 +495,8 @@ void EmitPayload(Emitter& w, const core::LogicalJobEvent& e) {
     case EventType::kFinalizationFailed:
       break;
     case EventType::kTerminalOutcomeCommitted:
-      w.Key("outcome").Str(*NameOf(As<core::TerminalOutcomePayload>(p)->outcome, outcome_names));
+      w.Key("outcome").Str(
+          ValidatedName(As<core::TerminalOutcomePayload>(p)->outcome, outcome_names));
       break;
     case EventType::kResourcesReleased: {
       const auto& v = *As<core::ResourcesReleasedPayload>(p);
@@ -496,11 +505,11 @@ void EmitPayload(Emitter& w, const core::LogicalJobEvent& e) {
       break;
     }
     case EventType::kCleanupStatusRecorded:
-      w.Key("status").Str(*NameOf(As<core::CleanupStatusPayload>(p)->status, cleanup_names));
+      w.Key("status").Str(ValidatedName(As<core::CleanupStatusPayload>(p)->status, cleanup_names));
       break;
     case EventType::kLateWorkerEvent: {
       const auto& v = *As<core::LateWorkerEventPayload>(p);
-      w.Key("original_event_type").Str(*NameOf(v.original_event_type, late_original_names));
+      w.Key("original_event_type").Str(ValidatedName(v.original_event_type, late_original_names));
       w.Key("worker_id").Str(v.worker_id.value);
       w.Key("event_sequence").Num(v.event_sequence);
       break;
