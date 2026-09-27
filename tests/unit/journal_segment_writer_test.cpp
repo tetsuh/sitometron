@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -64,6 +65,8 @@ class MemoryFileSystem final : public FileSystem {
   bool fail_next_sync = false;
   bool fail_next_directory_sync = false;
   bool fail_next_create = false;
+  bool throw_on_create = false;
+  bool throw_on_write = false;
   IoError create_error = IoError::kNoSpace;
 
   IoError EnsureDirectory(const std::string& directory) override {
@@ -106,6 +109,7 @@ class MemoryFileSystem final : public FileSystem {
   std::optional<FileHandle> OpenAppend(const std::string& path, bool create_new,
                                        IoError& error) override {
     log.push_back(std::string(create_new ? "create " : "open ") + path);
+    if (create_new && throw_on_create) throw std::runtime_error("injected create exception");
     if (create_new) {
       if (fail_next_create) {
         fail_next_create = false;
@@ -125,6 +129,7 @@ class MemoryFileSystem final : public FileSystem {
   }
   WriteOutcome Write(FileHandle file, std::string_view bytes) override {
     log.push_back("write " + std::to_string(bytes.size()));
+    if (throw_on_write) throw std::runtime_error("injected write exception");
     if (interrupted_writes > 0) {
       --interrupted_writes;
       return {0, IoError::kInterrupted};
@@ -336,6 +341,24 @@ int CommitResultClassification() {
     result |= Check(journal.Commit(Event(2)) == LogicalCommitResult::kDefiniteFailure &&
                         fs.CountOps("write") == 0,
                     "a sequence gap is a definite failure with no I/O");
+  }
+  {
+    // An exception before the first record byte is a definite failure; once writing began it is
+    // outcome-unknown (ADR-0006 §4). Both poison the journal.
+    MemoryFileSystem fs;
+    SegmentJournal journal(fs);
+    result |= OpenFresh(journal);
+    fs.throw_on_create = true;
+    result |= Check(
+        journal.Commit(Event(1)) == LogicalCommitResult::kDefiniteFailure && journal.Poisoned(),
+        "exception while creating the segment is a definite failure");
+    MemoryFileSystem writing;
+    SegmentJournal second(writing);
+    result |= OpenFresh(second);
+    writing.throw_on_write = true;
+    result |=
+        Check(second.Commit(Event(1)) == LogicalCommitResult::kOutcomeUnknown && second.Poisoned(),
+              "exception during the record write is outcome-unknown");
   }
   {
     MemoryFileSystem fs;

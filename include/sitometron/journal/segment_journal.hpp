@@ -75,6 +75,8 @@ class SegmentJournal final : public core::JobJournalPort {
   std::uint64_t next_sequence_ = 0;
   bool opened_ = false;
   std::atomic<bool> poisoned_{false};
+  // True once the current Commit() has issued its first write of record bytes.
+  std::atomic<bool> record_started_{false};
 };
 
 }  // namespace sitometron::journal

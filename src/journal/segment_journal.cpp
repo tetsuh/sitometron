@@ -170,13 +170,16 @@ core::LogicalCommitResult SegmentJournal::Commit(const core::LogicalJobEvent& ev
   try {
     const std::lock_guard guard(mutex_);
     if (!opened_ || poisoned_.load()) return core::LogicalCommitResult::kDefiniteFailure;
+    record_started_.store(false);
     const auto outcome = CommitLocked(event);
     if (outcome != core::LogicalCommitResult::kCommitted) poisoned_.store(true);
     return outcome;
   } catch (...) {
-    // Nothing observable distinguishes a pre-write failure here; poison conservatively.
+    // ADR-0006 §4: an exception before the first byte of this record reached the file is a
+    // definite failure; after that the record may be partially durable.
     poisoned_.store(true);
-    return core::LogicalCommitResult::kOutcomeUnknown;
+    return record_started_.load() ? core::LogicalCommitResult::kOutcomeUnknown
+                                  : core::LogicalCommitResult::kDefiniteFailure;
   }
 }
 
@@ -198,6 +201,7 @@ core::LogicalCommitResult SegmentJournal::CommitLocked(const core::LogicalJobEve
   if (!active_.has_value()) return core::LogicalCommitResult::kDefiniteFailure;
   const FileHandle file = *active_;
   std::size_t written = 0;
+  record_started_.store(true);
   while (written < bytes.size()) {
     const auto outcome = file_system_.Write(file, bytes.substr(written));
     written += outcome.written;

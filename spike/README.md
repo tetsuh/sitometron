@@ -82,7 +82,8 @@ a failed outcome.
 Native Windows, TLS, authentication, request limits beyond 64 KiB, Admission, Application Registry,
 ResourceProfile/topology, the Worker protocol (`worker_running` is asserted at spawn), cancel and
 terminate (the stop ports are no-ops), timeouts (no timer adapter exists, so a hung child never
-times out), Journal replay/recovery/pruning (the file is only counted on restart), Sitos, Artifact
+times out), Journal replay/recovery/pruning (on restart the writer only reads the last record of the highest
+segment to continue the sequence; earlier Jobs are not replayed), Sitos, Artifact
 REST, Quill logging, packaging, release. Bundle provenance is a placeholder digest.
 
 ## Findings for Phase 0B/1/2
