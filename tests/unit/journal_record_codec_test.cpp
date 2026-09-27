@@ -50,20 +50,16 @@ EventPayload PayloadFrom(EventType type, const Json& p) {
       return JobCreatedPayload{U(p.at("session_id"))};
     case EventType::kResourcesCommitted: {
       const auto& r = p.at("resolved_allocation");
-      return ResourcesCommittedPayload{S(p.at("allocation_id")), D(p.at("allocation_digest")),
-                                       S(r.at("schema_id")),
-                                       r.at("schema_version").get<std::uint32_t>(),
-                                       r.at("payload_utf8").get<std::string>()};
+      return ResourcesCommittedPayload{
+          S(p.at("allocation_id")), D(p.at("allocation_digest")), S(r.at("schema_id")),
+          r.at("schema_version").get<std::uint32_t>(), r.at("payload_utf8").get<std::string>()};
     }
     case EventType::kWorkerLaunchIntent: {
       const auto& a = p.at("application");
-      return WorkerLaunchIntentPayload{S(p.at("operation_id")),
-                                       S(a.at("application_id")),
-                                       a.at("version").get<std::string>(),
-                                       D(a.at("bundle_sha256")),
-                                       S(p.at("allocation_id")),
-                                       D(p.at("allocation_digest")),
-                                       U(p.at("worker_id"))};
+      return WorkerLaunchIntentPayload{
+          S(p.at("operation_id")),  S(a.at("application_id")), a.at("version").get<std::string>(),
+          D(a.at("bundle_sha256")), S(p.at("allocation_id")),  D(p.at("allocation_digest")),
+          U(p.at("worker_id"))};
     }
     case EventType::kWorkerLaunchObserved:
       return WorkerLaunchObservedPayload{S(p.at("operation_id")), p.at("outcome") == "started"};
@@ -201,15 +197,14 @@ int SizeBound() {
   result |= Check(DecodeRecord(exact.bytes + "\n").status == DecodeStatus::kOversize,
                   "decoder rejects input over the bound before parsing");
   // The largest allowed allocation text still fits.
-  LogicalJobEvent committed{1,
-                            1,
-                            EventType::kResourcesCommitted,
-                            DiagnosticTimestamp{"2026-09-27T01:02:03Z"},
-                            Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"},
-                            ResourcesCommittedPayload{
-                                StableId{"allocation-1"},
-                                Digest{std::string(64, 'a')}, StableId{"schema.v1"}, 1,
-                                "[" + std::string(65534, '1') + "]"}};
+  LogicalJobEvent committed{
+      1,
+      1,
+      EventType::kResourcesCommitted,
+      DiagnosticTimestamp{"2026-09-27T01:02:03Z"},
+      Uuid{"01890f3e-7b00-7abc-8abc-0123456789ab"},
+      ResourcesCommittedPayload{StableId{"allocation-1"}, Digest{std::string(64, 'a')},
+                                StableId{"schema.v1"}, 1, "[" + std::string(65534, '1') + "]"}};
   result |= Check(EncodeRecord(committed).status == EncodeStatus::kEncoded,
                   "65,536-byte allocation text encodes");
   std::get<ResourcesCommittedPayload>(committed.payload).payload_utf8.push_back('1');
@@ -247,9 +242,9 @@ int RejectsNoncanonical() {
   const std::array cases{
       Case{"missing LF", body, DecodeStatus::kMalformedJson},
       Case{"doubled LF", kSampleRecord + "\n", DecodeStatus::kMalformedJson},
-      Case{"CRLF", body + "\r\n", DecodeStatus::kMalformedJson},
-      Case{"trailing space", body + " \n", DecodeStatus::kMalformedJson},
-      Case{"leading space", " " + kSampleRecord, DecodeStatus::kMalformedJson},
+      Case{"CRLF", body + "\r\n", DecodeStatus::kNonCanonical},
+      Case{"trailing space", body + " \n", DecodeStatus::kNonCanonical},
+      Case{"leading space", " " + kSampleRecord, DecodeStatus::kNonCanonical},
       Case{"not an object", "[]\n", DecodeStatus::kSchemaViolation},
       Case{"truncated", body.substr(0, body.size() - 3) + "\n", DecodeStatus::kMalformedJson},
       Case{"reordered members",
@@ -258,12 +253,12 @@ int RejectsNoncanonical() {
       Case{"inner whitespace", replace(R"("sequence":7)", R"("sequence": 7)"),
            DecodeStatus::kNonCanonical},
       Case{"extra member", replace(R"("sequence":7)", R"("sequence":7,"note":"x")"),
-           DecodeStatus::kNonCanonical},
+           DecodeStatus::kSchemaViolation},
       Case{"duplicate member", replace(R"("sequence":7)", R"("sequence":7,"sequence":7)"),
            DecodeStatus::kNonCanonical},
       Case{"escaped solidus", replace("operator@example", R"(operator\/example)"),
            DecodeStatus::kNonCanonical},
-      Case{"uppercase unicode escape", replace("operator@example", R"(operator@example)"),
+      Case{"needless unicode escape", replace("operator@example", "operator\\u0040example"),
            DecodeStatus::kNonCanonical},
       Case{"float sequence", replace(R"("sequence":7)", R"("sequence":7.0)"),
            DecodeStatus::kSchemaViolation},
@@ -271,7 +266,8 @@ int RejectsNoncanonical() {
            DecodeStatus::kSchemaViolation},
       Case{"zero sequence", replace(R"("sequence":7)", R"("sequence":0)"),
            DecodeStatus::kSchemaViolation},
-      Case{"sequence beyond uint64", replace(R"("sequence":7)", R"("sequence":18446744073709551616)"),
+      Case{"sequence beyond uint64",
+           replace(R"("sequence":7)", R"("sequence":18446744073709551616)"),
            DecodeStatus::kSchemaViolation},
       Case{"string sequence", replace(R"("sequence":7)", R"("sequence":"7")"),
            DecodeStatus::kSchemaViolation},
@@ -289,8 +285,7 @@ int RejectsNoncanonical() {
            DecodeStatus::kSchemaViolation},
       Case{"lowercase t in timestamp", replace("03.456Z", "03.456z"),
            DecodeStatus::kSchemaViolation},
-      Case{"timestamp without zone", replace("03.456Z", "03.456"),
-           DecodeStatus::kSchemaViolation},
+      Case{"timestamp without zone", replace("03.456Z", "03.456"), DecodeStatus::kSchemaViolation},
       Case{"invalid UTF-8", replace("operator@example", "op\xC3(rator"),
            DecodeStatus::kMalformedJson},
   };
@@ -309,11 +304,11 @@ int RejectsNoncanonical() {
   auto control = SampleEvent();
   control.payload = PrincipalPayload{std::string("a\x1f") + "b\"c\\d/e\xC3\xA9"};
   const auto encoded = EncodeRecord(control);
-  result |= Check(encoded.status == EncodeStatus::kEncoded &&
-                      encoded.bytes.find(R"("a\u001fb\"c\\d/e)"
-                                         "\xC3\xA9"
-                                         R"(")") != std::string::npos,
-                  "escapes are RFC 8259 minimum with lowercase hex: " + encoded.bytes);
+  result |= Check(
+      encoded.status == EncodeStatus::kEncoded && encoded.bytes.find(R"("a\u001fb\"c\\d/e)"
+                                                                     "\xC3\xA9"
+                                                                     R"(")") != std::string::npos,
+      "escapes are RFC 8259 minimum with lowercase hex: " + encoded.bytes);
   const auto back = DecodeRecord(encoded.bytes);
   result |= Check(back.status == DecodeStatus::kDecoded &&
                       std::get<PrincipalPayload>(back.event.payload).principal_subject ==
@@ -353,7 +348,8 @@ int main(int argc, char** argv) {
   using namespace sitometron::test;
   if (check == "journal_record_roundtrip_vectors") return RoundtripVectors(vectors);
   if (check == "journal_record_size_bound") return SizeBound();
-  if (check == "journal_record_oversize_schema_valid_rejected") return OversizeSchemaValidRejected();
+  if (check == "journal_record_oversize_schema_valid_rejected")
+    return OversizeSchemaValidRejected();
   if (check == "journal_parser_rejects_noncanonical") return RejectsNoncanonical();
   std::cerr << "unknown check " << check << '\n';
   return 2;
