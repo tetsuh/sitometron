@@ -212,9 +212,11 @@ bool IsRfc3339(std::string_view s) {
   }
   const unsigned month = DigitValue(static_cast<unsigned char>(s[5])) * 10U +
                          DigitValue(static_cast<unsigned char>(s[6]));
-  const unsigned day = DigitValue(static_cast<unsigned char>(s[8])) * 10U +
-                       DigitValue(static_cast<unsigned char>(s[9]));
-  if (day > DaysInMonth(month, IsLeapYear(year))) return false;
+  if (const unsigned day = DigitValue(static_cast<unsigned char>(s[8])) * 10U +
+                           DigitValue(static_cast<unsigned char>(s[9]));
+      day > DaysInMonth(month, IsLeapYear(year))) {
+    return false;
+  }
   std::size_t i = 19;
   if (i < s.size() && s[i] == '.') {
     ++i;
@@ -604,7 +606,8 @@ std::optional<core::EventPayload> PayloadFromJson(core::EventType type, const Js
     error = "payload is not an object";
     return std::nullopt;
   }
-  auto make = [&](std::size_t members, auto&& build) -> std::optional<core::EventPayload> {
+  auto make = [&payload, &error](std::size_t members,
+                                 auto&& build) -> std::optional<core::EventPayload> {
     Reader r{payload, members, {}};
     core::EventPayload result = build(r);
     if (!r.CheckMemberCount()) {
@@ -619,12 +622,12 @@ std::optional<core::EventPayload> PayloadFromJson(core::EventType type, const Js
         return core::JobCreatedPayload{core::Uuid{r.Str("session_id")}};
       });
     case EventType::kResourcesCommitted:
-      return make(3, [&](Reader& r) -> core::EventPayload {
+      return make(3, [](Reader& r) -> core::EventPayload {
         core::ResourcesCommittedPayload v;
         v.allocation_id = core::StableId{r.Str("allocation_id")};
         v.allocation_digest = core::Digest{r.Str("allocation_digest")};
-        const auto* nested = r.Get("resolved_allocation", Json::value_t::object);
-        if (nested != nullptr) {
+        if (const auto* nested = r.Get("resolved_allocation", Json::value_t::object);
+            nested != nullptr) {
           Reader n{*nested, 3, {}};
           v.schema_id = core::StableId{n.Str("schema_id")};
           v.schema_version = n.U32("schema_version");
@@ -634,11 +637,10 @@ std::optional<core::EventPayload> PayloadFromJson(core::EventType type, const Js
         return v;
       });
     case EventType::kWorkerLaunchIntent:
-      return make(5, [&](Reader& r) -> core::EventPayload {
+      return make(5, [](Reader& r) -> core::EventPayload {
         core::WorkerLaunchIntentPayload v;
         v.operation_id = core::StableId{r.Str("operation_id")};
-        const auto* nested = r.Get("application", Json::value_t::object);
-        if (nested != nullptr) {
+        if (const auto* nested = r.Get("application", Json::value_t::object); nested != nullptr) {
           Reader n{*nested, 3, {}};
           v.application_id = core::StableId{n.Str("application_id")};
           v.application_version = n.Str("version");

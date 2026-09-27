@@ -37,13 +37,15 @@ enum class DecodeStatus {
   kDecoded,
   // The input is longer than max_record_bytes; it was not parsed.
   kOversize,
-  // The input is not one JSON object followed by exactly one LF.
+  // The input does not end with exactly one LF, contains another LF, or is not valid JSON
+  // (including invalid UTF-8, leading-zero numbers, and lone surrogate escapes).
   kMalformedJson,
-  // The JSON parses but violates the schema (missing member, wrong type, unknown event type,
-  // integer not exactly representable as unsigned 64-bit, identifier pattern, enum, size).
+  // The JSON parses but violates the schema (not an object, missing or extra member, wrong type,
+  // unknown event type, integer not exactly representable as unsigned 64-bit, identifier
+  // pattern, enum, size).
   kSchemaViolation,
   // The JSON is schema-valid but is not the canonical encoding of its event (member order,
-  // whitespace, escape spelling, duplicate or extra members).
+  // whitespace including CR or a byte-order mark, escape spelling, duplicate members).
   kNonCanonical,
 };
 
