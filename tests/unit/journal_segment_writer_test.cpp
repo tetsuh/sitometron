@@ -677,6 +677,12 @@ int DirectoryExclusiveLock() {
     }
   }
   {
+    // The noexcept sync of a directory that cannot be opened reports an error instead of throwing.
+    const auto missing = (root / "does-not-exist").string();
+    result |= Check(SystemFileSystem().SyncDirectory(missing) != IoError::kNone,
+                    "syncing a missing directory fails as a value");
+  }
+  {
     SegmentJournal third(SystemFileSystem());
     const auto opened = third.Open(root.string());
     result |= Check(opened.ok && opened.next_sequence == 2,

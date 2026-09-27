@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -243,7 +244,14 @@ class WindowsFileSystem final : public FileSystem {
     return FlushFileBuffers(ToHandle(file)) ? IoError::kNone : IoError::kOther;
   }
   IoError SyncDirectory(const std::string& directory) noexcept override {
-    const HANDLE handle = CreateFileW(std::filesystem::path(directory).c_str(), GENERIC_WRITE,
+    // The narrow-to-wide path conversion allocates and may throw; this call must not.
+    std::wstring wide;
+    try {
+      wide = std::filesystem::path(directory).wstring();
+    } catch (const std::exception&) {
+      return IoError::kOther;
+    }
+    const HANDLE handle = CreateFileW(wide.c_str(), GENERIC_WRITE,
                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                       nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return IoError::kUnsupported;
