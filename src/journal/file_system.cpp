@@ -1,6 +1,7 @@
 #include "sitometron/journal/file_system.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -86,12 +87,12 @@ IoError FromLastError() {
 }
 
 bool IsNtfs(HANDLE handle) {
-  wchar_t name[MAX_PATH + 1] = {};
-  if (!GetVolumeInformationByHandleW(handle, nullptr, 0, nullptr, nullptr, nullptr, name,
-                                     MAX_PATH + 1)) {
+  std::array<wchar_t, MAX_PATH + 1> name{};
+  if (!GetVolumeInformationByHandleW(handle, nullptr, 0, nullptr, nullptr, nullptr, name.data(),
+                                     static_cast<DWORD>(name.size()))) {
     return false;
   }
-  return std::wstring_view(name) == L"NTFS";
+  return std::wstring_view(name.data()) == L"NTFS";
 }
 
 class WindowsFileSystem final : public FileSystem {
@@ -109,9 +110,8 @@ class WindowsFileSystem final : public FileSystem {
       error = FromLastError();
       return std::nullopt;
     }
-    OVERLAPPED overlapped = {};
-    if (!LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0,
-                    &overlapped)) {
+    if (OVERLAPPED overlapped = {}; !LockFileEx(
+            handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped)) {
       error = IoError::kLocked;
       CloseHandle(handle);
       return std::nullopt;
@@ -136,8 +136,7 @@ class WindowsFileSystem final : public FileSystem {
       error = FromLastError();
       return std::nullopt;
     }
-    LARGE_INTEGER zero = {};
-    if (!SetFilePointerEx(handle, zero, nullptr, FILE_END)) {
+    if (const LARGE_INTEGER zero = {}; !SetFilePointerEx(handle, zero, nullptr, FILE_END)) {
       error = IoError::kOther;
       CloseHandle(handle);
       return std::nullopt;

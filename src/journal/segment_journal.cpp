@@ -24,8 +24,7 @@ constexpr std::size_t sequence_digits = 20;
 // Parses `journal-<20 digits>.ndjson`; other names are not segments.
 std::optional<std::uint64_t> SegmentFirstSequence(std::string_view name) {
   if (name.size() != segment_prefix.size() + sequence_digits + segment_suffix.size() ||
-      name.substr(0, segment_prefix.size()) != segment_prefix ||
-      name.substr(name.size() - segment_suffix.size()) != segment_suffix) {
+      !name.starts_with(segment_prefix) || !name.ends_with(segment_suffix)) {
     return std::nullopt;
   }
   const auto digits = name.substr(segment_prefix.size(), sequence_digits);
@@ -78,84 +77,93 @@ std::string SegmentJournal::SegmentName(std::uint64_t first_sequence) {
   return std::string(segment_prefix) + digits + std::string(segment_suffix);
 }
 
+SegmentJournal::Located SegmentJournal::Locate(const std::string& directory) {
+  IoError error = IoError::kNone;
+  const auto names = file_system_.List(directory, error);
+  if (!names.has_value()) return Located{"cannot list the Journal directory", 0, {}};
+  std::vector<std::pair<std::uint64_t, std::string>> segments;
+  for (const auto& name : *names) {
+    if (const auto first = SegmentFirstSequence(name); first.has_value()) {
+      segments.emplace_back(*first, name);
+    }
+  }
+  if (segments.empty()) return Located{{}, 1, {}};
+  std::sort(segments.begin(), segments.end());
+
+  const auto& [first, name] = segments.back();
+  const auto content = file_system_.ReadAll(JoinPath(directory, name), error);
+  if (!content.has_value()) return Located{"cannot read the active segment " + name, 0, {}};
+  std::string detail;
+  const auto last = LastSequence(*content, detail);
+  if (!detail.empty()) return Located{detail + " (" + name + ")", 0, {}};
+  if (last.has_value()) {
+    if (*last < first)
+      return Located{"active segment " + name + " holds an earlier sequence", 0, {}};
+    if (*last == UINT64_MAX) return Located{"Journal sequence is exhausted", 0, {}};
+    // A full active segment is left sealed; the next record starts a new one.
+    return Located{{}, *last + 1, content->size() < options_.segment_limit_bytes ? name : ""};
+  }
+
+  // An empty highest segment is valid only when named for the next sequence (ADR-0006 §5).
+  std::uint64_t expected = 1;
+  if (segments.size() > 1) {
+    const auto& previous = segments[segments.size() - 2].second;
+    const auto previous_content = file_system_.ReadAll(JoinPath(directory, previous), error);
+    const auto previous_last =
+        previous_content.has_value() ? LastSequence(*previous_content, detail) : std::nullopt;
+    if (!detail.empty() || !previous_last.has_value()) {
+      return Located{
+          "segment before the empty active segment is not usable (" + previous + ")", 0, {}};
+    }
+    expected = *previous_last + 1;
+  }
+  if (first != expected) {
+    return Located{
+        "empty segment " + name + " is not named for the next sequence " + std::to_string(expected),
+        0,
+        {}};
+  }
+  return Located{{}, first, name};
+}
+
 OpenResult SegmentJournal::Open(const std::string& directory) {
   const std::lock_guard guard(mutex_);
-  if (opened_ || lock_) return OpenResult{false, "journal is already open", 0, {}};
+  if (opened_ || lock_.has_value()) return OpenResult{false, "journal is already open", 0, {}};
   if (file_system_.EnsureDirectory(directory) != IoError::kNone) {
     return OpenResult{false, "cannot create the Journal directory", 0, {}};
   }
   IoError error = IoError::kNone;
-  auto lock = file_system_.Lock(JoinPath(directory, lock_name), error);
-  if (!lock) {
+  const auto lock = file_system_.Lock(JoinPath(directory, lock_name), error);
+  if (!lock.has_value()) {
     return OpenResult{false,
                       error == IoError::kLocked ? "Journal directory is locked by another owner"
                                                 : "cannot lock the Journal directory",
                       0,
                       {}};
   }
-  auto fail = [&](std::string detail) {
+  const auto located = Locate(directory);
+  if (!located.error.empty()) {
     file_system_.Close(*lock);
-    return OpenResult{false, std::move(detail), 0, {}};
-  };
-  const auto names = file_system_.List(directory, error);
-  if (!names) return fail("cannot list the Journal directory");
-  std::vector<std::pair<std::uint64_t, std::string>> segments;
-  for (const auto& name : *names) {
-    if (const auto first = SegmentFirstSequence(name)) segments.emplace_back(*first, name);
+    return OpenResult{false, located.error, 0, {}};
   }
-  std::sort(segments.begin(), segments.end());
-
-  std::uint64_t next = 1;
-  std::string active;
-  if (!segments.empty()) {
-    const auto& [first, name] = segments.back();
-    const auto content = file_system_.ReadAll(JoinPath(directory, name), error);
-    if (!content) return fail("cannot read the active segment " + name);
-    std::string detail;
-    const auto last = LastSequence(*content, detail);
-    if (!detail.empty()) return fail(detail + " (" + name + ")");
-    if (last) {
-      if (*last < first) return fail("active segment " + name + " holds an earlier sequence");
-      if (*last == UINT64_MAX) return fail("Journal sequence is exhausted");
-      next = *last + 1;
-      if (content->size() < options_.segment_limit_bytes) active = name;
-    } else {
-      // An empty highest segment is valid only when named for the next sequence (ADR-0006 §5).
-      std::uint64_t expected = 1;
-      if (segments.size() > 1) {
-        const auto& previous = segments[segments.size() - 2];
-        const auto previous_content =
-            file_system_.ReadAll(JoinPath(directory, previous.second), error);
-        if (!previous_content) return fail("cannot read segment " + previous.second);
-        const auto previous_last = LastSequence(*previous_content, detail);
-        if (!detail.empty() || !previous_last) {
-          return fail("segment before the empty active segment is not usable (" + previous.second +
-                      ")");
-        }
-        expected = *previous_last + 1;
-      }
-      if (first != expected) {
-        return fail("empty segment " + name + " is not named for the next sequence " +
-                    std::to_string(expected));
-      }
-      next = first;
-      active = name;
+  if (!located.active.empty()) {
+    const auto path = JoinPath(directory, located.active);
+    const auto handle = file_system_.OpenAppend(path, false, error);
+    if (!handle.has_value()) {
+      file_system_.Close(*lock);
+      return OpenResult{false, "cannot open the active segment " + located.active, 0, {}};
     }
-  }
-
-  if (!active.empty()) {
-    auto handle = file_system_.OpenAppend(JoinPath(directory, active), false, error);
-    if (!handle) return fail("cannot open the active segment " + active);
     active_ = handle;
-    const auto content = file_system_.ReadAll(JoinPath(directory, active), error);
-    active_size_ = content ? content->size() : 0;
+    const auto content = file_system_.ReadAll(path, error);
+    active_size_ = content.has_value() ? content->size() : 0;
   }
   directory_ = directory;
   lock_ = lock;
-  next_sequence_ = next;
+  next_sequence_ = located.next;
   opened_ = true;
   poisoned_.store(false);
-  return OpenResult{true, {}, next, active.empty() ? SegmentName(next) : active};
+  return OpenResult{
+      true, {}, located.next, located.active.empty() ? SegmentName(located.next) : located.active};
 }
 
 core::LogicalCommitResult SegmentJournal::Commit(const core::LogicalJobEvent& event) noexcept {
@@ -178,15 +186,16 @@ core::LogicalCommitResult SegmentJournal::CommitLocked(const core::LogicalJobEve
   if (encoded.status != EncodeStatus::kEncoded) return core::LogicalCommitResult::kDefiniteFailure;
   const std::string_view bytes = encoded.bytes;
 
-  const bool rotate =
-      !active_ || (active_size_ > 0 && active_size_ + bytes.size() > options_.segment_limit_bytes);
-  if (rotate) {
+  if (const bool rotate =
+          !active_.has_value() ||
+          (active_size_ > 0 && active_size_ + bytes.size() > options_.segment_limit_bytes);
+      rotate) {
     CloseActive();
     const auto started = StartSegment(event.sequence);
     if (started != core::LogicalCommitResult::kCommitted) return started;
   }
 
-  if (!active_) return core::LogicalCommitResult::kDefiniteFailure;
+  if (!active_.has_value()) return core::LogicalCommitResult::kDefiniteFailure;
   const FileHandle file = *active_;
   std::size_t written = 0;
   while (written < bytes.size()) {
