@@ -208,9 +208,10 @@ explicit follow-up.
 
 ## 9. Phase and Milestone gates
 
-Each implementation Phase maps to one GitHub Milestone. Every Milestone contains one `[Gate]` Issue
-with Entry gate, Exit gate, and Evidence sections. The Gate Issue closes last, followed by the
-Milestone.
+Work is planned one working increment at a time. A `[Gate]` Issue is created only when a
+hard-to-change contract (a wire format, persistence format, or public API) must be frozen before its
+implementation starts; Gates are not prepared in advance for later Phases. A Gate has Entry gate,
+Exit gate, and Evidence sections, closes last, and is followed by its Milestone.
 
 Design work, spikes, and fake-driven prototypes may proceed before an Entry gate closes.
 Contract-owning production implementation must not merge until its gate permits it.
