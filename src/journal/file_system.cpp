@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -39,10 +40,12 @@ namespace {
 std::vector<std::filesystem::path> MissingDirectories(const std::filesystem::path& path) {
   std::vector<std::filesystem::path> missing;
   std::error_code code;
-  for (auto current = path; !current.empty() && !std::filesystem::exists(current, code);
-       current = current.parent_path()) {
+  auto current = path;
+  while (!current.empty() && !std::filesystem::exists(current, code)) {
     missing.push_back(current);
-    if (current == current.parent_path()) break;
+    auto parent = current.parent_path();
+    if (parent == current) break;
+    current = std::move(parent);
   }
   std::reverse(missing.begin(), missing.end());
   return missing;
@@ -153,8 +156,8 @@ class WindowsFileSystem final : public FileSystem {
     // its parent before any record can live below it. Only the Journal directory itself gets the
     // owner-only DACL; created ancestors keep default permissions.
     for (const auto& missing : MissingDirectories(path)) {
-      SECURITY_ATTRIBUTES* attributes = missing == path ? security.Attributes() : nullptr;
-      if (!CreateDirectoryW(missing.c_str(), attributes) &&
+      if (SECURITY_ATTRIBUTES* attributes = missing == path ? security.Attributes() : nullptr;
+          !CreateDirectoryW(missing.c_str(), attributes) &&
           GetLastError() != ERROR_ALREADY_EXISTS) {
         return IoError::kOther;
       }
