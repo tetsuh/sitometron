@@ -76,7 +76,8 @@ Accepted ADR-0003 under Issue #10 makes these requirements binding on implementa
 
 Accepted [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under
 [Issue #51](https://github.com/tetsuh/sitometron/issues/51) makes these requirements binding on
-implementation. Their implementation remains Planned for Phase 0B.
+implementation. Issues #57 and #59 implement `JRN-004`–`JRN-007`; `OPS-002`–`OPS-005` remain
+Planned for Phase 0B.
 
 | ID | Level | Requirement | Authority |
 |---|---|---|---|

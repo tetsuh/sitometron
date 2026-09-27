@@ -50,7 +50,9 @@ preserves its behavior while reducing structural complexity. Accepted ADR-0005 a
 implement the lifecycle capability ports and deterministic fakes. Accepted ADR-0003 and Issue #12
 implement the bounded private single writer, complete logical envelope construction, commit ordering,
 and no-fail postcommit dispatch; Issue #13 completes deterministic adverse/race qualification.
-Physical Journal durability and production effect adapters remain Planned under later owners.
+The `sitometron_journal` adapter implements the canonical record codec (Issue #57) and the durable
+segment writer (Issue #59); startup validation, replay, and pruning remain Planned under Issue #51.
+Production effect adapters remain Planned under later owners.
 
 The machine-readable Job transition contract is documented in
 [the core contracts](03_core_contracts.md). Worker HTTP schemas, external REST schemas, physical
