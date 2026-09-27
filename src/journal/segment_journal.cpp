@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -55,6 +56,16 @@ std::optional<std::uint64_t> LastSequence(std::string_view content, std::string&
     return std::nullopt;
   }
   return decoded.event.sequence;
+}
+
+// Parent of the Journal directory, ignoring a trailing separator or "." / ".." spelling.
+std::string ParentDirectory(const std::string& directory) {
+  auto path = std::filesystem::path(directory).lexically_normal();
+  if (path.filename().empty() && path.has_parent_path() && path != path.root_path()) {
+    path = path.parent_path();
+  }
+  const auto parent = path.parent_path();
+  return parent.empty() ? std::string(".") : parent.string();
 }
 
 // Closes a handle on scope exit unless ownership was released (exception-safe Open()).
@@ -160,6 +171,11 @@ OpenResult SegmentJournal::Open(const std::string& directory) {
 OpenResult SegmentJournal::OpenLocked(const std::string& directory) {
   if (file_system_.EnsureDirectory(directory) != IoError::kNone) {
     return OpenResult{false, "cannot create the Journal directory", 0, {}};
+  }
+  // The directory may exist from an earlier attempt that failed before its parent sync; make its
+  // own entry durable again before any record can be committed below it (ADR-0006 §3).
+  if (file_system_.SyncDirectory(ParentDirectory(directory)) != IoError::kNone) {
+    return OpenResult{false, "cannot make the Journal directory entry durable", 0, {}};
   }
   IoError error = IoError::kNone;
   // Both handles stay owned by guards until every step that can fail or throw has succeeded.

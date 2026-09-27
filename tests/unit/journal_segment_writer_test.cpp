@@ -547,6 +547,26 @@ int RestartContinues() {
     result |= OpenFresh(retry, 2);
   }
   {
+    // Reopening an existing Journal directory re-syncs its parent entry first and fails closed if
+    // that sync fails, before any record could be committed below it.
+    MemoryFileSystem existing;
+    existing.directories.insert(k_dir);
+    existing.fail_next_directory_sync = true;
+    SegmentJournal failing(existing);
+    result |= Check(!failing.Open(k_dir).ok && existing.OpenHandles() == 0,
+                    "reopen fails closed when the parent entry cannot be re-synced");
+    SegmentJournal reopened(existing);
+    result |= OpenFresh(reopened, 1);
+    const auto parent_sync =
+        std::find(existing.log.begin(), existing.log.end(),
+                  "syncdir " + std::filesystem::path(k_dir).parent_path().string());
+    const auto lock = std::find_if(existing.log.begin(), existing.log.end(),
+                                   [](const std::string& e) { return e.rfind("lock", 0) == 0; });
+    result |=
+        Check(parent_sync != existing.log.end() && lock != existing.log.end() && parent_sync < lock,
+              "the parent entry is synced before the Journal is locked and used");
+  }
+  {
     MemoryFileSystem torn;
     torn.directories.insert(k_dir);
     torn.files[Segment(1)] = EncodeRecord(Event(1)).bytes + "{\"schema";
