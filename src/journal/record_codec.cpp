@@ -17,31 +17,31 @@ namespace {
 using Json = nlohmann::json;
 using namespace std::string_view_literals;
 
-constexpr std::size_t kMaxAllocationTextBytes = 65536;
-constexpr std::size_t kMaxStableIdChars = 128;
-constexpr std::size_t kMaxVersionChars = 128;
-constexpr std::size_t kMaxPrincipalChars = 256;
-constexpr std::size_t kEnvelopeMembers = 6;
+constexpr std::size_t max_allocation_text_bytes = 65536;
+constexpr std::size_t max_stable_id_chars = 128;
+constexpr std::size_t max_version_chars = 128;
+constexpr std::size_t max_principal_chars = 256;
+constexpr std::size_t envelope_members = 6;
 
 // --- closed enum spellings --------------------------------------------------------------------
 
-constexpr std::array kPhaseNames{
+constexpr std::array phase_names{
     std::pair{core::TimeoutPhase::kPreparation, "preparation"sv},
     std::pair{core::TimeoutPhase::kExecution, "execution"sv},
     std::pair{core::TimeoutPhase::kCooperativeStop, "cooperative_stop"sv},
     std::pair{core::TimeoutPhase::kProcessExitConfirmation, "process_exit_confirmation"sv}};
-constexpr std::array kCompletionModeNames{
+constexpr std::array completion_mode_names{
     std::pair{core::CompletionMode::kCooperative, "cooperative"sv},
     std::pair{core::CompletionMode::kForced, "forced"sv},
     std::pair{core::CompletionMode::kProcessAlreadyExited, "process_already_exited"sv}};
-constexpr std::array kOutcomeNames{std::pair{core::TerminalOutcome::kSucceeded, "succeeded"sv},
+constexpr std::array outcome_names{std::pair{core::TerminalOutcome::kSucceeded, "succeeded"sv},
                                    std::pair{core::TerminalOutcome::kFailed, "failed"sv},
                                    std::pair{core::TerminalOutcome::kCancelled, "cancelled"sv},
                                    std::pair{core::TerminalOutcome::kTerminated, "terminated"sv},
                                    std::pair{core::TerminalOutcome::kTimedOut, "timed_out"sv}};
-constexpr std::array kCleanupNames{std::pair{core::CleanupStatus::kCompleted, "completed"sv},
+constexpr std::array cleanup_names{std::pair{core::CleanupStatus::kCompleted, "completed"sv},
                                    std::pair{core::CleanupStatus::kIncomplete, "incomplete"sv}};
-constexpr std::array kLateOriginalNames{
+constexpr std::array late_original_names{
     std::pair{core::EventType::kWorkerCompleted, "worker_completed"sv},
     std::pair{core::EventType::kWorkerFailed, "worker_failed"sv}};
 
@@ -105,7 +105,7 @@ bool IsSha256(std::string_view s) {
 }
 
 bool IsStableId(std::string_view s) {
-  if (s.empty() || s.size() > kMaxStableIdChars) return false;
+  if (s.empty() || s.size() > max_stable_id_chars) return false;
   if (!IsAlnum(static_cast<unsigned char>(s.front()))) return false;
   for (const char raw : s.substr(1)) {
     const auto c = static_cast<unsigned char>(raw);
@@ -164,26 +164,49 @@ bool BoundedText(std::string_view s, std::size_t max_chars) {
   return points.has_value() && *points >= 1 && *points <= max_chars;
 }
 
-bool TwoDigits(std::string_view s, std::size_t at, unsigned min, unsigned max) {
+unsigned DigitValue(unsigned char c) { return static_cast<unsigned>(c - '0'); }
+
+struct DigitRange {
+  unsigned min;
+  unsigned max;
+};
+
+bool TwoDigits(std::string_view s, std::size_t at, DigitRange range) {
   if (at + 2 > s.size()) return false;
   const auto a = static_cast<unsigned char>(s[at]);
   const auto b = static_cast<unsigned char>(s[at + 1]);
   if (!IsDigit(a) || !IsDigit(b)) return false;
-  const unsigned value = (a - '0') * 10U + (b - '0');
-  return value >= min && value <= max;
+  const unsigned value = DigitValue(a) * 10U + DigitValue(b);
+  return value >= range.min && value <= range.max;
 }
 
-// RFC 3339 date-time as the encoder emits it: uppercase T and Z, optional fraction, numeric offset.
+bool IsLeapYear(unsigned year) { return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0; }
+
+unsigned DaysInMonth(unsigned month, bool leap) {
+  constexpr std::array<unsigned, 12> days{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  return month == 2 && leap ? 29 : days[month - 1];
+}
+
+// RFC 3339 date-time as the encoder emits it: uppercase T and Z, optional fraction, numeric
+// offset, calendar-valid date.
 bool IsRfc3339(std::string_view s) {
   if (s.size() < 20) return false;
+  unsigned year = 0;
   for (std::size_t i = 0; i < 4; ++i) {
-    if (!IsDigit(static_cast<unsigned char>(s[i]))) return false;
+    const auto c = static_cast<unsigned char>(s[i]);
+    if (!IsDigit(c)) return false;
+    year = year * 10U + DigitValue(c);
   }
-  if (s[4] != '-' || !TwoDigits(s, 5, 1, 12) || s[7] != '-' || !TwoDigits(s, 8, 1, 31) ||
-      s[10] != 'T' || !TwoDigits(s, 11, 0, 23) || s[13] != ':' || !TwoDigits(s, 14, 0, 59) ||
-      s[16] != ':' || !TwoDigits(s, 17, 0, 60)) {
+  if (s[4] != '-' || !TwoDigits(s, 5, {1, 12}) || s[7] != '-' || !TwoDigits(s, 8, {1, 31}) ||
+      s[10] != 'T' || !TwoDigits(s, 11, {0, 23}) || s[13] != ':' || !TwoDigits(s, 14, {0, 59}) ||
+      s[16] != ':' || !TwoDigits(s, 17, {0, 60})) {
     return false;
   }
+  const unsigned month = DigitValue(static_cast<unsigned char>(s[5])) * 10U +
+                         DigitValue(static_cast<unsigned char>(s[6]));
+  const unsigned day = DigitValue(static_cast<unsigned char>(s[8])) * 10U +
+                       DigitValue(static_cast<unsigned char>(s[9]));
+  if (day > DaysInMonth(month, IsLeapYear(year))) return false;
   std::size_t i = 19;
   if (i < s.size() && s[i] == '.') {
     ++i;
@@ -194,8 +217,8 @@ bool IsRfc3339(std::string_view s) {
   if (i >= s.size()) return false;
   if (s[i] == 'Z') return i + 1 == s.size();
   if (s[i] != '+' && s[i] != '-') return false;
-  return i + 6 == s.size() && TwoDigits(s, i + 1, 0, 23) && s[i + 3] == ':' &&
-         TwoDigits(s, i + 4, 0, 59);
+  return i + 6 == s.size() && TwoDigits(s, i + 1, {0, 23}) && s[i + 3] == ':' &&
+         TwoDigits(s, i + 4, {0, 59});
 }
 
 // --- semantic validation (shared by encoder and decoder) ---------------------------------------
@@ -222,7 +245,8 @@ std::optional<std::string> PayloadViolation(const core::LogicalJobEvent& e) {
       if (!IsSha256(v->allocation_digest.value)) return "allocation_digest is not sha256";
       if (!IsStableId(v->schema_id.value)) return "schema_id is not a stable id";
       if (v->schema_version < 1) return "resolved_allocation.schema_version below 1";
-      if (v->payload_utf8.size() > kMaxAllocationTextBytes) return "payload_utf8 over 65536 bytes";
+      if (v->payload_utf8.size() > max_allocation_text_bytes)
+        return "payload_utf8 over 65536 bytes";
       if (!Utf8CodePoints(v->payload_utf8).has_value()) return "payload_utf8 is not UTF-8";
       return std::nullopt;
     }
@@ -231,7 +255,7 @@ std::optional<std::string> PayloadViolation(const core::LogicalJobEvent& e) {
       if (v == nullptr) return "payload is not worker_launch_intent";
       if (!IsStableId(v->operation_id.value)) return "operation_id is not a stable id";
       if (!IsStableId(v->application_id.value)) return "application_id is not a stable id";
-      if (!BoundedText(v->application_version, kMaxVersionChars)) return "version out of bounds";
+      if (!BoundedText(v->application_version, max_version_chars)) return "version out of bounds";
       if (!IsSha256(v->bundle_sha256.value)) return "bundle_sha256 is not sha256";
       if (!IsStableId(v->allocation_id.value)) return "allocation_id is not a stable id";
       if (!IsSha256(v->allocation_digest.value)) return "allocation_digest is not sha256";
@@ -254,7 +278,7 @@ std::optional<std::string> PayloadViolation(const core::LogicalJobEvent& e) {
     case EventType::kTerminateAccepted: {
       const auto* v = As<core::PrincipalPayload>(p);
       if (v == nullptr) return "payload is not a principal payload";
-      if (!BoundedText(v->principal_subject, kMaxPrincipalChars)) {
+      if (!BoundedText(v->principal_subject, max_principal_chars)) {
         return "principal_subject out of bounds";
       }
       return std::nullopt;
@@ -262,7 +286,7 @@ std::optional<std::string> PayloadViolation(const core::LogicalJobEvent& e) {
     case EventType::kTimeoutExpired: {
       const auto* v = As<core::TimeoutExpiredPayload>(p);
       if (v == nullptr) return "payload is not timeout_expired";
-      if (!NameOf(v->phase, kPhaseNames)) return "phase is not a closed value";
+      if (!NameOf(v->phase, phase_names)) return "phase is not a closed value";
       if (v->timer_generation < 1) return "timer_generation below 1";
       return std::nullopt;
     }
@@ -277,7 +301,7 @@ std::optional<std::string> PayloadViolation(const core::LogicalJobEvent& e) {
     case EventType::kProcessExitConfirmed: {
       const auto* v = As<core::ProcessExitConfirmedPayload>(p);
       if (v == nullptr) return "payload is not process_exit_confirmed";
-      if (!NameOf(v->completion_mode, kCompletionModeNames)) {
+      if (!NameOf(v->completion_mode, completion_mode_names)) {
         return "completion_mode is not a closed value";
       }
       if (!IsStableId(v->launch_operation_id.value)) {
@@ -299,7 +323,7 @@ std::optional<std::string> PayloadViolation(const core::LogicalJobEvent& e) {
     case EventType::kTerminalOutcomeCommitted: {
       const auto* v = As<core::TerminalOutcomePayload>(p);
       if (v == nullptr) return "payload is not terminal_outcome_committed";
-      if (!NameOf(v->outcome, kOutcomeNames)) return "outcome is not a closed value";
+      if (!NameOf(v->outcome, outcome_names)) return "outcome is not a closed value";
       return std::nullopt;
     }
     case EventType::kResourcesReleased: {
@@ -312,13 +336,13 @@ std::optional<std::string> PayloadViolation(const core::LogicalJobEvent& e) {
     case EventType::kCleanupStatusRecorded: {
       const auto* v = As<core::CleanupStatusPayload>(p);
       if (v == nullptr) return "payload is not cleanup_status_recorded";
-      if (!NameOf(v->status, kCleanupNames)) return "status is not a closed value";
+      if (!NameOf(v->status, cleanup_names)) return "status is not a closed value";
       return std::nullopt;
     }
     case EventType::kLateWorkerEvent: {
       const auto* v = As<core::LateWorkerEventPayload>(p);
       if (v == nullptr) return "payload is not late_worker_event";
-      if (!NameOf(v->original_event_type, kLateOriginalNames)) {
+      if (!NameOf(v->original_event_type, late_original_names)) {
         return "original_event_type is not a closed value";
       }
       if (!IsUuid(v->worker_id.value, '4')) return "worker_id is not a UUIDv4";
@@ -343,7 +367,7 @@ std::optional<std::string> Violation(const core::LogicalJobEvent& e) {
 
 class Emitter {
  public:
-  void String(std::string_view s) {
+  Emitter& Str(std::string_view s) {
     out_.push_back('"');
     for (const char raw : s) {
       const auto c = static_cast<unsigned char>(raw);
@@ -354,20 +378,25 @@ class Emitter {
       } else if (c < 0x20) {
         constexpr std::string_view hex = "0123456789abcdef";
         out_ += "\\u00";
-        out_.push_back(hex[c >> 4U]);
-        out_.push_back(hex[c & 0x0FU]);
+        out_.push_back(hex[static_cast<std::size_t>(c >> 4U)]);
+        out_.push_back(hex[static_cast<std::size_t>(c & 0x0FU)]);
       } else {
         out_.push_back(raw);
       }
     }
     out_.push_back('"');
+    return *this;
   }
-  void Unsigned(std::uint64_t v) { out_ += std::to_string(v); }
-  void Member(std::string_view key) {
+  Emitter& Num(std::uint64_t v) {
+    out_ += std::to_string(v);
+    return *this;
+  }
+  Emitter& Key(std::string_view key) {
     if (first_.back() == 0) out_.push_back(',');
     first_.back() = 0;
-    String(key);
+    Str(key);
     out_.push_back(':');
+    return *this;
   }
   void Begin() {
     out_.push_back('{');
@@ -376,14 +405,6 @@ class Emitter {
   void End() {
     out_.push_back('}');
     first_.pop_back();
-  }
-  void Field(std::string_view key, std::string_view value) {
-    Member(key);
-    String(value);
-  }
-  void Field(std::string_view key, std::uint64_t value) {
-    Member(key);
-    Unsigned(value);
   }
   std::string Take() { return std::move(out_); }
 
@@ -398,90 +419,90 @@ void EmitPayload(Emitter& w, const core::LogicalJobEvent& e) {
   w.Begin();
   switch (e.event_type) {
     case EventType::kJobCreated:
-      w.Field("session_id", As<core::JobCreatedPayload>(p)->session_id.value);
+      w.Key("session_id").Str(As<core::JobCreatedPayload>(p)->session_id.value);
       break;
     case EventType::kResourcesCommitted: {
       const auto& v = *As<core::ResourcesCommittedPayload>(p);
-      w.Field("allocation_id", v.allocation_id.value);
-      w.Field("allocation_digest", v.allocation_digest.value);
-      w.Member("resolved_allocation");
+      w.Key("allocation_id").Str(v.allocation_id.value);
+      w.Key("allocation_digest").Str(v.allocation_digest.value);
+      w.Key("resolved_allocation");
       w.Begin();
-      w.Field("schema_id", v.schema_id.value);
-      w.Field("schema_version", v.schema_version);
-      w.Field("payload_utf8", v.payload_utf8);
+      w.Key("schema_id").Str(v.schema_id.value);
+      w.Key("schema_version").Num(v.schema_version);
+      w.Key("payload_utf8").Str(v.payload_utf8);
       w.End();
       break;
     }
     case EventType::kWorkerLaunchIntent: {
       const auto& v = *As<core::WorkerLaunchIntentPayload>(p);
-      w.Field("operation_id", v.operation_id.value);
-      w.Member("application");
+      w.Key("operation_id").Str(v.operation_id.value);
+      w.Key("application");
       w.Begin();
-      w.Field("application_id", v.application_id.value);
-      w.Field("version", v.application_version);
-      w.Field("bundle_sha256", v.bundle_sha256.value);
+      w.Key("application_id").Str(v.application_id.value);
+      w.Key("version").Str(v.application_version);
+      w.Key("bundle_sha256").Str(v.bundle_sha256.value);
       w.End();
-      w.Field("allocation_id", v.allocation_id.value);
-      w.Field("allocation_digest", v.allocation_digest.value);
-      w.Field("worker_id", v.worker_id.value);
+      w.Key("allocation_id").Str(v.allocation_id.value);
+      w.Key("allocation_digest").Str(v.allocation_digest.value);
+      w.Key("worker_id").Str(v.worker_id.value);
       break;
     }
     case EventType::kWorkerLaunchObserved: {
       const auto& v = *As<core::WorkerLaunchObservedPayload>(p);
-      w.Field("operation_id", v.operation_id.value);
-      w.Field("outcome", v.started ? "started"sv : "failed"sv);
+      w.Key("operation_id").Str(v.operation_id.value);
+      w.Key("outcome").Str(v.started ? "started"sv : "failed"sv);
       break;
     }
     case EventType::kWorkerRunning:
-      w.Field("worker_id", As<core::WorkerRunningPayload>(p)->worker_id.value);
+      w.Key("worker_id").Str(As<core::WorkerRunningPayload>(p)->worker_id.value);
       break;
     case EventType::kCancelAccepted:
     case EventType::kTerminateAccepted:
-      w.Field("principal_subject", As<core::PrincipalPayload>(p)->principal_subject);
+      w.Key("principal_subject").Str(As<core::PrincipalPayload>(p)->principal_subject);
       break;
     case EventType::kTimeoutExpired: {
       const auto& v = *As<core::TimeoutExpiredPayload>(p);
-      w.Field("phase", *NameOf(v.phase, kPhaseNames));
-      w.Field("timer_generation", v.timer_generation);
+      w.Key("phase").Str(*NameOf(v.phase, phase_names));
+      w.Key("timer_generation").Num(v.timer_generation);
       break;
     }
     case EventType::kWorkerCompleted:
     case EventType::kWorkerFailed: {
       const auto& v = *As<core::WorkerEventPayload>(p);
-      w.Field("worker_id", v.worker_id.value);
-      w.Field("event_sequence", v.event_sequence);
+      w.Key("worker_id").Str(v.worker_id.value);
+      w.Key("event_sequence").Num(v.event_sequence);
       break;
     }
     case EventType::kProcessExitConfirmed: {
       const auto& v = *As<core::ProcessExitConfirmedPayload>(p);
-      w.Field("completion_mode", *NameOf(v.completion_mode, kCompletionModeNames));
-      w.Field("launch_operation_id", v.launch_operation_id.value);
+      w.Key("completion_mode").Str(*NameOf(v.completion_mode, completion_mode_names));
+      w.Key("launch_operation_id").Str(v.launch_operation_id.value);
       break;
     }
     case EventType::kSessionRetainRequested:
     case EventType::kSessionRetained:
-      w.Field("session_id", As<core::SessionPayload>(p)->session_id.value);
+      w.Key("session_id").Str(As<core::SessionPayload>(p)->session_id.value);
       break;
     case EventType::kFinalizationCompleted:
     case EventType::kFinalizationFailed:
       break;
     case EventType::kTerminalOutcomeCommitted:
-      w.Field("outcome", *NameOf(As<core::TerminalOutcomePayload>(p)->outcome, kOutcomeNames));
+      w.Key("outcome").Str(*NameOf(As<core::TerminalOutcomePayload>(p)->outcome, outcome_names));
       break;
     case EventType::kResourcesReleased: {
       const auto& v = *As<core::ResourcesReleasedPayload>(p);
-      w.Field("allocation_id", v.allocation_id.value);
-      w.Field("allocation_digest", v.allocation_digest.value);
+      w.Key("allocation_id").Str(v.allocation_id.value);
+      w.Key("allocation_digest").Str(v.allocation_digest.value);
       break;
     }
     case EventType::kCleanupStatusRecorded:
-      w.Field("status", *NameOf(As<core::CleanupStatusPayload>(p)->status, kCleanupNames));
+      w.Key("status").Str(*NameOf(As<core::CleanupStatusPayload>(p)->status, cleanup_names));
       break;
     case EventType::kLateWorkerEvent: {
       const auto& v = *As<core::LateWorkerEventPayload>(p);
-      w.Field("original_event_type", *NameOf(v.original_event_type, kLateOriginalNames));
-      w.Field("worker_id", v.worker_id.value);
-      w.Field("event_sequence", v.event_sequence);
+      w.Key("original_event_type").Str(*NameOf(v.original_event_type, late_original_names));
+      w.Key("worker_id").Str(v.worker_id.value);
+      w.Key("event_sequence").Num(v.event_sequence);
       break;
     }
     case EventType::kInvalid:
@@ -494,12 +515,12 @@ void EmitPayload(Emitter& w, const core::LogicalJobEvent& e) {
 std::string Emit(const core::LogicalJobEvent& e) {
   Emitter w;
   w.Begin();
-  w.Field("schema_version", e.schema_version);
-  w.Field("sequence", e.sequence);
-  w.Field("event_type", core::ToString(e.event_type));
-  w.Field("recorded_at", e.recorded_at.rfc3339);
-  w.Field("job_id", e.job_id.value);
-  w.Member("payload");
+  w.Key("schema_version").Num(e.schema_version);
+  w.Key("sequence").Num(e.sequence);
+  w.Key("event_type").Str(core::ToString(e.event_type));
+  w.Key("recorded_at").Str(e.recorded_at.rfc3339);
+  w.Key("job_id").Str(e.job_id.value);
+  w.Key("payload");
   EmitPayload(w, e);
   w.End();
   auto bytes = w.Take();
@@ -643,7 +664,7 @@ std::optional<core::EventPayload> PayloadFromJson(core::EventType type, const Js
     case EventType::kTimeoutExpired:
       return make(2, [](Reader& r) -> core::EventPayload {
         core::TimeoutExpiredPayload v;
-        v.phase = ClosedValue(r, "phase", kPhaseNames, core::TimeoutPhase::kInvalid);
+        v.phase = ClosedValue(r, "phase", phase_names, core::TimeoutPhase::kInvalid);
         v.timer_generation = r.U64("timer_generation");
         return v;
       });
@@ -658,8 +679,8 @@ std::optional<core::EventPayload> PayloadFromJson(core::EventType type, const Js
     case EventType::kProcessExitConfirmed:
       return make(2, [](Reader& r) -> core::EventPayload {
         core::ProcessExitConfirmedPayload v;
-        v.completion_mode =
-            ClosedValue(r, "completion_mode", kCompletionModeNames, core::CompletionMode::kInvalid);
+        v.completion_mode = ClosedValue(r, "completion_mode", completion_mode_names,
+                                        core::CompletionMode::kInvalid);
         v.launch_operation_id = core::StableId{r.Str("launch_operation_id")};
         return v;
       });
@@ -674,7 +695,7 @@ std::optional<core::EventPayload> PayloadFromJson(core::EventType type, const Js
     case EventType::kTerminalOutcomeCommitted:
       return make(1, [](Reader& r) -> core::EventPayload {
         return core::TerminalOutcomePayload{
-            ClosedValue(r, "outcome", kOutcomeNames, core::TerminalOutcome::kInvalid)};
+            ClosedValue(r, "outcome", outcome_names, core::TerminalOutcome::kInvalid)};
       });
     case EventType::kResourcesReleased:
       return make(2, [](Reader& r) -> core::EventPayload {
@@ -686,13 +707,13 @@ std::optional<core::EventPayload> PayloadFromJson(core::EventType type, const Js
     case EventType::kCleanupStatusRecorded:
       return make(1, [](Reader& r) -> core::EventPayload {
         return core::CleanupStatusPayload{
-            ClosedValue(r, "status", kCleanupNames, core::CleanupStatus::kInvalid)};
+            ClosedValue(r, "status", cleanup_names, core::CleanupStatus::kInvalid)};
       });
     case EventType::kLateWorkerEvent:
       return make(3, [](Reader& r) -> core::EventPayload {
         core::LateWorkerEventPayload v;
         v.original_event_type =
-            ClosedValue(r, "original_event_type", kLateOriginalNames, core::EventType::kInvalid);
+            ClosedValue(r, "original_event_type", late_original_names, core::EventType::kInvalid);
         v.worker_id = core::Uuid{r.Str("worker_id")};
         v.event_sequence = r.U64("event_sequence");
         return v;
@@ -709,7 +730,7 @@ std::optional<core::LogicalJobEvent> EventFromJson(const Json& json, std::string
     error = "record is not an object";
     return std::nullopt;
   }
-  Reader r{json, kEnvelopeMembers, {}};
+  Reader r{json, envelope_members, {}};
   core::LogicalJobEvent e;
   e.schema_version = r.U32("schema_version");
   e.sequence = r.U64("sequence");
@@ -739,7 +760,7 @@ EncodedRecord EncodeRecord(const core::LogicalJobEvent& event) {
     return EncodedRecord{EncodeStatus::kSchemaViolation, {}, std::move(*violation)};
   }
   auto bytes = Emit(event);
-  if (bytes.size() > kMaxRecordBytes) {
+  if (bytes.size() > max_record_bytes) {
     return EncodedRecord{
         EncodeStatus::kOversize, {}, "record is " + std::to_string(bytes.size()) + " bytes"};
   }
@@ -747,7 +768,7 @@ EncodedRecord EncodeRecord(const core::LogicalJobEvent& event) {
 }
 
 DecodedRecord DecodeRecord(std::string_view record) {
-  if (record.size() > kMaxRecordBytes) {
+  if (record.size() > max_record_bytes) {
     return DecodedRecord{
         DecodeStatus::kOversize, {}, "record is " + std::to_string(record.size()) + " bytes"};
   }

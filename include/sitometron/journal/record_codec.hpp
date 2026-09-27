@@ -16,14 +16,14 @@
 namespace sitometron::journal {
 
 // Upper bound of one record in bytes, including its terminating LF.
-inline constexpr std::size_t kMaxRecordBytes = 1048576;
+inline constexpr std::size_t max_record_bytes = 1048576;
 
 enum class EncodeStatus {
   kEncoded,
   // The event violates job-journal-event.schema.json (event type, payload shape, identifier
   // pattern, enum, size, or UTF-8); no bytes were produced.
   kSchemaViolation,
-  // The event is schema-valid but its canonical encoding exceeds kMaxRecordBytes.
+  // The event is schema-valid but its canonical encoding exceeds max_record_bytes.
   kOversize,
 };
 
@@ -35,7 +35,7 @@ struct EncodedRecord {
 
 enum class DecodeStatus {
   kDecoded,
-  // The input is longer than kMaxRecordBytes; it was not parsed.
+  // The input is longer than max_record_bytes; it was not parsed.
   kOversize,
   // The input is not one JSON object followed by exactly one LF.
   kMalformedJson,

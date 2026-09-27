@@ -139,7 +139,7 @@ LogicalJobEvent SampleEvent() {
                          PrincipalPayload{"operator@example"}};
 }
 
-const std::string kSampleRecord =
+const std::string sample_record =
     R"({"schema_version":1,"sequence":7,"event_type":"cancel_accepted",)"
     R"("recorded_at":"2026-09-27T01:02:03.456Z","job_id":"01890f3e-7b00-7abc-8abc-0123456789ab",)"
     R"("payload":{"principal_subject":"operator@example"}})"
@@ -181,12 +181,12 @@ int SizeBound() {
   auto event = SampleEvent();
   const auto base = EncodeRecord(event);
   result |= Check(base.status == EncodeStatus::kEncoded, "sample encodes: " + base.detail);
-  result |= Check(base.bytes == kSampleRecord, "sample is canonical: " + base.bytes);
+  result |= Check(base.bytes == sample_record, "sample is canonical: " + base.bytes);
   // Grow the fractional-seconds part so that the record lands exactly on the bound.
-  const auto room = kMaxRecordBytes - base.bytes.size();
+  const auto room = max_record_bytes - base.bytes.size();
   event.recorded_at.rfc3339 = "2026-09-27T01:02:03." + std::string(3 + room, '4') + "Z";
   const auto exact = EncodeRecord(event);
-  result |= Check(exact.status == EncodeStatus::kEncoded && exact.bytes.size() == kMaxRecordBytes,
+  result |= Check(exact.status == EncodeStatus::kEncoded && exact.bytes.size() == max_record_bytes,
                   "record exactly at the bound encodes");
   result |= Check(DecodeRecord(exact.bytes).status == DecodeStatus::kDecoded,
                   "record exactly at the bound decodes");
@@ -216,7 +216,7 @@ int SizeBound() {
 int OversizeSchemaValidRejected() {
   int result = 0;
   auto event = SampleEvent();
-  event.recorded_at.rfc3339 = "2026-09-27T01:02:03." + std::string(kMaxRecordBytes, '9') + "Z";
+  event.recorded_at.rfc3339 = "2026-09-27T01:02:03." + std::string(max_record_bytes, '9') + "Z";
   const auto encoded = EncodeRecord(event);
   result |= Check(encoded.status == EncodeStatus::kOversize, "schema-valid oversize is kOversize");
   result |= Check(encoded.bytes.empty(), "no bytes for an oversize record");
@@ -225,68 +225,81 @@ int OversizeSchemaValidRejected() {
 
 int RejectsNoncanonical() {
   int result = 0;
-  const auto ok = DecodeRecord(kSampleRecord);
+  const auto ok = DecodeRecord(sample_record);
   result |= Check(ok.status == DecodeStatus::kDecoded, "canonical sample decodes: " + ok.detail);
   struct Case {
     std::string_view name;
     std::string record;
     DecodeStatus expected;
   };
-  const std::string body = kSampleRecord.substr(0, kSampleRecord.size() - 1);
-  auto replace = [&](std::string_view from, std::string_view to) {
-    std::string copy = kSampleRecord;
-    const auto at = copy.find(from);
-    if (at != std::string::npos) copy.replace(at, from.size(), to);
+  const std::string body = sample_record.substr(0, sample_record.size() - 1);
+  struct Mutation {
+    std::string_view from;
+    std::string_view to;
+  };
+  auto replace = [&](Mutation m) {
+    std::string copy = sample_record;
+    const auto at = copy.find(m.from);
+    if (at != std::string::npos) copy.replace(at, m.from.size(), m.to);
     return copy;
   };
   const std::array cases{
       Case{"missing LF", body, DecodeStatus::kMalformedJson},
-      Case{"doubled LF", kSampleRecord + "\n", DecodeStatus::kMalformedJson},
+      Case{"doubled LF", sample_record + "\n", DecodeStatus::kMalformedJson},
       Case{"CRLF", body + "\r\n", DecodeStatus::kNonCanonical},
       Case{"trailing space", body + " \n", DecodeStatus::kNonCanonical},
-      Case{"leading space", " " + kSampleRecord, DecodeStatus::kNonCanonical},
+      Case{"leading space", " " + sample_record, DecodeStatus::kNonCanonical},
       Case{"not an object", "[]\n", DecodeStatus::kSchemaViolation},
       Case{"truncated", body.substr(0, body.size() - 3) + "\n", DecodeStatus::kMalformedJson},
       Case{"reordered members",
-           replace(R"("schema_version":1,"sequence":7)", R"("sequence":7,"schema_version":1)"),
+           replace({R"("schema_version":1,"sequence":7)", R"("sequence":7,"schema_version":1)"}),
            DecodeStatus::kNonCanonical},
-      Case{"inner whitespace", replace(R"("sequence":7)", R"("sequence": 7)"),
+      Case{"inner whitespace", replace({R"("sequence":7)", R"("sequence": 7)"}),
            DecodeStatus::kNonCanonical},
-      Case{"extra member", replace(R"("sequence":7)", R"("sequence":7,"note":"x")"),
+      Case{"extra member", replace({R"("sequence":7)", R"("sequence":7,"note":"x")"}),
            DecodeStatus::kSchemaViolation},
-      Case{"duplicate member", replace(R"("sequence":7)", R"("sequence":7,"sequence":7)"),
+      Case{"duplicate member", replace({R"("sequence":7)", R"("sequence":7,"sequence":7)"}),
            DecodeStatus::kNonCanonical},
-      Case{"escaped solidus", replace("operator@example", R"(operator\/example)"),
+      Case{"escaped solidus", replace({"operator@example", R"(operator\/example)"}),
            DecodeStatus::kNonCanonical},
-      Case{"needless unicode escape", replace("operator@example", "operator\\u0040example"),
+      Case{"needless unicode escape", replace({"operator@example", "operator\\u0040example"}),
            DecodeStatus::kNonCanonical},
-      Case{"float sequence", replace(R"("sequence":7)", R"("sequence":7.0)"),
+      Case{"float sequence", replace({R"("sequence":7)", R"("sequence":7.0)"}),
            DecodeStatus::kSchemaViolation},
-      Case{"negative sequence", replace(R"("sequence":7)", R"("sequence":-7)"),
+      Case{"negative sequence", replace({R"("sequence":7)", R"("sequence":-7)"}),
            DecodeStatus::kSchemaViolation},
-      Case{"zero sequence", replace(R"("sequence":7)", R"("sequence":0)"),
+      Case{"zero sequence", replace({R"("sequence":7)", R"("sequence":0)"}),
            DecodeStatus::kSchemaViolation},
       Case{"sequence beyond uint64",
-           replace(R"("sequence":7)", R"("sequence":18446744073709551616)"),
+           replace({R"("sequence":7)", R"("sequence":18446744073709551616)"}),
            DecodeStatus::kSchemaViolation},
-      Case{"string sequence", replace(R"("sequence":7)", R"("sequence":"7")"),
+      Case{"string sequence", replace({R"("sequence":7)", R"("sequence":"7")"}),
            DecodeStatus::kSchemaViolation},
-      Case{"schema version 2", replace(R"("schema_version":1)", R"("schema_version":2)"),
+      Case{"schema version 2", replace({R"("schema_version":1)", R"("schema_version":2)"}),
            DecodeStatus::kSchemaViolation},
-      Case{"unknown event type", replace("cancel_accepted", "cancel_requested"),
+      Case{"unknown event type", replace({"cancel_accepted", "cancel_requested"}),
            DecodeStatus::kSchemaViolation},
-      Case{"payload for another event type", replace("cancel_accepted", "worker_running"),
+      Case{"payload for another event type", replace({"cancel_accepted", "worker_running"}),
            DecodeStatus::kSchemaViolation},
-      Case{"missing payload member", replace(R"({"principal_subject":"operator@example"})", "{}"),
+      Case{"missing payload member", replace({R"({"principal_subject":"operator@example"})", "{}"}),
            DecodeStatus::kSchemaViolation},
-      Case{"empty principal", replace("operator@example", ""), DecodeStatus::kSchemaViolation},
-      Case{"job id not v7",
-           replace("01890f3e-7b00-7abc-8abc-0123456789ab", "01890f3e-7b00-4abc-8abc-0123456789ab"),
+      Case{"empty principal", replace({"operator@example", ""}), DecodeStatus::kSchemaViolation},
+      Case{
+          "job id not v7",
+          replace({"01890f3e-7b00-7abc-8abc-0123456789ab", "01890f3e-7b00-4abc-8abc-0123456789ab"}),
+          DecodeStatus::kSchemaViolation},
+      Case{"lowercase t in timestamp", replace({"03.456Z", "03.456z"}),
            DecodeStatus::kSchemaViolation},
-      Case{"lowercase t in timestamp", replace("03.456Z", "03.456z"),
+      Case{"timestamp without zone", replace({"03.456Z", "03.456"}),
            DecodeStatus::kSchemaViolation},
-      Case{"timestamp without zone", replace("03.456Z", "03.456"), DecodeStatus::kSchemaViolation},
-      Case{"invalid UTF-8", replace("operator@example", "op\xC3(rator"),
+      Case{"calendar-invalid date", replace({"2026-09-27", "2026-02-30"}),
+           DecodeStatus::kSchemaViolation},
+      Case{"BOM prefix", "\xEF\xBB\xBF" + sample_record, DecodeStatus::kNonCanonical},
+      Case{"leading zero integer", replace({R"("sequence":7)", R"("sequence":07)"}),
+           DecodeStatus::kMalformedJson},
+      Case{"lone surrogate escape", replace({"operator@example", "operator\\ud800example"}),
+           DecodeStatus::kMalformedJson},
+      Case{"invalid UTF-8", replace({"operator@example", "op\xC3(rator"}),
            DecodeStatus::kMalformedJson},
   };
   for (const auto& c : cases) {
@@ -297,7 +310,7 @@ int RejectsNoncanonical() {
                         std::to_string(static_cast<int>(decoded.status)) + " " + decoded.detail);
   }
   // The sequence maximum is representable exactly.
-  const auto max = DecodeRecord(replace(R"("sequence":7)", R"("sequence":18446744073709551615)"));
+  const auto max = DecodeRecord(replace({R"("sequence":7)", R"("sequence":18446744073709551615)"}));
   result |= Check(max.status == DecodeStatus::kDecoded && max.event.sequence == UINT64_MAX,
                   "uint64 maximum sequence decodes exactly");
   // Control characters are escaped with lowercase hex and round-trip.
