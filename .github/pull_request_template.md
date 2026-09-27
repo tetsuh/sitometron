@@ -43,13 +43,3 @@ For production behavior; write N/A with a reason for documentation or metadata c
 - [ ] Review findings are dispositioned
 
 ## Risks and follow-up
-
-## Owner merge decision
-
-- Exact-head owner authorization:
-- Selected merge method:
-- Auto-merge not enabled:
-
-Pending until the owner records the three fields above. Passing checks do not authorize merge. The
-owner selects normal or squash merge and may delegate one merge of this PR at its current head; a
-new commit or blocking finding invalidates that authorization.
