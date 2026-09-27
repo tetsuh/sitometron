@@ -63,6 +63,7 @@ class SegmentJournal final : public core::JobJournalPort {
   Located Locate(const std::string& directory);
   core::LogicalCommitResult CommitLocked(const core::LogicalJobEvent& event);
   core::LogicalCommitResult StartSegment(std::uint64_t first_sequence);
+  core::LogicalCommitResult MakeActiveDurable();
   void CloseActive() noexcept;
 
   FileSystem& file_system_;
@@ -72,6 +73,9 @@ class SegmentJournal final : public core::JobJournalPort {
   std::optional<FileHandle> lock_;
   std::optional<FileHandle> active_;
   std::uint64_t active_size_ = 0;
+  // False while the active segment was adopted empty at Open() and its file and directory entry
+  // have not been re-synced by this process (ADR-0006 §3).
+  bool active_durable_ = true;
   std::uint64_t next_sequence_ = 0;
   bool opened_ = false;
   std::atomic<bool> poisoned_{false};

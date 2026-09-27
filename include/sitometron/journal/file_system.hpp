@@ -40,7 +40,8 @@ class FileSystem {
  public:
   virtual ~FileSystem() = default;
 
-  // Creates the directory with owner-only access if it does not exist.
+  // Creates the directory with owner-only access if it does not exist, and makes the new
+  // directory's entry in its parent durable.
   [[nodiscard]] virtual IoError EnsureDirectory(const std::string& directory) = 0;
   // Takes an exclusive advisory lock on `path` (created if absent) for the handle's lifetime.
   [[nodiscard]] virtual std::optional<FileHandle> Lock(const std::string& path, IoError& error) = 0;

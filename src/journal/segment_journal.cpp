@@ -156,6 +156,8 @@ OpenResult SegmentJournal::Open(const std::string& directory) {
     }
     active_ = handle;
     active_size_ = located.active_size;
+    // An empty adopted segment may be left by a crash before its creation syncs completed.
+    active_durable_ = located.active_size > 0;
   }
   directory_ = directory;
   lock_ = lock;
@@ -199,6 +201,12 @@ core::LogicalCommitResult SegmentJournal::CommitLocked(const core::LogicalJobEve
   }
 
   if (!active_.has_value()) return core::LogicalCommitResult::kDefiniteFailure;
+  if (!active_durable_) {
+    if (const auto durable = MakeActiveDurable();
+        durable != core::LogicalCommitResult::kCommitted) {
+      return durable;
+    }
+  }
   const FileHandle file = *active_;
   std::size_t written = 0;
   record_started_.store(true);
@@ -230,11 +238,23 @@ core::LogicalCommitResult SegmentJournal::StartSegment(std::uint64_t first_seque
   if (!handle) return core::LogicalCommitResult::kDefiniteFailure;
   active_ = handle;
   active_size_ = 0;
+  active_durable_ = false;
   if (file_system_.SyncData(*active_) != IoError::kNone ||
       file_system_.SyncDirectory(directory_) != IoError::kNone) {
     // No byte of the record was written; the empty segment is valid at the next start.
     return core::LogicalCommitResult::kDefiniteFailure;
   }
+  active_durable_ = true;
+  return core::LogicalCommitResult::kCommitted;
+}
+
+core::LogicalCommitResult SegmentJournal::MakeActiveDurable() {
+  // Same proof as a fresh segment: sync the file, then the directory entry, before any record byte.
+  if (!active_.has_value() || file_system_.SyncData(*active_) != IoError::kNone ||
+      file_system_.SyncDirectory(directory_) != IoError::kNone) {
+    return core::LogicalCommitResult::kDefiniteFailure;
+  }
+  active_durable_ = true;
   return core::LogicalCommitResult::kCommitted;
 }
 

@@ -133,11 +133,13 @@ class WindowsFileSystem final : public FileSystem {
     if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path(), code);
     OwnerOnlySecurity security;
     if (security.Attributes() == nullptr) return IoError::kUnsupported;
-    if (!CreateDirectoryW(path.c_str(), security.Attributes()) &&
-        GetLastError() != ERROR_ALREADY_EXISTS) {
-      return IoError::kOther;
+    if (!CreateDirectoryW(path.c_str(), security.Attributes())) {
+      return GetLastError() == ERROR_ALREADY_EXISTS ? IoError::kNone : IoError::kOther;
     }
-    return std::filesystem::is_directory(path, code) ? IoError::kNone : IoError::kOther;
+    // The new directory's entry in its parent must be durable before any record lives in it.
+    const auto parent =
+        path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
+    return SyncDirectory(parent.string());
   }
   std::optional<FileHandle> Lock(const std::string& path, IoError& error) override {
     OwnerOnlySecurity security;
@@ -252,8 +254,13 @@ class PosixFileSystem final : public FileSystem {
     const std::filesystem::path path(directory);
     if (std::filesystem::is_directory(path, code)) return IoError::kNone;
     if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path(), code);
-    if (::mkdir(directory.c_str(), S_IRWXU) != 0 && errno != EEXIST) return FromErrno(errno);
-    return std::filesystem::is_directory(path, code) ? IoError::kNone : IoError::kOther;
+    if (::mkdir(directory.c_str(), S_IRWXU) != 0) {
+      return errno == EEXIST ? IoError::kNone : FromErrno(errno);
+    }
+    // The new directory's entry in its parent must be durable before any record lives in it.
+    const auto parent =
+        path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
+    return SyncDirectory(parent.string());
   }
   std::optional<FileHandle> Lock(const std::string& path, IoError& error) override {
     const int descriptor = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, S_IRUSR | S_IWUSR);

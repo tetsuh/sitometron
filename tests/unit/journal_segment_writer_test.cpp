@@ -493,6 +493,41 @@ int RestartContinues() {
                     "restart keeps the active size and rotates at the limit");
   }
   {
+    // An adopted empty segment is re-synced (file, then directory entry) before its first record,
+    // because the crash that left it may have preceded its creation syncs (ADR-0006 §3).
+    MemoryFileSystem crashed;
+    crashed.directories.insert(k_dir);
+    crashed.files[Segment(1)] = "";
+    {
+      SegmentJournal journal(crashed);
+      result |= OpenFresh(journal, 1);
+      crashed.log.clear();
+      result |=
+          Check(journal.Commit(Event(1)) == LogicalCommitResult::kCommitted, "adopted commit");
+      const auto& log = crashed.log;
+      const auto file_sync = std::find(log.begin(), log.end(), "sync " + Segment(1));
+      const auto dir_sync = std::find(log.begin(), log.end(), "syncdir " + k_dir);
+      const auto first_write = std::find_if(
+          log.begin(), log.end(), [](const std::string& e) { return e.rfind("write", 0) == 0; });
+      result |= Check(file_sync != log.end() && dir_sync != log.end() && first_write != log.end() &&
+                          file_sync < dir_sync && dir_sync < first_write,
+                      "adopted empty segment re-synced before its first record");
+      const auto dir_syncs = crashed.CountOps("syncdir");
+      result |= Check(journal.Commit(Event(2)) == LogicalCommitResult::kCommitted &&
+                          crashed.CountOps("syncdir") == dir_syncs,
+                      "the re-sync happens once");
+    }
+    MemoryFileSystem unsynced;
+    unsynced.directories.insert(k_dir);
+    unsynced.files[Segment(1)] = "";
+    SegmentJournal journal(unsynced);
+    result |= OpenFresh(journal, 1);
+    unsynced.fail_next_directory_sync = true;
+    result |= Check(journal.Commit(Event(1)) == LogicalCommitResult::kDefiniteFailure &&
+                        unsynced.files[Segment(1)].empty() && journal.Poisoned(),
+                    "failed re-sync of an adopted segment is definite and writes nothing");
+  }
+  {
     MemoryFileSystem torn;
     torn.directories.insert(k_dir);
     torn.files[Segment(1)] = EncodeRecord(Event(1)).bytes + "{\"schema";
