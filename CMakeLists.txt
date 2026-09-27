@@ -80,6 +80,21 @@ set(SITOMETRON_CORE_LINK_TARGETS ${SITOMETRON_CORE_LINK_LIBRARIES})
 set(SITOMETRON_CORE_INTERFACE_LINK_TARGETS ${SITOMETRON_CORE_INTERFACE_LINK_LIBRARIES})
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_link_target_allowlist.cmake)
 
+add_library(sitometron_journal STATIC src/journal/record_codec.cpp)
+add_library(sitometron::journal ALIAS sitometron_journal)
+target_include_directories(
+  sitometron_journal
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_compile_features(sitometron_journal PUBLIC cxx_std_20)
+target_link_libraries(
+  sitometron_journal
+  PUBLIC sitometron::core
+  PRIVATE nlohmann_json::nlohmann_json)
+sitometron_enable_project_warnings(sitometron_journal)
+sitometron_enable_sanitizers(sitometron_journal)
+
 add_executable(sitometrond apps/sitometrond/main.cpp)
 target_link_libraries(sitometrond PRIVATE sitometron::core)
 sitometron_enable_project_warnings(sitometrond)
@@ -201,6 +216,28 @@ if(SITOMETRON_BUILD_TESTS)
       ${CMAKE_COMMAND}
       -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_job_contract.cmake)
+
+  add_executable(sitometron_journal_tests tests/unit/journal_record_codec_test.cpp)
+  target_link_libraries(
+    sitometron_journal_tests
+    PRIVATE
+      sitometron::journal
+      sitometron::core
+      sitometron::test_support
+      nlohmann_json::nlohmann_json)
+  sitometron_enable_project_warnings(sitometron_journal_tests)
+  sitometron_enable_sanitizers(sitometron_journal_tests)
+  foreach(_journal_check IN ITEMS
+      journal_record_roundtrip_vectors
+      journal_record_size_bound
+      journal_record_oversize_schema_valid_rejected
+      journal_parser_rejects_noncanonical)
+    add_test(
+      NAME ${_journal_check}
+      COMMAND sitometron_journal_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/schemas/core/v1/job-reducer-vectors.json
+        ${_journal_check})
+  endforeach()
 
   add_executable(sitometron_core_dependency_api_smoke tests/unit/core_dependency_api_smoke.cpp)
   target_link_libraries(

@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-EXPECTED_SOURCE_COUNT = 12
+EXPECTED_SOURCE_COUNT = 14
 EXPECTED_VERSION = "18.1.3"
 SOURCE_ROOTS = frozenset({"apps", "src", "tests"})
 Runner = Callable[..., subprocess.CompletedProcess[str]]
