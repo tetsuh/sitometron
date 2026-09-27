@@ -195,8 +195,9 @@ unsigned DaysInMonth(unsigned month, bool leap) {
   return month == 2 && leap ? 29 : days[month - 1];
 }
 
-// RFC 3339 date-time as the encoder emits it: uppercase T and Z, optional fraction, numeric
-// offset, calendar-valid date.
+// RFC 3339 date-time exactly as the repository's schema format checker accepts it
+// (jsonschema `date-time` via rfc3339-validator): T and Z in either case, year 0001-9999,
+// calendar-valid day, seconds 00-59 (no leap second), optional fraction, numeric offset.
 bool IsRfc3339(std::string_view s) {
   if (s.size() < 20) return false;
   unsigned year = 0;
@@ -205,9 +206,10 @@ bool IsRfc3339(std::string_view s) {
     if (!IsDigit(c)) return false;
     year = year * 10U + DigitValue(c);
   }
+  if (year == 0) return false;
   if (s[4] != '-' || !TwoDigits(s, 5, {1, 12}) || s[7] != '-' || !TwoDigits(s, 8, {1, 31}) ||
-      s[10] != 'T' || !TwoDigits(s, 11, {0, 23}) || s[13] != ':' || !TwoDigits(s, 14, {0, 59}) ||
-      s[16] != ':' || !TwoDigits(s, 17, {0, 60})) {
+      (s[10] != 'T' && s[10] != 't') || !TwoDigits(s, 11, {0, 23}) || s[13] != ':' ||
+      !TwoDigits(s, 14, {0, 59}) || s[16] != ':' || !TwoDigits(s, 17, {0, 59})) {
     return false;
   }
   const unsigned month = DigitValue(static_cast<unsigned char>(s[5])) * 10U +
@@ -225,7 +227,7 @@ bool IsRfc3339(std::string_view s) {
     if (i == start) return false;
   }
   if (i >= s.size()) return false;
-  if (s[i] == 'Z') return i + 1 == s.size();
+  if (s[i] == 'Z' || s[i] == 'z') return i + 1 == s.size();
   if (s[i] != '+' && s[i] != '-') return false;
   return i + 6 == s.size() && TwoDigits(s, i + 1, {0, 23}) && s[i + 3] == ':' &&
          TwoDigits(s, i + 4, {0, 59});

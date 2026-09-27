@@ -289,8 +289,11 @@ int RejectsNoncanonical() {
           "job id not v7",
           replace({"01890f3e-7b00-7abc-8abc-0123456789ab", "01890f3e-7b00-4abc-8abc-0123456789ab"}),
           DecodeStatus::kSchemaViolation},
-      Case{"lowercase t in timestamp", replace({"03.456Z", "03.456z"}),
+      Case{"year zero", replace({"2026-09-27", "0000-09-27"}), DecodeStatus::kSchemaViolation},
+      Case{"leap second", replace({"01:02:03.456Z", "23:59:60.456Z"}),
            DecodeStatus::kSchemaViolation},
+      Case{"hour 24", replace({"01:02:03.456Z", "24:00:00.456Z"}), DecodeStatus::kSchemaViolation},
+      Case{"offset hour 24", replace({"03.456Z", "03.456+24:00"}), DecodeStatus::kSchemaViolation},
       Case{"timestamp without zone", replace({"03.456Z", "03.456"}),
            DecodeStatus::kSchemaViolation},
       Case{"calendar-invalid date", replace({"2026-09-27", "2026-02-30"}),
@@ -309,6 +312,23 @@ int RejectsNoncanonical() {
                     std::string(c.name) + ": expected status " +
                         std::to_string(static_cast<int>(c.expected)) + ", got " +
                         std::to_string(static_cast<int>(decoded.status)) + " " + decoded.detail);
+  }
+  // Timestamp spellings the schema accepts round-trip unchanged.
+  for (const auto accepted : {"2026-09-27t01:02:03.456z"sv, "2024-02-29T23:59:59+09:00"sv,
+                              "0001-01-01T00:00:00Z"sv, "9999-12-31T23:59:59.999999999-23:59"sv}) {
+    auto event = SampleEvent();
+    event.recorded_at.rfc3339 = std::string(accepted);
+    const auto encoded = EncodeRecord(event);
+    result |= Check(encoded.status == EncodeStatus::kEncoded &&
+                        DecodeRecord(encoded.bytes).status == DecodeStatus::kDecoded,
+                    "schema-valid timestamp round-trips: " + std::string(accepted));
+  }
+  for (const auto rejected : {"0000-01-01T00:00:00Z"sv, "2026-09-27T23:59:60Z"sv,
+                              "2025-02-29T00:00:00Z"sv, "2026-09-27T01:02:03.Z"sv}) {
+    auto event = SampleEvent();
+    event.recorded_at.rfc3339 = std::string(rejected);
+    result |= Check(EncodeRecord(event).status == EncodeStatus::kSchemaViolation,
+                    "schema-invalid timestamp rejected before encoding: " + std::string(rejected));
   }
   // The sequence maximum is representable exactly.
   const auto max = DecodeRecord(replace({R"("sequence":7)", R"("sequence":18446744073709551615)"}));
