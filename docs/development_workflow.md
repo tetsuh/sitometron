@@ -183,7 +183,8 @@ They normally stop after preparing a merge-ready PR, responding to review, and r
 and residual risks. A coding agent may execute the merge when the owner explicitly instructs it to
 merge that PR at its current head. The instruction is one-time and expires if a new commit changes
 the head or a new blocking finding appears. The owner must authorize the new state before an agent
-merges it.
+merges it. The owner gives the instruction directly, in conversation or as a PR comment; the PR body
+carries no merge-decision fields.
 
 The default method is a normal merge commit. The owner may choose squash merge when retaining the
 branch's individual commits would not improve `main` history. An unqualified owner instruction to

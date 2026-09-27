@@ -69,7 +69,6 @@ PULL_REQUEST_FIELDS = (
     "Phase", "Gate Issue", "Requirement IDs or N/A", "ADR or N/A", "Affected rows or N/A",
     "RED command", "GREEN command and result",
     "REFACTOR command and result, or N/A with reason",
-    "Exact-head owner authorization", "Selected merge method", "Auto-merge not enabled",
 )
 PULL_REQUEST_SECTIONS = ("Verification", "Risks and follow-up")
 BANNER_MARKER = "**Planned, not yet normative:**"
