@@ -11,7 +11,7 @@ and implementation status are independent.
 3. An Accepted ADR may make a Contract Normative while implementation remains Planned.
 4. A PR names every affected row and its maturity and implementation transitions, or gives N/A.
 5. An unresolved specification section uses the standard Planned-not-normative banner.
-6. A Milestone horizontal review checks every new or changed surface against this Registry.
+6. A Gate's horizontal review checks every new or changed surface against this Registry.
 
 Contract maturity values are `Planned`, `Normative`, `Deprecated`, and `Superseded`. Implementation
 values are `Planned`, `In progress`, `Implemented`, and `Removed`.

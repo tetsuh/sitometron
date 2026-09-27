@@ -43,21 +43,23 @@ See [the architecture](02_architecture.md) and
 | Phase | Milestone | Result |
 |---|---|---|
 | 0A | `v0.1 / P0A Bootstrap` | Repository, core contracts, deterministic fake-driven lifecycle |
-| 0B | `v0.1 / P0B Durability` | Qualified logger and durable JobJournal foundation |
-| 1 | `v0.1 / P1 REST & Admission` | External REST, Admission, Application Registry |
-| 2 | `v0.1 / P2 Local Worker` | Worker protocol and local process supervision |
-| 3 | `v0.1 / P3 Resources` | Topology, scheduling, and resource reservations |
-| 4 | `v0.1 / P4 Sitos Integration` | Sitos Session, parameter, and durable-buffer integration |
-| 5 | `v0.1 / P5 Artifact REST` | Reconstructed-output Artifact REST |
-| 6 | `v0.1 / P6 Qualification` | Cross-platform, fault, security, and release qualification |
+| 0B | `v0.1 / P0B Durability` | Durable JobJournal foundation and a qualified logger |
 
-Every Phase has one Gate Issue. See [the Issue breakdown](07_issue_breakdown.md).
+Later work (external REST and admission, the Worker protocol and local process supervision,
+resources and scheduling, Sitos integration, Artifact REST, and cross-platform qualification) is
+planned one working increment at a time. A Gate is created only when a contract must be frozen; see
+[the development workflow](development_workflow.md#9-phase-and-milestone-gates) and
+[the Issue breakdown](07_issue_breakdown.md).
 
 ## 5. Current status
 
-Phase 0A is active. The dependency boundary, pure Job reducer, lifecycle capability ports and
-fakes, bounded private single writer, complete logical JobJournal envelope and ordering, and the
-fake-driven lifecycle and adverse/race qualification are implemented. Gate #1 remains open for the
-remaining documentation, bootstrap, and CI/policy evidence. Physical JobJournal durability and
-production adapters remain Planned under later owners in the
-[Contract Registry](08_contract_registry.md). No production API or compatibility guarantee exists.
+Phase 0A closed on 2026-09-24 ([Gate #1](https://github.com/tetsuh/sitometron/issues/1)). The
+dependency boundary, pure Job reducer, lifecycle capability ports and fakes, bounded private single
+writer, complete logical JobJournal envelope and ordering, and the fake-driven lifecycle and
+adverse/race qualification are implemented. Phase 0B is active under
+[Gate #50](https://github.com/tetsuh/sitometron/issues/50): Accepted
+[ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) makes the physical JobJournal
+contract normative, and its implementation is Planned. A non-normative Linux walking skeleton under
+`spike/` exercises the core end to end and is not a product component. Production adapters remain
+Planned under their owners in the [Contract Registry](08_contract_registry.md). No production API or
+compatibility guarantee exists.

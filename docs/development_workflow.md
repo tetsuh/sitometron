@@ -208,15 +208,16 @@ explicit follow-up.
 
 ## 9. Phase and Milestone gates
 
-Each implementation Phase maps to one GitHub Milestone. Every Milestone contains one `[Gate]` Issue
-with Entry gate, Exit gate, and Evidence sections. The Gate Issue closes last, followed by the
-Milestone.
+Work is planned one working increment at a time. A `[Gate]` Issue is created only when a
+hard-to-change contract (a wire format, persistence format, or public API) must be frozen before its
+implementation starts; Gates are not prepared in advance for later Phases. A Gate has Entry gate,
+Exit gate, and Evidence sections, closes last, and is followed by its Milestone.
 
 Design work, spikes, and fake-driven prototypes may proceed before an Entry gate closes.
 Contract-owning production implementation must not merge until its gate permits it.
 
-When a Milestone is assembled or materially re-scoped, perform one horizontal design review before
-the affected implementation begins. Record the review in the Phase's Gate Issue using its required
+When a Gate is created or its scope materially changes, perform one horizontal design review before
+the affected implementation begins. Record the review in that Gate Issue using its required
 checklist:
 
 1. **Shared mechanisms**: inventory tokens, identifiers, results, queues, ordering, retry, and other
@@ -230,7 +231,8 @@ checklist:
 
 The review completes only after every finding has a disposition and owner, the evidence is linked,
 and the repository owner accepts the result. A material re-scope repeats the review for the changed
-scope and pauses only the affected work.
+scope and pauses only the affected work. Work outside any Gate needs no separate horizontal review
+record.
 
 An unresolved specification section opens with this banner:
 
