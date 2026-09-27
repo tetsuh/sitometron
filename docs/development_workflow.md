@@ -230,8 +230,9 @@ checklist:
 4. **Planned sections**: identify every non-normative outline and verify its authority banner.
 
 The review completes only after every finding has a disposition and owner, the evidence is linked,
-and the repository owner accepts the result. Work outside any Gate needs no separate horizontal review record. A material re-scope repeats the review for the changed
-scope and pauses only the affected work.
+and the repository owner accepts the result. A material re-scope repeats the review for the changed
+scope and pauses only the affected work. Work outside any Gate needs no separate horizontal review
+record.
 
 An unresolved specification section opens with this banner:
 
