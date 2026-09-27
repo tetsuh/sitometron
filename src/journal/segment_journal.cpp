@@ -213,8 +213,17 @@ OpenResult SegmentJournal::OpenLocked(const std::string& directory) {
 }
 
 core::LogicalCommitResult SegmentJournal::Commit(const core::LogicalJobEvent& event) noexcept {
+  // The lock is owned outside the try block so that exception handling and poisoning happen while
+  // it is still held: no other Commit() can start I/O between a failure and its poison.
+  std::unique_lock guard(mutex_, std::defer_lock);
   try {
-    const std::lock_guard guard(mutex_);
+    guard.lock();
+  } catch (...) {
+    // Nothing was attempted for this record.
+    poisoned_.store(true);
+    return core::LogicalCommitResult::kDefiniteFailure;
+  }
+  try {
     if (!opened_ || poisoned_.load()) {
       // A non-committed result poisons this instance for good, including a Commit() before
       // Open(); only a new instance (a new process) starts unpoisoned.
@@ -226,8 +235,9 @@ core::LogicalCommitResult SegmentJournal::Commit(const core::LogicalJobEvent& ev
     if (outcome != core::LogicalCommitResult::kCommitted) poisoned_.store(true);
     return outcome;
   } catch (...) {
-    // ADR-0006 §4: an exception before the first byte of this record reached the file is a
-    // definite failure. The writing calls are noexcept, so record_started_ is a defensive guard.
+    // Still under the lock. ADR-0006 §4: an exception before the first byte of this record reached
+    // the file is a definite failure. The writing calls are noexcept, so record_started_ is a
+    // defensive guard.
     poisoned_.store(true);
     return record_started_.load() ? core::LogicalCommitResult::kOutcomeUnknown
                                   : core::LogicalCommitResult::kDefiniteFailure;

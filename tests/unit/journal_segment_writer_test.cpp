@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -11,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -66,6 +68,8 @@ class MemoryFileSystem final : public FileSystem {
   bool fail_next_directory_sync = false;
   bool fail_next_create = false;
   bool throw_on_create = false;
+  // Runs inside the throwing create, while the failing Commit() holds the journal lock.
+  std::function<void()> on_throwing_create;
   bool throw_on_list = false;
   bool throw_on_read = false;
   IoError create_error = IoError::kNoSpace;
@@ -112,7 +116,11 @@ class MemoryFileSystem final : public FileSystem {
   std::optional<FileHandle> OpenAppend(const std::string& path, bool create_new,
                                        IoError& error) override {
     log.push_back(std::string(create_new ? "create " : "open ") + path);
-    if (create_new && throw_on_create) throw std::runtime_error("injected create exception");
+    if (create_new && throw_on_create) {
+      throw_on_create = false;
+      if (on_throwing_create) on_throwing_create();
+      throw std::runtime_error("injected create exception");
+    }
     if (create_new) {
       if (fail_next_create) {
         fail_next_create = false;
@@ -354,6 +362,23 @@ int CommitResultClassification() {
     result |= Check(
         journal.Commit(Event(1)) == LogicalCommitResult::kDefiniteFailure && journal.Poisoned(),
         "exception while creating the segment is a definite failure");
+    // A second Commit() that arrives while the first one fails must observe the poison: the
+    // failure is handled and latched before the lock is released.
+    MemoryFileSystem racing;
+    SegmentJournal shared(racing);
+    result |= OpenFresh(shared);
+    std::thread second;
+    std::atomic<LogicalCommitResult> second_outcome{LogicalCommitResult::kCommitted};
+    racing.throw_on_create = true;
+    racing.on_throwing_create = [&] {
+      second = std::thread([&] { second_outcome.store(shared.Commit(Event(1))); });
+    };
+    result |= Check(shared.Commit(Event(1)) == LogicalCommitResult::kDefiniteFailure,
+                    "throwing commit is definite");
+    if (second.joinable()) second.join();
+    result |= Check(second_outcome.load() == LogicalCommitResult::kDefiniteFailure &&
+                        racing.CountOps("write") == 0 && racing.files.count(Segment(1)) == 0,
+                    "a concurrent commit after the failure sees the poison and performs no I/O");
     // Every call made after a record's first byte is noexcept, so an exception cannot leave the
     // number of accepted bytes unknown (ADR-0006 §4).
     static_assert(noexcept(std::declval<FileSystem&>().Write(FileHandle{}, std::string_view{})));
