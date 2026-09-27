@@ -207,7 +207,7 @@ core::LogicalCommitResult SegmentJournal::Commit(const core::LogicalJobEvent& ev
     return outcome;
   } catch (...) {
     // ADR-0006 §4: an exception before the first byte of this record reached the file is a
-    // definite failure; after that the record may be partially durable.
+    // definite failure. The writing calls are noexcept, so record_started_ is a defensive guard.
     poisoned_.store(true);
     return record_started_.load() ? core::LogicalCommitResult::kOutcomeUnknown
                                   : core::LogicalCommitResult::kDefiniteFailure;

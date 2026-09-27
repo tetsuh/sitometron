@@ -55,13 +55,16 @@ class FileSystem {
   // not exist yet.
   [[nodiscard]] virtual std::optional<FileHandle> OpenAppend(const std::string& path,
                                                              bool create_new, IoError& error) = 0;
+  // The calls below run after a record's first byte may have reached the file, where ADR-0006 §4
+  // needs an exact "bytes accepted" count. They report every failure as a value and never throw.
+  //
   // One write call; it may accept fewer bytes than requested.
-  [[nodiscard]] virtual WriteOutcome Write(FileHandle file, std::string_view bytes) = 0;
+  [[nodiscard]] virtual WriteOutcome Write(FileHandle file, std::string_view bytes) noexcept = 0;
   // Makes the file's data durable (fdatasync / FlushFileBuffers).
-  [[nodiscard]] virtual IoError SyncData(FileHandle file) = 0;
+  [[nodiscard]] virtual IoError SyncData(FileHandle file) noexcept = 0;
   // Makes the directory's entries durable (POSIX fsync on the directory; Windows
   // FlushFileBuffers on a FILE_FLAG_BACKUP_SEMANTICS handle, NTFS only).
-  [[nodiscard]] virtual IoError SyncDirectory(const std::string& directory) = 0;
+  [[nodiscard]] virtual IoError SyncDirectory(const std::string& directory) noexcept = 0;
   virtual void Close(FileHandle file) noexcept = 0;
 };
 

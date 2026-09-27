@@ -66,7 +66,6 @@ class MemoryFileSystem final : public FileSystem {
   bool fail_next_directory_sync = false;
   bool fail_next_create = false;
   bool throw_on_create = false;
-  bool throw_on_write = false;
   bool throw_on_list = false;
   bool throw_on_read = false;
   IoError create_error = IoError::kNoSpace;
@@ -131,9 +130,8 @@ class MemoryFileSystem final : public FileSystem {
     }
     return Register(path);
   }
-  WriteOutcome Write(FileHandle file, std::string_view bytes) override {
+  WriteOutcome Write(FileHandle file, std::string_view bytes) noexcept override {
     log.push_back("write " + std::to_string(bytes.size()));
-    if (throw_on_write) throw std::runtime_error("injected write exception");
     if (interrupted_writes > 0) {
       --interrupted_writes;
       return {0, IoError::kInterrupted};
@@ -151,7 +149,7 @@ class MemoryFileSystem final : public FileSystem {
     content.append(bytes.substr(0, accepted));
     return {accepted, IoError::kNone};
   }
-  IoError SyncData(FileHandle file) override {
+  IoError SyncData(FileHandle file) noexcept override {
     log.push_back("sync " + handles_.at(file.value));
     if (fail_next_sync) {
       fail_next_sync = false;
@@ -159,7 +157,7 @@ class MemoryFileSystem final : public FileSystem {
     }
     return IoError::kNone;
   }
-  IoError SyncDirectory(const std::string& directory) override {
+  IoError SyncDirectory(const std::string& directory) noexcept override {
     log.push_back("syncdir " + directory);
     if (fail_next_directory_sync) {
       fail_next_directory_sync = false;
@@ -348,7 +346,7 @@ int CommitResultClassification() {
   }
   {
     // An exception before the first record byte is a definite failure; once writing began it is
-    // outcome-unknown (ADR-0006 §4). Both poison the journal.
+    // outcome-unknown (ADR-0006 §4); the writing calls cannot throw.
     MemoryFileSystem fs;
     SegmentJournal journal(fs);
     result |= OpenFresh(journal);
@@ -356,13 +354,12 @@ int CommitResultClassification() {
     result |= Check(
         journal.Commit(Event(1)) == LogicalCommitResult::kDefiniteFailure && journal.Poisoned(),
         "exception while creating the segment is a definite failure");
-    MemoryFileSystem writing;
-    SegmentJournal second(writing);
-    result |= OpenFresh(second);
-    writing.throw_on_write = true;
-    result |=
-        Check(second.Commit(Event(1)) == LogicalCommitResult::kOutcomeUnknown && second.Poisoned(),
-              "exception during the record write is outcome-unknown");
+    // Every call made after a record's first byte is noexcept, so an exception cannot leave the
+    // number of accepted bytes unknown (ADR-0006 §4).
+    static_assert(noexcept(std::declval<FileSystem&>().Write(FileHandle{}, std::string_view{})));
+    static_assert(noexcept(std::declval<FileSystem&>().SyncData(FileHandle{})));
+    static_assert(noexcept(std::declval<FileSystem&>().SyncDirectory(std::string{})));
+    static_assert(noexcept(std::declval<FileSystem&>().Close(FileHandle{})));
   }
   {
     MemoryFileSystem fs;

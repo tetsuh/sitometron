@@ -231,7 +231,7 @@ class WindowsFileSystem final : public FileSystem {
     }
     return FromHandle(handle);
   }
-  WriteOutcome Write(FileHandle file, std::string_view bytes) override {
+  WriteOutcome Write(FileHandle file, std::string_view bytes) noexcept override {
     const auto request = static_cast<DWORD>(std::min<std::size_t>(bytes.size(), 1U << 30U));
     DWORD written = 0;
     if (!WriteFile(ToHandle(file), bytes.data(), request, &written, nullptr)) {
@@ -239,10 +239,10 @@ class WindowsFileSystem final : public FileSystem {
     }
     return {written, IoError::kNone};
   }
-  IoError SyncData(FileHandle file) override {
+  IoError SyncData(FileHandle file) noexcept override {
     return FlushFileBuffers(ToHandle(file)) ? IoError::kNone : IoError::kOther;
   }
-  IoError SyncDirectory(const std::string& directory) override {
+  IoError SyncDirectory(const std::string& directory) noexcept override {
     const HANDLE handle = CreateFileW(std::filesystem::path(directory).c_str(), GENERIC_WRITE,
                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                       nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
@@ -339,16 +339,16 @@ class PosixFileSystem final : public FileSystem {
     }
     return FromDescriptor(descriptor);
   }
-  WriteOutcome Write(FileHandle file, std::string_view bytes) override {
+  WriteOutcome Write(FileHandle file, std::string_view bytes) noexcept override {
     const auto count = ::write(ToDescriptor(file), bytes.data(), bytes.size());
     if (count < 0) return {0, FromErrno(errno)};
     return {static_cast<std::size_t>(count), IoError::kNone};
   }
-  IoError SyncData(FileHandle file) override {
+  IoError SyncData(FileHandle file) noexcept override {
     // A failed data sync is never retried (ADR-0006 §4), not even after EINTR.
     return ::fdatasync(ToDescriptor(file)) == 0 ? IoError::kNone : IoError::kOther;
   }
-  IoError SyncDirectory(const std::string& directory) override {
+  IoError SyncDirectory(const std::string& directory) noexcept override {
     const int descriptor = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (descriptor < 0) return FromErrno(errno);
     const IoError result = ::fsync(descriptor) == 0 ? IoError::kNone : FromErrno(errno);
