@@ -209,14 +209,18 @@ OpenResult SegmentJournal::OpenLocked(const std::string& directory) {
   lock_ = lock.Release();
   next_sequence_ = located.next;
   opened_ = true;
-  poisoned_.store(false);
   return result;
 }
 
 core::LogicalCommitResult SegmentJournal::Commit(const core::LogicalJobEvent& event) noexcept {
   try {
     const std::lock_guard guard(mutex_);
-    if (!opened_ || poisoned_.load()) return core::LogicalCommitResult::kDefiniteFailure;
+    if (!opened_ || poisoned_.load()) {
+      // A non-committed result poisons this instance for good, including a Commit() before
+      // Open(); only a new instance (a new process) starts unpoisoned.
+      poisoned_.store(true);
+      return core::LogicalCommitResult::kDefiniteFailure;
+    }
     record_started_.store(false);
     const auto outcome = CommitLocked(event);
     if (outcome != core::LogicalCommitResult::kCommitted) poisoned_.store(true);

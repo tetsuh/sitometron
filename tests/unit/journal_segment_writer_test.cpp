@@ -367,6 +367,12 @@ int CommitResultClassification() {
     result |=
         Check(journal.Commit(Event(1)) == LogicalCommitResult::kDefiniteFailure && fs.log.empty(),
               "commit before Open is a definite failure with no I/O");
+    result |= Check(journal.Poisoned(), "commit before Open poisons the instance");
+    result |= OpenFresh(journal);
+    const auto ops = fs.log.size();
+    result |= Check(journal.Commit(Event(1)) == LogicalCommitResult::kDefiniteFailure &&
+                        fs.log.size() == ops && journal.Poisoned(),
+                    "a later Open does not clear the poison; commits stay definite with no I/O");
   }
   return result;
 }
