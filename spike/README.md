@@ -118,7 +118,8 @@ authorities, not decisions.
    the Journal file through the reducer to rebuild snapshots. The skeleton does not do it; it only
    reads the last sequence so that new records continue the numbering, and Jobs from a previous
    run are invisible to the API after a restart. `ReplayJournal` (Issue #61) now implements the
-   fold; the spike adopts it together with starting the writer from the replayed state.
+   fold, but the spike does not call it yet and still seeds its writer only with the next sequence;
+   adopting it belongs to the writer-seeding increment.
 8. **Per-record `fsync` costs ~4–6 ms on WSL/ext4** (see `recorded_at` deltas), so one Job spends
    60–80 ms in durability alone. Group commit or a dedicated Journal thread is a Phase 0B topic.
 9. **Two facts, one process.** For a plain child process, "the Worker completed" and "the process

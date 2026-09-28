@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -116,8 +117,8 @@ std::optional<core::Snapshot> ReplayRecord(const std::optional<core::Snapshot>& 
                                       proposal->event_type,     record.recorded_at,
                                       proposal->job_id,         proposal->payload};
   const auto derived_bytes = EncodeRecord(derived);
-  const auto record_bytes = EncodeRecord(record);
-  if (derived_bytes.status != EncodeStatus::kEncoded ||
+  if (const auto record_bytes = EncodeRecord(record);
+      derived_bytes.status != EncodeStatus::kEncoded ||
       record_bytes.status != EncodeStatus::kEncoded || derived_bytes.bytes != record_bytes.bytes) {
     error = "the reducer derives a different record";
     return std::nullopt;
@@ -137,119 +138,146 @@ bool IsUnresolved(const core::Snapshot& snapshot) noexcept {
          snapshot.cleanup_status == core::CleanupStatus::kPending;
 }
 
-ReplayResult ReplayJournal(FileSystem& file_system, const std::string& directory,
-                           const ReplayOptions& options) {
-  ReplayResult result;
-  auto refuse = [&result](ReplayStatus status, std::string detail) {
-    result.status = status;
-    result.detail = std::move(detail);
-    result.jobs.clear();
-    result.unresolved.clear();
-    return result;
-  };
-  try {
+namespace {
+
+// One replay pass over a locked Journal directory. Each step returns a refusal or nullopt.
+class Replayer {
+ public:
+  Replayer(FileSystem& file_system, const std::string& directory, const ReplayOptions& options)
+      : file_system_(file_system), directory_(directory), options_(options) {}
+
+  ReplayResult Run() {
     IoError error = IoError::kNone;
-    const auto names = file_system.List(directory, error);
-    if (!names.has_value()) return refuse(ReplayStatus::kUnreadable, "journal_unreadable: list");
+    const auto names = file_system_.List(directory_, error);
+    if (!names.has_value()) return Refuse(ReplayStatus::kUnreadable, "journal_unreadable: list");
     std::vector<Segment> segments;
     for (const auto& name : *names) {
       if (const auto first = SegmentFirst(name); first.has_value()) {
-        segments.push_back(Segment{*first, name});
+        segments.emplace_back(Segment{*first, name});
       }
     }
     std::sort(segments.begin(), segments.end(),
               [](const Segment& a, const Segment& b) { return a.first < b.first; });
-
-    std::map<std::string, std::size_t> index_of;  // Job id -> position in result.jobs
-    std::uint64_t expected = segments.empty() ? 1 : segments.front().first;
-    std::uint64_t last = 0;
+    expected_ = segments.empty() ? 1 : segments.front().first;
     for (std::size_t s = 0; s < segments.size(); ++s) {
-      const auto& segment = segments[s];
-      const bool highest = s + 1 == segments.size();
-      const auto content = file_system.ReadAll(JoinPath(directory, segment.name), error);
-      if (!content.has_value()) {
-        return refuse(ReplayStatus::kUnreadable, "journal_unreadable: " + segment.name);
+      if (auto refusal = ReplaySegment(segments[s], s + 1 == segments.size())) return *refusal;
+    }
+    result_.status = ReplayStatus::kReplayed;
+    result_.next_sequence = expected_;
+    for (const auto& snapshot : result_.jobs) {
+      if (IsUnresolved(snapshot)) result_.unresolved.push_back(snapshot.job_id);
+    }
+    return result_;
+  }
+
+  ReplayResult Refuse(ReplayStatus status, std::string detail) {
+    result_.status = status;
+    result_.detail = std::move(detail);
+    result_.jobs.clear();
+    result_.unresolved.clear();
+    return result_;
+  }
+
+ private:
+  std::optional<ReplayResult> ReplaySegment(const Segment& segment, bool highest) {
+    IoError error = IoError::kNone;
+    const auto content = file_system_.ReadAll(JoinPath(directory_, segment.name), error);
+    if (!content.has_value()) {
+      return Refuse(ReplayStatus::kUnreadable, "journal_unreadable: " + segment.name);
+    }
+    if (segment.first != expected_) {
+      return Refuse(ReplayStatus::kCorrupt, "journal_corrupt: segment " + segment.name +
+                                                " is not named for sequence " +
+                                                std::to_string(expected_));
+    }
+    if (content->empty() && !highest) {
+      return Refuse(ReplayStatus::kCorrupt,
+                    "journal_corrupt: empty segment " + segment.name + " is not the highest");
+    }
+    // An empty highest segment is named for the next sequence, checked above (ADR-0006 §5).
+    std::size_t offset = 0;
+    while (offset < content->size()) {
+      const auto end = content->find('\n', offset);
+      if (end == std::string::npos) {
+        return highest ? Refuse(ReplayStatus::kTornTail, "journal_torn_tail: " + segment.name +
+                                                             " at byte " + std::to_string(offset))
+                       : Refuse(ReplayStatus::kCorrupt, "journal_corrupt: " + segment.name +
+                                                            " ends without LF at byte " +
+                                                            std::to_string(offset));
       }
-      if (segment.first != expected) {
-        return refuse(ReplayStatus::kCorrupt, "journal_corrupt: segment " + segment.name +
-                                                  " is not named for sequence " +
-                                                  std::to_string(expected));
-      }
-      if (content->empty()) {
-        if (!highest) {
-          return refuse(ReplayStatus::kCorrupt,
-                        "journal_corrupt: empty segment " + segment.name + " is not the highest");
-        }
-        continue;  // named for the next sequence, checked above (ADR-0006 §5)
-      }
-      std::size_t offset = 0;
-      while (offset < content->size()) {
-        const auto end = content->find('\n', offset);
-        if (end == std::string::npos) {
-          if (highest) {
-            return refuse(ReplayStatus::kTornTail, "journal_torn_tail: " + segment.name +
-                                                       " at byte " + std::to_string(offset));
-          }
-          return refuse(ReplayStatus::kCorrupt, "journal_corrupt: " + segment.name +
-                                                    " ends without LF at byte " +
-                                                    std::to_string(offset));
-        }
-        const auto line = std::string_view(*content).substr(offset, end + 1 - offset);
-        const auto decoded = DecodeRecord(line);
-        if (decoded.status != DecodeStatus::kDecoded) {
-          return refuse(ReplayStatus::kCorrupt, "journal_corrupt: " + segment.name + " byte " +
-                                                    std::to_string(offset) + ": " + decoded.detail);
-        }
-        const auto& record = decoded.event;
-        if (record.sequence != expected) {
-          return refuse(ReplayStatus::kCorrupt, "journal_corrupt: expected sequence " +
-                                                    std::to_string(expected) +
-                                                    Location(segment.name, record.sequence));
-        }
-        const auto found = index_of.find(record.job_id.value);
-        std::optional<core::Snapshot> before;
-        if (found != index_of.end()) before = result.jobs[found->second];
-        std::string why;
-        auto after = ReplayRecord(before, record, why);
-        if (!after.has_value()) {
-          return refuse(ReplayStatus::kCorrupt,
-                        "journal_corrupt: " + why + Location(segment.name, record.sequence));
-        }
-        if (found == index_of.end()) {
-          if (result.jobs.size() >= options.max_jobs) {
-            return refuse(ReplayStatus::kCapacityExceeded,
-                          "journal_capacity_exceeded: more than " +
-                              std::to_string(options.max_jobs) + " Jobs" +
-                              Location(segment.name, record.sequence));
-          }
-          index_of.emplace(record.job_id.value, result.jobs.size());
-          result.jobs.push_back(std::move(*after));
-        } else {
-          result.jobs[found->second] = std::move(*after);
-        }
-        last = record.sequence;
-        ++result.records;
-        offset = end + 1;
-        if (record.sequence == UINT64_MAX) {
-          if (offset != content->size() || !highest) {
-            return refuse(ReplayStatus::kCorrupt, "journal_corrupt: record after UINT64_MAX");
-          }
-          return refuse(ReplayStatus::kSequenceExhausted,
-                        "journal_sequence_exhausted" + Location(segment.name, last));
-        }
-        expected = record.sequence + 1;
+      const auto line = std::string_view(*content).substr(offset, end + 1 - offset);
+      if (auto refusal = ReplayLine(segment, offset, line)) return refusal;
+      offset = end + 1;
+      if (last_ == UINT64_MAX) {
+        return offset != content->size() || !highest
+                   ? Refuse(ReplayStatus::kCorrupt, "journal_corrupt: record after UINT64_MAX")
+                   : Refuse(ReplayStatus::kSequenceExhausted,
+                            "journal_sequence_exhausted" + Location(segment.name, last_));
       }
     }
-    result.status = ReplayStatus::kReplayed;
-    result.next_sequence = expected;
-    for (const auto& snapshot : result.jobs) {
-      if (IsUnresolved(snapshot)) result.unresolved.push_back(snapshot.job_id);
+    return std::nullopt;
+  }
+
+  std::optional<ReplayResult> ReplayLine(const Segment& segment, std::size_t offset,
+                                         std::string_view line) {
+    const auto decoded = DecodeRecord(line);
+    if (decoded.status != DecodeStatus::kDecoded) {
+      return Refuse(ReplayStatus::kCorrupt, "journal_corrupt: " + segment.name + " byte " +
+                                                std::to_string(offset) + ": " + decoded.detail);
     }
-    return result;
+    const auto& record = decoded.event;
+    if (record.sequence != expected_) {
+      return Refuse(ReplayStatus::kCorrupt, "journal_corrupt: expected sequence " +
+                                                std::to_string(expected_) +
+                                                Location(segment.name, record.sequence));
+    }
+    const auto found = index_of_.find(record.job_id.value);
+    const bool known = found != index_of_.end();
+    std::optional<core::Snapshot> before;
+    if (known) before = result_.jobs[found->second];
+    std::string why;
+    auto after = ReplayRecord(before, record, why);
+    if (!after.has_value()) {
+      return Refuse(ReplayStatus::kCorrupt,
+                    "journal_corrupt: " + why + Location(segment.name, record.sequence));
+    }
+    if (known) {
+      result_.jobs[found->second] = std::move(*after);
+    } else if (result_.jobs.size() >= options_.max_jobs) {
+      return Refuse(ReplayStatus::kCapacityExceeded,
+                    "journal_capacity_exceeded: more than " + std::to_string(options_.max_jobs) +
+                        " Jobs" + Location(segment.name, record.sequence));
+    } else {
+      index_of_.try_emplace(record.job_id.value, result_.jobs.size());
+      result_.jobs.push_back(std::move(*after));
+    }
+    last_ = record.sequence;
+    ++result_.records;
+    if (record.sequence != UINT64_MAX) expected_ = record.sequence + 1;
+    return std::nullopt;
+  }
+
+  FileSystem& file_system_;
+  const std::string& directory_;
+  const ReplayOptions& options_;
+  ReplayResult result_;
+  std::map<std::string, std::size_t, std::less<>> index_of_;  // Job id -> position in jobs
+  std::uint64_t expected_ = 1;
+  std::uint64_t last_ = 0;
+};
+
+}  // namespace
+
+ReplayResult ReplayJournal(FileSystem& file_system, const std::string& directory,
+                           const ReplayOptions& options) {
+  Replayer replayer(file_system, directory, options);
+  try {
+    return replayer.Run();
   } catch (const std::exception& error) {
-    return refuse(ReplayStatus::kUnreadable, std::string("journal_unreadable: ") + error.what());
+    return replayer.Refuse(ReplayStatus::kUnreadable,
+                           std::string("journal_unreadable: ") + error.what());
   } catch (...) {
-    return refuse(ReplayStatus::kUnreadable, "journal_unreadable: unexpected exception");
+    return replayer.Refuse(ReplayStatus::kUnreadable, "journal_unreadable: unexpected exception");
   }
 }
 

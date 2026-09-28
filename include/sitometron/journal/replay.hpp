@@ -28,7 +28,10 @@ enum class ReplayStatus {
 };
 
 struct ReplayOptions {
-  std::size_t max_jobs = 0;  // resident Job capacity of the writer that will start from the result
+  // The resident Job capacity of the writer that will start from the result. There is no default:
+  // zero would refuse every non-empty Journal.
+  explicit ReplayOptions(std::size_t capacity) : max_jobs(capacity) {}
+  std::size_t max_jobs;
 };
 
 struct ReplayResult {
