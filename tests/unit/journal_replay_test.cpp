@@ -28,6 +28,18 @@ int Check(bool condition, const std::string& message) {
   return 1;
 }
 
+// "<id> <what>: <detail>" without temporary string concatenations.
+struct Failure {
+  std::string_view id;
+  std::string_view what;
+  std::string_view detail;
+};
+std::string Why(const Failure& failure) {
+  std::string message(failure.id);
+  message.append(" ").append(failure.what).append(": ").append(failure.detail);
+  return message;
+}
+
 const std::string k_dir = "/journal";
 
 std::string SegmentPath(std::uint64_t first) {
@@ -98,13 +110,13 @@ int ReproducesVectors(const Json& vectors, const Ordered& ordered) {
     std::string error;
     const auto record = EventFromFixture(
         ordered.at("case_vectors")[index].at("expected").at("journal_event"), error);
-    result |= Check(record.has_value(), id + " fixture decodes: " + error);
+    result |= Check(record.has_value(), Why({id, "fixture decodes", error}));
     if (!record) continue;
     const auto& initial = vector.at("initial_snapshot");
     const std::optional<Snapshot> before =
         initial.is_null() ? std::nullopt : std::optional<Snapshot>{SnapshotFrom(initial)};
     const auto after = ReplayRecord(before, *record, error);
-    result |= Check(after.has_value(), id + " replays: " + error);
+    result |= Check(after.has_value(), Why({id, "replays", error}));
     ++replayed;
     // Like the reducer vector test, command vectors pin the decision only; the event matrix pins
     // the applied snapshot of the same Journal event.
@@ -128,10 +140,10 @@ int ReproducesVectors(const Json& vectors, const Ordered& ordered) {
                                                .at("expected")
                                                .at("journal_event"),
                                            error);
-      result |= Check(record.has_value(), id + " step decodes: " + error);
+      result |= Check(record.has_value(), Why({id, "step decodes", error}));
       if (!record) break;
       current = ReplayRecord(current, *record, error);
-      result |= Check(current.has_value(), id + " step replays: " + error);
+      result |= Check(current.has_value(), Why({id, "step replays", error}));
       if (!current) break;
     }
     if (current) {

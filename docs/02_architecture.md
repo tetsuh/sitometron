@@ -25,7 +25,7 @@ I/O/framework ownership. Only `sitometrond` composes concrete adapters.
 | `sitometron_core` | Domain state, commands, pure reducer, lifecycle ports, and private single-writer orchestration | Implemented ADR-0004/`NFR-005` closed allowlist; Sitometron-owned public types only |
 | `sitometron_test_support` and private fake-support targets | Deterministic fakes, barriers, and test helpers | Tests only |
 | `sitometrond` | Composition root and daemon entry point | Core initially; adapters by Phase |
-| `sitometron_journal` | Physical JobJournal adapter: canonical record codec and durable segment writer; startup validation and replay as Phase 0B proceeds | Accepted ADR-0006; owns its own I/O and JSON dependencies; exposes Sitometron-owned types only |
+| `sitometron_journal` | Physical JobJournal adapter: canonical record codec, durable segment writer, startup validation, and replay; writer seeding and pruning as Phase 0B proceeds | Accepted ADR-0006; owns its own I/O and JSON dependencies; exposes Sitometron-owned types only |
 
 Later adapter targets are introduced only by their owning Issues:
 
@@ -50,8 +50,9 @@ preserves its behavior while reducing structural complexity. Accepted ADR-0005 a
 implement the lifecycle capability ports and deterministic fakes. Accepted ADR-0003 and Issue #12
 implement the bounded private single writer, complete logical envelope construction, commit ordering,
 and no-fail postcommit dispatch; Issue #13 completes deterministic adverse/race qualification.
-The `sitometron_journal` adapter implements the canonical record codec (Issue #57) and the durable
-segment writer (Issue #59); startup validation, replay, and pruning remain Planned under Issue #51.
+The `sitometron_journal` adapter implements the canonical record codec (Issue #57), the durable
+segment writer (Issue #59), and startup validation and replay (Issue #61); starting the writer
+from the replayed state and pruning remain Planned under Issue #51.
 Production effect adapters remain Planned under later owners.
 
 The machine-readable Job transition contract is documented in
