@@ -418,6 +418,15 @@ int DispatchesNoEffects() {
   return result;
 }
 
+LogicalJobEvent Recorded(std::uint64_t sequence, int job, EventType type, EventPayload payload) {
+  return LogicalJobEvent{1,
+                         sequence,
+                         type,
+                         DiagnosticTimestamp{"2026-09-28T01:02:05Z"},
+                         Uuid{Job(job)},
+                         std::move(payload)};
+}
+
 int SequenceContinuation() {
   int result = 0;
   auto empty = Journal({});
@@ -431,6 +440,27 @@ int SequenceContinuation() {
   result |= Check(replayed.status == ReplayStatus::kReplayed && replayed.next_sequence == 5 &&
                       replayed.records == 4 && replayed.jobs.size() == 3,
                   "next sequence continues across segments: " + replayed.detail);
+  // Job 4 runs to the end (cancelled while admitted, finalized, terminal, cleaned up): it is
+  // resolved and must not be reported.
+  const std::vector<LogicalJobEvent> lifecycle{
+      Created(1, 4),
+      Cancelled(2, 4),
+      Recorded(3, 4, EventType::kSessionRetainRequested, SessionPayload{Uuid{Job(4)}}),
+      Recorded(4, 4, EventType::kSessionRetained, SessionPayload{Uuid{Job(4)}}),
+      Recorded(5, 4, EventType::kFinalizationCompleted, EmptyPayload{}),
+      Recorded(6, 4, EventType::kTerminalOutcomeCommitted,
+               TerminalOutcomePayload{TerminalOutcome::kCancelled}),
+      Recorded(7, 4, EventType::kCleanupStatusRecorded,
+               CleanupStatusPayload{CleanupStatus::kCompleted}),
+      Created(8, 5)};
+  std::string closed_segment;
+  for (const auto& event : lifecycle) closed_segment += Bytes(event);
+  auto closed = Journal({{1, closed_segment}});
+  const auto mixed = Replay(closed);
+  result |=
+      Check(mixed.status == ReplayStatus::kReplayed && mixed.jobs.size() == 2 &&
+                !IsUnresolved(mixed.jobs[0]) && mixed.unresolved == std::vector<Uuid>{Uuid{Job(5)}},
+            "a fully closed Job is not unresolved; only Job 5 is reported: " + mixed.detail);
   const std::vector<Uuid> expected_unresolved{Uuid{Job(1)}, Uuid{Job(2)}, Uuid{Job(3)}};
   result |= Check(replayed.unresolved == expected_unresolved,
                   "the admitted and stopping Jobs 1, 2, 3 are unresolved, in creation order");
