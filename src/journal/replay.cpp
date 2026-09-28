@@ -194,6 +194,12 @@ class Replayer {
       return Refuse(ReplayStatus::kCorrupt,
                     "journal_corrupt: empty segment " + segment.name + " is not the highest");
     }
+    // Pruning always keeps the highest non-empty segment, so a Journal without records can only be
+    // a fresh one whose empty segment is named for sequence 1 (ADR-0006 §5, §8).
+    if (content->empty() && result_.records == 0 && segment.first != 1) {
+      return Refuse(ReplayStatus::kCorrupt, "journal_corrupt: empty segment " + segment.name +
+                                                " without records is not named for sequence 1");
+    }
     // An empty highest segment is named for the next sequence, checked above (ADR-0006 §5).
     std::size_t offset = 0;
     while (offset < content->size()) {

@@ -318,6 +318,14 @@ int EmptyActiveSegment() {
   result |= Check(
       fresh.status == ReplayStatus::kReplayed && fresh.next_sequence == 1 && fresh.jobs.empty(),
       "a lone empty first segment is a fresh Journal: " + fresh.detail);
+  auto lone_later = Journal({{5, ""}});
+  result |= Check(Refused(Replay(lone_later), ReplayStatus::kCorrupt, "journal_corrupt"),
+                  "a lone empty segment not named for sequence 1 is corrupt");
+  auto pruned = Journal({{5, Bytes(Created(5, 1))}, {6, ""}});
+  const auto kept = Replay(pruned);
+  result |= Check(
+      kept.status == ReplayStatus::kReplayed && kept.next_sequence == 6,
+      "a pruned Journal starting above 1 with an empty active segment replays: " + kept.detail);
   return result;
 }
 
