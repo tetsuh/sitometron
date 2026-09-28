@@ -236,7 +236,8 @@ class Replayer {
       return Refuse(ReplayStatus::kTornTail,
                     "journal_torn_tail: " + segment.name + " at byte " + std::to_string(offset));
     }
-    return Refuse(ReplayStatus::kCorrupt, "journal_corrupt: record after UINT64_MAX");
+    return Refuse(ReplayStatus::kCorrupt, "journal_corrupt: record after UINT64_MAX in " +
+                                              segment.name + " at byte " + std::to_string(offset));
   }
 
   std::optional<ReplayResult> ReplayLine(const Segment& segment, std::size_t offset,

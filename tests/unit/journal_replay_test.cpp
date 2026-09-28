@@ -366,8 +366,13 @@ int SequenceExhaustedRefusal() {
                 torn_after.detail.find("byte") != std::string::npos,
             "a partial line after the UINT64_MAX record is a torn tail: " + torn_after.detail);
   auto extra = Journal({{UINT64_MAX, Bytes(Created(UINT64_MAX, 1)) + "{}\n"}});
-  result |= Check(Refused(Replay(extra), ReplayStatus::kCorrupt, "journal_corrupt"),
-                  "a complete line after the UINT64_MAX record is corruption");
+  const auto after_max = Replay(extra);
+  const auto max_location = SegmentJournal::SegmentName(UINT64_MAX) + " at byte " +
+                            std::to_string(Bytes(Created(UINT64_MAX, 1)).size());
+  result |= Check(Refused(after_max, ReplayStatus::kCorrupt, "journal_corrupt") &&
+                      after_max.detail.find(max_location) != std::string::npos,
+                  "a complete line after the UINT64_MAX record is corruption at its location: " +
+                      after_max.detail);
   return result;
 }
 
