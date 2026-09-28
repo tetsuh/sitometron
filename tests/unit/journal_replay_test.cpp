@@ -106,7 +106,9 @@ int ReproducesVectors(const Json& vectors, const Ordered& ordered) {
     const auto after = ReplayRecord(before, *record, error);
     result |= Check(after.has_value(), id + " replays: " + error);
     ++replayed;
-    if (after && !expected.at("next_snapshot").is_null()) {
+    // Like the reducer vector test, command vectors pin the decision only; the event matrix pins
+    // the applied snapshot of the same Journal event.
+    if (after && vector.at("matrix") == "event" && !expected.at("next_snapshot").is_null()) {
       result |= Check(SnapshotJson(*after) == expected.at("next_snapshot"),
                       id + " snapshot (actual=" + SnapshotJson(*after).dump() + ")");
     }
