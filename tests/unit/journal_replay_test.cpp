@@ -2,10 +2,12 @@
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "job_orchestrator.hpp"
@@ -101,6 +103,8 @@ bool Refused(const ReplayResult& result, ReplayStatus status, std::string_view c
 int ReproducesVectors(const Json& vectors, const Ordered& ordered) {
   int result = 0;
   std::size_t replayed = 0;
+  std::map<std::string, Json> applied_by_event;
+  std::vector<std::tuple<std::string, std::string, Json>> command_results;
   const auto& cases = vectors.at("case_vectors");
   for (std::size_t index = 0; index < cases.size(); ++index) {
     const auto& vector = cases[index];
@@ -118,13 +122,33 @@ int ReproducesVectors(const Json& vectors, const Ordered& ordered) {
     const auto after = ReplayRecord(before, *record, error);
     result |= Check(after.has_value(), Why({id, "replays", error}));
     ++replayed;
-    // Like the reducer vector test, command vectors pin the decision only; the event matrix pins
-    // the applied snapshot of the same Journal event.
-    if (after && vector.at("matrix") == "event" && !expected.at("next_snapshot").is_null()) {
-      result |= Check(SnapshotJson(*after) == expected.at("next_snapshot"),
-                      id + " snapshot (actual=" + SnapshotJson(*after).dump() + ")");
+    // An event vector pins the snapshot after applying its Journal event. A command vector's own
+    // next_snapshot is the pre-application decision state (the command changes nothing until its
+    // event is applied), so it is checked against the event vector with the same initial snapshot
+    // and Journal event instead.
+    if (after && !expected.at("next_snapshot").is_null()) {
+      const auto key = vector.at("initial_snapshot").dump() + expected.at("journal_event").dump();
+      if (vector.at("matrix") == "event") {
+        applied_by_event[key] = expected.at("next_snapshot");
+        result |= Check(SnapshotJson(*after) == expected.at("next_snapshot"),
+                        id + " snapshot (actual=" + SnapshotJson(*after).dump() + ")");
+      } else {
+        command_results.emplace_back(id, key, SnapshotJson(*after));
+      }
     }
   }
+  std::size_t matched = 0;
+  for (const auto& [id, key, actual] : command_results) {
+    const auto found = applied_by_event.find(key);
+    result |= Check(found != applied_by_event.end(), id + " has an event vector for its record");
+    if (found == applied_by_event.end()) continue;
+    ++matched;
+    result |=
+        Check(actual == found->second,
+              id + " applied snapshot equals the event vector (actual=" + actual.dump() + ")");
+  }
+  result |=
+      Check(matched >= 8, "command vectors matched to event vectors: " + std::to_string(matched));
   result |= Check(replayed > 100, "replayed " + std::to_string(replayed) + " case vectors");
   const auto& sequences = vectors.at("sequence_vectors");
   for (std::size_t index = 0; index < sequences.size(); ++index) {
@@ -301,6 +325,15 @@ int SequenceExhaustedRefusal() {
   const auto replayed = Replay(fs);
   result |= Check(Refused(replayed, ReplayStatus::kSequenceExhausted, "journal_sequence_exhausted"),
                   "last sequence is UINT64_MAX: " + replayed.detail);
+  auto torn = Journal({{UINT64_MAX, Bytes(Created(UINT64_MAX, 1)) + "{\"sch"}});
+  const auto torn_after = Replay(torn);
+  result |=
+      Check(Refused(torn_after, ReplayStatus::kTornTail, "journal_torn_tail") &&
+                torn_after.detail.find("byte") != std::string::npos,
+            "a partial line after the UINT64_MAX record is a torn tail: " + torn_after.detail);
+  auto extra = Journal({{UINT64_MAX, Bytes(Created(UINT64_MAX, 1)) + "{}\n"}});
+  result |= Check(Refused(Replay(extra), ReplayStatus::kCorrupt, "journal_corrupt"),
+                  "a complete line after the UINT64_MAX record is corruption");
   return result;
 }
 

@@ -214,14 +214,25 @@ class Replayer {
       const auto line = std::string_view(*content).substr(offset, end + 1 - offset);
       if (auto refusal = ReplayLine(segment, offset, line)) return refusal;
       offset = end + 1;
-      if (last_ == UINT64_MAX) {
-        return offset != content->size() || !highest
-                   ? Refuse(ReplayStatus::kCorrupt, "journal_corrupt: record after UINT64_MAX")
-                   : Refuse(ReplayStatus::kSequenceExhausted,
-                            "journal_sequence_exhausted" + Location(segment.name, last_));
-      }
+      if (last_ == UINT64_MAX) return AfterExhaustion(segment, highest, *content, offset);
     }
     return std::nullopt;
+  }
+
+  // The record at UINT64_MAX was replayed. What follows decides the refusal: nothing is
+  // exhaustion; bytes without LF in the highest segment are a torn tail (reported before
+  // exhaustion, like any other torn tail); anything else is corruption.
+  ReplayResult AfterExhaustion(const Segment& segment, bool highest, const std::string& content,
+                               std::size_t offset) {
+    if (offset == content.size() && highest) {
+      return Refuse(ReplayStatus::kSequenceExhausted,
+                    "journal_sequence_exhausted" + Location(segment.name, last_));
+    }
+    if (highest && content.find('\n', offset) == std::string::npos) {
+      return Refuse(ReplayStatus::kTornTail,
+                    "journal_torn_tail: " + segment.name + " at byte " + std::to_string(offset));
+    }
+    return Refuse(ReplayStatus::kCorrupt, "journal_corrupt: record after UINT64_MAX");
   }
 
   std::optional<ReplayResult> ReplayLine(const Segment& segment, std::size_t offset,
