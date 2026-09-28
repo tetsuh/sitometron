@@ -4,8 +4,9 @@ Accepted ADR-0002 makes the Phase 0A core Job contract normative. Issue #9 imple
 dependency-minimal pure reducer, and Issue #12 implements complete logical Journal envelope
 construction plus the ADR-0003 single-writer logical-commit orchestration. Accepted
 [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under Issue #51 makes
-physical serialization, append/flush/disk-sync durability, replay, recovery, and pruning normative;
-their implementation remains Planned for Phase 0B.
+physical serialization, append/flush/disk-sync durability, replay, recovery, and pruning normative.
+Issues #57 and #59 implement serialization and durable appends; startup validation, replay,
+recovery, and pruning remain Planned for Phase 0B.
 
 ## 1. Source files
 
@@ -40,7 +41,8 @@ The Phase 0A Job reducer contract is split into reviewable machine-readable arti
   Sitometron-specific structural, cross-field, coverage, fixture, and diagram consistency check.
 
 ADR-0002 explains the decision and authority boundary. The JSON contract defines exact cases.
-Physical JobJournal durability remains Phase 0B scope under Issue #51.
+Physical JobJournal serialization and durable appends are implemented in `sitometron_journal`;
+startup validation, replay, and pruning remain Phase 0B scope under Issue #51.
 
 ## 2. Lifecycle model
 
@@ -84,8 +86,9 @@ input
           -> typed postcommit effects in reducer-declared order
 ```
 
-Phase 0B separately implements physical serialization, append, flush, and disk sync without changing
-the logical commit-before-activation/effect contract.
+The `sitometron_journal` segment writer (Issue #59) implements physical serialization, append, and
+data sync behind the same port without changing the logical commit-before-activation/effect
+contract.
 
 The four exhaustive dispositions are `transition`, `audit`, `late_audit`, and `reject`. A reject case
 cannot emit, update, request an effect, or normalize to another event kind. Cases use a closed

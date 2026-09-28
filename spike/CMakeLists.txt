@@ -8,15 +8,14 @@ endif()
 add_executable(
   sitometron_spike
   src/main.cpp
-  src/file_journal.cpp
   src/http_server.cpp
   src/job_driver.cpp
   src/process_runner.cpp
   src/system_ports.cpp)
 target_include_directories(sitometron_spike PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
                                                     ${CMAKE_SOURCE_DIR}/src/core)
-target_link_libraries(sitometron_spike PRIVATE sitometron::core nlohmann_json::nlohmann_json
-                                               Threads::Threads)
+target_link_libraries(sitometron_spike PRIVATE sitometron::core sitometron::journal
+                                               nlohmann_json::nlohmann_json Threads::Threads)
 sitometron_enable_project_warnings(sitometron_spike)
 sitometron_enable_sanitizers(sitometron_spike)
 

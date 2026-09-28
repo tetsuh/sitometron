@@ -8,7 +8,7 @@
 adapters so that `sitometrond`-shaped behavior can be seen end to end on Linux/WSL:
 
 ```text
-curl POST /jobs ──> JobDriver ──> JobOrchestrator (core single writer) ──> FileJournal (JSON Lines, fsync)
+curl POST /jobs ──> JobDriver ──> JobOrchestrator (core single writer) ──> SegmentJournal (sitometron_journal, fdatasync)
                        │                 │ HandoffLaunch
                        │                 v
                        └─────────── ProcessRunner (posix_spawn / waitpid)
@@ -25,12 +25,12 @@ cmake -S . -B build/dev-linux -DSITOMETRON_BUILD_SPIKE=ON
 cmake --build build/dev-linux --target sitometron_spike
 
 build/dev-linux/spike/sitometron_spike --listen 127.0.0.1:8080 \
-    --journal /tmp/sitometron-journal.jsonl --workdir /tmp
+    --journal /tmp/sitometron-journal --workdir /tmp
 ```
 
 Options: `--listen HOST:PORT` (loopback addresses only; port `0` picks an ephemeral port and prints
-it), `--journal PATH` (an existing file is appended to and the logical sequence continues after its
-last record),
+it), `--journal DIR` (the production `SegmentJournal` from `sitometron_journal`, Issue #59: segment
+files, exclusive lock, and a restart that continues the logical sequence after the last record),
 `--workdir DIR` (default working directory for children), `--max-jobs N` (default 32, see
 [Findings](#findings-for-phase-0b12)), `--trace-capacity N` (default 4096).
 
@@ -82,7 +82,8 @@ a failed outcome.
 Native Windows, TLS, authentication, request limits beyond 64 KiB, Admission, Application Registry,
 ResourceProfile/topology, the Worker protocol (`worker_running` is asserted at spawn), cancel and
 terminate (the stop ports are no-ops), timeouts (no timer adapter exists, so a hung child never
-times out), Journal replay/recovery/pruning (the file is only counted on restart), Sitos, Artifact
+times out), Journal replay/recovery/pruning (on restart the writer only reads the last record of the highest
+segment to continue the sequence; earlier Jobs are not replayed), Sitos, Artifact
 REST, Quill logging, packaging, release. Bundle provenance is a placeholder digest.
 
 ## Findings for Phase 0B/1/2
@@ -110,8 +111,9 @@ authorities, not decisions.
    not block or re-enter ingress. The skeleton uses per-Job mailboxes (`AwaitLaunch`,
    `AwaitRetain`); a production adapter needs the same discipline spelled out in its contract.
 6. **No canonical serializer for the logical envelope exists in C++.** The JSON schemas define the
-   record, but the mapping from `LogicalJobEvent` to JSON (`FileJournal::ToJson`) had to be written
-   by hand here. Phase 0B should own one serializer (and its inverse for replay) next to the schema.
+   record, but the mapping from `LogicalJobEvent` to JSON had to be written by hand here. Phase 0B
+   should own one serializer (and its inverse for replay) next to the schema. **Resolved** by
+   Issue #57 (canonical record codec) and Issue #59 (the spike now writes through it).
 7. **Replay is feasible with the pure reducer.** Because `Apply` is pure, restart recovery can fold
    the Journal file through the reducer to rebuild snapshots. The skeleton does not do it; it only
    reads the last sequence so that new records continue the numbering, and Jobs from a previous
