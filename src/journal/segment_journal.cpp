@@ -114,6 +114,10 @@ SegmentJournal::Located SegmentJournal::Locate(const std::string& directory) {
   for (const auto& name : *names) {
     if (const auto first = SegmentFirstSequence(name); first.has_value()) {
       segments.emplace_back(*first, name);
+    } else if (name.starts_with(segment_prefix) && name.ends_with(segment_suffix)) {
+      // Same rule as startup replay: a segment-shaped name that is not a valid segment may hide
+      // records, so the writer does not append past it.
+      return Located{"malformed segment name " + name, 0, {}};
     }
   }
   if (segments.empty()) return Located{{}, 1, {}};

@@ -306,6 +306,22 @@ int SegmentNameMismatch() {
   const auto second = Replay(later);
   result |= Check(Refused(second, ReplayStatus::kCorrupt, "journal_corrupt"),
                   "later segment named past its first record: " + second.detail);
+  for (const std::string bad : {"journal-12.ndjson", "journal-0000000000000000000x.ndjson",
+                                "journal-00000000000000000000.ndjson"}) {
+    auto lone = Journal({});
+    lone.files[JoinPath(k_dir, bad)] = Bytes(Created(1, 1));
+    result |= Check(Refused(Replay(lone), ReplayStatus::kCorrupt, "journal_corrupt"),
+                    "a lone malformed segment name is corrupt: " + bad);
+    auto hidden = Journal({{1, Bytes(Created(1, 1))}});
+    hidden.files[JoinPath(k_dir, bad)] = Bytes(Created(2, 2));
+    result |= Check(Refused(Replay(hidden), ReplayStatus::kCorrupt, "journal_corrupt"),
+                    "a malformed next segment is corrupt: " + bad);
+  }
+  auto unrelated = Journal({{1, Bytes(Created(1, 1))}});
+  unrelated.files[JoinPath(k_dir, "journal.lock")] = "";
+  unrelated.files[JoinPath(k_dir, "journal-00000000000000000002.ndjson.quarantine")] = "x";
+  result |= Check(Replay(unrelated).status == ReplayStatus::kReplayed,
+                  "the lock and non-segment files are ignored");
   return result;
 }
 
@@ -392,8 +408,9 @@ int SequenceContinuation() {
   result |= Check(replayed.status == ReplayStatus::kReplayed && replayed.next_sequence == 5 &&
                       replayed.records == 4 && replayed.jobs.size() == 3,
                   "next sequence continues across segments: " + replayed.detail);
-  result |= Check(replayed.unresolved.size() == 3, "admitted and stopping Jobs are unresolved: " +
-                                                       std::to_string(replayed.unresolved.size()));
+  const std::vector<Uuid> expected_unresolved{Uuid{Job(1)}, Uuid{Job(2)}, Uuid{Job(3)}};
+  result |= Check(replayed.unresolved == expected_unresolved,
+                  "the admitted and stopping Jobs 1, 2, 3 are unresolved, in creation order");
   return result;
 }
 }  // namespace

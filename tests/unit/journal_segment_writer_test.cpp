@@ -447,6 +447,15 @@ int RestartContinues() {
               "the parent entry is synced before the Journal is locked and used");
   }
   {
+    // A segment-shaped name that is not a valid segment may hide records; the writer refuses it.
+    MemoryFileSystem malformed;
+    malformed.directories.insert(k_dir);
+    malformed.files[JoinPath(k_dir, "journal-12.ndjson")] = EncodeRecord(Event(1)).bytes;
+    SegmentJournal journal(malformed);
+    result |= Check(!journal.Open(k_dir).ok && malformed.OpenHandles() == 0,
+                    "a malformed segment name refuses Open without leaking the lock");
+  }
+  {
     MemoryFileSystem torn;
     torn.directories.insert(k_dir);
     torn.files[Segment(1)] = EncodeRecord(Event(1)).bytes + "{\"schema";

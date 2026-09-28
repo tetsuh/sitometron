@@ -154,6 +154,10 @@ class Replayer {
     for (const auto& name : *names) {
       if (const auto first = SegmentFirst(name); first.has_value()) {
         segments.emplace_back(Segment{*first, name});
+      } else if (name.starts_with(segment_prefix) && name.ends_with(segment_suffix)) {
+        // Looks like a segment but cannot be one: it may hide records (ADR-0006 §5). Other names,
+        // such as journal.lock or quarantine files, are not segments and are ignored.
+        return Refuse(ReplayStatus::kCorrupt, "journal_corrupt: malformed segment name " + name);
       }
     }
     std::sort(segments.begin(), segments.end(),
