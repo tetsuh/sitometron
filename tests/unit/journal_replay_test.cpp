@@ -258,9 +258,10 @@ int TornTailRefusal() {
   int result = 0;
   auto fs = Journal({{1, Bytes(Created(1, 1)) + Bytes(Created(2, 2)).substr(0, 20)}});
   const auto replayed = Replay(fs);
-  result |= Check(Refused(replayed, ReplayStatus::kTornTail, "journal_torn_tail") &&
-                      replayed.detail.find(SegmentJournal::SegmentName(1)) != std::string::npos,
-                  "torn tail of the last segment: " + replayed.detail);
+  const auto expected = "journal_torn_tail: " + SegmentJournal::SegmentName(1) + " at byte " +
+                        std::to_string(Bytes(Created(1, 1)).size());
+  result |= Check(replayed.status == ReplayStatus::kTornTail && replayed.detail == expected,
+                  "torn tail names the segment and exact byte offset: " + replayed.detail);
   return result;
 }
 
@@ -269,29 +270,46 @@ int CorruptionRefusal() {
   struct Case {
     std::string name;
     std::vector<std::pair<std::uint64_t, std::string>> segments;
+    std::string location;  // the part of the refusal detail that pins where the problem is
   };
+  const auto seg1 = SegmentJournal::SegmentName(1);
+  const auto first_record = std::to_string(Bytes(Created(1, 1)).size());
   const std::vector<Case> cases{
       {"undecodable line mid-Journal",
-       {{1, Bytes(Created(1, 1)) + "{\"not\":\"a record\"}\n" + Bytes(Created(3, 3))}}},
+       {{1, Bytes(Created(1, 1)) + "{\"not\":\"a record\"}\n" + Bytes(Created(3, 3))}},
+       seg1 + " byte " + first_record + ":"},
       {"torn line in a sealed segment",
-       {{1, Bytes(Created(1, 1)).substr(0, 30) + "\n"}, {2, Bytes(Created(2, 2))}}},
-      {"sequence gap", {{1, Bytes(Created(1, 1)) + Bytes(Created(3, 3))}}},
-      {"repeated sequence", {{1, Bytes(Created(1, 1)) + Bytes(Created(1, 2))}}},
-      {"gap across segments", {{1, Bytes(Created(1, 1))}, {3, Bytes(Created(3, 3))}}},
-      {"record for an absent Job", {{1, Bytes(Cancelled(1, 1))}}},
-      {"duplicate job_created", {{1, Bytes(Created(1, 1)) + Bytes(Created(2, 1))}}},
+       {{1, Bytes(Created(1, 1)).substr(0, 30) + "\n"}, {2, Bytes(Created(2, 2))}},
+       seg1 + " byte 0:"},
+      {"sequence gap",
+       {{1, Bytes(Created(1, 1)) + Bytes(Created(3, 3))}},
+       "expected sequence 2 at " + seg1 + " sequence 3"},
+      {"repeated sequence",
+       {{1, Bytes(Created(1, 1)) + Bytes(Created(1, 2))}},
+       "expected sequence 2 at " + seg1 + " sequence 1"},
+      {"gap across segments",
+       {{1, Bytes(Created(1, 1))}, {3, Bytes(Created(3, 3))}},
+       "segment " + SegmentJournal::SegmentName(3) + " is not named for sequence 2"},
+      {"record for an absent Job", {{1, Bytes(Cancelled(1, 1))}}, " at " + seg1 + " sequence 1"},
+      {"duplicate job_created",
+       {{1, Bytes(Created(1, 1)) + Bytes(Created(2, 1))}},
+       " at " + seg1 + " sequence 2"},
       {"reducer rejects the record",
        {{1, Bytes(Created(1, 1)) +
                 Bytes(LogicalJobEvent{1, 2, EventType::kTerminalOutcomeCommitted,
                                       DiagnosticTimestamp{"2026-09-28T01:02:05Z"}, Uuid{Job(1)},
-                                      TerminalOutcomePayload{TerminalOutcome::kSucceeded}})}}},
-      {"empty non-highest segment", {{1, ""}, {2, Bytes(Created(2, 2))}}},
+                                      TerminalOutcomePayload{TerminalOutcome::kSucceeded}})}},
+       " at " + seg1 + " sequence 2"},
+      {"empty non-highest segment",
+       {{1, ""}, {2, Bytes(Created(2, 2))}},
+       "empty segment " + seg1 + " is not the highest"},
   };
   for (const auto& c : cases) {
     auto fs = Journal(c.segments);
     const auto replayed = Replay(fs);
-    result |= Check(Refused(replayed, ReplayStatus::kCorrupt, "journal_corrupt"),
-                    c.name + ": " + replayed.detail);
+    result |= Check(Refused(replayed, ReplayStatus::kCorrupt, "journal_corrupt") &&
+                        replayed.detail.find(c.location) != std::string::npos,
+                    c.name + " (expected location '" + c.location + "'): " + replayed.detail);
   }
   return result;
 }
