@@ -133,6 +133,14 @@ if(SITOMETRON_BUILD_TESTS)
   sitometron_enable_sanitizers(sitometron_version_test)
   add_test(NAME sitometron_version_test COMMAND sitometron_version_test)
 
+  add_library(sitometron_reducer_json_support STATIC tests/support/reducer_snapshot_json.cpp)
+  target_include_directories(sitometron_reducer_json_support PUBLIC tests/support)
+  target_link_libraries(
+    sitometron_reducer_json_support
+    PUBLIC sitometron::core nlohmann_json::nlohmann_json)
+  sitometron_enable_project_warnings(sitometron_reducer_json_support)
+  sitometron_enable_sanitizers(sitometron_reducer_json_support)
+
   add_executable(
     sitometron_core_tests
     tests/unit/job_reducer_test.cpp
@@ -142,6 +150,7 @@ if(SITOMETRON_BUILD_TESTS)
     PRIVATE
       sitometron::core
       sitometron::test_support
+      sitometron_reducer_json_support
       nlohmann_json::nlohmann_json)
   sitometron_enable_project_warnings(sitometron_core_tests)
   sitometron_enable_sanitizers(sitometron_core_tests)
