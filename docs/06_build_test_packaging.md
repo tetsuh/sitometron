@@ -38,12 +38,12 @@ Phase 0A PR CI requires:
 The Linux clang-tidy step resolves the absolute `clang-tidy-18` application and runs the
 standard-library-only `tools/run_clang_tidy.py` helper against
 `build/dev-linux/compile_commands.json`. The helper intersects tracked `apps/**/*.cpp`,
-`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 17-source set and
+`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 20-source set and
 LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection drift.
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the 49-test `dev-linux` baseline. It runs without suppressions using
+CTest-name parity with the 58-test `dev-linux` baseline. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -172,8 +172,8 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `JRN-005` | CTests `job_physical_disk_sync_order`, `journal_segment_creation_durable`, `journal_segment_rotation`, `journal_segment_restart_continues` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #59 |
 | `JRN-006` | CTests `journal_commit_result_classification`, `journal_adapter_poisoned_after_failure`, `job_physical_commit_failure_fail_closed` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #59 |
 | `JRN-007` | CTests `journal_directory_exclusive_lock`, `journal_daemon_never_rewrites` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #59 |
-| `OPS-002` | C++ tests `journal_startup_torn_tail_refusal`, `journal_startup_corruption_refusal`, `journal_startup_segment_name_mismatch`, `journal_startup_capacity_refusal`, `journal_startup_sequence_exhausted_refusal`, `journal_startup_empty_active_segment` | Normative under Accepted ADR-0006 under Issue #51; checks planned for Phase 0B implementation |
-| `OPS-003` | C++ tests `journal_replay_reproduces_vectors`, `journal_replay_dispatches_no_effects`, `journal_replay_sequence_continuation` | Normative under Accepted ADR-0006 under Issue #51; checks planned for Phase 0B implementation |
+| `OPS-002` | CTests `journal_startup_torn_tail_refusal`, `journal_startup_corruption_refusal`, `journal_startup_segment_name_mismatch`, `journal_startup_capacity_refusal`, `journal_startup_sequence_exhausted_refusal`, `journal_startup_empty_active_segment` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #61 |
+| `OPS-003` | CTests `journal_replay_reproduces_vectors`, `journal_replay_dispatches_no_effects`, `journal_replay_sequence_continuation` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #61 |
 | `OPS-004` | C++ test `journal_unresolved_jobs_block_admission` | Normative under Accepted ADR-0006 under Issue #51; checks planned for Phase 0B implementation |
 | `OPS-005` | C++ tests `journal_prune_prefix_only`, `journal_prune_refuses_open_jobs`, `journal_prune_keeps_last_record` | Normative under Accepted ADR-0006 under Issue #51; checks planned for Phase 0B implementation |
 

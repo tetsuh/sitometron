@@ -5,8 +5,8 @@ dependency-minimal pure reducer, and Issue #12 implements complete logical Journ
 construction plus the ADR-0003 single-writer logical-commit orchestration. Accepted
 [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under Issue #51 makes
 physical serialization, append/flush/disk-sync durability, replay, recovery, and pruning normative.
-Issues #57 and #59 implement serialization and durable appends; startup validation, replay,
-recovery, and pruning remain Planned for Phase 0B.
+Issues #57, #59, and #61 implement serialization, durable appends, startup validation, and replay;
+starting the writer from the replayed state and pruning remain Planned for Phase 0B.
 
 ## 1. Source files
 
@@ -41,8 +41,9 @@ The Phase 0A Job reducer contract is split into reviewable machine-readable arti
   Sitometron-specific structural, cross-field, coverage, fixture, and diagram consistency check.
 
 ADR-0002 explains the decision and authority boundary. The JSON contract defines exact cases.
-Physical JobJournal serialization and durable appends are implemented in `sitometron_journal`;
-startup validation, replay, and pruning remain Phase 0B scope under Issue #51.
+Physical JobJournal serialization, durable appends, startup validation, and replay are implemented
+in `sitometron_journal`; starting the writer from the replayed state and pruning remain Phase 0B
+scope under Issue #51.
 
 ## 2. Lifecycle model
 

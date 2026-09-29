@@ -84,7 +84,8 @@ add_library(
   sitometron_journal STATIC
   src/journal/record_codec.cpp
   src/journal/segment_journal.cpp
-  src/journal/file_system.cpp)
+  src/journal/file_system.cpp
+  src/journal/replay.cpp)
 add_library(sitometron::journal ALIAS sitometron_journal)
 target_include_directories(
   sitometron_journal
@@ -133,6 +134,14 @@ if(SITOMETRON_BUILD_TESTS)
   sitometron_enable_sanitizers(sitometron_version_test)
   add_test(NAME sitometron_version_test COMMAND sitometron_version_test)
 
+  add_library(sitometron_reducer_json_support STATIC tests/support/reducer_snapshot_json.cpp)
+  target_include_directories(sitometron_reducer_json_support PUBLIC tests/support)
+  target_link_libraries(
+    sitometron_reducer_json_support
+    PUBLIC sitometron::core nlohmann_json::nlohmann_json)
+  sitometron_enable_project_warnings(sitometron_reducer_json_support)
+  sitometron_enable_sanitizers(sitometron_reducer_json_support)
+
   add_executable(
     sitometron_core_tests
     tests/unit/job_reducer_test.cpp
@@ -142,6 +151,7 @@ if(SITOMETRON_BUILD_TESTS)
     PRIVATE
       sitometron::core
       sitometron::test_support
+      sitometron_reducer_json_support
       nlohmann_json::nlohmann_json)
   sitometron_enable_project_warnings(sitometron_core_tests)
   sitometron_enable_sanitizers(sitometron_core_tests)
@@ -273,6 +283,35 @@ if(SITOMETRON_BUILD_TESTS)
     add_test(
       NAME ${_journal_segment_check}
       COMMAND sitometron_journal_segment_tests ${_journal_segment_check})
+  endforeach()
+
+  add_executable(sitometron_journal_replay_tests tests/unit/journal_replay_test.cpp)
+  target_include_directories(sitometron_journal_replay_tests PRIVATE src/core)
+  target_link_libraries(
+    sitometron_journal_replay_tests
+    PRIVATE
+      sitometron::journal
+      sitometron::core
+      sitometron::test_support
+      sitometron_reducer_json_support
+      nlohmann_json::nlohmann_json)
+  sitometron_enable_project_warnings(sitometron_journal_replay_tests)
+  sitometron_enable_sanitizers(sitometron_journal_replay_tests)
+  foreach(_journal_replay_check IN ITEMS
+      journal_startup_torn_tail_refusal
+      journal_startup_corruption_refusal
+      journal_startup_segment_name_mismatch
+      journal_startup_capacity_refusal
+      journal_startup_sequence_exhausted_refusal
+      journal_startup_empty_active_segment
+      journal_replay_reproduces_vectors
+      journal_replay_dispatches_no_effects
+      journal_replay_sequence_continuation)
+    add_test(
+      NAME ${_journal_replay_check}
+      COMMAND sitometron_journal_replay_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/schemas/core/v1/job-reducer-vectors.json
+        ${_journal_replay_check})
   endforeach()
 
   add_executable(sitometron_core_dependency_api_smoke tests/unit/core_dependency_api_smoke.cpp)
