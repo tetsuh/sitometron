@@ -25,7 +25,7 @@ I/O/framework ownership. Only `sitometrond` composes concrete adapters.
 | `sitometron_core` | Domain state, commands, pure reducer, lifecycle ports, and private single-writer orchestration | Implemented ADR-0004/`NFR-005` closed allowlist; Sitometron-owned public types only |
 | `sitometron_test_support` and private fake-support targets | Deterministic fakes, barriers, and test helpers | Tests only |
 | `sitometrond` | Composition root and daemon entry point | Core initially; adapters by Phase |
-| `sitometron_journal` | Physical JobJournal adapter: canonical record codec, durable segment writer, startup validation, and replay; writer seeding and pruning as Phase 0B proceeds | Accepted ADR-0006; owns its own I/O and JSON dependencies; exposes Sitometron-owned types only |
+| `sitometron_journal` | Physical JobJournal adapter: canonical record codec, durable segment writer, startup validation, and replay that seeds the writer; pruning as Phase 0B proceeds | Accepted ADR-0006; owns its own I/O and JSON dependencies; exposes Sitometron-owned types only |
 
 Later adapter targets are introduced only by their owning Issues:
 
@@ -51,8 +51,8 @@ implement the lifecycle capability ports and deterministic fakes. Accepted ADR-0
 implement the bounded private single writer, complete logical envelope construction, commit ordering,
 and no-fail postcommit dispatch; Issue #13 completes deterministic adverse/race qualification.
 The `sitometron_journal` adapter implements the canonical record codec (Issue #57), the durable
-segment writer (Issue #59), and startup validation and replay (Issue #61); starting the writer
-from the replayed state and pruning remain Planned under Issue #51.
+segment writer (Issue #59), and startup validation and replay (Issue #61); the single writer starts
+from the replayed state (Issue #64). Pruning remains Planned under Issue #51.
 Production effect adapters remain Planned under later owners.
 
 The machine-readable Job transition contract is documented in

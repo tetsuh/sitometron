@@ -73,6 +73,9 @@ JobDriver::JobDriver(DriverConfig config, journal::SegmentJournal& journal)
     JobRecord record;
     record.job_id = snapshot.job_id.value;
     record.recovered = true;
+    if (snapshot.worker_id) record.worker_id = snapshot.worker_id->value;
+    if (snapshot.launch_operation_id)
+      record.launch_operation_id = snapshot.launch_operation_id->value;
     jobs_.emplace(record.job_id, record);
     order_.push_back(record.job_id);
   }

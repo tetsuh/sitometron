@@ -118,7 +118,7 @@ struct Config {
 
 class JobOrchestrator final {
  public:
-  explicit JobOrchestrator(Config config);
+  explicit JobOrchestrator(const Config& config);
   ~JobOrchestrator();
   JobOrchestrator(const JobOrchestrator&) = delete;
   JobOrchestrator& operator=(const JobOrchestrator&) = delete;

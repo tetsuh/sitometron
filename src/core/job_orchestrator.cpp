@@ -1507,7 +1507,7 @@ struct JobOrchestrator::Impl {
     Checkpoint(entry.sequence, WriterPhase::kTurnFinished);
   }
 };
-JobOrchestrator::JobOrchestrator(Config config) : impl_(std::make_unique<Impl>(config)) {
+JobOrchestrator::JobOrchestrator(const Config& config) : impl_(std::make_unique<Impl>(config)) {
   // Callback controls are fully allocated before the writer or any producer is exposed.
   for (auto& control : impl_->callbacks) {
     control = std::make_shared<CallbackHandle::Control>();
