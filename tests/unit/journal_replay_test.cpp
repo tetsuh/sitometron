@@ -100,6 +100,45 @@ bool Refused(const ReplayResult& result, ReplayStatus status, std::string_view c
   return result.status == status && result.detail.find(code) != std::string::npos;
 }
 
+// Port fakes for an orchestrator writing to a SegmentJournal: they record nothing and fail nothing.
+struct FakePorts {
+  class Clock final : public ClockPort {
+   public:
+    ClockReading Read() override {
+      return {DiagnosticTimestamp{"2026-09-28T01:02:03.456Z"}, MonotonicInstant{++tick_}};
+    }
+
+   private:
+    std::uint64_t tick_ = 0;
+  } clock;
+  class Runner final : public ApplicationRunnerPort {
+   public:
+    void HandoffLaunch(ApplicationLaunchRequest&&) noexcept override {}
+    void HandoffCooperativeStop(ApplicationStopRequest&&) noexcept override {}
+    void HandoffForcedStop(ApplicationStopRequest&&) noexcept override {}
+  } runner;
+  class Session final : public SessionRetainerPort {
+   public:
+    void HandoffRetainSameIdentity(SessionRetainRequest&&) noexcept override {}
+  } session;
+  class Identity final : public IdentitySourcePort {
+   public:
+    JobSessionIdentityResult GenerateJobSessionIdentity() override {
+      return GeneratedJobSessionIdentity{Uuid{Job(++jobs_)}};
+    }
+    WorkerIdentityResult GenerateWorkerIdentity() override {
+      return GeneratedWorkerIdentity{Uuid{"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"}};
+    }
+    LaunchOperationIdentityResult GenerateLaunchOperationIdentity() override {
+      return GeneratedLaunchOperationIdentity{StableId{"launch-1"}};
+    }
+    int Generated() const { return jobs_; }
+
+   private:
+    int jobs_ = 0;
+  } identity;
+};
+
 int ReproducesVectors(const Json& vectors, const Ordered& ordered) {
   int result = 0;
   std::size_t replayed = 0;
@@ -178,40 +217,7 @@ int ReproducesVectors(const Json& vectors, const Ordered& ordered) {
   // A Journal written by the orchestrator through SegmentJournal replays to its own snapshots.
   MemoryFileSystem fs;
   {
-    class Clock final : public ClockPort {
-     public:
-      ClockReading Read() override {
-        return {DiagnosticTimestamp{"2026-09-28T01:02:03.456Z"}, MonotonicInstant{++tick_}};
-      }
-
-     private:
-      std::uint64_t tick_ = 0;
-    } clock;
-    class Runner final : public ApplicationRunnerPort {
-     public:
-      void HandoffLaunch(ApplicationLaunchRequest&&) noexcept override {}
-      void HandoffCooperativeStop(ApplicationStopRequest&&) noexcept override {}
-      void HandoffForcedStop(ApplicationStopRequest&&) noexcept override {}
-    } runner;
-    class Session final : public SessionRetainerPort {
-     public:
-      void HandoffRetainSameIdentity(SessionRetainRequest&&) noexcept override {}
-    } session;
-    class Identity final : public IdentitySourcePort {
-     public:
-      JobSessionIdentityResult GenerateJobSessionIdentity() override {
-        return GeneratedJobSessionIdentity{Uuid{Job(++jobs_)}};
-      }
-      WorkerIdentityResult GenerateWorkerIdentity() override {
-        return GeneratedWorkerIdentity{Uuid{"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"}};
-      }
-      LaunchOperationIdentityResult GenerateLaunchOperationIdentity() override {
-        return GeneratedLaunchOperationIdentity{StableId{"launch-1"}};
-      }
-
-     private:
-      int jobs_ = 0;
-    } identity;
+    FakePorts fakes;
     SegmentJournal journal(fs);
     result |= Check(journal.Open(k_dir).ok, "orchestrator journal opens");
     core::internal::Config config;
@@ -222,7 +228,7 @@ int ReproducesVectors(const Json& vectors, const Ordered& ordered) {
     config.handoff_capacity = 4;
     config.ack_capacity = 4;
     config.callback_registration_capacity = 4;
-    config.ports = {&clock, &journal, &runner, &session, &identity};
+    config.ports = {&fakes.clock, &journal, &fakes.runner, &fakes.session, &fakes.identity};
     core::internal::JobOrchestrator orchestrator(config);
     std::vector<Uuid> created;
     for (int i = 0; i < 3; ++i) {
@@ -466,6 +472,182 @@ int SequenceContinuation() {
                   "the admitted and stopping Jobs 1, 2, 3 are unresolved, in creation order");
   return result;
 }
+
+// Job `job` runs to the end from sequence `first`: cancelled while admitted, finalized, terminal,
+// cleaned up. Seven records; the Job is resolved afterwards.
+std::string ClosedJob(std::uint64_t first, int job) {
+  const std::vector<LogicalJobEvent> lifecycle{
+      Created(first, job),
+      Cancelled(first + 1, job),
+      Recorded(first + 2, job, EventType::kSessionRetainRequested, SessionPayload{Uuid{Job(job)}}),
+      Recorded(first + 3, job, EventType::kSessionRetained, SessionPayload{Uuid{Job(job)}}),
+      Recorded(first + 4, job, EventType::kFinalizationCompleted, EmptyPayload{}),
+      Recorded(first + 5, job, EventType::kTerminalOutcomeCommitted,
+               TerminalOutcomePayload{TerminalOutcome::kCancelled}),
+      Recorded(first + 6, job, EventType::kCleanupStatusRecorded,
+               CleanupStatusPayload{CleanupStatus::kCompleted})};
+  std::string bytes;
+  for (const auto& event : lifecycle) bytes += Bytes(event);
+  return bytes;
+}
+
+// An orchestrator seeded from `replayed`, writing to `journal` (already opened on the replayed
+// directory).
+core::internal::Config SeededConfig(const ReplayResult& replayed, SegmentJournal& journal,
+                                    FakePorts& fakes, std::size_t max_jobs) {
+  core::internal::Config config;
+  config.max_jobs = max_jobs;
+  config.normal_capacity = 4;
+  config.trace_capacity = config.total_capacity();
+  config.completion_capacity = config.total_capacity();
+  config.handoff_capacity = 4;
+  config.ack_capacity = max_jobs < 4 ? 4 : max_jobs;
+  config.callback_registration_capacity = 4;
+  config.initial_journal_sequence = replayed.next_sequence;
+  config.ports = {&fakes.clock, &journal, &fakes.runner, &fakes.session, &fakes.identity};
+  config.replayed_jobs = replayed.jobs;
+  config.unresolved_jobs = replayed.unresolved;
+  return config;
+}
+
+bool WriteSide(const MemoryFileSystem& fs, std::size_t from) {
+  for (std::size_t i = from; i < fs.log.size(); ++i) {
+    const auto op = fs.log[i].substr(0, fs.log[i].find(' '));
+    if (op != "list" && op != "read") return true;
+  }
+  return false;
+}
+
+int UnresolvedJobsBlockAdmission() {
+  int result = 0;
+  // Job 101 is closed; Job 102 was admitted and never resolved.
+  auto fs = Journal({{1, ClosedJob(1, 101) + Bytes(Created(8, 102))}});
+  const auto replayed = Replay(fs);
+  result |= Check(replayed.status == ReplayStatus::kReplayed, "replays: " + replayed.detail);
+  const std::vector<Uuid> expected_unresolved{Uuid{Job(102)}};
+  result |= Check(replayed.unresolved == expected_unresolved, "Job 102 alone is unresolved");
+  FakePorts fakes;
+  SegmentJournal journal(fs);
+  result |= Check(journal.Open(k_dir).ok, "journal opens");
+  const auto files_before = fs.files;
+  const auto log_before = fs.log.size();
+  {
+    core::internal::JobOrchestrator orchestrator(SeededConfig(replayed, journal, fakes, 4));
+    result |= Check(!orchestrator.ready(), "readiness is false while Job 102 is unresolved");
+    result |= Check(orchestrator.unresolved() == expected_unresolved,
+                    "the unresolved Job is reported, and only it");
+    for (std::size_t i = 0; i < replayed.jobs.size(); ++i) {
+      const auto snapshot = orchestrator.SnapshotFor(replayed.jobs[i].job_id);
+      result |= Check(snapshot && SnapshotJson(*snapshot) == SnapshotJson(replayed.jobs[i]),
+                      "replayed snapshot " + std::to_string(i) + " is readable");
+    }
+    result |= Check(!orchestrator.SnapshotFor(Uuid{Job(103)}), "an unknown Job stays unknown");
+    using core::internal::IngressCode;
+    auto closed = [&result](const core::internal::IngressResult& admitted, const char* what) {
+      result |=
+          Check(admitted.code == IngressCode::kAdmissionClosed && admitted.ingress_sequence == 0,
+                std::string(what) + " is refused with admission closed and no sequence");
+    };
+    closed(orchestrator.Create(), "Create");
+    result |= Check(fakes.identity.Generated() == 0, "Create generates no identity while closed");
+    closed(orchestrator.SubmitCommand(Command{1, CommandType::kCancel, Uuid{Job(102)}, "op"}),
+           "cancel");
+    closed(orchestrator.SubmitCommand(Command{1, CommandType::kTerminate, Uuid{Job(102)}, "op"}),
+           "terminate (critical)");
+    closed(orchestrator.SubmitCommand(Command{1, CommandType::kTerminate, Uuid{Job(101)}, "op"}),
+           "terminate of a closed Job");
+    closed(orchestrator.SubmitCandidate(
+               RawCandidateEvent{1, Uuid{Job(102)}, "finalization_completed", "{}"}),
+           "candidate");
+    closed(orchestrator.SubmitWorker(RawCandidateEvent{
+               1, Uuid{Job(102)}, "worker_started",
+               R"({"worker_id":"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f","event_sequence":1})"}),
+           "worker event");
+    const auto timer =
+        orchestrator.SubmitTimeout(TimerNotification{Uuid{Job(102)}, TimeoutPhase::kExecution, 1});
+    closed(timer.admitted, "timeout");
+    result |= Check(!timer.discarded, "a timeout is refused, not silently discarded");
+    closed(orchestrator.SubmitShutdown(), "shutdown marker");
+    result |= Check(orchestrator.CopyIngressSequences().empty() &&
+                        orchestrator.journal_attempts() == 0 && !orchestrator.failed(),
+                    "nothing was sequenced or attempted, and the writer did not fail");
+  }
+  result |= Check(fs.files == files_before && !WriteSide(fs, log_before),
+                  "nothing is appended, synced, or created while admission is closed");
+  result |= Check(journal.NextSequence() == 9, "the Journal still continues at 9");
+  return result;
+}
+
+int ResolvedJobsSeedWriter() {
+  int result = 0;
+  auto fs = Journal({{1, ClosedJob(1, 101) + ClosedJob(8, 102)}});
+  const auto replayed = Replay(fs);
+  result |= Check(replayed.status == ReplayStatus::kReplayed && replayed.unresolved.empty() &&
+                      replayed.next_sequence == 15,
+                  "two closed Jobs replay with nothing unresolved: " + replayed.detail);
+  FakePorts fakes;
+  SegmentJournal journal(fs);
+  result |= Check(journal.Open(k_dir).ok, "journal opens");
+  {
+    core::internal::JobOrchestrator orchestrator(SeededConfig(replayed, journal, fakes, 3));
+    result |= Check(orchestrator.ready() && orchestrator.unresolved().empty(),
+                    "a Journal of closed Jobs starts ready");
+    for (const auto& job : replayed.jobs) {
+      const auto snapshot = orchestrator.SnapshotFor(job.job_id);
+      result |= Check(snapshot && SnapshotJson(*snapshot) == SnapshotJson(job),
+                      "seeded Job " + job.job_id.value + " is readable");
+    }
+    // Terminating a seeded closed Job reaches the reducer and is rejected there.
+    const auto terminate =
+        orchestrator.SubmitCommand(Command{1, CommandType::kTerminate, Uuid{Job(101)}, "op"});
+    result |= Check(terminate.code == core::internal::IngressCode::kAdmitted,
+                    "terminate of a seeded Job is admitted");
+    (void)orchestrator.WaitUntil(terminate.ingress_sequence,
+                                 core::internal::WriterPhase::kTurnFinished);
+    const auto rejected = orchestrator.TakeCompletion(terminate.ingress_sequence);
+    result |=
+        Check(rejected && rejected->code == core::internal::Completion::Code::kReducerRejection &&
+                  !orchestrator.failed(),
+              "terminate of a seeded closed Job is a reducer rejection");
+    // The first new record continues at 15; the two seeded Jobs fill two of three slots.
+    const auto first = orchestrator.Create();
+    (void)orchestrator.WaitUntil(first.ingress_sequence,
+                                 core::internal::WriterPhase::kTurnFinished);
+    const auto created = orchestrator.TakeCompletion(first.ingress_sequence);
+    result |= Check(created && created->code == core::internal::Completion::Code::kSuccess &&
+                        journal.NextSequence() == 16,
+                    "the first new record is sequence 15");
+    const auto over = orchestrator.Create();
+    result |= Check(over.code == core::internal::IngressCode::kResidentLimit,
+                    "seeded Jobs count toward max_jobs");
+  }
+  const auto after = Replay(fs);
+  result |= Check(after.status == ReplayStatus::kReplayed && after.jobs.size() == 3 &&
+                      after.next_sequence == 16,
+                  "the continued Journal replays: " + after.detail);
+  // Invalid seeds are refused at construction.
+  auto refused = [&](const core::internal::Config& config, const char* what) {
+    bool threw = false;
+    try {
+      core::internal::JobOrchestrator orchestrator(config);
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    result |= Check(threw, std::string(what) + " is refused at construction");
+  };
+  auto too_many = SeededConfig(replayed, journal, fakes, 1);
+  refused(too_many, "more seeded Jobs than max_jobs");
+  auto duplicate = SeededConfig(replayed, journal, fakes, 3);
+  duplicate.replayed_jobs.push_back(replayed.jobs[0]);
+  refused(duplicate, "a duplicate seeded Job");
+  auto absent = SeededConfig(replayed, journal, fakes, 3);
+  absent.replayed_jobs[0].entity_exists = false;
+  refused(absent, "a seeded snapshot that does not exist");
+  auto unknown = SeededConfig(replayed, journal, fakes, 3);
+  unknown.unresolved_jobs.push_back(Uuid{Job(999)});
+  refused(unknown, "an unresolved ID that was not seeded");
+  return result;
+}
 }  // namespace
 }  // namespace sitometron::test
 
@@ -488,6 +670,8 @@ int main(int argc, char** argv) try {
   if (check == "journal_startup_empty_active_segment") return EmptyActiveSegment();
   if (check == "journal_replay_dispatches_no_effects") return DispatchesNoEffects();
   if (check == "journal_replay_sequence_continuation") return SequenceContinuation();
+  if (check == "journal_unresolved_jobs_block_admission") return UnresolvedJobsBlockAdmission();
+  if (check == "journal_resolved_jobs_seed_writer") return ResolvedJobsSeedWriter();
   std::cerr << "unknown check " << check << '\n';
   return 2;
 } catch (const std::exception& error) {

@@ -30,7 +30,7 @@ build/dev-linux/spike/sitometron_spike --listen 127.0.0.1:8080 \
 
 Options: `--listen HOST:PORT` (loopback addresses only; port `0` picks an ephemeral port and prints
 it), `--journal DIR` (the production `SegmentJournal` from `sitometron_journal`, Issue #59: segment
-files, exclusive lock, and a restart that continues the logical sequence after the last record),
+files and exclusive lock; at startup every segment is validated and replayed, Issues #61 and #64),
 `--workdir DIR` (default working directory for children), `--max-jobs N` (default 32, see
 [Findings](#findings-for-phase-0b12)), `--trace-capacity N` (default 4096).
 
@@ -50,6 +50,21 @@ child's pid and exit status, every committed event type so far (`steps`), and th
 error if any. Unknown ids give `404`; malformed bodies give `400`. `SIGINT`/`SIGTERM` stop the
 listener, send `SIGTERM` to live children, let each Job's driver finish its record, and seal the
 writer through its shutdown marker.
+
+After a restart every replayed Job is listed with `"recovered": true`. If the previous run was
+killed while a Job was still open, the startup line reports it (`unresolved job <id>: admission
+closed`), `GET /healthz` returns `503` with `"ready":false` and the unresolved IDs, `POST /jobs`
+returns `503`, and nothing is appended to the Journal:
+
+```sh
+curl -s -X POST localhost:8080/jobs -d '{"executable":"/bin/sh","args":["-c","sleep 30"]}'
+kill -9 <daemon pid>
+build/dev-linux/spike/sitometron_spike --listen 127.0.0.1:8080 --journal /tmp/sitometron-journal
+# unresolved job <id>: admission closed
+# ... (next sequence: N, replayed jobs: 1, unresolved: 1)
+curl -s localhost:8080/healthz   # 503 {"ready":false,"status":"not_ready","unresolved":["<id>"],...}
+curl -s localhost:8080/jobs/<id> # {"recovered":true,"state":"running","terminal":false,...}
+```
 
 Smoke test (needs `curl`): `ctest --test-dir build/dev-linux -L spike --output-on-failure`.
 
@@ -82,8 +97,8 @@ a failed outcome.
 Native Windows, TLS, authentication, request limits beyond 64 KiB, Admission, Application Registry,
 ResourceProfile/topology, the Worker protocol (`worker_running` is asserted at spawn), cancel and
 terminate (the stop ports are no-ops), timeouts (no timer adapter exists, so a hung child never
-times out), Journal replay/recovery/pruning (on restart the writer only reads the last record of the highest
-segment to continue the sequence; earlier Jobs are not replayed), Sitos, Artifact
+times out), recovery of Jobs left unresolved by a crash (they are replayed and shown, but the daemon
+then stays not ready with admission closed; Phase 2 owns their resolution), Journal pruning, Sitos, Artifact
 REST, Quill logging, packaging, release. Bundle provenance is a placeholder digest.
 
 ## Findings for Phase 0B/1/2
@@ -117,9 +132,10 @@ authorities, not decisions.
 7. **Replay is feasible with the pure reducer.** Because `Apply` is pure, restart recovery can fold
    the Journal file through the reducer to rebuild snapshots. The skeleton does not do it; it only
    reads the last sequence so that new records continue the numbering, and Jobs from a previous
-   run are invisible to the API after a restart. `ReplayJournal` (Issue #61) now implements the
-   fold, but the spike does not call it yet and still seeds its writer only with the next sequence;
-   adopting it belongs to the writer-seeding increment.
+   run are invisible to the API after a restart. **Resolved** by `ReplayJournal` (Issue #61) and
+   writer seeding (Issue #64): the spike replays every segment at startup, lists replayed Jobs as
+   `"recovered": true`, and after `kill -9` during a Job answers `/healthz` and `POST /jobs` with
+   503 for the whole run (resolving such a Job is Phase 2 scope, Issue #35).
 8. **Per-record `fsync` costs ~4–6 ms on WSL/ext4** (see `recorded_at` deltas), so one Job spends
    60–80 ms in durability alone. Group commit or a dedicated Journal thread is a Phase 0B topic.
 9. **Two facts, one process.** For a plain child process, "the Worker completed" and "the process

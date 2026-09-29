@@ -60,8 +60,8 @@ adverse/race qualification are implemented. Phase 0B is active under
 [Gate #50](https://github.com/tetsuh/sitometron/issues/50): Accepted
 [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) makes the physical JobJournal
 contract normative. The record codec (Issue #57), the durable segment writer (Issue #59), and
-startup validation and replay (Issue #61) are implemented; starting the writer from the replayed
-state and pruning are Planned. A non-normative Linux walking skeleton under
+startup validation and replay (Issue #61), and starting the writer from the replayed state
+(Issue #64) are implemented; pruning is Planned. A non-normative Linux walking skeleton under
 `spike/` exercises the core end to end and is not a product component. Production adapters remain
 Planned under their owners in the [Contract Registry](08_contract_registry.md). No production API or
 compatibility guarantee exists.

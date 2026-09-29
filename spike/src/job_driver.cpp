@@ -49,8 +49,10 @@ JobDriver::JobDriver(DriverConfig config, journal::SegmentJournal& journal)
     : config_(std::move(config)), journal_(journal) {
   core::internal::Config orchestration;
   orchestration.max_jobs = config_.max_jobs;
-  // Continue the logical sequence after the last durable record; no replay yet (README finding 7).
+  // Continue after the last durable record, with every replayed Job resident (OPS-003, OPS-004).
   orchestration.initial_journal_sequence = journal_.NextSequence();
+  orchestration.replayed_jobs = config_.replayed_jobs;
+  orchestration.unresolved_jobs = config_.unresolved_jobs;
   orchestration.normal_capacity = 64;
   orchestration.trace_capacity = config_.trace_capacity;
   // The writer validates its bounds: completions and trace must cover the whole FIFO
@@ -67,6 +69,16 @@ JobDriver::JobDriver(DriverConfig config, journal::SegmentJournal& journal)
   orchestration.ports.session = &session_;
   orchestration.ports.identity = &identity_;
   orchestrator_ = std::make_unique<core::internal::JobOrchestrator>(orchestration);
+  for (const auto& snapshot : config_.replayed_jobs) {
+    JobRecord record;
+    record.job_id = snapshot.job_id.value;
+    record.recovered = true;
+    if (snapshot.worker_id) record.worker_id = snapshot.worker_id->value;
+    if (snapshot.launch_operation_id)
+      record.launch_operation_id = snapshot.launch_operation_id->value;
+    jobs_.emplace(record.job_id, record);
+    order_.push_back(record.job_id);
+  }
 }
 
 JobDriver::~JobDriver() { Shutdown(); }
@@ -81,6 +93,10 @@ std::optional<std::string> JobDriver::Submit(LaunchSpec spec, std::string& error
       error = "daemon is shutting down";
       return std::nullopt;
     }
+  }
+  if (!orchestrator_->unresolved().empty()) {
+    error = "admission closed: unresolved Jobs from a previous run";
+    return std::nullopt;
   }
   const auto admitted = orchestrator_->Create();
   const auto step = Await(admitted, "job_created");
@@ -272,10 +288,15 @@ void JobDriver::Run(std::string job_id) {
 json JobDriver::Describe(const std::string& job_id) const {
   const auto record = Get(job_id);
   if (!record) return nullptr;
+  // A recovered Job has only its replayed snapshot: the launch request is not journaled.
+  const auto known = [&record](const auto& value) {
+    return record->recovered ? json(nullptr) : json(value);
+  };
   json out{{"job_id", record->job_id},
-           {"created_at", record->created_at},
-           {"executable", record->spec.executable},
-           {"arguments", record->spec.arguments},
+           {"recovered", record->recovered},
+           {"created_at", known(record->created_at)},
+           {"executable", known(record->spec.executable)},
+           {"arguments", known(record->spec.arguments)},
            {"worker_id", record->worker_id ? json(*record->worker_id) : json(nullptr)},
            {"launch_operation_id",
             record->launch_operation_id ? json(*record->launch_operation_id) : json(nullptr)},
@@ -310,9 +331,20 @@ json JobDriver::List() const {
   for (const auto& id : ids) {
     const auto entry = Describe(id);
     if (!entry.is_null())
-      out.push_back({{"job_id", id}, {"state", entry["state"]}, {"terminal", entry["terminal"]}});
+      out.push_back({{"job_id", id},
+                     {"recovered", entry["recovered"]},
+                     {"state", entry["state"]},
+                     {"terminal", entry["terminal"]}});
   }
   return out;
+}
+
+bool JobDriver::Ready() const { return orchestrator_->ready(); }
+
+std::vector<std::string> JobDriver::Unresolved() const {
+  std::vector<std::string> ids;
+  for (const auto& id : orchestrator_->unresolved()) ids.push_back(id.value);
+  return ids;
 }
 
 json JobDriver::Stats() const {

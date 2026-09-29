@@ -164,6 +164,33 @@ struct JobOrchestrator::Impl {
         resident.prepared_trace[bank].reserve(config.trace_capacity);
       }
     }
+    Seed();
+  }
+
+  // ADR-0006 Section 6: each replayed Job occupies one resident with its replayed snapshot. Only
+  // the terminate gate is registered; event sources of the previous process do not exist here.
+  // Replay dispatched nothing, so no timer, effect, trace record, or acknowledgment is created.
+  void Seed() {
+    const auto& jobs = config.replayed_jobs;
+    if (jobs.size() > residents.size()) throw std::bad_variant_access();
+    for (std::size_t i = 0; i != jobs.size(); ++i) {
+      if (!jobs[i].entity_exists) throw std::bad_variant_access();
+      for (std::size_t j = 0; j != i; ++j)
+        if (jobs[j].job_id == jobs[i].job_id) throw std::bad_variant_access();
+      auto& resident = residents[i];
+      resident.id = jobs[i].job_id;
+      resident.banks[0] = ApplyResult{jobs[i], {}, std::nullopt};
+      resident.banks[1] = resident.banks[0];
+      resident.exists = true;
+      RegisterGateLocked(resident, GateKind::kTerminate);
+    }
+    for (const auto& id : config.unresolved_jobs) {
+      if (Find(id) == nullptr) throw std::bad_variant_access();
+    }
+    if (failed) throw std::bad_variant_access();
+    // Unresolved Jobs cannot be resumed or concluded by this process (ADR-0002), so it starts
+    // with readiness false and admission closed and appends nothing.
+    recovery_closed = !config.unresolved_jobs.empty();
   }
 
   Config config;
@@ -198,6 +225,8 @@ struct JobOrchestrator::Impl {
   std::uint64_t next_ingress = config.initial_ingress_sequence;
   std::uint64_t next_journal = config.initial_journal_sequence;
   bool failed = false;
+  // Set once at construction when a replayed Job is unresolved; never cleared in this process.
+  bool recovery_closed = false;
   Mode mode = Mode::kRunning;
   bool marker_processed = false;
   bool creation_generation_in_progress = false;
@@ -783,6 +812,7 @@ struct JobOrchestrator::Impl {
     }
     (void)identity_ready;
     if (failed) return ResultLocked(IngressCode::kServiceFailed);
+    if (recovery_closed) return ResultLocked(IngressCode::kAdmissionClosed);
     if (mode == Mode::kSealed || mode == Mode::kStopped)
       return ResultLocked(IngressCode::kAdmissionClosed);
 
@@ -1477,7 +1507,7 @@ struct JobOrchestrator::Impl {
     Checkpoint(entry.sequence, WriterPhase::kTurnFinished);
   }
 };
-JobOrchestrator::JobOrchestrator(Config config) : impl_(std::make_unique<Impl>(config)) {
+JobOrchestrator::JobOrchestrator(const Config& config) : impl_(std::make_unique<Impl>(config)) {
   // Callback controls are fully allocated before the writer or any producer is exposed.
   for (auto& control : impl_->callbacks) {
     control = std::make_shared<CallbackHandle::Control>();
@@ -1713,7 +1743,7 @@ IngressResult JobOrchestrator::Create() {
   {
     std::lock_guard lock(impl_->mutex);
     if (impl_->failed) return impl_->ResultLocked(IngressCode::kServiceFailed);
-    if (impl_->mode != Impl::Mode::kRunning)
+    if (impl_->mode != Impl::Mode::kRunning || impl_->recovery_closed)
       return impl_->ResultLocked(IngressCode::kAdmissionClosed);
     if (impl_->creation_generation_in_progress)
       return impl_->ResultLocked(IngressCode::kAlreadyPending);
@@ -1846,6 +1876,8 @@ JobOrchestrator::TimerSubmitResult JobOrchestrator::SubmitTimeout(
       std::unique_lock lock(impl_->mutex);
       if (impl_->failed)
         return TimerSubmitResult{false, impl_->ResultLocked(IngressCode::kServiceFailed)};
+      if (impl_->recovery_closed)
+        return TimerSubmitResult{false, impl_->ResultLocked(IngressCode::kAdmissionClosed)};
       const auto* resident = impl_->Find(notification.job_id);
       if (resident == nullptr) {
         TimerState unknown;
@@ -1926,6 +1958,7 @@ IngressResult JobOrchestrator::SubmitShutdown() {
   {
     std::lock_guard lock(impl_->mutex);
     if (impl_->failed) return impl_->ResultLocked(IngressCode::kServiceFailed);
+    if (impl_->recovery_closed) return impl_->ResultLocked(IngressCode::kAdmissionClosed);
     if (impl_->mode == Impl::Mode::kQuiescing && impl_->shutdown_gate_pending)
       return impl_->ResultLocked(IngressCode::kCoalescedPending, impl_->shutdown_sequence);
     if (impl_->mode != Impl::Mode::kRunning)
@@ -2357,6 +2390,11 @@ std::optional<Completion> JobOrchestrator::TakeCompletion(std::uint64_t s) {
   }
   return std::nullopt;
 }
+bool JobOrchestrator::ready() const noexcept {
+  std::lock_guard lock(impl_->mutex);
+  return !impl_->failed && !impl_->recovery_closed && impl_->mode == Impl::Mode::kRunning;
+}
+std::vector<Uuid> JobOrchestrator::unresolved() const { return impl_->config.unresolved_jobs; }
 std::optional<Snapshot> JobOrchestrator::SnapshotFor(const Uuid& id) const {
   std::lock_guard lock(impl_->mutex);
   if (auto* r = impl_->Find(id)) return r->banks[r->active].snapshot;

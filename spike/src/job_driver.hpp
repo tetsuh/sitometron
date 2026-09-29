@@ -27,6 +27,10 @@ struct DriverConfig {
   std::size_t max_jobs = 32;          // resident slots: also the lifetime Job count (see README)
   std::size_t trace_capacity = 4096;  // writer trace + ingress log bound (see README)
   std::string working_directory;
+  // Replayed at startup (ADR-0006 Section 6): snapshots in creation order, and the unresolved Jobs
+  // that keep admission closed for this run.
+  std::vector<core::Snapshot> replayed_jobs;
+  std::vector<core::Uuid> unresolved_jobs;
 };
 
 struct JobRecord {
@@ -39,6 +43,7 @@ struct JobRecord {
   std::optional<ExitStatus> exit;
   std::string error;               // first driver-side failure, empty on success
   std::vector<std::string> steps;  // committed event types in order, for the demo
+  bool recovered = false;          // replayed from the Journal of a previous run
 };
 
 // The composition root's Job sequencer. One thread per Job drives the lifecycle candidates that
@@ -57,6 +62,9 @@ class JobDriver {
   [[nodiscard]] nlohmann::json Describe(const std::string& job_id) const;
   [[nodiscard]] nlohmann::json List() const;
   [[nodiscard]] nlohmann::json Stats() const;
+  // False while a replayed Job is unresolved (admission closed) or after a writer failure.
+  [[nodiscard]] bool Ready() const;
+  [[nodiscard]] std::vector<std::string> Unresolved() const;
 
   // Signals live children, drains driver threads, and seals the writer.
   void Shutdown();
