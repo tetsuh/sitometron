@@ -196,6 +196,10 @@ struct JobOrchestrator::Impl {
   Config config;
   // The ingress mutex is the sole synchronization boundary for admission,
   // fixed-slot ownership, resident metadata, and reader-visible observations.
+  // Lock order: JobOrchestrator::mutex_ (scheduler), then this mutex, then a
+  // CallbackHandle::Control mutex. WaitUntil takes this mutex while holding the
+  // scheduler mutex; RetainedCallback and TrySealFailure take a control mutex
+  // while holding this one. No path acquires them in the reverse order.
   mutable std::mutex mutex;
   std::condition_variable cv;
   std::vector<Entry> fifo;
@@ -1944,8 +1948,10 @@ JobOrchestrator::TimerSubmitResult JobOrchestrator::SubmitTimeout(
       return TimerSubmitResult{true, {}};
     }
     const auto admitted = impl_->Candidate(std::move(candidate), std::nullopt, &lock);
-    if (admitted.code == IngressCode::kAdmitted) Notify();
-    return TimerSubmitResult{false, admitted};
+    // Schedule the writer only after releasing ingress ownership, as KickIf does for every other
+    // producer: the scheduler mutex is never acquired while the ingress mutex is held.
+    lock.unlock();
+    return TimerSubmitResult{false, KickIf(this, admitted)};
   } catch (...) {
     LatchReadinessFailure();
     return TimerSubmitResult{false, impl_->Result(IngressCode::kServiceFailed)};
