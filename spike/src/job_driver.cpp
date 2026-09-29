@@ -331,7 +331,10 @@ json JobDriver::List() const {
   for (const auto& id : ids) {
     const auto entry = Describe(id);
     if (!entry.is_null())
-      out.push_back({{"job_id", id}, {"state", entry["state"]}, {"terminal", entry["terminal"]}});
+      out.push_back({{"job_id", id},
+                     {"recovered", entry["recovered"]},
+                     {"state", entry["state"]},
+                     {"terminal", entry["terminal"]}});
   }
   return out;
 }

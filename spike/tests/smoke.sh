@@ -169,9 +169,13 @@ grep -q 'next sequence: 64, replayed jobs: 5, unresolved: 0' "$log"
 # Every Job of the previous run was closed, so the restarted daemon is ready.
 curl -fsS "$base/healthz" | grep -q '"ready":true'
 curl -fsS "$base/jobs" | grep -o '"job_id"' | wc -l | grep -qx 5
+curl -fsS "$base/jobs" | grep -o '"recovered":true' | wc -l | grep -qx 5
 again=$(curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' -d '{"executable":"/bin/true"}')
 again_id=$(printf '%s' "$again" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
 wait_terminal "$again_id" >/dev/null
+listing=$(curl -fsS "$base/jobs")
+printf '%s' "$listing" | grep -q "{\"job_id\":\"$again_id\",\"recovered\":false," || { echo "new Job not listed as fresh: $listing"; exit 1; }
+printf '%s' "$listing" | grep -o '"recovered":true' | wc -l | grep -qx 5 || { echo "expected 5 recovered Jobs: $listing"; exit 1; }
 kill -TERM "$daemon"
 wait "$daemon"
 lines=$(records | wc -l)
@@ -244,7 +248,8 @@ printf '%s' "$health" | grep -q "\"unresolved\":\[\"$running_id\"\]" || { echo "
 recovered=$(curl -fsS "$base/jobs/$running_id")
 printf '%s' "$recovered" | grep -q '"recovered":true' || { echo "not recovered: $recovered"; exit 1; }
 printf '%s' "$recovered" | grep -q '"terminal":false' || { echo "expected non-terminal: $recovered"; exit 1; }
-curl -fsS "$base/jobs" | grep -q "\"job_id\":\"$running_id\"" || { echo "listing lacks $running_id"; exit 1; }
+listing=$(curl -fsS "$base/jobs")
+printf '%s' "$listing" | grep -q "{\"job_id\":\"$running_id\",\"recovered\":true," || { echo "listing lacks recovered $running_id: $listing"; exit 1; }
 curl -sS -X POST "$base/jobs" -H 'Content-Type: application/json' -d '{"executable":"/bin/true"}' \
   -o /dev/null -w '%{http_code}\n' | grep -qx 503
 kill -TERM "$daemon"
