@@ -19,6 +19,7 @@
 #include "http_server.hpp"
 #include "job_driver.hpp"
 #include "sitometron/core/version.hpp"
+#include "sitometron/journal/replay.hpp"
 
 namespace {
 
@@ -109,8 +110,15 @@ HttpResponse Json(int status, const json& body) { return {status, body.dump()}; 
 
 HttpResponse Route(sitometron::spike::JobDriver& driver, const HttpRequest& request) {
   const auto& target = request.target;
-  if (target == "/healthz" && request.method == "GET")
-    return Json(200, {{"status", "ok"}, {"version", sitometron::Version()}});
+  if (target == "/healthz" && request.method == "GET") {
+    if (!driver.Ready()) {
+      return Json(503, {{"status", "not_ready"},
+                        {"ready", false},
+                        {"unresolved", driver.Unresolved()},
+                        {"version", sitometron::Version()}});
+    }
+    return Json(200, {{"status", "ok"}, {"ready", true}, {"version", sitometron::Version()}});
+  }
   if (target == "/stats" && request.method == "GET") return Json(200, driver.Stats());
   if (target == "/jobs") {
     if (request.method == "GET") return Json(200, driver.List());
@@ -170,7 +178,21 @@ int main(int argc, char** argv) {
     std::cerr << "error: cannot open journal " << options.journal << ": " << opened.detail << '\n';
     return 1;
   }
+  // Validate and replay every segment before the writer starts (OPS-002, OPS-003). Replay only
+  // reads; a refusal leaves the Journal untouched.
+  const auto replayed =
+      sitometron::journal::ReplayJournal(sitometron::journal::SystemFileSystem(), options.journal,
+                                         sitometron::journal::ReplayOptions{options.max_jobs});
+  if (replayed.status != sitometron::journal::ReplayStatus::kReplayed) {
+    std::cerr << "error: cannot replay journal " << options.journal << ": " << replayed.detail
+              << '\n';
+    return 1;
+  }
+  for (const auto& id : replayed.unresolved)
+    std::cout << "unresolved job " << id.value << ": admission closed\n";
   sitometron::spike::DriverConfig config;
+  config.replayed_jobs = replayed.jobs;
+  config.unresolved_jobs = replayed.unresolved;
   config.max_jobs = options.max_jobs;
   config.trace_capacity = options.trace_capacity;
   config.working_directory = options.workdir;
@@ -196,7 +218,9 @@ int main(int argc, char** argv) {
 
   std::cout << "sitometron_spike " << sitometron::Version() << " listening on http://"
             << options.host << ':' << server.port() << " journal=" << options.journal
-            << " (next sequence: " << opened.next_sequence << ")\n"
+            << " (next sequence: " << opened.next_sequence
+            << ", replayed jobs: " << replayed.jobs.size()
+            << ", unresolved: " << replayed.unresolved.size() << ")\n"
             << std::flush;
 
   for (;;) {

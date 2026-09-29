@@ -165,7 +165,10 @@ for _ in $(seq 1 100); do
 done
 [[ -n "$port" ]] || { echo "restarted daemon did not report a port"; cat "$log"; exit 1; }
 base="http://127.0.0.1:$port"
-grep -q 'next sequence: 64' "$log"
+grep -q 'next sequence: 64, replayed jobs: 5, unresolved: 0' "$log"
+# Every Job of the previous run was closed, so the restarted daemon is ready.
+curl -fsS "$base/healthz" | grep -q '"ready":true'
+curl -fsS "$base/jobs" | grep -o '"job_id"' | wc -l | grep -qx 5
 again=$(curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' -d '{"executable":"/bin/true"}')
 again_id=$(printf '%s' "$again" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
 wait_terminal "$again_id" >/dev/null
@@ -196,6 +199,58 @@ done
 if kill -0 "$daemon" 2>/dev/null; then echo "daemon did not exit after immediate shutdown"; kill -KILL "$daemon"; exit 1; fi
 wait "$daemon" || true
 grep -q 'shutting down' "$log"
+
+# kill -9 while a Job runs: after restart the Job is visible from the Journal alone, it is reported
+# unresolved, readiness is false, admission is closed, and the Journal is not modified.
+crash="$scratch/crash"
+start_daemon() {
+  "$binary" --listen 127.0.0.1:0 --journal "$crash" --workdir "$scratch" >"$log" 2>&1 &
+  daemon=$!
+  port=''
+  for _ in $(seq 1 100); do
+    port=$(sed -n 's/.*listening on http:\/\/127\.0\.0\.1:\([0-9]*\).*/\1/p' "$log" | head -n1)
+    [[ -n "$port" ]] && break
+    read -r -t 0.1 <> <(:) || true
+  done
+  [[ -n "$port" ]] || { echo "crash daemon did not report a port"; cat "$log"; exit 1; }
+  base="http://127.0.0.1:$port"
+}
+start_daemon
+running=$(curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' \
+  -d '{"executable":"/bin/sh","args":["-c","sleep 30"]}')
+running_id=$(printf '%s' "$running" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+child=''
+for _ in $(seq 1 200); do
+  body=$(curl -fsS "$base/jobs/$running_id")
+  if printf '%s' "$body" | grep -q '"worker_running"'; then
+    child=$(printf '%s' "$body" | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
+    break
+  fi
+  read -r -t 0.05 <> <(:) || true
+done
+[[ -n "$child" ]] || { echo "crash job did not start running: $body"; exit 1; }
+kill -KILL "$daemon"
+wait "$daemon" 2>/dev/null || true
+kill -KILL "$child" 2>/dev/null || true
+crash_files=$(ls "$crash")
+crash_bytes=$(cat "$crash"/journal-*.ndjson | cksum)
+
+start_daemon
+grep -q "unresolved job $running_id: admission closed" "$log" || { echo "unresolved job not reported"; cat "$log"; exit 1; }
+grep -q 'replayed jobs: 1, unresolved: 1' "$log"
+health=$(curl -sS "$base/healthz" -w '\n%{http_code}')
+printf '%s' "$health" | tail -n1 | grep -qx 503 || { echo "expected 503 healthz: $health"; exit 1; }
+printf '%s' "$health" | grep -q "\"unresolved\":\[\"$running_id\"\]" || { echo "healthz lacks $running_id: $health"; exit 1; }
+recovered=$(curl -fsS "$base/jobs/$running_id")
+printf '%s' "$recovered" | grep -q '"recovered":true' || { echo "not recovered: $recovered"; exit 1; }
+printf '%s' "$recovered" | grep -q '"terminal":false' || { echo "expected non-terminal: $recovered"; exit 1; }
+curl -fsS "$base/jobs" | grep -q "\"job_id\":\"$running_id\"" || { echo "listing lacks $running_id"; exit 1; }
+curl -sS -X POST "$base/jobs" -H 'Content-Type: application/json' -d '{"executable":"/bin/true"}' \
+  -o /dev/null -w '%{http_code}\n' | grep -qx 503
+kill -TERM "$daemon"
+wait "$daemon"
+[[ "$(ls "$crash")" == "$crash_files" ]] || { echo "journal files changed: $(ls "$crash")"; exit 1; }
+[[ "$(cat "$crash"/journal-*.ndjson | cksum)" == "$crash_bytes" ]] || { echo "journal bytes changed"; exit 1; }
 trap - EXIT
 echo "smoke ok: $lines journal lines, port $port"
 exit 0
