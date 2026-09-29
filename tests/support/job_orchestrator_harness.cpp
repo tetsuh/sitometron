@@ -473,7 +473,10 @@ core::internal::Config Convert(const Config& value, PortBundle& ports) {
                                 value.callback_registration_capacity,
                                 value.initial_ingress_sequence,
                                 value.initial_journal_sequence,
-                                value.commit_result};
+                                value.commit_result,
+                                {},
+                                {},
+                                {}};
   result.ports = {&ports.clock,    &ports.journal, &ports.runner,    &ports.session,
                   &ports.identity, &ports,         &SetJournalResult};
   return result;

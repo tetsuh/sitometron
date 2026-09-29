@@ -306,7 +306,9 @@ if(SITOMETRON_BUILD_TESTS)
       journal_startup_empty_active_segment
       journal_replay_reproduces_vectors
       journal_replay_dispatches_no_effects
-      journal_replay_sequence_continuation)
+      journal_replay_sequence_continuation
+      journal_unresolved_jobs_block_admission
+      journal_resolved_jobs_seed_writer)
     add_test(
       NAME ${_journal_replay_check}
       COMMAND sitometron_journal_replay_tests

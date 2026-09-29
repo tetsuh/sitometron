@@ -98,6 +98,11 @@ struct Config {
   std::uint64_t initial_journal_sequence = 1;
   LogicalCommitResult commit_result = LogicalCommitResult::kCommitted;
   Ports ports{};
+  // Startup seed from the replayed JobJournal (ADR-0006 Section 6): replayed snapshots in creation
+  // order, and the IDs of the replayed Jobs that are unresolved. Any unresolved Job starts the
+  // writer with readiness false and admission closed.
+  std::vector<Snapshot> replayed_jobs;
+  std::vector<Uuid> unresolved_jobs;
   constexpr std::size_t critical_reserve() const noexcept {
     constexpr auto m = std::numeric_limits<std::size_t>::max();
     return max_jobs > (m - 1U) / 9U ? 0U : 9U * max_jobs + 1U;
@@ -157,6 +162,9 @@ class JobOrchestrator final {
   bool WaitUntil(std::uint64_t, WriterPhase);
   bool Release(std::uint64_t, WriterPhase);
   bool failed() const noexcept;
+  // False while a replayed Job is unresolved, after a failure, and once shutdown begins.
+  bool ready() const noexcept;
+  std::vector<Uuid> unresolved() const;
   bool sealed() const noexcept;
   bool stopped() const noexcept;
   std::optional<Uuid> LastCreated() const;

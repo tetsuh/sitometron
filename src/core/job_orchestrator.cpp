@@ -2357,6 +2357,8 @@ std::optional<Completion> JobOrchestrator::TakeCompletion(std::uint64_t s) {
   }
   return std::nullopt;
 }
+bool JobOrchestrator::ready() const noexcept { return !failed(); }
+std::vector<Uuid> JobOrchestrator::unresolved() const { return {}; }
 std::optional<Snapshot> JobOrchestrator::SnapshotFor(const Uuid& id) const {
   std::lock_guard lock(impl_->mutex);
   if (auto* r = impl_->Find(id)) return r->banks[r->active].snapshot;
