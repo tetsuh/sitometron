@@ -132,6 +132,7 @@ struct FakePorts {
     LaunchOperationIdentityResult GenerateLaunchOperationIdentity() override {
       return GeneratedLaunchOperationIdentity{StableId{"launch-1"}};
     }
+    int generated() const { return jobs_; }
 
    private:
     int jobs_ = 0;
@@ -548,6 +549,7 @@ int UnresolvedJobsBlockAdmission() {
                 std::string(what) + " is refused with admission closed and no sequence");
     };
     closed(orchestrator.Create(), "Create");
+    result |= Check(fakes.identity.generated() == 0, "Create generates no identity while closed");
     closed(orchestrator.SubmitCommand(Command{1, CommandType::kCancel, Uuid{Job(102)}, "op"}),
            "cancel");
     closed(orchestrator.SubmitCommand(Command{1, CommandType::kTerminate, Uuid{Job(102)}, "op"}),
