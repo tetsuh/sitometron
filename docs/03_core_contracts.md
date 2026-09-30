@@ -5,8 +5,8 @@ dependency-minimal pure reducer, and Issue #12 implements complete logical Journ
 construction plus the ADR-0003 single-writer logical-commit orchestration. Accepted
 [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under Issue #51 makes
 physical serialization, append/flush/disk-sync durability, replay, recovery, and pruning normative.
-Issues #57, #59, #61, and #64 implement serialization, durable appends, startup validation, replay,
-and starting the writer from the replayed state; pruning remains Planned for Phase 0B.
+Issues #57, #59, #61, #64, and #69 implement serialization, durable appends, startup validation,
+replay, starting the writer from the replayed state, and offline quarantine and pruning.
 
 ## 1. Source files
 
@@ -44,7 +44,8 @@ ADR-0002 explains the decision and authority boundary. The JSON contract defines
 Physical JobJournal serialization, durable appends, startup validation, and replay are implemented
 in `sitometron_journal`. The single writer starts from the replayed snapshots and next sequence, and
 with any unresolved Job starts with readiness false and every ingress refused as admission closed
-(Issue #64). Pruning remains Phase 0B scope under Issue #51.
+(Issue #64). Offline maintenance moves a torn tail into a quarantine file and a closed prefix of
+sealed segments into `archive/`, never touching a complete record or a sequence (Issue #69).
 
 ## 2. Lifecycle model
 
