@@ -221,6 +221,8 @@ class JobOrchestrator final {
   void LatchFailureFromCallback() noexcept;
   void TrySealFailure(bool allow_one_invocation = false) noexcept;
   std::unique_ptr<Impl> impl_;
+  // Scheduler mutex. It precedes the ingress mutex (Impl::mutex) in the lock order; producers
+  // schedule the writer only after releasing ingress ownership.
   mutable std::mutex mutex_;
   std::condition_variable wake_;
   std::condition_variable idle_;
