@@ -283,11 +283,12 @@ class WindowsMaintenanceFileSystem final : public WindowsFiles<MaintenanceFileSy
                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return FromLastError();
     const auto cut = [handle, size]() {
-      LARGE_INTEGER current = {};
+      LARGE_INTEGER current;
+      current.QuadPart = 0;  // the member GetFileSizeEx fills and this function reads
       if (!GetFileSizeEx(handle, &current)) return FromLastError();
       // A cut never extends the file.
       if (static_cast<std::uint64_t>(current.QuadPart) < size) return IoError::kOther;
-      LARGE_INTEGER position = {};
+      LARGE_INTEGER position;
       position.QuadPart = static_cast<LONGLONG>(size);
       if (!SetFilePointerEx(handle, position, nullptr, FILE_BEGIN) || !SetEndOfFile(handle)) {
         return FromLastError();
@@ -300,9 +301,11 @@ class WindowsMaintenanceFileSystem final : public WindowsFiles<MaintenanceFileSy
   }
   IoError RenameNoReplace(const std::string& from, const std::string& to) override {
     const auto source = std::filesystem::path(from).wstring();
-    const auto target = std::filesystem::path(to).wstring();
     // Without MOVEFILE_REPLACE_EXISTING an existing target fails with ERROR_ALREADY_EXISTS.
-    if (MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) return IoError::kNone;
+    if (const auto target = std::filesystem::path(to).wstring();
+        MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
+      return IoError::kNone;
+    }
     return FromLastError();
   }
 };

@@ -65,7 +65,7 @@ class OpenFile {
   FileHandle handle_;
 };
 
-std::string Failed(std::string_view step, const std::string& path) {
+std::string Failed(std::string_view step, std::string_view path) {
   std::string detail = "journal_maintenance_failed: ";
   detail.append(step).append(" ").append(path);
   return detail;
@@ -216,8 +216,8 @@ class Prune {
       return Finish(MaintenanceStatus::kPlanned, Summary("journal_prune_planned"));
     }
     if (auto failure = Archive()) return *failure;
-    const auto after = ReplayAll(file_system_, directory_);
-    if (after.status != ReplayStatus::kReplayed || after.next_sequence != result_.next_sequence ||
+    if (const auto after = ReplayAll(file_system_, directory_);
+        after.status != ReplayStatus::kReplayed || after.next_sequence != result_.next_sequence ||
         after.records + result_.records != replayed.records) {
       return Finish(MaintenanceStatus::kFailed,
                     Failed("verify", after.detail.empty() ? directory_ : after.detail));
@@ -228,6 +228,12 @@ class Prune {
   PruneResult Finish(MaintenanceStatus status, std::string detail) {
     result_.status = status;
     result_.detail = std::move(detail);
+    if (status == MaintenanceStatus::kRefused || status == MaintenanceStatus::kFailed) {
+      // Nothing is reported as moved or planned; a failed run is continued by running again.
+      result_.segments.clear();
+      result_.jobs.clear();
+      result_.records = 0;
+    }
     return result_;
   }
 
@@ -279,8 +285,8 @@ class Prune {
       }
     }
     for (const auto& name : result_.segments) {
-      const auto from = JoinPath(directory_, name);
-      if (file_system_.RenameNoReplace(from, JoinPath(archive, name)) != IoError::kNone) {
+      if (const auto from = JoinPath(directory_, name);
+          file_system_.RenameNoReplace(from, JoinPath(archive, name)) != IoError::kNone) {
         return Finish(MaintenanceStatus::kFailed, Failed("rename", from));
       }
       if (file_system_.SyncDirectory(archive) != IoError::kNone) {

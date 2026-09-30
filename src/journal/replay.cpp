@@ -207,7 +207,7 @@ class Replayer {
                                                 " without records is not named for sequence 1");
     }
     // An empty highest segment is named for the next sequence, checked above (ADR-0006 §5).
-    result_.segments.push_back(ReplayedSegment{segment.name, segment.first, 0});
+    result_.segments.emplace_back(segment.name, segment.first, 0);
     std::size_t offset = 0;
     while (offset < content->size()) {
       const auto end = content->find('\n', offset);

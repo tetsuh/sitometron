@@ -520,10 +520,12 @@ int PruneFaults() {
     auto fs = ClosedPrefixJournal();
     fault.arm(fs);
     const auto failed = Prune(fs);
-    result |= Check(failed.status == MaintenanceStatus::kFailed &&
-                        failed.detail.find("journal_maintenance_failed") != std::string::npos &&
-                        failed.detail.find(fault.step) != std::string::npos,
-                    fault.label + ": the failure names its step: " + failed.detail);
+    result |= Check(
+        failed.status == MaintenanceStatus::kFailed &&
+            failed.detail.find("journal_maintenance_failed") != std::string::npos &&
+            failed.detail.find(fault.step) != std::string::npos && failed.segments.empty() &&
+            failed.jobs.empty(),
+        fault.label + ": the failure names its step and reports nothing moved: " + failed.detail);
     const auto between = Replay(fs);
     result |= Check(
         between.status == ReplayStatus::kReplayed && between.next_sequence == 16 && Released(fs),
@@ -567,6 +569,7 @@ int PruneFaults() {
     const auto conflict = Prune(fs);
     result |= Check(conflict.status == MaintenanceStatus::kRefused &&
                         conflict.detail.find("journal_archive_conflict") != std::string::npos &&
+                        conflict.segments.empty() && conflict.jobs.empty() &&
                         fs.CountOps("rename") == 0 && fs.files == files && Released(fs),
                     "an existing archived name refuses before any move: " + conflict.detail);
   }

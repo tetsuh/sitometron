@@ -60,6 +60,7 @@ struct PruneOptions {
   bool dry_run = false;
 };
 
+// `segments`, `records`, and `jobs` are empty unless status is kDone or kPlanned.
 struct PruneResult {
   MaintenanceStatus status = MaintenanceStatus::kRefused;
   std::string detail;                 // result code with its location
