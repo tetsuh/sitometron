@@ -460,7 +460,14 @@ int RestartContinues() {
     torn.directories.insert(k_dir);
     torn.files[Segment(1)] = EncodeRecord(Event(1)).bytes + "{\"schema";
     SegmentJournal journal(torn);
-    result |= Check(!journal.Open(k_dir).ok, "torn tail of the active segment is refused");
+    const auto refused = journal.Open(k_dir);
+    result |= Check(!refused.ok, "torn tail of the active segment is refused");
+    result |= Check(
+        refused.detail.find("journal_torn_tail") != std::string::npos &&
+            refused.detail.find("at byte " + std::to_string(EncodeRecord(Event(1)).bytes.size())) !=
+                std::string::npos &&
+            refused.detail.find(SegmentJournal::SegmentName(1)) != std::string::npos,
+        "the refusal names journal_torn_tail, the byte offset, and the segment: " + refused.detail);
   }
   {
     MemoryFileSystem misnamed;

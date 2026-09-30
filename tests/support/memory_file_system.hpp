@@ -14,16 +14,19 @@
 #include <vector>
 
 #include "sitometron/journal/file_system.hpp"
+#include "sitometron/journal/maintenance.hpp"
 
 namespace sitometron::test {
 using journal::FileHandle;
 using journal::FileSystem;
 using journal::IoError;
 using journal::JoinPath;
+using journal::MaintenanceFileSystem;
 using journal::WriteOutcome;
 
-// In-memory file system that records every operation and injects scripted faults.
-class MemoryFileSystem final : public FileSystem {
+// In-memory file system that records every operation and injects scripted faults. It also offers
+// the offline maintenance operations; the daemon only ever sees it as a FileSystem.
+class MemoryFileSystem final : public MaintenanceFileSystem {
  public:
   struct WriteFault {
     std::size_t accept = 0;  // bytes accepted before the error
@@ -45,10 +48,20 @@ class MemoryFileSystem final : public FileSystem {
   std::function<void()> on_throwing_create;
   bool throw_on_list = false;
   bool throw_on_read = false;
+  bool fail_next_mkdir = false;
+  bool fail_next_truncate = false;
+  bool fail_next_rename = false;
+  // The next call reports success but changes nothing, as a misbehaving file system might.
+  bool ignore_next_truncate = false;
+  bool ignore_next_rename = false;
   IoError create_error = IoError::kNoSpace;
 
   IoError EnsureDirectory(const std::string& directory) override {
     log.push_back("mkdir " + directory);
+    if (fail_next_mkdir) {
+      fail_next_mkdir = false;
+      return IoError::kOther;
+    }
     directories.insert(directory);
     return IoError::kNone;
   }
@@ -72,7 +85,11 @@ class MemoryFileSystem final : public FileSystem {
     std::vector<std::string> names;
     const auto prefix = JoinPath(directory, "");
     for (const auto& [path, content] : files) {
-      if (path.rfind(prefix, 0) == 0) names.push_back(path.substr(prefix.size()));
+      // Only files directly inside the directory, like the system implementation.
+      if (path.rfind(prefix, 0) == 0 &&
+          path.find_first_of("/\\", prefix.size()) == std::string::npos) {
+        names.push_back(path.substr(prefix.size()));
+      }
     }
     return names;
   }
@@ -146,8 +163,44 @@ class MemoryFileSystem final : public FileSystem {
     }
     const auto prefix = JoinPath(directory, "");
     for (const auto& [path, content] : files) {
-      if (path.rfind(prefix, 0) == 0) durable_entries.insert(path);
+      if (path.rfind(prefix, 0) == 0 &&
+          path.find_first_of("/\\", prefix.size()) == std::string::npos) {
+        durable_entries.insert(path);
+      }
     }
+    return IoError::kNone;
+  }
+  IoError Truncate(const std::string& path, std::uint64_t size) override {
+    log.push_back("truncate " + path + " " + std::to_string(size));
+    if (fail_next_truncate) {
+      fail_next_truncate = false;
+      return IoError::kOther;
+    }
+    if (ignore_next_truncate) {
+      ignore_next_truncate = false;
+      return IoError::kNone;
+    }
+    const auto it = files.find(path);
+    if (it == files.end() || size > it->second.size()) return IoError::kOther;
+    it->second.resize(static_cast<std::size_t>(size));
+    return IoError::kNone;
+  }
+  IoError RenameNoReplace(const std::string& from, const std::string& to) override {
+    log.push_back("rename " + from + " " + to);
+    if (fail_next_rename) {
+      fail_next_rename = false;
+      return IoError::kOther;
+    }
+    if (ignore_next_rename) {
+      ignore_next_rename = false;
+      return IoError::kNone;
+    }
+    const auto it = files.find(from);
+    if (it == files.end()) return IoError::kOther;
+    if (files.count(to) != 0) return IoError::kExists;
+    files[to] = std::move(it->second);
+    files.erase(from);
+    durable_entries.erase(from);
     return IoError::kNone;
   }
   void Close(FileHandle file) noexcept override {
