@@ -264,6 +264,12 @@ wait "$daemon"
 # Offline maintenance (OPS-005). With one record per segment, three Jobs run one after another
 # leave segment boundaries between Jobs, so the first two Jobs' 26 segments form a closed prefix.
 maint="$scratch/maint"
+for bad in abc 12abc -1 99999999999999999999; do
+  status=0
+  "$binary" --segment-limit "$bad" --journal "$maint" >"$scratch/bad-limit.log" 2>&1 || status=$?
+  [[ "$status" -eq 2 ]] && grep -q -- '--segment-limit needs a number of bytes' "$scratch/bad-limit.log" || { echo "--segment-limit $bad: exit $status: $(cat "$scratch/bad-limit.log")"; exit 1; }
+done
+[[ ! -e "$maint" ]] || { echo "a rejected option created the Journal"; exit 1; }
 submit_true() {
   local body
   body=$(curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' -d '{"executable":"/bin/true"}')

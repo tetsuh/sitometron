@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +20,8 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <vector>
 
 #include "http_server.hpp"
 #include "job_driver.hpp"
@@ -104,11 +107,13 @@ bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
       options.trace_capacity = std::stoul(raw);
     } else if (flag == "--segment-limit") {
       const char* raw = value();
-      if (raw == nullptr) {
+      const std::string_view text = raw == nullptr ? std::string_view() : std::string_view(raw);
+      const auto [end, code] =
+          std::from_chars(text.data(), text.data() + text.size(), options.segment_limit);
+      if (text.empty() || code != std::errc() || end != text.data() + text.size()) {
         error = "--segment-limit needs a number of bytes";
         return false;
       }
-      options.segment_limit = std::stoull(raw);
     } else if (flag == "--help" || flag == "-h") {
       error.clear();
       return false;
@@ -176,58 +181,83 @@ HttpResponse Route(sitometron::spike::JobDriver& driver, const HttpRequest& requ
 
 // Offline Journal maintenance (OPS-005): runs instead of the daemon, never starts the writer or the
 // HTTP server, and refuses while a daemon holds the Journal lock.
-int RunJournalTool(int argc, char** argv) {
-  namespace journal = sitometron::journal;
-  const std::string usage =
-      "usage: sitometron_spike journal quarantine-tail --journal DIR\n"
-      "       sitometron_spike journal prune --journal DIR [--dry-run]\n";
-  const std::string command = argc > 2 ? argv[2] : "";
+namespace journal = sitometron::journal;
+
+constexpr std::string_view k_tool_usage =
+    "usage: sitometron_spike journal quarantine-tail --journal DIR\n"
+    "       sitometron_spike journal prune --journal DIR [--dry-run]\n";
+
+struct ToolOptions {
+  std::string command;
   std::string directory;
   bool dry_run = false;
-  for (int index = 3; index < argc; ++index) {
-    const std::string_view flag = argv[index];
-    if (flag == "--journal" && index + 1 < argc) {
-      directory = argv[++index];
-    } else if (flag == "--dry-run" && command == "prune") {
-      dry_run = true;
+};
+
+// Parses `journal <command> --journal DIR [--dry-run]`; returns false after printing the reason.
+bool ParseToolOptions(int argc, char** argv, ToolOptions& options) {
+  const std::vector<std::string_view> args(argv + 2, argv + argc);
+  if (!args.empty()) options.command = args.front();
+  std::size_t index = 1;
+  while (index < args.size()) {
+    const auto flag = args[index];
+    if (flag == "--journal" && index + 1 < args.size()) {
+      options.directory = args[index + 1];
+      index += 2;
+    } else if (flag == "--dry-run" && options.command == "prune") {
+      options.dry_run = true;
+      index += 1;
     } else {
-      std::cerr << "error: unknown option " << flag << '\n' << usage;
-      return 2;
+      std::cerr << "error: unknown option " << flag << '\n' << k_tool_usage;
+      return false;
     }
   }
-  if ((command != "quarantine-tail" && command != "prune") || directory.empty()) {
-    std::cerr << usage;
-    return 2;
+  if ((options.command != "quarantine-tail" && options.command != "prune") ||
+      options.directory.empty()) {
+    std::cerr << k_tool_usage;
+    return false;
   }
-  auto& file_system = journal::SystemMaintenanceFileSystem();
-  journal::MaintenanceStatus status = journal::MaintenanceStatus::kRefused;
-  std::string detail;
-  if (command == "quarantine-tail") {
-    const auto result = journal::QuarantineTornTail(file_system, directory);
-    status = result.status;
-    detail = result.detail;
-    if (status == journal::MaintenanceStatus::kDone) {
-      std::cout << "quarantined " << result.bytes << " bytes of " << result.segment << " from byte "
-                << result.offset << " into " << result.quarantine << '\n'
-                << "next sequence " << result.next_sequence << '\n';
-    }
-  } else {
-    journal::PruneOptions prune;
-    prune.dry_run = dry_run;
-    const auto result = journal::PruneClosedPrefix(file_system, directory, prune);
-    status = result.status;
-    detail = result.detail;
-    const char* verb = dry_run ? "would archive " : "archived ";
-    for (const auto& segment : result.segments) std::cout << verb << segment << '\n';
-    for (const auto& id : result.jobs) {
-      std::cout << (dry_run ? "would prune job " : "pruned job ") << id.value << '\n';
-    }
+  return true;
+}
+
+// Prints the result detail to stdout on success or to stderr on refusal; returns the exit code.
+int Report(journal::MaintenanceStatus status, const std::string& detail) {
+  using enum journal::MaintenanceStatus;
+  if (status == kDone || status == kPlanned || status == kNothingToDo) {
+    std::cout << detail << '\n';
+    return 0;
   }
-  const bool ok = status == journal::MaintenanceStatus::kDone ||
-                  status == journal::MaintenanceStatus::kPlanned ||
-                  status == journal::MaintenanceStatus::kNothingToDo;
-  (ok ? std::cout : std::cerr) << (ok ? "" : "error: ") << detail << '\n';
-  return ok ? 0 : 1;
+  std::cerr << "error: " << detail << '\n';
+  return 1;
+}
+
+int RunQuarantine(const ToolOptions& options) {
+  const auto result =
+      journal::QuarantineTornTail(journal::SystemMaintenanceFileSystem(), options.directory);
+  if (result.status == journal::MaintenanceStatus::kDone) {
+    std::cout << "quarantined " << result.bytes << " bytes of " << result.segment << " from byte "
+              << result.offset << " into " << result.quarantine << '\n'
+              << "next sequence " << result.next_sequence << '\n';
+  }
+  return Report(result.status, result.detail);
+}
+
+int RunPrune(const ToolOptions& options) {
+  journal::PruneOptions prune;
+  prune.dry_run = options.dry_run;
+  const auto result =
+      journal::PruneClosedPrefix(journal::SystemMaintenanceFileSystem(), options.directory, prune);
+  // The lists are empty unless the prefix was moved (kDone) or planned (kPlanned).
+  const std::string_view segment_verb = options.dry_run ? "would archive " : "archived ";
+  const std::string_view job_verb = options.dry_run ? "would prune job " : "pruned job ";
+  for (const auto& segment : result.segments) std::cout << segment_verb << segment << '\n';
+  for (const auto& id : result.jobs) std::cout << job_verb << id.value << '\n';
+  return Report(result.status, result.detail);
+}
+
+int RunJournalTool(int argc, char** argv) {
+  ToolOptions options;
+  if (!ParseToolOptions(argc, argv, options)) return 2;
+  return options.command == "prune" ? RunPrune(options) : RunQuarantine(options);
 }
 
 }  // namespace
