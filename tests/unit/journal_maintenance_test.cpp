@@ -645,6 +645,35 @@ int SystemFileSystemCheck() {
                         replayed.jobs.size() == 1,
                     "the pruned Journal replays from segment 15: " + replayed.detail);
   }
+  {
+    // A relative directory, spelled bare and with "./" and a trailing separator, names the same
+    // Journal: both operations resolve it against the working directory.
+    const auto name = root.filename().string() + "-relative";
+    const std::filesystem::path relative(name);
+    result |= Check(fs.EnsureDirectory(name) == IoError::kNone, "create the relative directory");
+    write(relative / Name(1), ClosedJob(1, 1));
+    write(relative / Name(8), ClosedJob(8, 2));
+    write(relative / Name(15), Bytes(Created(15, 3)) + k_tail);
+    const auto moved = QuarantineTornTail(fs, name);
+    result |= Check(moved.status == MaintenanceStatus::kDone &&
+                        read(relative / Name(15)) == Bytes(Created(15, 3)) &&
+                        read(relative / moved.quarantine) == k_tail,
+                    "quarantine through a bare relative path: " + moved.detail);
+    const auto dotted = (std::filesystem::path(".") / name / "").string();
+    const auto pruned = PruneClosedPrefix(fs, dotted, PruneOptions{});
+    result |= Check(pruned.status == MaintenanceStatus::kDone &&
+                        pruned.segments == std::vector<std::string>{Name(1), Name(8)} &&
+                        std::filesystem::exists(relative / k_archive_directory / Name(1)) &&
+                        std::filesystem::exists(relative / k_archive_directory / Name(8)) &&
+                        !std::filesystem::exists(relative / Name(1)),
+                    "prune through ./<relative>/: " + pruned.detail);
+    const auto replayed = ReplayJournal(SystemFileSystem(), name, ReplayOptions{1});
+    result |= Check(replayed.status == ReplayStatus::kReplayed && replayed.next_sequence == 16 &&
+                        replayed.jobs.size() == 1,
+                    "the relative Journal replays from segment 15: " + replayed.detail);
+    std::error_code ignored;
+    std::filesystem::remove_all(relative, ignored);
+  }
   std::error_code ignored;
   std::filesystem::remove_all(root, ignored);
   return result;
