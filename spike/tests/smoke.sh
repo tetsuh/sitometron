@@ -207,8 +207,11 @@ grep -q 'shutting down' "$log"
 # kill -9 while a Job runs: after restart the Job is visible from the Journal alone, it is reported
 # unresolved, readiness is false, admission is closed, and the Journal is not modified.
 crash="$scratch/crash"
-start_daemon() {
-  "$binary" --listen 127.0.0.1:0 --journal "$crash" --workdir "$scratch" >"$log" 2>&1 &
+# Starts the daemon on Journal $1 with any further options, and sets $daemon and $base.
+start_on() {
+  local dir=$1
+  shift
+  "$binary" --listen 127.0.0.1:0 --journal "$dir" --workdir "$scratch" "$@" >"$log" 2>&1 &
   daemon=$!
   port=''
   for _ in $(seq 1 100); do
@@ -216,9 +219,10 @@ start_daemon() {
     [[ -n "$port" ]] && break
     read -r -t 0.1 <> <(:) || true
   done
-  [[ -n "$port" ]] || { echo "crash daemon did not report a port"; cat "$log"; exit 1; }
+  [[ -n "$port" ]] || { echo "daemon on $dir did not report a port"; cat "$log"; exit 1; }
   base="http://127.0.0.1:$port"
 }
+start_daemon() { start_on "$crash"; }
 start_daemon
 running=$(curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' \
   -d '{"executable":"/bin/sh","args":["-c","sleep 30"]}')
@@ -256,6 +260,84 @@ kill -TERM "$daemon"
 wait "$daemon"
 [[ "$(ls "$crash")" == "$crash_files" ]] || { echo "journal files changed: $(ls "$crash")"; exit 1; }
 [[ "$(cat "$crash"/journal-*.ndjson | cksum)" == "$crash_bytes" ]] || { echo "journal bytes changed"; exit 1; }
+
+# Offline maintenance (OPS-005). With one record per segment, three Jobs run one after another
+# leave segment boundaries between Jobs, so the first two Jobs' 26 segments form a closed prefix.
+maint="$scratch/maint"
+submit_true() {
+  local body
+  body=$(curl -fsS -X POST "$base/jobs" -H 'Content-Type: application/json' -d '{"executable":"/bin/true"}')
+  printf '%s' "$body" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p'
+}
+start_on "$maint" --segment-limit 1
+ids=()
+for _ in 1 2 3; do
+  id=$(submit_true)
+  wait_terminal "$id" >/dev/null
+  ids+=("$id")
+done
+# While the daemon holds the Journal lock, both tools refuse and change nothing.
+for tool in "prune" "quarantine-tail"; do
+  if "$binary" journal $tool --journal "$maint" >"$scratch/tool.log" 2>&1; then
+    echo "journal $tool ran while the daemon held the lock"; exit 1
+  fi
+  grep -q 'journal_locked' "$scratch/tool.log" || { echo "expected journal_locked: $(cat "$scratch/tool.log")"; exit 1; }
+done
+kill -TERM "$daemon"
+wait "$daemon"
+[[ "$(ls "$maint"/journal-*.ndjson | wc -l)" -eq 39 ]] || { echo "expected 39 segments: $(ls "$maint")"; exit 1; }
+maint_files=$(ls "$maint")
+maint_bytes=$(cat "$maint"/journal-*.ndjson | cksum)
+
+dry=$("$binary" journal prune --journal "$maint" --dry-run)
+[[ "$(printf '%s\n' "$dry" | grep -c '^would archive journal-')" -eq 26 ]] || { echo "dry run: $dry"; exit 1; }
+printf '%s\n' "$dry" | grep -qx "would prune job ${ids[0]}"
+printf '%s\n' "$dry" | grep -qx "would prune job ${ids[1]}"
+printf '%s\n' "$dry" | grep -q "${ids[2]}" && { echo "dry run would prune the last Job: $dry"; exit 1; }
+printf '%s\n' "$dry" | grep -q 'journal_prune_planned: 26 segments, 26 records, 2 Jobs; replay starts at 27'
+[[ "$(ls "$maint")" == "$maint_files" && "$(cat "$maint"/journal-*.ndjson | cksum)" == "$maint_bytes" ]] || { echo "dry run changed the Journal"; exit 1; }
+
+pruned=$("$binary" journal prune --journal "$maint")
+[[ "$(printf '%s\n' "$pruned" | grep -c '^archived journal-')" -eq 26 ]] || { echo "prune: $pruned"; exit 1; }
+printf '%s\n' "$pruned" | grep -qx "pruned job ${ids[0]}"
+printf '%s\n' "$pruned" | grep -qx "pruned job ${ids[1]}"
+printf '%s\n' "$pruned" | grep -q 'journal_pruned: 26 segments'
+[[ "$(ls "$maint/archive" | wc -l)" -eq 26 && "$(ls "$maint"/journal-*.ndjson | wc -l)" -eq 13 ]] || { echo "unexpected layout: $(ls -R "$maint")"; exit 1; }
+[[ "$(cat "$maint/archive"/journal-*.ndjson "$maint"/journal-*.ndjson | cksum)" == "$maint_bytes" ]] || { echo "pruning changed record bytes"; exit 1; }
+
+# The restarted daemon replays only the retained Job, is ready, and continues the sequence.
+start_on "$maint" --segment-limit 1
+grep -q 'next sequence: 40, replayed jobs: 1, unresolved: 0' "$log" || { echo "restart after prune: $(cat "$log")"; exit 1; }
+curl -fsS "$base/healthz" | grep -q '"ready":true'
+listing=$(curl -fsS "$base/jobs")
+printf '%s' "$listing" | grep -q "{\"job_id\":\"${ids[2]}\",\"recovered\":true," || { echo "retained Job missing: $listing"; exit 1; }
+for gone in "${ids[0]}" "${ids[1]}"; do
+  printf '%s' "$listing" | grep -q "$gone" && { echo "pruned Job $gone still listed: $listing"; exit 1; }
+done
+fresh=$(submit_true)
+wait_terminal "$fresh" >/dev/null
+grep -q "\"sequence\":40,.*\"job_id\":\"$fresh\"" "$maint/$(printf 'journal-%020d.ndjson' 40)" || { echo "the new Job does not start at sequence 40"; exit 1; }
+kill -TERM "$daemon"
+wait "$daemon"
+
+# A torn tail: startup refuses with journal_torn_tail, quarantine-tail moves the bytes, and the
+# daemon starts again.
+highest=$(ls "$maint"/journal-*.ndjson | sort | tail -n1)
+highest_bytes=$(cksum <"$highest")
+printf '{"sequence":' >>"$highest"
+if "$binary" --listen 127.0.0.1:0 --journal "$maint" >"$scratch/torn-start.log" 2>&1; then
+  echo "expected the torn Journal to be refused"; exit 1
+fi
+grep -q 'journal_torn_tail' "$scratch/torn-start.log" || { echo "no journal_torn_tail: $(cat "$scratch/torn-start.log")"; exit 1; }
+quarantined=$("$binary" journal quarantine-tail --journal "$maint")
+printf '%s\n' "$quarantined" | grep -q "^quarantined 12 bytes of $(basename "$highest") from byte " || { echo "quarantine: $quarantined"; exit 1; }
+[[ "$(cksum <"$highest")" == "$highest_bytes" ]] || { echo "the segment was not cut back to its last record"; exit 1; }
+[[ "$(cat "$highest".torn-*)" == '{"sequence":' ]] || { echo "quarantine file content: $(cat "$highest".torn-*)"; exit 1; }
+"$binary" journal quarantine-tail --journal "$maint" | grep -q 'journal_clean'
+start_on "$maint" --segment-limit 1
+curl -fsS "$base/healthz" | grep -q '"ready":true'
+kill -TERM "$daemon"
+wait "$daemon"
 trap - EXIT
 echo "smoke ok: $lines journal lines, port $port"
 exit 0
