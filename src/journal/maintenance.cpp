@@ -275,6 +275,11 @@ class Prune {
     if (file_system_.EnsureDirectory(archive) != IoError::kNone) {
       return Finish(MaintenanceStatus::kFailed, Failed("archive directory", archive));
     }
+    // EnsureDirectory syncs the entry only when it creates archive/; one left by an interrupted run
+    // may not be durable yet. Sync it before any segment can live below it (ADR-0006 Section 3).
+    if (file_system_.SyncDirectory(directory_) != IoError::kNone) {
+      return Finish(MaintenanceStatus::kFailed, Failed("sync directory", directory_));
+    }
     IoError error = IoError::kNone;
     const auto archived = file_system_.List(archive, error);
     if (!archived.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("list", archive));

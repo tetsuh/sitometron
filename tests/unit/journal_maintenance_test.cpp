@@ -140,8 +140,11 @@ int PrunePrefixOnly() {
                   "the retained segment is unchanged");
   const auto first_move = Find(fs, "rename " + SegmentPath(1) + " " + ArchivePath(1), mark);
   const auto second_move = Find(fs, "rename " + SegmentPath(8) + " " + ArchivePath(8), mark);
-  result |= Check(Find(fs, "mkdir " + k_archive, mark) < first_move && first_move < second_move,
+  const auto ensured = Find(fs, "mkdir " + k_archive, mark);
+  result |= Check(ensured < first_move && first_move < second_move,
                   "archive/ is ensured first, then segments move lowest first");
+  result |= Check(Find(fs, "syncdir " + k_dir, ensured) < first_move,
+                  "the Journal directory is synced after archive/ is ensured and before any move");
   result |= Check(Find(fs, "syncdir " + k_archive, first_move) < second_move &&
                       Find(fs, "syncdir " + k_dir, first_move) < second_move &&
                       Find(fs, "syncdir " + k_archive, second_move) != std::string::npos &&
@@ -537,9 +540,10 @@ int PruneFaults() {
               fault.label + ": a second run finishes the prefix: " + retried.detail);
   }
   {
-    // A crash between the two moves leaves a shorter pruned Journal; the rerun moves the rest.
+    // A crash between the two moves leaves a shorter pruned Journal; the rerun moves the rest. The
+    // second directory sync is the first one after a move (the first makes archive/ durable).
     auto fs = ClosedPrefixJournal();
-    fs.fail_next_directory_sync = true;
+    fs.directory_syncs_until_failure = 2;
     (void)Prune(fs);
     const bool first_moved = fs.files.count(ArchivePath(1)) != 0;
     const bool second_stayed = fs.files.count(SegmentPath(8)) != 0;
@@ -560,6 +564,24 @@ int PruneFaults() {
     result |= Check(unverified.status == MaintenanceStatus::kFailed &&
                         unverified.detail.find("verify") != std::string::npos && Released(fs),
                     "an unverified move is a failure: " + unverified.detail);
+  }
+  {
+    // archive/ left by an interrupted run: its entry is synced again, and a failure moves nothing.
+    auto fs = ClosedPrefixJournal();
+    fs.directories.insert(k_archive);
+    fs.fail_next_directory_sync = true;
+    const auto unsynced = Prune(fs);
+    result |= Check(unsynced.status == MaintenanceStatus::kFailed &&
+                        unsynced.detail.find("sync directory " + k_dir) != std::string::npos &&
+                        fs.CountOps("rename") == 0 && Released(fs),
+                    "an unsynced archive/ entry refuses before any move: " + unsynced.detail);
+    const auto mark = fs.log.size();
+    const auto retried = Prune(fs);
+    const auto synced = Find(fs, "syncdir " + k_dir, mark);
+    result |=
+        Check(retried.status == MaintenanceStatus::kDone && synced != std::string::npos &&
+                  synced < Find(fs, "rename " + SegmentPath(1) + " " + ArchivePath(1), mark),
+              "the rerun syncs the Journal directory before its first move: " + retried.detail);
   }
   {
     // An archived name that already exists is a conflict, and nothing moves.

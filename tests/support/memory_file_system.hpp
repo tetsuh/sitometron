@@ -42,6 +42,7 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   std::size_t short_write_limit = 0;   // 0 = unlimited bytes per call
   bool fail_next_sync = false;
   bool fail_next_directory_sync = false;
+  std::size_t directory_syncs_until_failure = 0;  // when nonzero, the Nth directory sync fails
   bool fail_next_create = false;
   bool throw_on_create = false;
   // Runs inside the throwing create, while the failing Commit() holds the journal lock.
@@ -157,6 +158,9 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   }
   IoError SyncDirectory(const std::string& directory) noexcept override {
     log.push_back("syncdir " + directory);
+    if (directory_syncs_until_failure != 0 && --directory_syncs_until_failure == 0) {
+      return IoError::kUnsupported;
+    }
     if (fail_next_directory_sync) {
       fail_next_directory_sync = false;
       return IoError::kUnsupported;
