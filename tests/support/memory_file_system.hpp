@@ -55,6 +55,7 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   // The next call reports success but changes nothing, as a misbehaving file system might.
   bool ignore_next_truncate = false;
   bool ignore_next_rename = false;
+  bool throw_on_rename = false;
   IoError create_error = IoError::kNoSpace;
 
   IoError EnsureDirectory(const std::string& directory) override {
@@ -191,6 +192,7 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   }
   IoError RenameNoReplace(const std::string& from, const std::string& to) override {
     log.push_back("rename " + from + " " + to);
+    if (throw_on_rename) throw std::runtime_error("injected rename exception");
     if (fail_next_rename) {
       fail_next_rename = false;
       return IoError::kOther;

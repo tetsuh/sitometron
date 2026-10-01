@@ -413,6 +413,7 @@ int QuarantineTail() {
     const auto conflict = QuarantineTornTail(different, k_dir);
     result |= Check(conflict.status == MaintenanceStatus::kRefused &&
                         conflict.detail.find("journal_quarantine_conflict") != std::string::npos &&
+                        conflict.detail.find(quarantine_path) != std::string::npos &&
                         different.files.at(SegmentPath(1)) == complete + k_tail &&
                         different.files.at(quarantine_path) == "other" && !Changed(different, mark),
                     "a different quarantine file is a conflict: " + conflict.detail);
@@ -516,6 +517,15 @@ int QuarantineFaults() {
     const auto thrown = QuarantineTornTail(fs, k_dir);
     result |= Check(thrown.status != MaintenanceStatus::kDone && Released(fs),
                     "an exception is reported and releases the lock: " + thrown.detail);
+    // A create that throws reaches the operation's own boundary: kFailed with the Journal named.
+    auto creating = Journal({{1, complete + k_tail}});
+    creating.throw_on_create = true;
+    const auto failed = QuarantineTornTail(creating, k_dir);
+    result |=
+        Check(failed.status == MaintenanceStatus::kFailed &&
+                  failed.detail.find("journal_maintenance_failed") != std::string::npos &&
+                  failed.detail.find(" in " + k_dir) != std::string::npos && Released(creating),
+              "a throwing create is a failure that names the Journal: " + failed.detail);
   }
   return result;
 }
@@ -572,6 +582,17 @@ int PruneFaults() {
     result |= Check(unverified.status == MaintenanceStatus::kFailed &&
                         unverified.detail.find("verify") != std::string::npos && Released(fs),
                     "an unverified move is a failure: " + unverified.detail);
+  }
+  {
+    // A rename that throws reaches the operation's own boundary: kFailed with the Journal named.
+    auto fs = ClosedPrefixJournal();
+    fs.throw_on_rename = true;
+    const auto thrown = Prune(fs);
+    result |= Check(thrown.status == MaintenanceStatus::kFailed &&
+                        thrown.detail.find("journal_maintenance_failed") != std::string::npos &&
+                        thrown.detail.find(" in " + k_dir) != std::string::npos &&
+                        thrown.segments.empty() && Released(fs),
+                    "a throwing rename is a failure that names the Journal: " + thrown.detail);
   }
   {
     // archive/ left by an interrupted run: its entry is synced again, and a failure moves nothing.

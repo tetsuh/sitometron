@@ -168,9 +168,8 @@ class Quarantine {
       const auto existing = file_system_.ReadAll(path, error);
       if (!existing.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("read", path));
       if (existing->size() > tail.size() || !tail.starts_with(*existing)) {
-        return Finish(
-            MaintenanceStatus::kRefused,
-            "journal_quarantine_conflict: " + result_.quarantine + " exists with different bytes");
+        return Finish(MaintenanceStatus::kRefused,
+                      "journal_quarantine_conflict: " + path + " exists with different bytes");
       }
       // Identical bytes may still be only in the page cache: sync them before the cut.
       failure = AppendDurably(file_system_, path, tail.substr(existing->size()), false);
@@ -337,11 +336,12 @@ QuarantineResult QuarantineTornTail(MaintenanceFileSystem& file_system,
   try {
     return quarantine.Run();
   } catch (const std::exception& error) {
-    return quarantine.Finish(MaintenanceStatus::kFailed,
-                             std::string("journal_maintenance_failed: ") + error.what());
+    return quarantine.Finish(
+        MaintenanceStatus::kFailed,
+        In(std::string("journal_maintenance_failed: ") + error.what(), directory));
   } catch (...) {
     return quarantine.Finish(MaintenanceStatus::kFailed,
-                             "journal_maintenance_failed: unexpected exception");
+                             In("journal_maintenance_failed: unexpected exception", directory));
   }
 }
 
@@ -352,10 +352,10 @@ PruneResult PruneClosedPrefix(MaintenanceFileSystem& file_system, const std::str
     return prune.Run();
   } catch (const std::exception& error) {
     return prune.Finish(MaintenanceStatus::kFailed,
-                        std::string("journal_maintenance_failed: ") + error.what());
+                        In(std::string("journal_maintenance_failed: ") + error.what(), directory));
   } catch (...) {
     return prune.Finish(MaintenanceStatus::kFailed,
-                        "journal_maintenance_failed: unexpected exception");
+                        In("journal_maintenance_failed: unexpected exception", directory));
   }
 }
 
