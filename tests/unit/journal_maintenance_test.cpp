@@ -195,8 +195,9 @@ int PruneRefusesOpenJobs() {
   result |= Check(none.status == MaintenanceStatus::kNothingToDo && none.segments.empty() &&
                       none.jobs.empty() && !Changed(first, mark) && first.CountOps("mkdir") == 0,
                   "an unresolved Job in the first segment blocks every prefix: " + none.detail);
-  result |= Check(none.detail.find("journal_nothing_to_prune") != std::string::npos,
-                  "the result names journal_nothing_to_prune: " + none.detail);
+  result |= Check(none.detail.find("journal_nothing_to_prune") != std::string::npos &&
+                      none.detail.find(" in " + k_dir) != std::string::npos,
+                  "the result names journal_nothing_to_prune and the Journal: " + none.detail);
 
   // Job 2 is unresolved in the middle: the prefix stops before it, even though Job 3 is closed.
   auto middle = Journal({{1, ClosedJob(1, 1)},
@@ -277,16 +278,18 @@ int PruneKeepsLastRecord() {
   auto torn = Journal({{1, ClosedJob(1, 1)}, {8, ClosedJob(8, 2) + "{\"partial"}});
   auto mark = torn.log.size();
   const auto refused = Prune(torn);
-  result |= Check(refused.status == MaintenanceStatus::kRefused &&
-                      refused.detail.find("journal_torn_tail") != std::string::npos &&
-                      !Changed(torn, mark),
-                  "a torn tail refuses pruning unchanged: " + refused.detail);
+  result |=
+      Check(refused.status == MaintenanceStatus::kRefused &&
+                refused.detail.find("journal_torn_tail") != std::string::npos &&
+                refused.detail.find(" in " + k_dir) != std::string::npos && !Changed(torn, mark),
+            "a torn tail refuses pruning unchanged: " + refused.detail);
   auto corrupt = Journal({{1, ClosedJob(1, 1)}, {8, "not json\n"}});
   mark = corrupt.log.size();
   const auto bad = Prune(corrupt);
   result |=
       Check(bad.status == MaintenanceStatus::kRefused &&
-                bad.detail.find("journal_corrupt") != std::string::npos && !Changed(corrupt, mark),
+                bad.detail.find("journal_corrupt") != std::string::npos &&
+                bad.detail.find(" in " + k_dir) != std::string::npos && !Changed(corrupt, mark),
             "corruption refuses pruning unchanged: " + bad.detail);
   return result;
 }
@@ -366,7 +369,8 @@ int QuarantineTail() {
                     "a clean Journal has nothing to do");
     const auto corrupt_result = QuarantineTornTail(corrupt, k_dir);
     result |= Check(corrupt_result.status == MaintenanceStatus::kRefused &&
-                        corrupt_result.detail.find("journal_corrupt") != std::string::npos,
+                        corrupt_result.detail.find("journal_corrupt") != std::string::npos &&
+                        corrupt_result.detail.find(" in " + k_dir) != std::string::npos,
                     "corruption is refused: " + corrupt_result.detail);
     const auto exhausted_result = QuarantineTornTail(exhausted, k_dir);
     result |=
@@ -452,8 +456,12 @@ int RequiresLock() {
   const auto unlisted = PruneClosedPrefix(missing, "/missing", PruneOptions{});
   result |= Check(unreadable.status == MaintenanceStatus::kRefused &&
                       unreadable.detail.find("journal_unreadable") != std::string::npos &&
-                      unlisted.status == MaintenanceStatus::kRefused && Released(missing),
-                  "an unreadable directory is refused: " + unreadable.detail);
+                      unreadable.detail.find("/missing") != std::string::npos &&
+                      unlisted.status == MaintenanceStatus::kRefused &&
+                      unlisted.detail.find("journal_unreadable") != std::string::npos &&
+                      unlisted.detail.find("/missing") != std::string::npos && Released(missing),
+                  "an unreadable directory is refused with its location: " + unreadable.detail +
+                      " / " + unlisted.detail);
   return result;
 }
 

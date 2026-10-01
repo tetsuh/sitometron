@@ -90,6 +90,12 @@ std::optional<std::string> AppendDurably(MaintenanceFileSystem& file_system,
   return std::nullopt;
 }
 
+// A replay result carries segment names but not the Journal directory; every maintenance result
+// names its location, so the directory is appended.
+std::string In(std::string_view detail, std::string_view directory) {
+  return std::string(detail).append(" in ").append(directory);
+}
+
 bool Contains(const std::vector<std::string>& names, const std::string& name) {
   return std::find(names.begin(), names.end(), name) != names.end();
 }
@@ -110,7 +116,7 @@ class Quarantine {
       return Finish(MaintenanceStatus::kNothingToDo, "journal_clean: " + directory_);
     }
     if (replayed.status != ReplayStatus::kTornTail) {
-      return Finish(MaintenanceStatus::kRefused, replayed.detail);
+      return Finish(MaintenanceStatus::kRefused, In(replayed.detail, directory_));
     }
     result_.segment = replayed.torn_segment;
     result_.offset = replayed.torn_offset;
@@ -131,7 +137,7 @@ class Quarantine {
     const auto after = ReplayAll(file_system_, directory_);
     if (after.status != ReplayStatus::kReplayed &&
         after.status != ReplayStatus::kSequenceExhausted) {
-      return Finish(MaintenanceStatus::kFailed, Failed("verify", after.detail));
+      return Finish(MaintenanceStatus::kFailed, Failed("verify", In(after.detail, directory_)));
     }
     result_.next_sequence = after.next_sequence;
     std::string detail = "journal_quarantined: ";
@@ -196,13 +202,14 @@ class Prune {
     }
     const auto replayed = ReplayAll(file_system_, directory_);
     if (replayed.status != ReplayStatus::kReplayed) {
-      return Finish(MaintenanceStatus::kRefused, replayed.detail);
+      return Finish(MaintenanceStatus::kRefused, In(replayed.detail, directory_));
     }
     result_.next_sequence = replayed.next_sequence;
     const auto length = PrunableLength(replayed);
     if (length == 0) {
-      return Finish(MaintenanceStatus::kNothingToDo,
-                    "journal_nothing_to_prune: no sealed prefix holds only closed Jobs");
+      return Finish(
+          MaintenanceStatus::kNothingToDo,
+          In("journal_nothing_to_prune: no sealed prefix holds only closed Jobs", directory_));
     }
     for (std::size_t s = 0; s < length; ++s) {
       result_.segments.push_back(replayed.segments[s].name);
@@ -219,8 +226,7 @@ class Prune {
     if (const auto after = ReplayAll(file_system_, directory_);
         after.status != ReplayStatus::kReplayed || after.next_sequence != result_.next_sequence ||
         after.records + result_.records != replayed.records) {
-      return Finish(MaintenanceStatus::kFailed,
-                    Failed("verify", after.detail.empty() ? directory_ : after.detail));
+      return Finish(MaintenanceStatus::kFailed, Failed("verify", In(after.detail, directory_)));
     }
     return Finish(MaintenanceStatus::kDone, Summary("journal_pruned"));
   }
