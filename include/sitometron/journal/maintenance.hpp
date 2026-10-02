@@ -58,7 +58,9 @@ struct QuarantineResult {
 
 // Moves the torn tail of the highest segment (ADR-0006 Section 5) into
 // `<segment>.torn-<offset>` next to it, makes that file durable, and cuts the segment back to its
-// last complete record. A clean Journal is kNothingToDo; any other replay refusal is kRefused.
+// last complete record. A clean Journal is kNothingToDo; any other replay refusal is kRefused. When
+// the highest segment still ends at the offset its quarantine file names, that cut is synced again
+// first (no byte changes), since a cut whose sync failed looks the same on disk.
 [[nodiscard]] QuarantineResult QuarantineTornTail(MaintenanceFileSystem& file_system,
                                                   const std::string& directory);
 
@@ -80,7 +82,9 @@ struct PruneResult {
 
 // Moves the longest prunable prefix of sealed segments (ADR-0006 Section 8) into the archive
 // subdirectory, lowest first. Every Job with a record in the prefix has its last record there and
-// is terminal, released, and cleaned up after it. The highest non-empty segment always stays.
+// is terminal, released, and cleaned up after it. The highest non-empty segment always stays. The
+// retained Journal is verified by replay; archive/ is outside the Journal (ADR-0006 Section 8 also
+// allows deleting the prefix), so the moved bytes are not read back.
 [[nodiscard]] PruneResult PruneClosedPrefix(MaintenanceFileSystem& file_system,
                                             const std::string& directory,
                                             const PruneOptions& options);

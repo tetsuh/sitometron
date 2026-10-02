@@ -328,10 +328,16 @@ int QuarantineTail() {
                     "the quarantine file's entry is durable");
     result |= Check(Replay(fs).status == ReplayStatus::kReplayed, "the Journal replays afterwards");
     result |= Check(Released(fs), "the lock and every handle are released");
+    // A second run finds the Journal clean. The segment still ends at the quarantine offset, so the
+    // cut is synced again (a failed sync would look the same); no byte changes.
+    const auto settled = fs.files;
     const auto again = QuarantineTornTail(fs, k_dir);
     result |= Check(again.status == MaintenanceStatus::kNothingToDo &&
-                        again.detail.find("journal_clean") != std::string::npos,
-                    "a second run finds the Journal clean: " + again.detail);
+                        again.detail.find("journal_clean") != std::string::npos &&
+                        again.detail.find("synced the cut of " + Name(1) + " at byte " +
+                                          std::to_string(complete.size())) != std::string::npos &&
+                        again.detail.find("re-synced") == std::string::npos && fs.files == settled,
+                    "a second run finds the Journal clean and unchanged: " + again.detail);
   }
   {
     // The torn tail is in the highest of two segments; the sealed one is untouched.
@@ -527,7 +533,7 @@ int QuarantineFaults() {
         Find(cut, "truncate " + SegmentPath(1) + " " + std::to_string(complete.size()), cut_mark);
     result |= Check(resynced.status == MaintenanceStatus::kNothingToDo &&
                         resynced.detail.find("journal_clean") != std::string::npos &&
-                        resynced.detail.find("re-synced") != std::string::npos &&
+                        resynced.detail.find("synced the cut of " + Name(1)) != std::string::npos &&
                         again != std::string::npos &&
                         Find(cut, "syncdir " + k_dir, again) != std::string::npos,
                     "the rerun cuts and syncs again before reporting clean: " + resynced.detail);
@@ -540,7 +546,7 @@ int QuarantineFaults() {
     const auto refused = QuarantineTornTail(exhausted, k_dir);
     result |= Check(refused.status == MaintenanceStatus::kRefused &&
                         refused.detail.find("journal_sequence_exhausted") != std::string::npos &&
-                        refused.detail.find("re-synced") != std::string::npos &&
+                        refused.detail.find("synced the cut of") != std::string::npos &&
                         Find(exhausted,
                              "truncate " + JoinPath(k_dir, Name(UINT64_MAX)) + " " +
                                  std::to_string(last.size()),

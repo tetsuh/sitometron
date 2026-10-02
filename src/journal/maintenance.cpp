@@ -180,9 +180,11 @@ class Quarantine {
   }
 
   // A run whose cut succeeded but whose data sync failed leaves the highest segment exactly as long
-  // as the offset its quarantine file names, and replay then sees no torn tail. Cutting again at
-  // that offset repeats the truncate and its data sync, so the cut is durable before anything is
-  // reported. `note` names what was done; it stays empty when there was nothing to finish.
+  // as the offset its quarantine file names, and replay then sees no torn tail. On disk that state
+  // is indistinguishable from a completed cut, so whenever the highest segment still ends at the
+  // offset of its quarantine file, the cut is repeated at the same offset with its data sync. That
+  // changes no byte; it only makes the cut durable before anything is reported. `note` names the
+  // segment and offset; it stays empty when no such quarantine file exists.
   std::optional<QuarantineResult> ResyncEarlierCut(std::string& note) {
     IoError error = IoError::kNone;
     const auto names = file_system_.List(directory_, error);
@@ -211,8 +213,7 @@ class Quarantine {
     result_.segment = highest;
     result_.offset = content->size();
     result_.quarantine = quarantine;
-    note =
-        "; re-synced the earlier cut of " + highest + " at byte " + std::to_string(content->size());
+    note = "; synced the cut of " + highest + " at byte " + std::to_string(content->size());
     return std::nullopt;
   }
 
