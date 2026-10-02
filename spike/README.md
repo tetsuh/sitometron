@@ -75,8 +75,8 @@ Jobs and the sequence continues unchanged. Deleting or restoring `archive/` is u
 `journal quarantine-tail` moves a torn tail, which makes startup refuse with `journal_torn_tail`,
 into `<segment>.torn-<offset>` next to the segment and cuts the segment back to its last complete
 record. It prints the next sequence, or `sequence exhausted` when the last remaining record carries
-the last possible sequence, in which case the daemon still refuses to start. Every result line names
-the Journal directory:
+the last possible sequence, in which case the daemon still refuses to start. The final line of each
+subcommand, its result code, names the Journal directory; the lines before it do not repeat it:
 
 With the default 64 MiB segments a small Journal is one segment, and the highest non-empty segment
 always stays, so there is nothing to prune. To see pruning, run the daemon with `--segment-limit 1`
