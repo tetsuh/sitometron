@@ -249,6 +249,64 @@ class Quarantine {
   QuarantineResult result_;
 };
 
+bool IsSegmentName(std::string_view name) {
+  return name.starts_with("journal-") && name.ends_with(".ndjson");
+}
+
+// The Journal directory as it was before an interrupted prune: its own files plus `archived`
+// segments, which are read in place from archive/. Replay only lists and reads; every write-side
+// call fails, so the view cannot change anything.
+class MergedJournalView final : public FileSystem {
+ public:
+  MergedJournalView(FileSystem& base, const std::string& directory,
+                    const std::vector<std::string>& archived)
+      : base_(base),
+        directory_(directory),
+        archive_(JoinPath(directory, k_archive_directory)),
+        archived_(archived) {}
+
+  IoError EnsureDirectory(const std::string& /*directory*/) override {
+    return IoError::kUnsupported;
+  }
+  std::optional<FileHandle> Lock(const std::string& /*path*/, IoError& error) override {
+    error = IoError::kUnsupported;
+    return std::nullopt;
+  }
+  std::optional<std::vector<std::string>> List(const std::string& directory,
+                                               IoError& error) override {
+    auto names = base_.List(directory, error);
+    if (names.has_value() && directory == directory_) {
+      names->insert(names->end(), archived_.begin(), archived_.end());
+    }
+    return names;
+  }
+  std::optional<std::string> ReadAll(const std::string& path, IoError& error) override {
+    for (const auto& name : archived_) {
+      if (path == JoinPath(directory_, name)) return base_.ReadAll(JoinPath(archive_, name), error);
+    }
+    return base_.ReadAll(path, error);
+  }
+  std::optional<FileHandle> OpenAppend(const std::string& /*path*/, bool /*create_new*/,
+                                       IoError& error) override {
+    error = IoError::kUnsupported;
+    return std::nullopt;
+  }
+  WriteOutcome Write(FileHandle /*file*/, std::string_view /*bytes*/) noexcept override {
+    return {0, IoError::kUnsupported};
+  }
+  IoError SyncData(FileHandle /*file*/) noexcept override { return IoError::kUnsupported; }
+  IoError SyncDirectory(const std::string& /*directory*/) noexcept override {
+    return IoError::kUnsupported;
+  }
+  void Close(FileHandle /*file*/) noexcept override {}
+
+ private:
+  FileSystem& base_;
+  const std::string& directory_;
+  std::string archive_;
+  const std::vector<std::string>& archived_;
+};
+
 class Prune {
  public:
   Prune(MaintenanceFileSystem& file_system, const std::string& directory,
@@ -260,18 +318,34 @@ class Prune {
     if (auto refusal = lock.Refusal(directory_)) {
       return Finish(MaintenanceStatus::kRefused, *refusal);
     }
-    const auto replayed = ReplayAll(file_system_, directory_);
+    auto replayed = ReplayAll(file_system_, directory_);
     if (replayed.status != ReplayStatus::kReplayed) {
-      return Finish(MaintenanceStatus::kRefused, In(replayed.detail, directory_));
+      auto resumed = ReplayInterrupted(replayed);
+      if (!resumed.has_value()) {
+        return Finish(MaintenanceStatus::kRefused, In(replayed.detail, directory_));
+      }
+      replayed = std::move(*resumed);
     }
     result_.next_sequence = replayed.next_sequence;
     const auto length = PrunableLength(replayed);
+    const auto archived = result_.resumed.size();
+    if (archived != 0 && length <= archived) {
+      // The archived run explains the refusal but is not a prunable prefix: nothing to resume.
+      result_.resumed.clear();
+      return Finish(MaintenanceStatus::kRefused,
+                    In("journal_corrupt: archived segments before the Journal are not a prunable "
+                       "prefix",
+                       directory_));
+    }
     if (length == 0) {
       return Finish(
           MaintenanceStatus::kNothingToDo,
           In("journal_nothing_to_prune: no sealed prefix holds only closed Jobs", directory_));
     }
+    std::uint64_t prefix_records = 0;
     for (std::size_t s = 0; s < length; ++s) {
+      prefix_records += replayed.segments[s].records;
+      if (s < archived) continue;  // already in archive/ from the interrupted run
       result_.segments.push_back(replayed.segments[s].name);
       result_.records += replayed.segments[s].records;
     }
@@ -285,7 +359,7 @@ class Prune {
     if (auto failure = Archive()) return *failure;
     if (const auto after = ReplayAll(file_system_, directory_);
         after.status != ReplayStatus::kReplayed || after.next_sequence != result_.next_sequence ||
-        after.records + result_.records != replayed.records) {
+        after.records + prefix_records != replayed.records) {
       return Finish(MaintenanceStatus::kFailed, Failed("verify", In(after.detail, directory_)));
     }
     return Finish(MaintenanceStatus::kDone, Summary("journal_pruned"));
@@ -295,7 +369,8 @@ class Prune {
     result_.status = status;
     result_.detail = std::move(detail);
     if (status == MaintenanceStatus::kRefused || status == MaintenanceStatus::kFailed) {
-      // Nothing is reported as moved or planned; a failed run is continued by running again.
+      // Nothing is reported as planned or completed. `moved` still names what this run already
+      // moved, and running prune again completes it.
       result_.segments.clear();
       result_.jobs.clear();
       result_.records = 0;
@@ -335,8 +410,51 @@ class Prune {
     return longest;
   }
 
+  // A prune interrupted between moves can leave the first retained segment holding records of a
+  // Job whose creation is already in archive/; replay then refuses with "never created". The
+  // shortest run of archived segments directly before the Journal that makes the whole replay
+  // succeed is the interrupted prefix. Returns that replay and records the run in `resumed`, or
+  // nullopt when the refusal has another cause.
+  std::optional<ReplayResult> ReplayInterrupted(const ReplayResult& refused) {
+    const auto interrupted = [](const ReplayResult& r) {
+      return r.status == ReplayStatus::kCorrupt &&
+             r.detail.find("record for a Job that was never created") != std::string::npos;
+    };
+    if (!interrupted(refused)) return std::nullopt;
+    IoError error = IoError::kNone;
+    const auto names = file_system_.List(directory_, error);
+    const auto archive = JoinPath(directory_, k_archive_directory);
+    const auto archived = file_system_.List(archive, error);
+    if (!names.has_value() || !archived.has_value()) return std::nullopt;
+    std::string first;
+    for (const auto& name : *names) {
+      if (IsSegmentName(name) && (first.empty() || name < first)) first = name;
+    }
+    // Zero-padded segment names sort in sequence order.
+    std::vector<std::string> before;
+    for (const auto& name : *archived) {
+      if (IsSegmentName(name) && name < first) before.push_back(name);
+    }
+    std::sort(before.begin(), before.end());
+    for (std::size_t n = 1; n <= before.size(); ++n) {
+      const std::vector<std::string> run(before.end() - static_cast<std::ptrdiff_t>(n),
+                                         before.end());
+      MergedJournalView view(file_system_, directory_, run);
+      auto merged = ReplayAll(view, directory_);
+      if (merged.status == ReplayStatus::kReplayed) {
+        result_.resumed = run;
+        return merged;
+      }
+      // Only a missing creation can be explained by a longer archived run.
+      if (!interrupted(merged)) return std::nullopt;
+    }
+    return std::nullopt;
+  }
+
   // Moves the prefix into the archive directory, lowest first, making both directory entries
-  // durable after each move. A failure leaves a valid, shorter pruned Journal.
+  // durable after each move. When a Job spans a boundary inside the prefix, a failure or crash
+  // between moves leaves a Journal that replay refuses until prune is run again, which resumes from
+  // archive/ (ReplayInterrupted).
   std::optional<PruneResult> Archive() {
     const auto archive = JoinPath(directory_, k_archive_directory);
     if (file_system_.EnsureDirectory(archive) != IoError::kNone) {
@@ -361,6 +479,7 @@ class Prune {
           file_system_.RenameNoReplace(from, JoinPath(archive, name)) != IoError::kNone) {
         return Finish(MaintenanceStatus::kFailed, Failed("rename", from));
       }
+      result_.moved.push_back(name);
       if (file_system_.SyncDirectory(archive) != IoError::kNone) {
         return Finish(MaintenanceStatus::kFailed, Failed("sync directory", archive));
       }
@@ -381,6 +500,11 @@ class Prune {
         .append(std::to_string(result_.jobs.size()))
         .append(" Jobs; replay starts at ")
         .append(std::to_string(result_.first_retained_sequence));
+    if (!result_.resumed.empty()) {
+      detail.append("; completes an interrupted prune after ")
+          .append(std::to_string(result_.resumed.size()))
+          .append(" archived segments");
+    }
     return In(detail, directory_);
   }
 

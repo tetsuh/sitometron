@@ -33,7 +33,7 @@ enum class MaintenanceStatus {
   kPlanned,      // dry run: the Journal was not changed; the result reports what would change
   kNothingToDo,  // the Journal needs no change and was not changed
   kRefused,      // the Journal was not changed; `detail` names the code and location
-  kFailed,       // an I/O step failed; the Journal is still valid, and running again continues
+  kFailed,       // an I/O step failed; running the operation again continues it
 };
 
 // Subdirectory of the Journal directory that receives pruned segments. Replay reads only the
@@ -68,8 +68,10 @@ struct PruneOptions {
   bool dry_run = false;
 };
 
-// `segments`, `records`, `jobs`, and `first_retained_sequence` are empty or 0 unless status is
-// kDone or kPlanned. `next_sequence` is 0 when the Journal could not be replayed.
+// `segments`, `records`, `jobs`, and `first_retained_sequence` describe the prefix this run
+// completed (kDone) or would complete (kPlanned); they are empty or 0 for every other status.
+// `moved` always names what this run actually moved, so a kFailed run that moved some segments
+// says so. `next_sequence` is 0 when the Journal could not be replayed.
 struct PruneResult {
   MaintenanceStatus status = MaintenanceStatus::kRefused;
   std::string detail;                 // result code with its location
@@ -78,13 +80,24 @@ struct PruneResult {
   std::vector<core::Uuid> jobs;       // Jobs whose every record is in the prefix, in creation order
   std::uint64_t first_retained_sequence = 0;  // where replay starts after pruning
   std::uint64_t next_sequence = 0;            // unchanged by pruning
+  // Segments this run actually moved into archive/, lowest first, whatever the status: a failed run
+  // names what it already moved.
+  std::vector<std::string> moved;
+  // Segments an interrupted earlier run already moved into archive/ and this run completes.
+  std::vector<std::string> resumed;
 };
 
 // Moves the longest prunable prefix of sealed segments (ADR-0006 Section 8) into the archive
 // subdirectory, lowest first. Every Job with a record in the prefix has its last record there and
 // is terminal, released, and cleaned up after it. The highest non-empty segment always stays. The
-// retained Journal is verified by replay; archive/ is outside the Journal (ADR-0006 Section 8 also
-// allows deleting the prefix), so the moved bytes are not read back.
+// retained Journal is verified by replay after the moves; moved bytes are not read back.
+//
+// When a Job spans a segment boundary inside the prefix, a crash or failure between moves leaves a
+// Journal whose first retained segment holds records of a Job created in an archived segment. The
+// daemon refuses that Journal (journal_corrupt). Running prune again resumes: the shortest run of
+// archived segments directly before the Journal that makes replay succeed is read from archive/,
+// and when it lies inside the prunable prefix the remaining moves complete. Deleting archive/
+// before that rerun makes the Journal unrecoverable by this tool.
 [[nodiscard]] PruneResult PruneClosedPrefix(MaintenanceFileSystem& file_system,
                                             const std::string& directory,
                                             const PruneOptions& options);

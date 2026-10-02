@@ -52,6 +52,7 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   bool fail_next_mkdir = false;
   bool fail_next_truncate = false;
   bool fail_next_rename = false;
+  std::size_t renames_until_failure = 0;  // when nonzero, the Nth rename fails
   // The next call reports success but changes nothing, as a misbehaving file system might.
   bool ignore_next_truncate = false;
   bool fail_after_next_truncate = false;  // the next truncate cuts, then reports a failed sync
@@ -208,6 +209,7 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
       fail_next_rename = false;
       return IoError::kOther;
     }
+    if (renames_until_failure != 0 && --renames_until_failure == 0) return IoError::kOther;
     if (ignore_next_rename) {
       ignore_next_rename = false;
       return IoError::kNone;

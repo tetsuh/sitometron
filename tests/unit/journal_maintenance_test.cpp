@@ -587,8 +587,11 @@ int QuarantineFaults() {
     auto fs = Journal({{1, complete + k_tail}});
     fs.throw_on_read = true;
     const auto thrown = QuarantineTornTail(fs, k_dir);
-    result |= Check(thrown.status != MaintenanceStatus::kDone && Released(fs),
-                    "an exception is reported and releases the lock: " + thrown.detail);
+    // Replay catches the exception itself and reports the Journal unreadable.
+    result |=
+        Check(thrown.status == MaintenanceStatus::kRefused &&
+                  thrown.detail.find("journal_unreadable") != std::string::npos && Released(fs),
+              "an exception is reported and releases the lock: " + thrown.detail);
     // A create that throws reaches the operation's own boundary: kFailed with the Journal named.
     auto creating = Journal({{1, complete + k_tail}});
     creating.throw_on_create = true;
@@ -700,7 +703,110 @@ int PruneFaults() {
   return result;
 }
 
-int MaintenanceFaults() { return QuarantineFaults() | PruneFaults(); }
+// Job 1 spans segments 1 and 5, Job 2 closes in segment 5, Job 3 stays open in segment 15: the
+// prunable prefix is segments 1 and 5, and no boundary inside it is prunable on its own.
+MemoryFileSystem SpanningPrefixJournal() {
+  return Journal({{1, ClosedJobPart(1, 1, 0, 4)},
+                  {5, ClosedJobPart(1, 1, 4, 7) + ClosedJob(8, 2)},
+                  {15, Bytes(Created(15, 3))}});
+}
+
+// A prune interrupted between moves of a prefix that a Job spans leaves a Journal the daemon
+// refuses; running prune again completes the interrupted prune from archive/.
+int PruneInterruptedSpanning() {
+  int result = 0;
+  const std::vector<FaultCase> cases{
+      {"archive sync after the first move", "sync directory",
+       [](MemoryFileSystem& fs) { fs.directory_syncs_until_failure = 2; }},
+      {"Journal sync after the first move", "sync directory",
+       [](MemoryFileSystem& fs) { fs.directory_syncs_until_failure = 3; }},
+      {"second rename", "rename", [](MemoryFileSystem& fs) { fs.renames_until_failure = 2; }},
+  };
+  for (const auto& fault : cases) {
+    auto fs = SpanningPrefixJournal();
+    const auto original = fs.files;
+    fault.arm(fs);
+    const auto failed = Prune(fs);
+    result |=
+        Check(failed.status == MaintenanceStatus::kFailed &&
+                  failed.detail.find(fault.step) != std::string::npos &&
+                  failed.moved == std::vector<std::string>{Name(1)} &&
+                  fs.files.count(ArchivePath(1)) != 0 && Released(fs),
+              fault.label + ": the failure reports the one segment it moved: " + failed.detail);
+    result |= Check(Replay(fs).status == ReplayStatus::kCorrupt,
+                    fault.label + ": the daemon refuses the interrupted Journal");
+    const auto planned = Prune(fs, true);
+    result |=
+        Check(planned.status == MaintenanceStatus::kPlanned &&
+                  planned.segments == std::vector<std::string>{Name(5)} &&
+                  planned.resumed == std::vector<std::string>{Name(1)} &&
+                  planned.jobs == Jobs({1, 2}) && planned.first_retained_sequence == 15,
+              fault.label + ": a dry run plans to finish the interrupted prune: " + planned.detail);
+    const auto finished = Prune(fs);
+    const auto after = Replay(fs);
+    result |= Check(finished.status == MaintenanceStatus::kDone &&
+                        finished.moved == std::vector<std::string>{Name(5)} &&
+                        finished.resumed == std::vector<std::string>{Name(1)} &&
+                        finished.detail.find("interrupted") != std::string::npos &&
+                        fs.files.at(ArchivePath(1)) == original.at(SegmentPath(1)) &&
+                        fs.files.at(ArchivePath(5)) == original.at(SegmentPath(5)) &&
+                        after.status == ReplayStatus::kReplayed && after.next_sequence == 16 &&
+                        Ids(after.jobs) == Jobs({3}) && Released(fs),
+                    fault.label + ": running prune again finishes it: " + finished.detail);
+  }
+  {
+    // Only the archived segments the interrupted prune needs are read: an older archived prefix
+    // that the operator already deleted does not matter.
+    auto fs = Journal({{1, ClosedJob(1, 1)},
+                       {8, ClosedJobPart(8, 2, 0, 4)},
+                       {12, ClosedJobPart(8, 2, 4, 7) + ClosedJob(15, 3)},
+                       {22, Bytes(Created(22, 4))}});
+    fs.renames_until_failure = 3;  // moves segments 1 and 8, then fails on 12
+    (void)Prune(fs);
+    // With segment 1 still archived, only segment 8 is the interrupted run: the shortest archived
+    // run that explains the refusal is resumed, not every older archived segment.
+    auto kept = fs;
+    const auto planned = Prune(kept, true);
+    result |= Check(planned.status == MaintenanceStatus::kPlanned &&
+                        planned.resumed == std::vector<std::string>{Name(8)},
+                    "only the interrupted run is resumed: " + planned.detail);
+    fs.files.erase(ArchivePath(1));
+    const auto finished = Prune(fs);
+    result |= Check(finished.status == MaintenanceStatus::kDone &&
+                        finished.resumed == std::vector<std::string>{Name(8)} &&
+                        finished.moved == std::vector<std::string>{Name(12)} &&
+                        Replay(fs).status == ReplayStatus::kReplayed,
+                    "resume uses only the archived run before the Journal: " + finished.detail);
+  }
+  {
+    // An archived run that explains the refusal but holds an unresolved Job is not a prunable
+    // prefix: it is refused, not reported as nothing to prune, and nothing moves.
+    auto fs = Journal({{2, Bytes(Cancelled(2, 1))}, {3, Bytes(Created(3, 2))}});
+    fs.directories.insert(k_archive);
+    fs.files[ArchivePath(1)] = Bytes(Created(1, 1));
+    const auto mark = fs.log.size();
+    const auto refused = Prune(fs);
+    result |= Check(refused.status == MaintenanceStatus::kRefused &&
+                        refused.detail.find("not a prunable prefix") != std::string::npos &&
+                        refused.resumed.empty() && !Changed(fs, mark),
+                    "an archived run with an unresolved Job is refused: " + refused.detail);
+  }
+  {
+    // A Journal that refuses for another reason is not resumed: nothing moves.
+    auto fs =
+        Journal({{5, ClosedJobPart(1, 1, 4, 7) + ClosedJob(8, 2)}, {15, Bytes(Created(15, 3))}});
+    const auto mark = fs.log.size();
+    const auto refused = Prune(fs);
+    result |=
+        Check(refused.status == MaintenanceStatus::kRefused &&
+                  refused.detail.find("journal_corrupt") != std::string::npos &&
+                  refused.moved.empty() && fs.CountOps("rename") == 0 && !Changed(fs, mark),
+              "a Journal without a matching archived run is refused unchanged: " + refused.detail);
+  }
+  return result;
+}
+
+int MaintenanceFaults() { return QuarantineFaults() | PruneFaults() | PruneInterruptedSpanning(); }
 
 // Real file system: cut, no-replace rename, and both operations end to end.
 int SystemFileSystemCheck() {
