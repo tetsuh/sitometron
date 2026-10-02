@@ -111,9 +111,17 @@ class Quarantine {
       return Finish(MaintenanceStatus::kRefused, *refusal);
     }
     const auto replayed = ReplayAll(file_system_, directory_);
-    if (replayed.status == ReplayStatus::kReplayed) {
+    if (replayed.status == ReplayStatus::kReplayed ||
+        replayed.status == ReplayStatus::kSequenceExhausted) {
+      // No torn tail is visible, but an earlier run may have cut one without making the cut
+      // durable. Finish that cut before reporting the Journal.
+      std::string resynced;
+      if (auto failure = ResyncEarlierCut(resynced)) return *failure;
+      if (replayed.status == ReplayStatus::kSequenceExhausted) {
+        return Finish(MaintenanceStatus::kRefused, In(replayed.detail + resynced, directory_));
+      }
       result_.next_sequence = replayed.next_sequence;
-      return Finish(MaintenanceStatus::kNothingToDo, "journal_clean: " + directory_);
+      return Finish(MaintenanceStatus::kNothingToDo, "journal_clean: " + directory_ + resynced);
     }
     if (replayed.status != ReplayStatus::kTornTail) {
       return Finish(MaintenanceStatus::kRefused, In(replayed.detail, directory_));
@@ -158,6 +166,41 @@ class Quarantine {
   }
 
  private:
+  // A run whose cut succeeded but whose data sync failed leaves the highest segment exactly as long
+  // as the offset its quarantine file names, and replay then sees no torn tail. Cutting again at
+  // that offset repeats the truncate and its data sync, so the cut is durable before anything is
+  // reported. `note` names what was done; it stays empty when there was nothing to finish.
+  std::optional<QuarantineResult> ResyncEarlierCut(std::string& note) {
+    IoError error = IoError::kNone;
+    const auto names = file_system_.List(directory_, error);
+    if (!names.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("list", directory_));
+    // Replay accepted every segment-shaped name, and zero-padded names sort in sequence order.
+    std::string highest;
+    for (const auto& name : *names) {
+      if (name.starts_with("journal-") && name.ends_with(".ndjson") && name > highest) {
+        highest = name;
+      }
+    }
+    if (highest.empty()) return std::nullopt;
+    const auto path = JoinPath(directory_, highest);
+    const auto content = file_system_.ReadAll(path, error);
+    if (!content.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("read", path));
+    const auto quarantine = highest + ".torn-" + std::to_string(content->size());
+    if (!Contains(*names, quarantine)) return std::nullopt;
+    if (file_system_.Truncate(path, content->size()) != IoError::kNone) {
+      return Finish(MaintenanceStatus::kFailed, Failed("truncate", path));
+    }
+    if (file_system_.SyncDirectory(directory_) != IoError::kNone) {
+      return Finish(MaintenanceStatus::kFailed, Failed("sync directory", directory_));
+    }
+    result_.segment = highest;
+    result_.offset = content->size();
+    result_.quarantine = quarantine;
+    note =
+        "; re-synced the earlier cut of " + highest + " at byte " + std::to_string(content->size());
+    return std::nullopt;
+  }
+
   // Makes the quarantine file hold exactly `tail`, durably, with a durable directory entry. A file
   // left by an interrupted run is completed when it holds a prefix of `tail`.
   std::optional<QuarantineResult> WriteQuarantine(std::string_view tail) {

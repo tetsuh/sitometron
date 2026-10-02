@@ -54,6 +54,7 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   bool fail_next_rename = false;
   // The next call reports success but changes nothing, as a misbehaving file system might.
   bool ignore_next_truncate = false;
+  bool fail_after_next_truncate = false;  // the next truncate cuts, then reports a failed sync
   bool ignore_next_rename = false;
   bool throw_on_rename = false;
   IoError create_error = IoError::kNoSpace;
@@ -188,6 +189,10 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
     const auto it = files.find(path);
     if (it == files.end() || size > it->second.size()) return IoError::kOther;
     it->second.resize(static_cast<std::size_t>(size));
+    if (fail_after_next_truncate) {
+      fail_after_next_truncate = false;
+      return IoError::kOther;
+    }
     return IoError::kNone;
   }
   IoError RenameNoReplace(const std::string& from, const std::string& to) override {

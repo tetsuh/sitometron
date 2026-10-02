@@ -512,6 +512,42 @@ int QuarantineFaults() {
         fault.label + ": a second run finishes: " + retried.detail);
   }
   {
+    // The cut succeeds but its data sync fails: replay then sees no torn tail, so the rerun cuts
+    // again at the quarantine file's offset before it reports the Journal clean.
+    auto cut = Journal({{1, complete + k_tail}});
+    cut.fail_after_next_truncate = true;
+    const auto failed = QuarantineTornTail(cut, k_dir);
+    result |= Check(failed.status == MaintenanceStatus::kFailed &&
+                        failed.detail.find("truncate") != std::string::npos &&
+                        cut.files.at(SegmentPath(1)) == complete && Released(cut),
+                    "a failed sync after the cut is a failure: " + failed.detail);
+    const auto cut_mark = cut.log.size();
+    const auto resynced = QuarantineTornTail(cut, k_dir);
+    const auto again =
+        Find(cut, "truncate " + SegmentPath(1) + " " + std::to_string(complete.size()), cut_mark);
+    result |= Check(resynced.status == MaintenanceStatus::kNothingToDo &&
+                        resynced.detail.find("journal_clean") != std::string::npos &&
+                        resynced.detail.find("re-synced") != std::string::npos &&
+                        again != std::string::npos &&
+                        Find(cut, "syncdir " + k_dir, again) != std::string::npos,
+                    "the rerun cuts and syncs again before reporting clean: " + resynced.detail);
+    // The same after a tail behind UINT64_MAX: the cut is finished, and the refusal stays.
+    const auto last = Bytes(Created(UINT64_MAX, 1));
+    auto exhausted = Journal({{UINT64_MAX, last + k_tail}});
+    exhausted.fail_after_next_truncate = true;
+    (void)QuarantineTornTail(exhausted, k_dir);
+    const auto exhausted_mark = exhausted.log.size();
+    const auto refused = QuarantineTornTail(exhausted, k_dir);
+    result |= Check(refused.status == MaintenanceStatus::kRefused &&
+                        refused.detail.find("journal_sequence_exhausted") != std::string::npos &&
+                        refused.detail.find("re-synced") != std::string::npos &&
+                        Find(exhausted,
+                             "truncate " + JoinPath(k_dir, Name(UINT64_MAX)) + " " +
+                                 std::to_string(last.size()),
+                             exhausted_mark) != std::string::npos,
+                    "an exhausted Journal's earlier cut is synced again: " + refused.detail);
+  }
+  {
     // A cut that reports success without cutting is caught by the verification replay.
     auto fs = Journal({{1, complete + k_tail}});
     fs.ignore_next_truncate = true;
