@@ -40,6 +40,9 @@ enum class MaintenanceStatus {
 // regular files directly inside the Journal directory, so it never reads this one.
 inline constexpr const char* k_archive_directory = "archive";
 
+// `segment`, `offset`, `quarantine`, and `bytes` are filled once a torn tail is found, so a later
+// refusal or failure still names it. `next_sequence` is the Journal's next sequence for kDone and
+// kNothingToDo, and 0 otherwise or when `sequence_exhausted` is set.
 struct QuarantineResult {
   MaintenanceStatus status = MaintenanceStatus::kRefused;
   std::string detail;               // result code with its location
@@ -48,6 +51,9 @@ struct QuarantineResult {
   std::string quarantine;           // quarantine file name, next to the segment
   std::uint64_t bytes = 0;          // bytes moved from the segment into the quarantine file
   std::uint64_t next_sequence = 0;  // after the cut
+  // After the cut the last record carries UINT64_MAX: no next sequence exists, and startup refuses
+  // with journal_sequence_exhausted (ADR-0003, ADR-0006 Section 5).
+  bool sequence_exhausted = false;
 };
 
 // Moves the torn tail of the highest segment (ADR-0006 Section 5) into
@@ -60,7 +66,8 @@ struct PruneOptions {
   bool dry_run = false;
 };
 
-// `segments`, `records`, and `jobs` are empty unless status is kDone or kPlanned.
+// `segments`, `records`, `jobs`, and `first_retained_sequence` are empty or 0 unless status is
+// kDone or kPlanned. `next_sequence` is 0 when the Journal could not be replayed.
 struct PruneResult {
   MaintenanceStatus status = MaintenanceStatus::kRefused;
   std::string detail;                 // result code with its location

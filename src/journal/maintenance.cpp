@@ -139,14 +139,16 @@ class Quarantine {
         after.status != ReplayStatus::kSequenceExhausted) {
       return Finish(MaintenanceStatus::kFailed, Failed("verify", In(after.detail, directory_)));
     }
-    result_.next_sequence = after.next_sequence;
+    result_.sequence_exhausted = after.status == ReplayStatus::kSequenceExhausted;
+    result_.next_sequence = result_.sequence_exhausted ? 0 : after.next_sequence;
     std::string detail = "journal_quarantined: ";
     detail.append(result_.segment)
         .append(" at byte ")
         .append(std::to_string(result_.offset))
         .append(" into ")
         .append(result_.quarantine);
-    return Finish(MaintenanceStatus::kDone, std::move(detail));
+    if (result_.sequence_exhausted) detail.append("; sequence exhausted");
+    return Finish(MaintenanceStatus::kDone, In(detail, directory_));
   }
 
   QuarantineResult Finish(MaintenanceStatus status, std::string detail) {
@@ -238,6 +240,7 @@ class Prune {
       result_.segments.clear();
       result_.jobs.clear();
       result_.records = 0;
+      result_.first_retained_sequence = 0;
     }
     return result_;
   }
@@ -319,7 +322,7 @@ class Prune {
         .append(std::to_string(result_.jobs.size()))
         .append(" Jobs; replay starts at ")
         .append(std::to_string(result_.first_retained_sequence));
-    return detail;
+    return In(detail, directory_);
   }
 
   MaintenanceFileSystem& file_system_;

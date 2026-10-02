@@ -118,7 +118,8 @@ int PrunePrefixOnly() {
   result |= Check(planned.status == MaintenanceStatus::kPlanned, "dry run: " + planned.detail);
   result |= Check(planned.segments == std::vector<std::string>{Name(1), Name(8)} &&
                       planned.records == 14 && planned.jobs == Jobs({1, 2}) &&
-                      planned.first_retained_sequence == 15 && planned.next_sequence == 16,
+                      planned.first_retained_sequence == 15 && planned.next_sequence == 16 &&
+                      planned.detail.find(" in " + k_dir) != std::string::npos,
                   "dry run reports segments 1 and 8, 14 records, Jobs 1 and 2, retained from 15");
   result |= Check(!Changed(fs, mark) && fs.files == before_files, "a dry run changes nothing");
   result |= Check(Released(fs), "the dry run releases the lock");
@@ -126,7 +127,9 @@ int PrunePrefixOnly() {
   // Apply moves exactly the same prefix, lowest first, into archive/.
   mark = fs.log.size();
   const auto pruned = Prune(fs);
-  result |= Check(pruned.status == MaintenanceStatus::kDone, "prune: " + pruned.detail);
+  result |= Check(pruned.status == MaintenanceStatus::kDone &&
+                      pruned.detail.find(" in " + k_dir) != std::string::npos,
+                  "prune: " + pruned.detail);
   result |= Check(pruned.segments == planned.segments && pruned.records == planned.records &&
                       pruned.jobs == planned.jobs &&
                       pruned.first_retained_sequence == planned.first_retained_sequence &&
@@ -307,7 +310,9 @@ int QuarantineTail() {
     const auto moved = QuarantineTornTail(fs, k_dir);
     result |= Check(moved.status == MaintenanceStatus::kDone && moved.segment == Name(1) &&
                         moved.offset == complete.size() && moved.quarantine == quarantine_name &&
-                        moved.bytes == k_tail.size() && moved.next_sequence == 8,
+                        moved.bytes == k_tail.size() && moved.next_sequence == 8 &&
+                        !moved.sequence_exhausted &&
+                        moved.detail.find(" in " + k_dir) != std::string::npos,
                     "the torn tail is quarantined and the cut reported: " + moved.detail);
     result |=
         Check(fs.files.at(quarantine_path) == k_tail && fs.files.at(SegmentPath(1)) == complete,
@@ -350,6 +355,7 @@ int QuarantineTail() {
     auto fresh = Journal({{1, k_tail}});
     const auto fresh_moved = QuarantineTornTail(fresh, k_dir);
     result |= Check(fresh_moved.status == MaintenanceStatus::kDone &&
+                        fresh_moved.next_sequence == 1 && !fresh_moved.sequence_exhausted &&
                         Replay(fresh).status == ReplayStatus::kReplayed,
                     "a fresh Journal with only torn bytes becomes empty: " + fresh_moved.detail);
   }
@@ -387,6 +393,10 @@ int QuarantineTail() {
                         fs.files.at(JoinPath(k_dir, Name(UINT64_MAX))) == last &&
                         Replay(fs).status == ReplayStatus::kSequenceExhausted,
                     "a tail after UINT64_MAX is quarantined: " + moved.detail);
+    result |= Check(
+        moved.sequence_exhausted && moved.next_sequence == 0 &&
+            moved.detail.find("sequence exhausted") != std::string::npos,
+        "the result reports the exhausted sequence, not a next sequence of 0: " + moved.detail);
   }
   {
     // An existing quarantine file: identical is accepted, a prefix is completed, and anything
@@ -621,6 +631,7 @@ int PruneFaults() {
     result |= Check(conflict.status == MaintenanceStatus::kRefused &&
                         conflict.detail.find("journal_archive_conflict") != std::string::npos &&
                         conflict.segments.empty() && conflict.jobs.empty() &&
+                        conflict.records == 0 && conflict.first_retained_sequence == 0 &&
                         fs.CountOps("rename") == 0 && fs.files == files && Released(fs),
                     "an existing archived name refuses before any move: " + conflict.detail);
   }
