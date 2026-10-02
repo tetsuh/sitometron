@@ -548,6 +548,26 @@ int QuarantineFaults() {
                     "an exhausted Journal's earlier cut is synced again: " + refused.detail);
   }
   {
+    // A cut that reports success but removes a complete record is never reported as done, although
+    // replay of the shorter segment is valid.
+    const auto six = ClosedJobPart(1, 1, 0, 6);
+    auto early = Journal({{1, complete + k_tail}});
+    early.next_truncate_to = six.size();
+    const auto lost = QuarantineTornTail(early, k_dir);
+    result |= Check(lost.status == MaintenanceStatus::kFailed &&
+                        lost.detail.find("verify cut") != std::string::npos && Released(early),
+                    "a cut before the last complete record is a failure: " + lost.detail);
+    // The same check guards the re-sync of an earlier cut.
+    auto earlier = Journal({{1, complete + k_tail}});
+    earlier.fail_after_next_truncate = true;
+    (void)QuarantineTornTail(earlier, k_dir);
+    earlier.next_truncate_to = six.size();
+    const auto resync_lost = QuarantineTornTail(earlier, k_dir);
+    result |= Check(resync_lost.status == MaintenanceStatus::kFailed &&
+                        resync_lost.detail.find("verify cut") != std::string::npos,
+                    "a re-sync that removes a complete record is a failure: " + resync_lost.detail);
+  }
+  {
     // A cut that reports success without cutting is caught by the verification replay.
     auto fs = Journal({{1, complete + k_tail}});
     fs.ignore_next_truncate = true;

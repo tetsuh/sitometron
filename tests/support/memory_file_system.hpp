@@ -55,6 +55,7 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   // The next call reports success but changes nothing, as a misbehaving file system might.
   bool ignore_next_truncate = false;
   bool fail_after_next_truncate = false;  // the next truncate cuts, then reports a failed sync
+  std::optional<std::uint64_t> next_truncate_to;  // the next truncate cuts here and reports success
   bool ignore_next_rename = false;
   bool throw_on_rename = false;
   IoError create_error = IoError::kNoSpace;
@@ -188,6 +189,11 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
     }
     const auto it = files.find(path);
     if (it == files.end() || size > it->second.size()) return IoError::kOther;
+    if (next_truncate_to) {
+      it->second.resize(static_cast<std::size_t>(*next_truncate_to));
+      next_truncate_to.reset();
+      return IoError::kNone;
+    }
     it->second.resize(static_cast<std::size_t>(size));
     if (fail_after_next_truncate) {
       fail_after_next_truncate = false;

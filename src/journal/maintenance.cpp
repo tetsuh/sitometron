@@ -142,9 +142,15 @@ class Quarantine {
     if (file_system_.Truncate(segment_path, result_.offset) != IoError::kNone) {
       return Finish(MaintenanceStatus::kFailed, Failed("truncate", segment_path));
     }
+    // A cut that reports success must have removed exactly the torn bytes: the segment is the old
+    // content up to the offset, and replay finds every complete record it found before.
+    if (!Holds(segment_path, std::string_view(*content).substr(0, result_.offset))) {
+      return Finish(MaintenanceStatus::kFailed, Failed("verify cut", segment_path));
+    }
     const auto after = ReplayAll(file_system_, directory_);
-    if (after.status != ReplayStatus::kReplayed &&
-        after.status != ReplayStatus::kSequenceExhausted) {
+    if ((after.status != ReplayStatus::kReplayed &&
+         after.status != ReplayStatus::kSequenceExhausted) ||
+        after.records != replayed.records) {
       return Finish(MaintenanceStatus::kFailed, Failed("verify", In(after.detail, directory_)));
     }
     result_.sequence_exhausted = after.status == ReplayStatus::kSequenceExhausted;
@@ -166,6 +172,13 @@ class Quarantine {
   }
 
  private:
+  // True when the file at `path` now holds exactly `expected`.
+  bool Holds(const std::string& path, std::string_view expected) {
+    IoError error = IoError::kNone;
+    const auto now = file_system_.ReadAll(path, error);
+    return now.has_value() && *now == expected;
+  }
+
   // A run whose cut succeeded but whose data sync failed leaves the highest segment exactly as long
   // as the offset its quarantine file names, and replay then sees no torn tail. Cutting again at
   // that offset repeats the truncate and its data sync, so the cut is durable before anything is
@@ -190,6 +203,8 @@ class Quarantine {
     if (file_system_.Truncate(path, content->size()) != IoError::kNone) {
       return Finish(MaintenanceStatus::kFailed, Failed("truncate", path));
     }
+    if (!Holds(path, *content))
+      return Finish(MaintenanceStatus::kFailed, Failed("verify cut", path));
     if (file_system_.SyncDirectory(directory_) != IoError::kNone) {
       return Finish(MaintenanceStatus::kFailed, Failed("sync directory", directory_));
     }
