@@ -255,10 +255,16 @@ int RunPrune(const ToolOptions& options) {
   prune.dry_run = options.dry_run;
   const auto result =
       journal::PruneClosedPrefix(journal::SystemMaintenanceFileSystem(), options.directory, prune);
-  // The lists are empty unless the prefix was moved (kDone) or planned (kPlanned).
-  const std::string_view segment_verb = options.dry_run ? "would archive " : "archived ";
+  // `resumed` names what an interrupted earlier run already moved. A dry run lists what it would
+  // move; a real run lists what it moved, also when it then failed. Jobs are listed only when the
+  // prefix was completed or planned.
+  for (const auto& segment : result.resumed) std::cout << "already archived " << segment << '\n';
+  if (options.dry_run) {
+    for (const auto& segment : result.segments) std::cout << "would archive " << segment << '\n';
+  } else {
+    for (const auto& segment : result.moved) std::cout << "archived " << segment << '\n';
+  }
   const std::string_view job_verb = options.dry_run ? "would prune job " : "pruned job ";
-  for (const auto& segment : result.segments) std::cout << segment_verb << segment << '\n';
   for (const auto& id : result.jobs) std::cout << job_verb << id.value << '\n';
   return Report(result.status, result.detail);
 }

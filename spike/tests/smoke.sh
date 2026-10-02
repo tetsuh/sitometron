@@ -303,11 +303,22 @@ printf '%s\n' "$dry" | grep -q "${ids[2]}" && { echo "dry run would prune the la
 printf '%s\n' "$dry" | grep -q 'journal_prune_planned: 26 segments, 26 records, 2 Jobs; replay starts at 27'
 [[ "$(ls "$maint")" == "$maint_files" && "$(cat "$maint"/journal-*.ndjson | cksum)" == "$maint_bytes" ]] || { echo "dry run changed the Journal"; exit 1; }
 
+# A prune interrupted after its first move: the first Job spans 13 segments, so the retained
+# Journal now holds records of a Job whose creation is archived. The daemon refuses it, and running
+# prune again completes the interrupted prune from archive/.
+first_segment=$(printf 'journal-%020d.ndjson' 1)
+mkdir -m 700 "$maint/archive"
+mv "$maint/$first_segment" "$maint/archive/"
+if "$binary" --listen 127.0.0.1:0 --journal "$maint" >"$scratch/interrupted.log" 2>&1; then
+  echo "expected the interrupted prune to be refused at startup"; exit 1
+fi
+grep -q 'never created' "$scratch/interrupted.log" || { echo "interrupted startup: $(cat "$scratch/interrupted.log")"; exit 1; }
 pruned=$("$binary" journal prune --journal "$maint")
-[[ "$(printf '%s\n' "$pruned" | grep -c '^archived journal-')" -eq 26 ]] || { echo "prune: $pruned"; exit 1; }
+printf '%s\n' "$pruned" | grep -qx "already archived $first_segment" || { echo "prune: $pruned"; exit 1; }
+[[ "$(printf '%s\n' "$pruned" | grep -c '^archived journal-')" -eq 25 ]] || { echo "prune: $pruned"; exit 1; }
 printf '%s\n' "$pruned" | grep -qx "pruned job ${ids[0]}"
 printf '%s\n' "$pruned" | grep -qx "pruned job ${ids[1]}"
-printf '%s\n' "$pruned" | grep -q 'journal_pruned: 26 segments'
+printf '%s\n' "$pruned" | grep -q 'journal_pruned: 25 segments, 25 records, 2 Jobs; replay starts at 27; completes an interrupted prune after 1 archived segments'
 [[ "$(ls "$maint/archive" | wc -l)" -eq 26 && "$(ls "$maint"/journal-*.ndjson | wc -l)" -eq 13 ]] || { echo "unexpected layout: $(ls -R "$maint")"; exit 1; }
 [[ "$(cat "$maint/archive"/journal-*.ndjson "$maint"/journal-*.ndjson | cksum)" == "$maint_bytes" ]] || { echo "pruning changed record bytes"; exit 1; }
 

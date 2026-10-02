@@ -71,7 +71,10 @@ With the daemon stopped, two offline subcommands maintain the Journal (Issue #69
 take the Journal lock, so they refuse with `journal_locked` while a daemon runs, and neither starts
 the writer or the HTTP server. `journal prune` moves the longest prefix of sealed segments whose
 Jobs are all closed within it into `archive/` inside the Journal directory; replay then skips those
-Jobs and the sequence continues unchanged. Deleting or restoring `archive/` is up to the operator.
+Jobs and the sequence continues unchanged. If a prune is interrupted between moves while a Job spans
+the moved segments, the daemon refuses the Journal until `journal prune` runs again; that run lists
+the segments already moved as `already archived` and completes the rest. Deleting or restoring
+`archive/` is otherwise up to the operator, but not while a prune is interrupted.
 `journal quarantine-tail` moves a torn tail, which makes startup refuse with `journal_torn_tail`,
 into `<segment>.torn-<offset>` next to the segment and cuts the segment back to its last complete
 record. It prints the next sequence, or `sequence exhausted` when the last remaining record carries
