@@ -110,8 +110,9 @@ bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
       const std::string_view text = raw == nullptr ? std::string_view() : std::string_view(raw);
       const auto [end, code] =
           std::from_chars(text.data(), text.data() + text.size(), options.segment_limit);
-      if (text.empty() || code != std::errc() || end != text.data() + text.size()) {
-        error = "--segment-limit needs a number of bytes";
+      if (text.empty() || code != std::errc() || end != text.data() + text.size() ||
+          options.segment_limit == 0) {
+        error = "--segment-limit needs a positive number of bytes";
         return false;
       }
     } else if (flag == "--help" || flag == "-h") {
@@ -200,7 +201,11 @@ bool ParseToolOptions(int argc, char** argv, ToolOptions& options) {
   std::size_t index = 1;
   while (index < args.size()) {
     const auto flag = args[index];
-    if (flag == "--journal" && index + 1 < args.size()) {
+    if (flag == "--journal") {
+      if (index + 1 >= args.size()) {
+        std::cerr << "error: --journal needs a directory\n" << k_tool_usage;
+        return false;
+      }
       options.directory = args[index + 1];
       index += 2;
     } else if (flag == "--dry-run" && options.command == "prune") {
@@ -235,8 +240,12 @@ int RunQuarantine(const ToolOptions& options) {
       journal::QuarantineTornTail(journal::SystemMaintenanceFileSystem(), options.directory);
   if (result.status == journal::MaintenanceStatus::kDone) {
     std::cout << "quarantined " << result.bytes << " bytes of " << result.segment << " from byte "
-              << result.offset << " into " << result.quarantine << '\n'
-              << "next sequence " << result.next_sequence << '\n';
+              << result.offset << " into " << result.quarantine << '\n';
+    if (result.sequence_exhausted) {
+      std::cout << "sequence exhausted: the daemon will refuse to start\n";
+    } else {
+      std::cout << "next sequence " << result.next_sequence << '\n';
+    }
   }
   return Report(result.status, result.detail);
 }

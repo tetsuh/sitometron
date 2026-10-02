@@ -264,10 +264,10 @@ wait "$daemon"
 # Offline maintenance (OPS-005). With one record per segment, three Jobs run one after another
 # leave segment boundaries between Jobs, so the first two Jobs' 26 segments form a closed prefix.
 maint="$scratch/maint"
-for bad in abc 12abc -1 99999999999999999999; do
+for bad in abc 12abc -1 0 99999999999999999999; do
   status=0
   "$binary" --segment-limit "$bad" --journal "$maint" >"$scratch/bad-limit.log" 2>&1 || status=$?
-  [[ "$status" -eq 2 ]] && grep -q -- '--segment-limit needs a number of bytes' "$scratch/bad-limit.log" || { echo "--segment-limit $bad: exit $status: $(cat "$scratch/bad-limit.log")"; exit 1; }
+  [[ "$status" -eq 2 ]] && grep -q -- '--segment-limit needs a positive number of bytes' "$scratch/bad-limit.log" || { echo "--segment-limit $bad: exit $status: $(cat "$scratch/bad-limit.log")"; exit 1; }
 done
 [[ ! -e "$maint" ]] || { echo "a rejected option created the Journal"; exit 1; }
 submit_true() {
@@ -340,10 +340,31 @@ printf '%s\n' "$quarantined" | grep -q "^quarantined 12 bytes of $(basename "$hi
 [[ "$(cksum <"$highest")" == "$highest_bytes" ]] || { echo "the segment was not cut back to its last record"; exit 1; }
 [[ "$(cat "$highest".torn-*)" == '{"sequence":' ]] || { echo "quarantine file content: $(cat "$highest".torn-*)"; exit 1; }
 "$binary" journal quarantine-tail --journal "$maint" | grep -q 'journal_clean'
+status=0
+"$binary" journal prune --journal >"$scratch/tool.log" 2>&1 || status=$?
+[[ "$status" -eq 2 ]] && grep -q -- '--journal needs a directory' "$scratch/tool.log" || { echo "missing --journal value: exit $status: $(cat "$scratch/tool.log")"; exit 1; }
 start_on "$maint" --segment-limit 1
 curl -fsS "$base/healthz" | grep -q '"ready":true'
 kill -TERM "$daemon"
 wait "$daemon"
+
+# A torn tail after the last possible sequence: quarantine-tail cuts it and reports that no next
+# sequence exists, and startup then refuses the exhausted Journal.
+exhausted="$scratch/exhausted"
+mkdir -p "$exhausted"
+last_segment="$exhausted/journal-18446744073709551615.ndjson"
+head -n1 "$maint/archive/$(printf 'journal-%020d.ndjson' 1)" |
+  sed 's/"sequence":1,/"sequence":18446744073709551615,/' >"$last_segment"
+grep -q '"sequence":18446744073709551615,' "$last_segment" || { echo "could not build the exhausted record"; exit 1; }
+printf '{"seq' >>"$last_segment"
+exhausted_out=$("$binary" journal quarantine-tail --journal "$exhausted")
+printf '%s\n' "$exhausted_out" | grep -qx 'sequence exhausted: the daemon will refuse to start' || { echo "exhausted quarantine: $exhausted_out"; exit 1; }
+printf '%s\n' "$exhausted_out" | grep -q 'next sequence' && { echo "an exhausted Journal reported a next sequence: $exhausted_out"; exit 1; }
+printf '%s\n' "$exhausted_out" | grep -q "; sequence exhausted in $exhausted"
+if "$binary" --listen 127.0.0.1:0 --journal "$exhausted" >"$scratch/exhausted-start.log" 2>&1; then
+  echo "expected the exhausted Journal to be refused"; exit 1
+fi
+grep -q 'exhausted' "$scratch/exhausted-start.log" || { echo "no exhaustion refusal: $(cat "$scratch/exhausted-start.log")"; exit 1; }
 trap - EXIT
 echo "smoke ok: $lines journal lines, port $port"
 exit 0

@@ -74,7 +74,9 @@ Jobs are all closed within it into `archive/` inside the Journal directory; repl
 Jobs and the sequence continues unchanged. Deleting or restoring `archive/` is up to the operator.
 `journal quarantine-tail` moves a torn tail, which makes startup refuse with `journal_torn_tail`,
 into `<segment>.torn-<offset>` next to the segment and cuts the segment back to its last complete
-record:
+record. It prints the next sequence, or `sequence exhausted` when the last remaining record carries
+the last possible sequence, in which case the daemon still refuses to start. Every result line names
+the Journal directory:
 
 With the default 64 MiB segments a small Journal is one segment, and the highest non-empty segment
 always stays, so there is nothing to prune. To see pruning, run the daemon with `--segment-limit 1`
@@ -84,7 +86,7 @@ always stays, so there is nothing to prune. To see pruning, run the daemon with 
 build/dev-linux/spike/sitometron_spike journal prune --journal /tmp/sitometron-journal --dry-run
 # would archive journal-00000000000000000001.ndjson   (13 lines, one per record of the first Job)
 # would prune job <first id>
-# journal_prune_planned: 13 segments, 13 records, 1 Jobs; replay starts at 14
+# journal_prune_planned: 13 segments, 13 records, 1 Jobs; replay starts at 14 in /tmp/sitometron-journal
 build/dev-linux/spike/sitometron_spike journal prune --journal /tmp/sitometron-journal
 build/dev-linux/spike/sitometron_spike journal quarantine-tail --journal /tmp/sitometron-journal
 # journal_clean: /tmp/sitometron-journal
