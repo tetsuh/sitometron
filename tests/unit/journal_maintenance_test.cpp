@@ -779,6 +779,29 @@ int PruneInterruptedSpanning() {
                     "resume uses only the archived run before the Journal: " + finished.detail);
   }
   {
+    // The resuming run is itself interrupted: Job 1 spans segments 1, 3, and 5. The first run moves
+    // segment 1, the resume moves segment 3 and fails, and a third run resumes from both.
+    auto fs = Journal({{1, ClosedJobPart(1, 1, 0, 2)},
+                       {3, ClosedJobPart(1, 1, 2, 4)},
+                       {5, ClosedJobPart(1, 1, 4, 7) + ClosedJob(8, 2)},
+                       {15, Bytes(Created(15, 3))}});
+    fs.renames_until_failure = 2;
+    const auto first = Prune(fs);
+    fs.renames_until_failure = 2;
+    const auto second = Prune(fs);
+    const auto third = Prune(fs);
+    result |=
+        Check(first.status == MaintenanceStatus::kFailed &&
+                  first.moved == std::vector<std::string>{Name(1)} &&
+                  second.status == MaintenanceStatus::kFailed &&
+                  second.moved == std::vector<std::string>{Name(3)} &&
+                  third.status == MaintenanceStatus::kDone &&
+                  third.resumed == std::vector<std::string>{Name(1), Name(3)} &&
+                  third.moved == std::vector<std::string>{Name(5)} &&
+                  Replay(fs).status == ReplayStatus::kReplayed && Ids(Replay(fs).jobs) == Jobs({3}),
+              "an interrupted resume is resumed again: " + third.detail);
+  }
+  {
     // An archived run that explains the refusal but holds an unresolved Job is not a prunable
     // prefix: it is refused, not reported as nothing to prune, and nothing moves.
     auto fs = Journal({{2, Bytes(Cancelled(2, 1))}, {3, Bytes(Created(3, 2))}});
@@ -903,6 +926,29 @@ int SystemFileSystemCheck() {
                     "the relative Journal replays from segment 15: " + replayed.detail);
     std::error_code ignored;
     std::filesystem::remove_all(relative, ignored);
+  }
+  {
+    // A prune interrupted after its first move resumes on the real file system: Job 1 spans
+    // segments 1 and 5.
+    const auto spanning = root / "spanning";
+    result |=
+        Check(fs.EnsureDirectory(spanning.string()) == IoError::kNone &&
+                  fs.EnsureDirectory((spanning / k_archive_directory).string()) == IoError::kNone,
+              "create the spanning Journal and its archive");
+    write(spanning / Name(1), ClosedJobPart(1, 1, 0, 4));
+    write(spanning / Name(5), ClosedJobPart(1, 1, 4, 7) + ClosedJob(8, 2));
+    write(spanning / Name(15), Bytes(Created(15, 3)));
+    result |= Check(
+        fs.RenameNoReplace((spanning / Name(1)).string(),
+                           (spanning / k_archive_directory / Name(1)).string()) == IoError::kNone,
+        "move the first segment as an interrupted prune would");
+    const auto resumed = PruneClosedPrefix(fs, spanning.string(), PruneOptions{});
+    const auto replayed = ReplayJournal(SystemFileSystem(), spanning.string(), ReplayOptions{1});
+    result |= Check(resumed.status == MaintenanceStatus::kDone &&
+                        resumed.resumed == std::vector<std::string>{Name(1)} &&
+                        resumed.moved == std::vector<std::string>{Name(5)} &&
+                        replayed.status == ReplayStatus::kReplayed && replayed.next_sequence == 16,
+                    "an interrupted prune resumes on the real file system: " + resumed.detail);
   }
   std::error_code ignored;
   std::filesystem::remove_all(root, ignored);
