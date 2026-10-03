@@ -107,11 +107,14 @@ bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
       options.trace_capacity = std::stoul(raw);
     } else if (flag == "--segment-limit") {
       const char* raw = value();
-      const std::string_view text = raw == nullptr ? std::string_view() : std::string_view(raw);
+      if (raw == nullptr || *raw == '\0') {
+        error = "--segment-limit needs a positive number of bytes";
+        return false;
+      }
+      const std::string_view text(raw);
       const auto [end, code] =
           std::from_chars(text.data(), text.data() + text.size(), options.segment_limit);
-      if (text.empty() || code != std::errc() || end != text.data() + text.size() ||
-          options.segment_limit == 0) {
+      if (code != std::errc() || end != text.data() + text.size() || options.segment_limit == 0) {
         error = "--segment-limit needs a positive number of bytes";
         return false;
       }

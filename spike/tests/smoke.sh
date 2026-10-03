@@ -269,6 +269,12 @@ for bad in abc 12abc -1 0 99999999999999999999; do
   "$binary" --segment-limit "$bad" --journal "$maint" >"$scratch/bad-limit.log" 2>&1 || status=$?
   [[ "$status" -eq 2 ]] && grep -q -- '--segment-limit needs a positive number of bytes' "$scratch/bad-limit.log" || { echo "--segment-limit $bad: exit $status: $(cat "$scratch/bad-limit.log")"; exit 1; }
 done
+status=0
+"$binary" --journal "$maint" --segment-limit >"$scratch/bad-limit.log" 2>&1 || status=$?
+[[ "$status" -eq 2 ]] && grep -q -- '--segment-limit needs a positive number of bytes' "$scratch/bad-limit.log" || { echo "--segment-limit without a value: exit $status: $(cat "$scratch/bad-limit.log")"; exit 1; }
+status=0
+"$binary" --journal "$maint" --segment-limit '' >"$scratch/bad-limit.log" 2>&1 || status=$?
+[[ "$status" -eq 2 ]] || { echo "--segment-limit '': exit $status"; exit 1; }
 [[ ! -e "$maint" ]] || { echo "a rejected option created the Journal"; exit 1; }
 submit_true() {
   local body
