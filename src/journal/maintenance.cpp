@@ -418,7 +418,11 @@ class Prune {
   std::optional<PruneResult> SyncEarlierMoves() {
     const auto archive = JoinPath(directory_, k_archive_directory);
     IoError error = IoError::kNone;
-    if (!file_system_.List(archive, error).has_value()) return std::nullopt;  // no archive/
+    if (!file_system_.List(archive, error).has_value()) {
+      // Only a missing archive/ means no earlier move; any other listing failure fails closed.
+      if (error == IoError::kNotFound) return std::nullopt;
+      return Finish(MaintenanceStatus::kFailed, Failed("list", archive));
+    }
     if (file_system_.SyncDirectory(archive) != IoError::kNone) {
       return Finish(MaintenanceStatus::kFailed, Failed("sync directory", archive));
     }

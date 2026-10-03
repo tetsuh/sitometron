@@ -670,6 +670,15 @@ int PruneFaults() {
                 "a failed sync after the last move is synced again before nothing to prune: " +
                     settled.detail);
     }
+    // archive/ exists but cannot be listed: that is an I/O failure, not "no earlier move".
+    auto unlisted = ClosedPrefixJournal();
+    unlisted.directory_syncs_until_failure = 5;
+    (void)Prune(unlisted);
+    unlisted.unlistable.insert(k_archive);
+    const auto blind = Prune(unlisted);
+    result |= Check(blind.status == MaintenanceStatus::kFailed &&
+                        blind.detail.find("list " + k_archive) != std::string::npos,
+                    "an archive/ that cannot be listed is a failure: " + blind.detail);
     // And a failure of that sync is reported.
     auto fs = ClosedPrefixJournal();
     fs.directory_syncs_until_failure = 5;
@@ -889,6 +898,10 @@ int SystemFileSystemCheck() {
                         !std::filesystem::exists(a) && read(b) == "abc",
                     "rename moves the file");
     write(c, "other");
+    IoError listed = IoError::kNone;
+    result |= Check(!fs.List((root / "no-such-directory").string(), listed).has_value() &&
+                        listed == IoError::kNotFound,
+                    "listing a missing directory is kNotFound");
     result |= Check(fs.RenameNoReplace(c.string(), b.string()) == IoError::kExists &&
                         read(b) == "abc" && read(c) == "other",
                     "rename refuses to replace an existing file and changes nothing");

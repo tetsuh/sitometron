@@ -50,6 +50,7 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   bool throw_on_list = false;
   bool throw_on_read = false;
   bool fail_next_mkdir = false;
+  std::set<std::string> unlistable;  // existing directories whose listing fails with an I/O error
   bool fail_next_truncate = false;
   bool fail_next_rename = false;
   std::size_t renames_until_failure = 0;  // when nonzero, the Nth rename fails
@@ -83,8 +84,12 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
                                                IoError& error) override {
     log.push_back("list " + directory);
     if (throw_on_list) throw std::runtime_error("injected list exception");
-    if (directories.count(directory) == 0) {
+    if (unlistable.count(directory) != 0) {
       error = IoError::kOther;
+      return std::nullopt;
+    }
+    if (directories.count(directory) == 0) {
+      error = IoError::kNotFound;
       return std::nullopt;
     }
     std::vector<std::string> names;
