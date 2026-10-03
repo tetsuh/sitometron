@@ -50,8 +50,8 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   bool throw_on_list = false;
   bool throw_on_read = false;
   bool fail_next_mkdir = false;
-  std::set<std::string> unlistable;  // existing directories whose listing fails with an I/O error
-  std::set<std::string> other_entries;  // non-regular entries: not listed, but they exist
+  std::set<std::string> unreadable_entries;  // paths whose entry kind cannot be read
+  std::set<std::string> other_entries;       // non-regular entries: not listed, but they exist
   // Paths that are symbolic links. A link to a file also sits in `files` (listed and read through,
   // as the system follows it); a link to a directory also sits in `directories`.
   std::set<std::string> symbolic_links;
@@ -88,12 +88,8 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
                                                IoError& error) override {
     log.push_back("list " + directory);
     if (throw_on_list) throw std::runtime_error("injected list exception");
-    if (unlistable.count(directory) != 0) {
-      error = IoError::kOther;
-      return std::nullopt;
-    }
     if (directories.count(directory) == 0) {
-      error = IoError::kNotFound;
+      error = IoError::kOther;
       return std::nullopt;
     }
     std::vector<std::string> names;
@@ -233,8 +229,12 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
     durable_entries.erase(from);
     return IoError::kNone;
   }
-  std::optional<journal::EntryKind> Entry(const std::string& path, IoError& /*error*/) override {
+  std::optional<journal::EntryKind> Entry(const std::string& path, IoError& error) override {
     log.push_back("entry " + path);
+    if (unreadable_entries.count(path) != 0) {
+      error = IoError::kOther;
+      return std::nullopt;
+    }
     using journal::EntryKind;
     if (symbolic_links.count(path) != 0) return EntryKind::kSymbolicLink;
     if (files.count(path) != 0) return EntryKind::kRegularFile;

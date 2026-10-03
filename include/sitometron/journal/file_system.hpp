@@ -28,7 +28,6 @@ enum class IoError {
   kExists,       // exclusive create found an existing file
   kLocked,       // the lock is held by another owner
   kUnsupported,  // the platform or file system cannot provide the required guarantee
-  kNotFound,     // the directory or file does not exist
   kOther,
 };
 
@@ -46,8 +45,7 @@ class FileSystem {
   [[nodiscard]] virtual IoError EnsureDirectory(const std::string& directory) = 0;
   // Takes an exclusive advisory lock on `path` (created if absent) for the handle's lifetime.
   [[nodiscard]] virtual std::optional<FileHandle> Lock(const std::string& path, IoError& error) = 0;
-  // Names of the regular files directly inside `directory`. A directory that does not exist is
-  // kNotFound; any other failure is an I/O error.
+  // Names of the regular files directly inside `directory`.
   [[nodiscard]] virtual std::optional<std::vector<std::string>> List(const std::string& directory,
                                                                      IoError& error) = 0;
   // Entire content of a file.

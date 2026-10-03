@@ -81,7 +81,7 @@ std::optional<std::vector<std::string>> ListRegularFiles(const std::string& dire
     }
   }
   if (code) {
-    error = code == std::errc::no_such_file_or_directory ? IoError::kNotFound : IoError::kOther;
+    error = IoError::kOther;
     return std::nullopt;
   }
   return names;

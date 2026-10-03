@@ -424,11 +424,14 @@ class Prune {
   // earlier run whose final directory sync failed are durable. Syncing changes no byte.
   std::optional<PruneResult> SyncEarlierMoves() {
     const auto archive = JoinPath(directory_, k_archive_directory);
+    // Only a missing archive/ means no earlier move; a failed check fails closed.
     IoError error = IoError::kNone;
-    if (!file_system_.List(archive, error).has_value()) {
-      // Only a missing archive/ means no earlier move; any other listing failure fails closed.
-      if (error == IoError::kNotFound) return std::nullopt;
-      return Finish(MaintenanceStatus::kFailed, Failed("list", archive));
+    const auto kind = file_system_.Entry(archive, error);
+    if (!kind.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("check", archive));
+    if (*kind == EntryKind::kNone) return std::nullopt;
+    if (*kind != EntryKind::kDirectory) {
+      return Finish(MaintenanceStatus::kRefused,
+                    "journal_archive_conflict: " + archive + " is not a directory");
     }
     if (file_system_.SyncDirectory(archive) != IoError::kNone) {
       return Finish(MaintenanceStatus::kFailed, Failed("sync directory", archive));
