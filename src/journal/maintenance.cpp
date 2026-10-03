@@ -220,7 +220,7 @@ class Quarantine {
     if (!content.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("read", path));
     const auto quarantine = highest + ".torn-" + std::to_string(content->size());
     if (!Contains(*names, quarantine)) return std::nullopt;
-    if (auto refusal = RefuseForeign(path)) return *refusal;
+    if (auto refusal = RefuseForeign(path)) return refusal;
     if (file_system_.Truncate(path, content->size()) != IoError::kNone) {
       return Finish(MaintenanceStatus::kFailed, Failed("truncate", path));
     }
@@ -258,7 +258,7 @@ class Quarantine {
     if (Contains(*names, result_.quarantine)) {
       // Only a file of its own is completed: through a symbolic link the bytes would leave the
       // Journal, and a file another hard link also names could lose them to a later change there.
-      if (auto refusal = RefuseForeign(path)) return *refusal;
+      if (auto refusal = RefuseForeign(path)) return refusal;
       const auto existing = file_system_.ReadAll(path, error);
       if (!existing.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("read", path));
       if (existing->size() > tail.size() || !tail.starts_with(*existing)) {
