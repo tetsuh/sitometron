@@ -338,6 +338,9 @@ class Prune {
                        directory_));
     }
     if (length == 0) {
+      // An earlier run may have moved its last segment and failed to sync the directories; its
+      // moves are not reported as settled until both entries are durable.
+      if (auto failure = SyncEarlierMoves()) return *failure;
       return Finish(
           MaintenanceStatus::kNothingToDo,
           In("journal_nothing_to_prune: no sealed prefix holds only closed Jobs", directory_));
@@ -408,6 +411,21 @@ class Prune {
       if (running == 0) longest = k;
     }
     return longest;
+  }
+
+  // When archive/ exists, syncs it and the Journal directory, so the entries of moves made by an
+  // earlier run whose final directory sync failed are durable. Syncing changes no byte.
+  std::optional<PruneResult> SyncEarlierMoves() {
+    const auto archive = JoinPath(directory_, k_archive_directory);
+    IoError error = IoError::kNone;
+    if (!file_system_.List(archive, error).has_value()) return std::nullopt;  // no archive/
+    if (file_system_.SyncDirectory(archive) != IoError::kNone) {
+      return Finish(MaintenanceStatus::kFailed, Failed("sync directory", archive));
+    }
+    if (file_system_.SyncDirectory(directory_) != IoError::kNone) {
+      return Finish(MaintenanceStatus::kFailed, Failed("sync directory", directory_));
+    }
+    return std::nullopt;
   }
 
   // A prune interrupted between moves can leave the first retained segment holding records of a

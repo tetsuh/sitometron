@@ -75,10 +75,13 @@ std::vector<Uuid> Ids(const std::vector<Snapshot>& snapshots) {
 }
 
 // True when an operation after log position `from` changed the file system.
+// A directory sync changes no byte, so it does not count.
 bool Changed(const MemoryFileSystem& fs, std::size_t from) {
   for (std::size_t i = from; i < fs.log.size(); ++i) {
     const auto op = fs.log[i].substr(0, fs.log[i].find(' '));
-    if (op != "list" && op != "read" && op != "lock" && op != "close") return true;
+    if (op != "list" && op != "read" && op != "lock" && op != "close" && op != "syncdir") {
+      return true;
+    }
   }
   return false;
 }
@@ -648,6 +651,34 @@ int PruneFaults() {
     result |= Check(rest.status == MaintenanceStatus::kDone &&
                         rest.segments == std::vector<std::string>{Name(8)},
                     "the rerun moves only segment 8: " + rest.detail);
+  }
+  {
+    // The last move's directory sync fails: the Journal already looks pruned, so the rerun has
+    // nothing to move, but it syncs both directories before it reports the prefix settled.
+    for (const std::size_t failing_sync : {4U, 5U}) {
+      auto fs = ClosedPrefixJournal();
+      fs.directory_syncs_until_failure = failing_sync;
+      const auto failed = Prune(fs);
+      const auto mark = fs.log.size();
+      const auto settled = Prune(fs);
+      result |=
+          Check(failed.status == MaintenanceStatus::kFailed &&
+                    failed.moved == std::vector<std::string>{Name(1), Name(8)} &&
+                    settled.status == MaintenanceStatus::kNothingToDo &&
+                    Find(fs, "syncdir " + k_archive, mark) != std::string::npos &&
+                    Find(fs, "syncdir " + k_dir, mark) != std::string::npos,
+                "a failed sync after the last move is synced again before nothing to prune: " +
+                    settled.detail);
+    }
+    // And a failure of that sync is reported.
+    auto fs = ClosedPrefixJournal();
+    fs.directory_syncs_until_failure = 5;
+    (void)Prune(fs);
+    fs.fail_next_directory_sync = true;
+    const auto unsynced = Prune(fs);
+    result |= Check(unsynced.status == MaintenanceStatus::kFailed &&
+                        unsynced.detail.find("sync directory") != std::string::npos,
+                    "a failed sync of earlier moves is a failure: " + unsynced.detail);
   }
   {
     // A move that reports success without moving is caught by the verification replay.
