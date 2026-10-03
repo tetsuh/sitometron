@@ -487,13 +487,16 @@ class Prune {
     if (file_system_.SyncDirectory(directory_) != IoError::kNone) {
       return Finish(MaintenanceStatus::kFailed, Failed("sync directory", directory_));
     }
-    IoError error = IoError::kNone;
-    const auto archived = file_system_.List(archive, error);
-    if (!archived.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("list", archive));
+    // Any entry at a destination, not only a regular file, would make its rename fail after the
+    // earlier moves: check every destination before the first move.
     for (const auto& name : result_.segments) {
-      if (Contains(*archived, name)) {
+      const auto to = JoinPath(archive, name);
+      IoError error = IoError::kNone;
+      const auto exists = file_system_.Exists(to, error);
+      if (!exists.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("check", to));
+      if (*exists) {
         return Finish(MaintenanceStatus::kRefused,
-                      "journal_archive_conflict: " + JoinPath(archive, name) + " already exists");
+                      "journal_archive_conflict: " + to + " already exists");
       }
     }
     for (const auto& name : result_.segments) {

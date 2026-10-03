@@ -728,6 +728,18 @@ int PruneFaults() {
               "the rerun syncs the Journal directory before its first move: " + retried.detail);
   }
   {
+    // A non-regular entry at a destination (a directory or a dangling link) is a conflict too,
+    // found before the first move.
+    auto fs = ClosedPrefixJournal();
+    fs.other_entries.insert(ArchivePath(8));
+    const auto files = fs.files;
+    const auto conflict = Prune(fs);
+    result |= Check(conflict.status == MaintenanceStatus::kRefused &&
+                        conflict.detail.find("journal_archive_conflict") != std::string::npos &&
+                        fs.CountOps("rename") == 0 && fs.files == files && Released(fs),
+                    "a non-regular archived entry refuses before any move: " + conflict.detail);
+  }
+  {
     // An archived name that already exists is a conflict, and nothing moves.
     auto fs = ClosedPrefixJournal();
     fs.files[ArchivePath(8)] = "older copy";
@@ -993,6 +1005,34 @@ int SystemFileSystemCheck() {
                         resumed.moved == std::vector<std::string>{Name(5)} &&
                         replayed.status == ReplayStatus::kReplayed && replayed.next_sequence == 16,
                     "an interrupted prune resumes on the real file system: " + resumed.detail);
+  }
+  {
+    // A directory, and on POSIX a dangling symbolic link, at an archive destination is a conflict
+    // found before any move on the real file system.
+    const auto blocked = root / "blocked";
+    result |=
+        Check(fs.EnsureDirectory(blocked.string()) == IoError::kNone &&
+                  fs.EnsureDirectory((blocked / k_archive_directory).string()) == IoError::kNone,
+              "create the blocked Journal and its archive");
+    write(blocked / Name(1), ClosedJob(1, 1));
+    write(blocked / Name(8), ClosedJob(8, 2));
+    write(blocked / Name(15), Bytes(Created(15, 3)));
+    std::filesystem::create_directory(blocked / k_archive_directory / Name(8));
+    const auto refused = PruneClosedPrefix(fs, blocked.string(), PruneOptions{});
+    result |=
+        Check(refused.status == MaintenanceStatus::kRefused &&
+                  refused.detail.find("journal_archive_conflict") != std::string::npos &&
+                  refused.moved.empty() && std::filesystem::exists(blocked / Name(1)),
+              "a directory at an archive destination refuses before any move: " + refused.detail);
+#if !defined(_WIN32)
+    std::filesystem::remove(blocked / k_archive_directory / Name(8));
+    std::filesystem::create_symlink(root / "nowhere", blocked / k_archive_directory / Name(8));
+    const auto dangling = PruneClosedPrefix(fs, blocked.string(), PruneOptions{});
+    result |= Check(
+        dangling.status == MaintenanceStatus::kRefused && dangling.moved.empty() &&
+            std::filesystem::exists(blocked / Name(1)),
+        "a dangling link at an archive destination refuses before any move: " + dangling.detail);
+#endif
   }
   std::error_code ignored;
   std::filesystem::remove_all(root, ignored);

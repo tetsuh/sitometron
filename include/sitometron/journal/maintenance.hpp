@@ -2,6 +2,7 @@
 #define SITOMETRON_JOURNAL_MAINTENANCE_HPP_
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,9 @@ class MaintenanceFileSystem : public FileSystem {
   // Renames the file `from` to `to`. Returns kExists and changes nothing when `to` exists. The
   // caller makes both directory entries durable.
   [[nodiscard]] virtual IoError RenameNoReplace(const std::string& from, const std::string& to) = 0;
+  // True when any entry exists at `path`: a file, directory, symbolic link (not followed, so a
+  // dangling link counts), or anything else. nullopt with `error` set when that cannot be told.
+  [[nodiscard]] virtual std::optional<bool> Exists(const std::string& path, IoError& error) = 0;
 };
 
 // The maintenance file system of the current platform. The daemon never takes it.

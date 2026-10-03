@@ -51,6 +51,7 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   bool throw_on_read = false;
   bool fail_next_mkdir = false;
   std::set<std::string> unlistable;  // existing directories whose listing fails with an I/O error
+  std::set<std::string> other_entries;  // non-regular entries: not listed, but they exist
   bool fail_next_truncate = false;
   bool fail_next_rename = false;
   std::size_t renames_until_failure = 0;  // when nonzero, the Nth rename fails
@@ -221,11 +222,17 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
     }
     const auto it = files.find(from);
     if (it == files.end()) return IoError::kOther;
-    if (files.count(to) != 0) return IoError::kExists;
+    if (files.count(to) != 0 || directories.count(to) != 0 || other_entries.count(to) != 0) {
+      return IoError::kExists;
+    }
     files[to] = std::move(it->second);
     files.erase(from);
     durable_entries.erase(from);
     return IoError::kNone;
+  }
+  std::optional<bool> Exists(const std::string& path, IoError& /*error*/) override {
+    log.push_back("exists " + path);
+    return files.count(path) != 0 || directories.count(path) != 0 || other_entries.count(path) != 0;
   }
   void Close(FileHandle file) noexcept override {
     const auto it = handles_.find(file.value);

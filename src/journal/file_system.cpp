@@ -87,6 +87,18 @@ std::optional<std::vector<std::string>> ListRegularFiles(const std::string& dire
   return names;
 }
 
+// Whether any entry exists at `path`, without following a symbolic link.
+std::optional<bool> EntryExists(const std::string& path, IoError& error) {
+  std::error_code code;
+  const auto status = std::filesystem::symlink_status(std::filesystem::path(path), code);
+  if (status.type() == std::filesystem::file_type::not_found) return false;
+  if (code) {
+    error = IoError::kOther;
+    return std::nullopt;
+  }
+  return true;
+}
+
 std::optional<std::string> ReadWholeFile(const std::string& path, IoError& error) {
   std::ifstream input(std::filesystem::path(path), std::ios::binary);
   if (!input) {
@@ -308,6 +320,9 @@ class WindowsMaintenanceFileSystem final : public WindowsFiles<MaintenanceFileSy
     }
     return FromLastError();
   }
+  std::optional<bool> Exists(const std::string& path, IoError& error) override {
+    return EntryExists(path, error);
+  }
 };
 
 #else
@@ -447,6 +462,9 @@ class PosixMaintenanceFileSystem final : public PosixFiles<MaintenanceFileSystem
     (void)to;
     return IoError::kUnsupported;  // no atomic no-replace rename is wired for this platform
 #endif
+  }
+  std::optional<bool> Exists(const std::string& path, IoError& error) override {
+    return EntryExists(path, error);
   }
 };
 
