@@ -32,7 +32,8 @@ Options: `--listen HOST:PORT` (loopback addresses only; port `0` picks an epheme
 it), `--journal DIR` (the production `SegmentJournal` from `sitometron_journal`, Issue #59: segment
 files and exclusive lock; at startup every segment is validated and replayed, Issues #61 and #64),
 `--workdir DIR` (default working directory for children), `--max-jobs N` (default 32, see
-[Findings](#findings-for-phase-0b12)), `--trace-capacity N` (default 4096).
+[Findings](#findings-for-phase-0b12)), `--trace-capacity N` (default 4096), `--segment-limit BYTES`
+(default 67108864; the segment size at which the Journal rotates).
 
 ```sh
 curl -s localhost:8080/healthz
@@ -64,6 +65,34 @@ build/dev-linux/spike/sitometron_spike --listen 127.0.0.1:8080 --journal /tmp/si
 # ... (next sequence: N, replayed jobs: 1, unresolved: 1)
 curl -s localhost:8080/healthz   # 503 {"ready":false,"status":"not_ready","unresolved":["<id>"],...}
 curl -s localhost:8080/jobs/<id> # {"recovered":true,"state":"running","terminal":false,...}
+```
+
+With the daemon stopped, two offline subcommands maintain the Journal (Issue #69, `OPS-005`). Both
+take the Journal lock, so they refuse with `journal_locked` while a daemon runs, and neither starts
+the writer or the HTTP server. `journal prune` moves the longest prefix of sealed segments whose
+Jobs are all closed within it into `archive/` inside the Journal directory; replay then skips those
+Jobs and the sequence continues unchanged. If a prune is interrupted between moves while a Job spans
+the moved segments, the daemon refuses the Journal until `journal prune` runs again; that run lists
+the segments already moved as `already archived` and completes the rest. Deleting or restoring
+`archive/` is otherwise up to the operator, but not while a prune is interrupted.
+`journal quarantine-tail` moves a torn tail, which makes startup refuse with `journal_torn_tail`,
+into `<segment>.torn-<offset>` next to the segment and cuts the segment back to its last complete
+record. It prints the next sequence, or `sequence exhausted` when the last remaining record carries
+the last possible sequence, in which case the daemon still refuses to start. The final line of each
+subcommand, its result code, names the Journal directory; the lines before it do not repeat it:
+
+With the default 64 MiB segments a small Journal is one segment, and the highest non-empty segment
+always stays, so there is nothing to prune. To see pruning, run the daemon with `--segment-limit 1`
+(one record per segment), finish two `/bin/true` Jobs one after the other, and stop it:
+
+```sh
+build/dev-linux/spike/sitometron_spike journal prune --journal /tmp/sitometron-journal --dry-run
+# would archive journal-00000000000000000001.ndjson   (13 lines, one per record of the first Job)
+# would prune job <first id>
+# journal_prune_planned: 13 segments, 13 records, 1 Jobs; replay starts at 14 in /tmp/sitometron-journal
+build/dev-linux/spike/sitometron_spike journal prune --journal /tmp/sitometron-journal
+build/dev-linux/spike/sitometron_spike journal quarantine-tail --journal /tmp/sitometron-journal
+# journal_clean: /tmp/sitometron-journal
 ```
 
 Smoke test (needs `curl`): `ctest --test-dir build/dev-linux -L spike --output-on-failure`.
@@ -98,7 +127,7 @@ Native Windows, TLS, authentication, request limits beyond 64 KiB, Admission, Ap
 ResourceProfile/topology, the Worker protocol (`worker_running` is asserted at spawn), cancel and
 terminate (the stop ports are no-ops), timeouts (no timer adapter exists, so a hung child never
 times out), recovery of Jobs left unresolved by a crash (they are replayed and shown, but the daemon
-then stays not ready with admission closed; Phase 2 owns their resolution), Journal pruning, Sitos, Artifact
+then stays not ready with admission closed; Phase 2 owns their resolution), online Journal pruning, Sitos, Artifact
 REST, Quill logging, packaging, release. Bundle provenance is a placeholder digest.
 
 ## Findings for Phase 0B/1/2
@@ -121,7 +150,9 @@ authorities, not decisions.
    The trace and ingress-sequence logs are append-only and bounded by `trace_capacity`; the writer
    fails closed when either fills. Memory is reserved up front as
    `2 × max_jobs × trace_capacity` trace records. Phase 0B/1 need resident retirement, a bounded or
-   rolling trace, and a documented daemon lifetime model.
+   rolling trace, and a documented daemon lifetime model. **Partly addressed** across restarts:
+   offline pruning (Issue #69) removes closed Jobs from replay, so a restarted daemon regains their
+   slots. Retirement inside one run remains open (Gate #50 finding H7).
 5. **Handoff ports run on the writer thread.** `HandoffLaunch` / `HandoffRetainSameIdentity` must
    not block or re-enter ingress. The skeleton uses per-Job mailboxes (`AwaitLaunch`,
    `AwaitRetain`); a production adapter needs the same discipline spelled out in its contract.

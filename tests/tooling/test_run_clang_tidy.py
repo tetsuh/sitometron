@@ -85,12 +85,12 @@ class RunClangTidyTest(unittest.TestCase):
                     )
 
     def test_requires_exact_frozen_source_count(self) -> None:
-        sources = [self.root / f"source-{index}.cpp" for index in range(20)]
+        sources = [self.root / f"source-{index}.cpp" for index in range(22)]
         self.module.require_source_count(sources)
         for invalid in (sources[:-1], [*sources, self.root / "extra.cpp"]):
             with self.subTest(count=len(invalid)):
                 with self.assertRaisesRegex(
-                    self.module.QualificationError, "expected 20.*found"
+                    self.module.QualificationError, "expected 22.*found"
                 ):
                     self.module.require_source_count(invalid)
 

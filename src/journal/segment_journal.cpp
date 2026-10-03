@@ -44,7 +44,10 @@ std::optional<std::uint64_t> SegmentFirstSequence(std::string_view name) {
 std::optional<std::uint64_t> LastSequence(std::string_view content, std::string& error) {
   if (content.empty()) return std::nullopt;
   if (content.back() != '\n') {
-    error = "active segment ends with a torn record";
+    // Same code and location as startup replay (ADR-0006 §5): the byte after the last LF.
+    const auto end = content.rfind('\n');
+    error = "journal_torn_tail: active segment ends with a torn record at byte " +
+            std::to_string(end == std::string_view::npos ? 0 : end + 1);
     return std::nullopt;
   }
   const auto body = content.substr(0, content.size() - 1);

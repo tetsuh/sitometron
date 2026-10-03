@@ -25,7 +25,7 @@ I/O/framework ownership. Only `sitometrond` composes concrete adapters.
 | `sitometron_core` | Domain state, commands, pure reducer, lifecycle ports, and private single-writer orchestration | Implemented ADR-0004/`NFR-005` closed allowlist; Sitometron-owned public types only |
 | `sitometron_test_support` and private fake-support targets | Deterministic fakes, barriers, and test helpers | Tests only |
 | `sitometrond` | Composition root and daemon entry point | Core initially; adapters by Phase |
-| `sitometron_journal` | Physical JobJournal adapter: canonical record codec, durable segment writer, startup validation, and replay that seeds the writer; pruning as Phase 0B proceeds | Accepted ADR-0006; owns its own I/O and JSON dependencies; exposes Sitometron-owned types only |
+| `sitometron_journal` | Physical JobJournal adapter: canonical record codec, durable segment writer, startup validation, replay that seeds the writer, and offline maintenance (torn-tail quarantine and prefix pruning through a separate maintenance file system the daemon never takes) | Accepted ADR-0006; owns its own I/O and JSON dependencies; exposes Sitometron-owned types only |
 
 Later adapter targets are introduced only by their owning Issues:
 
@@ -52,7 +52,8 @@ implement the bounded private single writer, complete logical envelope construct
 and no-fail postcommit dispatch; Issue #13 completes deterministic adverse/race qualification.
 The `sitometron_journal` adapter implements the canonical record codec (Issue #57), the durable
 segment writer (Issue #59), and startup validation and replay (Issue #61); the single writer starts
-from the replayed state (Issue #64). Pruning remains Planned under Issue #51.
+from the replayed state (Issue #64). Offline torn-tail quarantine and closed-prefix pruning are
+implemented by Issue #69.
 Production effect adapters remain Planned under later owners.
 
 The machine-readable Job transition contract is documented in
