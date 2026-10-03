@@ -1,6 +1,8 @@
 // sitometron_spike: the non-normative walking skeleton (Issue #48).
 //
 //   sitometron_spike --listen 127.0.0.1:8080 --journal ./journal --workdir /tmp/work
+//   sitometron_spike journal quarantine-tail --journal ./journal
+//   sitometron_spike journal prune --journal ./journal [--dry-run]
 //
 // Composes the Phase 0A core (reducer + single writer) with real adapters: a file Journal, a
 // posix_spawn process runner, a loopback HTTP surface, and system clock/identity sources.
@@ -10,16 +12,23 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <charconv>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
+#include <system_error>
+#include <vector>
 
 #include "http_server.hpp"
 #include "job_driver.hpp"
 #include "sitometron/core/version.hpp"
+#include "sitometron/journal/maintenance.hpp"
 #include "sitometron/journal/replay.hpp"
+#include "sitometron/journal/segment_journal.hpp"
 
 namespace {
 
@@ -44,6 +53,7 @@ struct Options {
   std::string workdir;
   std::size_t max_jobs = 32;
   std::size_t trace_capacity = 4096;
+  std::uint64_t segment_limit = sitometron::journal::SegmentJournalOptions{}.segment_limit_bytes;
 };
 
 bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
@@ -95,6 +105,19 @@ bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
         return false;
       }
       options.trace_capacity = std::stoul(raw);
+    } else if (flag == "--segment-limit") {
+      const char* raw = value();
+      if (raw == nullptr || *raw == '\0') {
+        error = "--segment-limit needs a positive number of bytes";
+        return false;
+      }
+      const std::string_view text(raw);
+      const auto [end, code] =
+          std::from_chars(text.data(), text.data() + text.size(), options.segment_limit);
+      if (code != std::errc() || end != text.data() + text.size() || options.segment_limit == 0) {
+        error = "--segment-limit needs a positive number of bytes";
+        return false;
+      }
     } else if (flag == "--help" || flag == "-h") {
       error.clear();
       return false;
@@ -160,19 +183,122 @@ HttpResponse Route(sitometron::spike::JobDriver& driver, const HttpRequest& requ
   return Json(404, {{"error", "unknown resource"}});
 }
 
+// Offline Journal maintenance (OPS-005): runs instead of the daemon, never starts the writer or the
+// HTTP server, and refuses while a daemon holds the Journal lock.
+namespace journal = sitometron::journal;
+
+constexpr std::string_view k_tool_usage =
+    "usage: sitometron_spike journal quarantine-tail --journal DIR\n"
+    "       sitometron_spike journal prune --journal DIR [--dry-run]\n";
+
+struct ToolOptions {
+  std::string command;
+  std::string directory;
+  bool dry_run = false;
+};
+
+// Parses `journal <command> --journal DIR [--dry-run]`; returns false after printing the reason.
+bool ParseToolOptions(int argc, char** argv, ToolOptions& options) {
+  const std::vector<std::string_view> args(argv + 2, argv + argc);
+  if (!args.empty()) options.command = args.front();
+  std::size_t index = 1;
+  while (index < args.size()) {
+    const auto flag = args[index];
+    if (flag == "--journal") {
+      // A missing value, or the next option where the directory belongs, is a usage error.
+      if (index + 1 >= args.size() || args[index + 1].empty() ||
+          args[index + 1].starts_with("--")) {
+        std::cerr << "error: --journal needs a directory\n" << k_tool_usage;
+        return false;
+      }
+      options.directory = args[index + 1];
+      index += 2;
+    } else if (flag == "--dry-run" && options.command == "prune") {
+      options.dry_run = true;
+      index += 1;
+    } else {
+      std::cerr << "error: unknown option " << flag << '\n' << k_tool_usage;
+      return false;
+    }
+  }
+  if ((options.command != "quarantine-tail" && options.command != "prune") ||
+      options.directory.empty()) {
+    std::cerr << k_tool_usage;
+    return false;
+  }
+  return true;
+}
+
+// Prints the result detail to stdout on success or to stderr on refusal; returns the exit code.
+int Report(journal::MaintenanceStatus status, const std::string& detail) {
+  using enum journal::MaintenanceStatus;
+  if (status == kDone || status == kPlanned || status == kNothingToDo) {
+    std::cout << detail << '\n';
+    return 0;
+  }
+  std::cerr << "error: " << detail << '\n';
+  return 1;
+}
+
+int RunQuarantine(const ToolOptions& options) {
+  const auto result =
+      journal::QuarantineTornTail(journal::SystemMaintenanceFileSystem(), options.directory);
+  if (result.status == journal::MaintenanceStatus::kDone) {
+    std::cout << "quarantined " << result.bytes << " bytes of " << result.segment << " from byte "
+              << result.offset << " into " << result.quarantine << '\n';
+    if (result.sequence_exhausted) {
+      std::cout << "sequence exhausted: the daemon will refuse to start\n";
+    } else {
+      std::cout << "next sequence " << result.next_sequence << '\n';
+    }
+  }
+  return Report(result.status, result.detail);
+}
+
+int RunPrune(const ToolOptions& options) {
+  journal::PruneOptions prune;
+  prune.dry_run = options.dry_run;
+  const auto result =
+      journal::PruneClosedPrefix(journal::SystemMaintenanceFileSystem(), options.directory, prune);
+  // `resumed` names what an interrupted earlier run already moved. A dry run lists what it would
+  // move; a real run lists what it moved, also when it then failed. Jobs are listed only when the
+  // prefix was completed or planned.
+  for (const auto& segment : result.resumed) std::cout << "already archived " << segment << '\n';
+  if (options.dry_run) {
+    for (const auto& segment : result.segments) std::cout << "would archive " << segment << '\n';
+  } else {
+    for (const auto& segment : result.moved) std::cout << "archived " << segment << '\n';
+  }
+  const std::string_view job_verb = options.dry_run ? "would prune job " : "pruned job ";
+  for (const auto& id : result.jobs) std::cout << job_verb << id.value << '\n';
+  return Report(result.status, result.detail);
+}
+
+int RunJournalTool(int argc, char** argv) {
+  ToolOptions options;
+  if (!ParseToolOptions(argc, argv, options)) return 2;
+  return options.command == "prune" ? RunPrune(options) : RunQuarantine(options);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc > 1 && std::string_view(argv[1]) == "journal") return RunJournalTool(argc, argv);
   Options options;
   std::string error;
   if (!ParseOptions(argc, argv, options, error)) {
     if (!error.empty()) std::cerr << "error: " << error << '\n';
     std::cerr << "usage: sitometron_spike [--listen HOST:PORT] [--journal DIR] [--workdir DIR]"
-                 " [--max-jobs N] [--trace-capacity N]\n";
+                 " [--max-jobs N] [--trace-capacity N] [--segment-limit BYTES]\n"
+                 "       sitometron_spike journal quarantine-tail --journal DIR\n"
+                 "       sitometron_spike journal prune --journal DIR [--dry-run]\n";
     return error.empty() ? 0 : 2;
   }
 
-  sitometron::journal::SegmentJournal journal(sitometron::journal::SystemFileSystem());
+  sitometron::journal::SegmentJournalOptions journal_options;
+  journal_options.segment_limit_bytes = options.segment_limit;
+  sitometron::journal::SegmentJournal journal(sitometron::journal::SystemFileSystem(),
+                                              journal_options);
   const auto opened = journal.Open(options.journal);
   if (!opened.ok) {
     std::cerr << "error: cannot open journal " << options.journal << ": " << opened.detail << '\n';

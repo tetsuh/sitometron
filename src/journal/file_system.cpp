@@ -15,6 +15,8 @@
 #include <utility>
 #include <vector>
 
+#include "sitometron/journal/maintenance.hpp"
+
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -32,6 +34,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdio>
 #endif
 
 namespace sitometron::journal {
@@ -82,6 +85,38 @@ std::optional<std::vector<std::string>> ListRegularFiles(const std::string& dire
     return std::nullopt;
   }
   return names;
+}
+
+// The kind of entry at `path`, without following a symbolic link.
+std::optional<EntryKind> EntryAt(const std::string& path, IoError& error) {
+  std::error_code code;
+  const auto status = std::filesystem::symlink_status(std::filesystem::path(path), code);
+  if (status.type() == std::filesystem::file_type::not_found) return EntryKind::kNone;
+  if (code) {
+    error = IoError::kOther;
+    return std::nullopt;
+  }
+  switch (status.type()) {
+    case std::filesystem::file_type::regular:
+      return EntryKind::kRegularFile;
+    case std::filesystem::file_type::directory:
+      return EntryKind::kDirectory;
+    case std::filesystem::file_type::symlink:
+      return EntryKind::kSymbolicLink;
+    default:
+      return EntryKind::kOther;
+  }
+}
+
+// The number of hard links to the file at `path`.
+std::optional<std::uintmax_t> HardLinkCount(const std::string& path, IoError& error) {
+  std::error_code code;
+  const auto count = std::filesystem::hard_link_count(std::filesystem::path(path), code);
+  if (code) {
+    error = IoError::kOther;
+    return std::nullopt;
+  }
+  return count;
 }
 
 std::optional<std::string> ReadWholeFile(const std::string& path, IoError& error) {
@@ -155,7 +190,10 @@ class OwnerOnlySecurity {
   SECURITY_ATTRIBUTES attributes_{};
 };
 
-class WindowsFileSystem final : public FileSystem {
+// The platform operations shared by the daemon's FileSystem and the offline
+// MaintenanceFileSystem. `Base` is one of the two interfaces.
+template <class Base>
+class WindowsFiles : public Base {
  public:
   IoError EnsureDirectory(const std::string& directory) override {
     std::error_code code;
@@ -267,6 +305,58 @@ class WindowsFileSystem final : public FileSystem {
   void Close(FileHandle file) noexcept override { CloseHandle(ToHandle(file)); }
 };
 
+class WindowsFileSystem final : public WindowsFiles<FileSystem> {};
+
+class WindowsMaintenanceFileSystem final : public WindowsFiles<MaintenanceFileSystem> {
+ public:
+  IoError Truncate(const std::string& path, std::uint64_t size) override {
+    const HANDLE handle =
+        CreateFileW(std::filesystem::path(path).c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                    OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return FromLastError();
+    const auto cut = [handle, size]() {
+      // The opened file itself must be a regular file that no other hard link names; a reparse
+      // point (a symbolic link) is opened as itself, not followed.
+      BY_HANDLE_FILE_INFORMATION information{};
+      if (!GetFileInformationByHandle(handle, &information)) return FromLastError();
+      if ((information.dwFileAttributes &
+           (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0 ||
+          information.nNumberOfLinks != 1) {
+        return IoError::kOther;
+      }
+      LARGE_INTEGER current;
+      current.QuadPart = 0;  // the member GetFileSizeEx fills and this function reads
+      if (!GetFileSizeEx(handle, &current)) return FromLastError();
+      // A cut never extends the file.
+      if (static_cast<std::uint64_t>(current.QuadPart) < size) return IoError::kOther;
+      LARGE_INTEGER position;
+      position.QuadPart = static_cast<LONGLONG>(size);
+      if (!SetFilePointerEx(handle, position, nullptr, FILE_BEGIN) || !SetEndOfFile(handle)) {
+        return FromLastError();
+      }
+      return FlushFileBuffers(handle) ? IoError::kNone : IoError::kOther;
+    };
+    const IoError result = cut();
+    CloseHandle(handle);
+    return result;
+  }
+  IoError RenameNoReplace(const std::string& from, const std::string& to) override {
+    const auto source = std::filesystem::path(from).wstring();
+    // Without MOVEFILE_REPLACE_EXISTING an existing target fails with ERROR_ALREADY_EXISTS.
+    if (const auto target = std::filesystem::path(to).wstring();
+        MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
+      return IoError::kNone;
+    }
+    return FromLastError();
+  }
+  std::optional<EntryKind> Entry(const std::string& path, IoError& error) override {
+    return EntryAt(path, error);
+  }
+  std::optional<std::uintmax_t> HardLinks(const std::string& path, IoError& error) override {
+    return HardLinkCount(path, error);
+  }
+};
+
 #else
 
 int ToDescriptor(FileHandle file) { return static_cast<int>(file.value); }
@@ -291,7 +381,10 @@ IoError FromErrno(int code) {
   }
 }
 
-class PosixFileSystem final : public FileSystem {
+// The platform operations shared by the daemon's FileSystem and the offline
+// MaintenanceFileSystem. `Base` is one of the two interfaces.
+template <class Base>
+class PosixFiles : public Base {
  public:
   IoError EnsureDirectory(const std::string& directory) override {
     std::error_code code;
@@ -366,6 +459,53 @@ class PosixFileSystem final : public FileSystem {
   void Close(FileHandle file) noexcept override { ::close(ToDescriptor(file)); }
 };
 
+class PosixFileSystem final : public PosixFiles<FileSystem> {};
+
+class PosixMaintenanceFileSystem final : public PosixFiles<MaintenanceFileSystem> {
+ public:
+  IoError Truncate(const std::string& path, std::uint64_t size) override {
+    int descriptor = -1;
+    do {
+      // A symbolic link is never followed, and a FIFO never blocks the open.
+      descriptor = ::open(path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) return FromErrno(errno);
+    const auto cut = [descriptor, size]() {
+      struct stat status = {};
+      if (::fstat(descriptor, &status) != 0) return FromErrno(errno);
+      // The opened file itself must be a regular file that no other hard link names.
+      if (!S_ISREG(status.st_mode) || status.st_nlink != 1) return IoError::kOther;
+      // A cut never extends the file.
+      if (static_cast<std::uint64_t>(status.st_size) < size) return IoError::kOther;
+      if (::ftruncate(descriptor, static_cast<off_t>(size)) != 0) return FromErrno(errno);
+      // A failed data sync is never retried (ADR-0006 §4).
+      return ::fdatasync(descriptor) == 0 ? IoError::kNone : IoError::kOther;
+    };
+    const IoError result = cut();
+    ::close(descriptor);
+    return result == IoError::kInterrupted ? IoError::kOther : result;
+  }
+  IoError RenameNoReplace(const std::string& from, const std::string& to) override {
+#if defined(__linux__)
+    // RENAME_NOREPLACE fails with EEXIST instead of replacing the target atomically.
+    if (::renameat2(AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE) == 0) {
+      return IoError::kNone;
+    }
+    return FromErrno(errno);
+#else
+    (void)from;
+    (void)to;
+    return IoError::kUnsupported;  // no atomic no-replace rename is wired for this platform
+#endif
+  }
+  std::optional<EntryKind> Entry(const std::string& path, IoError& error) override {
+    return EntryAt(path, error);
+  }
+  std::optional<std::uintmax_t> HardLinks(const std::string& path, IoError& error) override {
+    return HardLinkCount(path, error);
+  }
+};
+
 #endif
 
 }  // namespace
@@ -375,6 +515,15 @@ FileSystem& SystemFileSystem() {
   static WindowsFileSystem file_system;
 #else
   static PosixFileSystem file_system;
+#endif
+  return file_system;
+}
+
+MaintenanceFileSystem& SystemMaintenanceFileSystem() {
+#if defined(_WIN32)
+  static WindowsMaintenanceFileSystem file_system;
+#else
+  static PosixMaintenanceFileSystem file_system;
 #endif
   return file_system;
 }

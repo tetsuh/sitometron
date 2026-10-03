@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "job_orchestrator.hpp"
+#include "journal_test_events.hpp"
 #include "memory_file_system.hpp"
 #include "reducer_snapshot_json.hpp"
 #include "sitometron/core/job_ports.hpp"
@@ -59,31 +60,6 @@ std::optional<LogicalJobEvent> EventFromFixture(const Ordered& fixture, std::str
   }
   return decoded.event;
 }
-
-std::string Job(int n) {
-  std::string suffix = std::to_string(n);
-  return "01890f3e-7b00-7abc-8abc-" + std::string(12 - suffix.size(), '0') + suffix;
-}
-
-LogicalJobEvent Created(std::uint64_t sequence, int job) {
-  return LogicalJobEvent{1,
-                         sequence,
-                         EventType::kJobCreated,
-                         DiagnosticTimestamp{"2026-09-28T01:02:03Z"},
-                         Uuid{Job(job)},
-                         JobCreatedPayload{Uuid{Job(job)}}};
-}
-
-LogicalJobEvent Cancelled(std::uint64_t sequence, int job) {
-  return LogicalJobEvent{1,
-                         sequence,
-                         EventType::kCancelAccepted,
-                         DiagnosticTimestamp{"2026-09-28T01:02:04Z"},
-                         Uuid{Job(job)},
-                         PrincipalPayload{"operator@example"}};
-}
-
-std::string Bytes(const LogicalJobEvent& event) { return EncodeRecord(event).bytes; }
 
 MemoryFileSystem Journal(const std::vector<std::pair<std::uint64_t, std::string>>& segments) {
   MemoryFileSystem fs;
@@ -424,15 +400,6 @@ int DispatchesNoEffects() {
   return result;
 }
 
-LogicalJobEvent Recorded(std::uint64_t sequence, int job, EventType type, EventPayload payload) {
-  return LogicalJobEvent{1,
-                         sequence,
-                         type,
-                         DiagnosticTimestamp{"2026-09-28T01:02:05Z"},
-                         Uuid{Job(job)},
-                         std::move(payload)};
-}
-
 int SequenceContinuation() {
   int result = 0;
   auto empty = Journal({});
@@ -471,24 +438,6 @@ int SequenceContinuation() {
   result |= Check(replayed.unresolved == expected_unresolved,
                   "the admitted and stopping Jobs 1, 2, 3 are unresolved, in creation order");
   return result;
-}
-
-// Job `job` runs to the end from sequence `first`: cancelled while admitted, finalized, terminal,
-// cleaned up. Seven records; the Job is resolved afterwards.
-std::string ClosedJob(std::uint64_t first, int job) {
-  const std::vector<LogicalJobEvent> lifecycle{
-      Created(first, job),
-      Cancelled(first + 1, job),
-      Recorded(first + 2, job, EventType::kSessionRetainRequested, SessionPayload{Uuid{Job(job)}}),
-      Recorded(first + 3, job, EventType::kSessionRetained, SessionPayload{Uuid{Job(job)}}),
-      Recorded(first + 4, job, EventType::kFinalizationCompleted, EmptyPayload{}),
-      Recorded(first + 5, job, EventType::kTerminalOutcomeCommitted,
-               TerminalOutcomePayload{TerminalOutcome::kCancelled}),
-      Recorded(first + 6, job, EventType::kCleanupStatusRecorded,
-               CleanupStatusPayload{CleanupStatus::kCompleted})};
-  std::string bytes;
-  for (const auto& event : lifecycle) bytes += Bytes(event);
-  return bytes;
 }
 
 // An orchestrator seeded from `replayed`, writing to `journal` (already opened on the replayed

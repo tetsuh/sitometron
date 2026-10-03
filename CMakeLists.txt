@@ -85,7 +85,8 @@ add_library(
   src/journal/record_codec.cpp
   src/journal/segment_journal.cpp
   src/journal/file_system.cpp
-  src/journal/replay.cpp)
+  src/journal/replay.cpp
+  src/journal/maintenance.cpp)
 add_library(sitometron::journal ALIAS sitometron_journal)
 target_include_directories(
   sitometron_journal
@@ -314,6 +315,28 @@ if(SITOMETRON_BUILD_TESTS)
       COMMAND sitometron_journal_replay_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/schemas/core/v1/job-reducer-vectors.json
         ${_journal_replay_check})
+  endforeach()
+
+  add_executable(sitometron_journal_maintenance_tests tests/unit/journal_maintenance_test.cpp)
+  target_link_libraries(
+    sitometron_journal_maintenance_tests
+    PRIVATE
+      sitometron::journal
+      sitometron::core
+      sitometron::test_support)
+  sitometron_enable_project_warnings(sitometron_journal_maintenance_tests)
+  sitometron_enable_sanitizers(sitometron_journal_maintenance_tests)
+  foreach(_journal_maintenance_check IN ITEMS
+      journal_prune_prefix_only
+      journal_prune_refuses_open_jobs
+      journal_prune_keeps_last_record
+      journal_quarantine_torn_tail
+      journal_maintenance_requires_lock
+      journal_maintenance_faults
+      journal_maintenance_system_file_system)
+    add_test(
+      NAME ${_journal_maintenance_check}
+      COMMAND sitometron_journal_maintenance_tests ${_journal_maintenance_check})
   endforeach()
 
   add_executable(sitometron_core_dependency_api_smoke tests/unit/core_dependency_api_smoke.cpp)

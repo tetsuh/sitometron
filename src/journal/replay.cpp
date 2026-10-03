@@ -179,6 +179,8 @@ class Replayer {
     result_.detail = std::move(detail);
     result_.jobs.clear();
     result_.unresolved.clear();
+    result_.segments.clear();
+    result_.spans.clear();
     return result_;
   }
 
@@ -205,12 +207,12 @@ class Replayer {
                                                 " without records is not named for sequence 1");
     }
     // An empty highest segment is named for the next sequence, checked above (ADR-0006 §5).
+    result_.segments.emplace_back(segment.name, segment.first, 0);
     std::size_t offset = 0;
     while (offset < content->size()) {
       const auto end = content->find('\n', offset);
       if (end == std::string::npos) {
-        return highest ? Refuse(ReplayStatus::kTornTail, "journal_torn_tail: " + segment.name +
-                                                             " at byte " + std::to_string(offset))
+        return highest ? TornTail(segment, offset)
                        : Refuse(ReplayStatus::kCorrupt, "journal_corrupt: " + segment.name +
                                                             " ends without LF at byte " +
                                                             std::to_string(offset));
@@ -233,11 +235,18 @@ class Replayer {
                     "journal_sequence_exhausted" + Location(segment.name, last_));
     }
     if (highest && content.find('\n', offset) == std::string_view::npos) {
-      return Refuse(ReplayStatus::kTornTail,
-                    "journal_torn_tail: " + segment.name + " at byte " + std::to_string(offset));
+      return TornTail(segment, offset);
     }
     return Refuse(ReplayStatus::kCorrupt, "journal_corrupt: record after UINT64_MAX in " +
                                               segment.name + " at byte " + std::to_string(offset));
+  }
+
+  // The bytes from `offset` to the end of the highest segment were never committed (ADR-0006 §5).
+  ReplayResult TornTail(const Segment& segment, std::size_t offset) {
+    result_.torn_segment = segment.name;
+    result_.torn_offset = offset;
+    return Refuse(ReplayStatus::kTornTail,
+                  "journal_torn_tail: " + segment.name + " at byte " + std::to_string(offset));
   }
 
   std::optional<ReplayResult> ReplayLine(const Segment& segment, std::size_t offset,
@@ -263,8 +272,10 @@ class Replayer {
       return Refuse(ReplayStatus::kCorrupt,
                     "journal_corrupt: " + why + Location(segment.name, record.sequence));
     }
+    const auto segment_index = result_.segments.size() - 1;
     if (known) {
       result_.jobs[found->second] = std::move(*after);
+      result_.spans[found->second].last_segment = segment_index;
     } else if (result_.jobs.size() >= options_.max_jobs) {
       return Refuse(ReplayStatus::kCapacityExceeded,
                     "journal_capacity_exceeded: more than " + std::to_string(options_.max_jobs) +
@@ -272,9 +283,11 @@ class Replayer {
     } else {
       index_of_.try_emplace(record.job_id.value, result_.jobs.size());
       result_.jobs.push_back(std::move(*after));
+      result_.spans.push_back(JobSegmentSpan{segment_index, segment_index});
     }
     last_ = record.sequence;
     ++result_.records;
+    ++result_.segments.back().records;
     if (record.sequence != UINT64_MAX) expected_ = record.sequence + 1;
     return std::nullopt;
   }

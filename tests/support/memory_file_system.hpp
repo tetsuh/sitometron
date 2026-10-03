@@ -14,16 +14,19 @@
 #include <vector>
 
 #include "sitometron/journal/file_system.hpp"
+#include "sitometron/journal/maintenance.hpp"
 
 namespace sitometron::test {
 using journal::FileHandle;
 using journal::FileSystem;
 using journal::IoError;
 using journal::JoinPath;
+using journal::MaintenanceFileSystem;
 using journal::WriteOutcome;
 
-// In-memory file system that records every operation and injects scripted faults.
-class MemoryFileSystem final : public FileSystem {
+// In-memory file system that records every operation and injects scripted faults. It also offers
+// the offline maintenance operations; the daemon only ever sees it as a FileSystem.
+class MemoryFileSystem final : public MaintenanceFileSystem {
  public:
   struct WriteFault {
     std::size_t accept = 0;  // bytes accepted before the error
@@ -39,16 +42,37 @@ class MemoryFileSystem final : public FileSystem {
   std::size_t short_write_limit = 0;   // 0 = unlimited bytes per call
   bool fail_next_sync = false;
   bool fail_next_directory_sync = false;
+  std::size_t directory_syncs_until_failure = 0;  // when nonzero, the Nth directory sync fails
   bool fail_next_create = false;
   bool throw_on_create = false;
   // Runs inside the throwing create, while the failing Commit() holds the journal lock.
   std::function<void()> on_throwing_create;
   bool throw_on_list = false;
   bool throw_on_read = false;
+  bool fail_next_mkdir = false;
+  std::set<std::string> unreadable_entries;          // paths whose entry kind cannot be read
+  std::map<std::string, std::uintmax_t> hard_links;  // link count per path; 1 when absent
+  std::set<std::string> other_entries;  // non-regular entries: not listed, but they exist
+  // Paths that are symbolic links. A link to a file also sits in `files` (listed and read through,
+  // as the system follows it); a link to a directory also sits in `directories`.
+  std::set<std::string> symbolic_links;
+  bool fail_next_truncate = false;
+  bool fail_next_rename = false;
+  std::size_t renames_until_failure = 0;  // when nonzero, the Nth rename fails
+  // The next call reports success but changes nothing, as a misbehaving file system might.
+  bool ignore_next_truncate = false;
+  bool fail_after_next_truncate = false;  // the next truncate cuts, then reports a failed sync
+  std::optional<std::uint64_t> next_truncate_to;  // the next truncate cuts here and reports success
+  bool ignore_next_rename = false;
+  bool throw_on_rename = false;
   IoError create_error = IoError::kNoSpace;
 
   IoError EnsureDirectory(const std::string& directory) override {
     log.push_back("mkdir " + directory);
+    if (fail_next_mkdir) {
+      fail_next_mkdir = false;
+      return IoError::kOther;
+    }
     directories.insert(directory);
     return IoError::kNone;
   }
@@ -72,7 +96,11 @@ class MemoryFileSystem final : public FileSystem {
     std::vector<std::string> names;
     const auto prefix = JoinPath(directory, "");
     for (const auto& [path, content] : files) {
-      if (path.rfind(prefix, 0) == 0) names.push_back(path.substr(prefix.size()));
+      // Only files directly inside the directory, like the system implementation.
+      if (path.rfind(prefix, 0) == 0 &&
+          path.find_first_of("/\\", prefix.size()) == std::string::npos) {
+        names.push_back(path.substr(prefix.size()));
+      }
     }
     return names;
   }
@@ -140,15 +168,94 @@ class MemoryFileSystem final : public FileSystem {
   }
   IoError SyncDirectory(const std::string& directory) noexcept override {
     log.push_back("syncdir " + directory);
+    if (directory_syncs_until_failure != 0 && --directory_syncs_until_failure == 0) {
+      return IoError::kUnsupported;
+    }
     if (fail_next_directory_sync) {
       fail_next_directory_sync = false;
       return IoError::kUnsupported;
     }
     const auto prefix = JoinPath(directory, "");
     for (const auto& [path, content] : files) {
-      if (path.rfind(prefix, 0) == 0) durable_entries.insert(path);
+      if (path.rfind(prefix, 0) == 0 &&
+          path.find_first_of("/\\", prefix.size()) == std::string::npos) {
+        durable_entries.insert(path);
+      }
     }
     return IoError::kNone;
+  }
+  IoError Truncate(const std::string& path, std::uint64_t size) override {
+    log.push_back("truncate " + path + " " + std::to_string(size));
+    if (fail_next_truncate) {
+      fail_next_truncate = false;
+      return IoError::kOther;
+    }
+    if (ignore_next_truncate) {
+      ignore_next_truncate = false;
+      return IoError::kNone;
+    }
+    const auto it = files.find(path);
+    if (it == files.end() || size > it->second.size()) return IoError::kOther;
+    // As the system does: never through a symbolic link or a file with another hard link.
+    if (const auto links = hard_links.find(path);
+        symbolic_links.count(path) != 0 || (links != hard_links.end() && links->second != 1)) {
+      return IoError::kOther;
+    }
+    if (next_truncate_to) {
+      it->second.resize(static_cast<std::size_t>(*next_truncate_to));
+      next_truncate_to.reset();
+      return IoError::kNone;
+    }
+    it->second.resize(static_cast<std::size_t>(size));
+    if (fail_after_next_truncate) {
+      fail_after_next_truncate = false;
+      return IoError::kOther;
+    }
+    return IoError::kNone;
+  }
+  IoError RenameNoReplace(const std::string& from, const std::string& to) override {
+    log.push_back("rename " + from + " " + to);
+    if (throw_on_rename) throw std::runtime_error("injected rename exception");
+    if (fail_next_rename) {
+      fail_next_rename = false;
+      return IoError::kOther;
+    }
+    if (renames_until_failure != 0 && --renames_until_failure == 0) return IoError::kOther;
+    if (ignore_next_rename) {
+      ignore_next_rename = false;
+      return IoError::kNone;
+    }
+    const auto it = files.find(from);
+    if (it == files.end()) return IoError::kOther;
+    if (files.count(to) != 0 || directories.count(to) != 0 || other_entries.count(to) != 0) {
+      return IoError::kExists;
+    }
+    files[to] = std::move(it->second);
+    files.erase(from);
+    durable_entries.erase(from);
+    return IoError::kNone;
+  }
+  std::optional<journal::EntryKind> Entry(const std::string& path, IoError& error) override {
+    log.push_back("entry " + path);
+    if (unreadable_entries.count(path) != 0) {
+      error = IoError::kOther;
+      return std::nullopt;
+    }
+    using journal::EntryKind;
+    if (symbolic_links.count(path) != 0) return EntryKind::kSymbolicLink;
+    if (files.count(path) != 0) return EntryKind::kRegularFile;
+    if (directories.count(path) != 0) return EntryKind::kDirectory;
+    if (other_entries.count(path) != 0) return EntryKind::kOther;
+    return EntryKind::kNone;
+  }
+  std::optional<std::uintmax_t> HardLinks(const std::string& path, IoError& error) override {
+    log.push_back("links " + path);
+    if (files.count(path) == 0) {
+      error = IoError::kOther;
+      return std::nullopt;
+    }
+    const auto it = hard_links.find(path);
+    return it == hard_links.end() ? 1 : it->second;
   }
   void Close(FileHandle file) noexcept override {
     const auto it = handles_.find(file.value);

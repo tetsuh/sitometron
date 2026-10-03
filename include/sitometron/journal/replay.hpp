@@ -34,6 +34,19 @@ struct ReplayOptions {
   std::size_t max_jobs;
 };
 
+// One segment of a replayed Journal, in sequence order.
+struct ReplayedSegment {
+  std::string name;
+  std::uint64_t first = 0;    // sequence the segment is named for
+  std::uint64_t records = 0;  // records it holds
+};
+
+// Positions in ReplayResult::segments of the first and last segment holding a Job's records.
+struct JobSegmentSpan {
+  std::size_t first_segment = 0;
+  std::size_t last_segment = 0;
+};
+
 struct ReplayResult {
   ReplayStatus status = ReplayStatus::kCorrupt;
   std::string detail;                  // refusal code and location when status is not kReplayed
@@ -41,6 +54,13 @@ struct ReplayResult {
   std::uint64_t records = 0;           // records replayed
   std::vector<core::Snapshot> jobs;    // replayed snapshots in creation order
   std::vector<core::Uuid> unresolved;  // Jobs that are non-terminal or not fully cleaned up
+  // Layout for offline maintenance (ADR-0006 Section 8), filled when status is kReplayed.
+  std::vector<ReplayedSegment> segments;
+  std::vector<JobSegmentSpan> spans;  // one per entry of `jobs`
+  // Where the torn tail starts when status is kTornTail: the highest segment, and the byte after
+  // its last LF.
+  std::string torn_segment;
+  std::uint64_t torn_offset = 0;
 };
 
 // Replays one record onto `before` (the Job's current snapshot, or nullopt when the Job does not
