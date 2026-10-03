@@ -75,11 +75,12 @@ std::vector<Uuid> Ids(const std::vector<Snapshot>& snapshots) {
 }
 
 // True when an operation after log position `from` changed the file system.
-// A directory sync changes no byte, so it does not count.
+// A directory sync or an entry check changes no byte, so neither counts.
 bool Changed(const MemoryFileSystem& fs, std::size_t from) {
   for (std::size_t i = from; i < fs.log.size(); ++i) {
     const auto op = fs.log[i].substr(0, fs.log[i].find(' '));
-    if (op != "list" && op != "read" && op != "lock" && op != "close" && op != "syncdir") {
+    if (op != "list" && op != "read" && op != "lock" && op != "close" && op != "syncdir" &&
+        op != "entry") {
       return true;
     }
   }
@@ -426,6 +427,16 @@ int QuarantineTail() {
                         partial.files.at(quarantine_path) == k_tail &&
                         partial.files.at(SegmentPath(1)) == complete,
                     "a partial quarantine file is completed: " + completed.detail);
+    // An existing quarantine name that is a symbolic link is never written through.
+    auto linked = Journal({{1, complete + k_tail}});
+    linked.files[quarantine_path] = k_tail.substr(0, 3);
+    linked.symbolic_links.insert(quarantine_path);
+    const auto linked_files = linked.files;
+    const auto refused_link = QuarantineTornTail(linked, k_dir);
+    result |= Check(refused_link.status == MaintenanceStatus::kRefused &&
+                        refused_link.detail.find("is not a regular file") != std::string::npos &&
+                        linked.files == linked_files && linked.CountOps("open") == 0,
+                    "a linked quarantine name refuses without writing: " + refused_link.detail);
     auto different = Journal({{1, complete + k_tail}});
     different.files[quarantine_path] = "other";
     const auto mark = different.log.size();
@@ -726,6 +737,19 @@ int PruneFaults() {
         Check(retried.status == MaintenanceStatus::kDone && synced != std::string::npos &&
                   synced < Find(fs, "rename " + SegmentPath(1) + " " + ArchivePath(1), mark),
               "the rerun syncs the Journal directory before its first move: " + retried.detail);
+  }
+  {
+    // An archive/ that is a symbolic link is refused before anything moves.
+    auto fs = ClosedPrefixJournal();
+    fs.directories.insert(k_archive);
+    fs.symbolic_links.insert(k_archive);
+    const auto files = fs.files;
+    const auto linked = Prune(fs);
+    result |= Check(linked.status == MaintenanceStatus::kRefused &&
+                        linked.detail.find("is not a directory") != std::string::npos &&
+                        fs.CountOps("rename") == 0 && fs.CountOps("mkdir") == 0 &&
+                        fs.files == files && Released(fs),
+                    "a linked archive/ refuses before any move: " + linked.detail);
   }
   {
     // A non-regular entry at a destination (a directory or a dangling link) is a conflict too,
@@ -1032,6 +1056,16 @@ int SystemFileSystemCheck() {
         dangling.status == MaintenanceStatus::kRefused && dangling.moved.empty() &&
             std::filesystem::exists(blocked / Name(1)),
         "a dangling link at an archive destination refuses before any move: " + dangling.detail);
+    // archive/ itself a link to a directory outside the Journal: nothing moves there.
+    const auto outside = root / "outside";
+    std::filesystem::create_directory(outside);
+    std::filesystem::remove_all(blocked / k_archive_directory);
+    std::filesystem::create_directory_symlink(outside, blocked / k_archive_directory);
+    const auto linked = PruneClosedPrefix(fs, blocked.string(), PruneOptions{});
+    result |=
+        Check(linked.status == MaintenanceStatus::kRefused && linked.moved.empty() &&
+                  std::filesystem::is_empty(outside) && std::filesystem::exists(blocked / Name(1)),
+              "a linked archive/ refuses on the real file system: " + linked.detail);
 #endif
   }
   std::error_code ignored;

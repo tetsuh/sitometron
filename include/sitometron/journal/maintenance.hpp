@@ -17,6 +17,9 @@
 // (JRN-007); only MaintenanceFileSystem does, and only these offline operations take one.
 namespace sitometron::journal {
 
+// What a directory entry is, read without following a symbolic link.
+enum class EntryKind { kNone, kRegularFile, kDirectory, kSymbolicLink, kOther };
+
 class MaintenanceFileSystem : public FileSystem {
  public:
   // Cuts the file at `path` back to `size` bytes and makes the new size durable.
@@ -24,9 +27,10 @@ class MaintenanceFileSystem : public FileSystem {
   // Renames the file `from` to `to`. Returns kExists and changes nothing when `to` exists. The
   // caller makes both directory entries durable.
   [[nodiscard]] virtual IoError RenameNoReplace(const std::string& from, const std::string& to) = 0;
-  // True when any entry exists at `path`: a file, directory, symbolic link (not followed, so a
-  // dangling link counts), or anything else. nullopt with `error` set when that cannot be told.
-  [[nodiscard]] virtual std::optional<bool> Exists(const std::string& path, IoError& error) = 0;
+  // The kind of entry at `path`, kNone when there is none. A symbolic link is reported as one and
+  // not followed, so a dangling link is kSymbolicLink. nullopt with `error` set when that cannot be
+  // told.
+  [[nodiscard]] virtual std::optional<EntryKind> Entry(const std::string& path, IoError& error) = 0;
 };
 
 // The maintenance file system of the current platform. The daemon never takes it.

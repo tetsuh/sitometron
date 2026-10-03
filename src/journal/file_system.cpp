@@ -87,16 +87,25 @@ std::optional<std::vector<std::string>> ListRegularFiles(const std::string& dire
   return names;
 }
 
-// Whether any entry exists at `path`, without following a symbolic link.
-std::optional<bool> EntryExists(const std::string& path, IoError& error) {
+// The kind of entry at `path`, without following a symbolic link.
+std::optional<EntryKind> EntryAt(const std::string& path, IoError& error) {
   std::error_code code;
   const auto status = std::filesystem::symlink_status(std::filesystem::path(path), code);
-  if (status.type() == std::filesystem::file_type::not_found) return false;
+  if (status.type() == std::filesystem::file_type::not_found) return EntryKind::kNone;
   if (code) {
     error = IoError::kOther;
     return std::nullopt;
   }
-  return true;
+  switch (status.type()) {
+    case std::filesystem::file_type::regular:
+      return EntryKind::kRegularFile;
+    case std::filesystem::file_type::directory:
+      return EntryKind::kDirectory;
+    case std::filesystem::file_type::symlink:
+      return EntryKind::kSymbolicLink;
+    default:
+      return EntryKind::kOther;
+  }
 }
 
 std::optional<std::string> ReadWholeFile(const std::string& path, IoError& error) {
@@ -320,8 +329,8 @@ class WindowsMaintenanceFileSystem final : public WindowsFiles<MaintenanceFileSy
     }
     return FromLastError();
   }
-  std::optional<bool> Exists(const std::string& path, IoError& error) override {
-    return EntryExists(path, error);
+  std::optional<EntryKind> Entry(const std::string& path, IoError& error) override {
+    return EntryAt(path, error);
   }
 };
 
@@ -463,8 +472,8 @@ class PosixMaintenanceFileSystem final : public PosixFiles<MaintenanceFileSystem
     return IoError::kUnsupported;  // no atomic no-replace rename is wired for this platform
 #endif
   }
-  std::optional<bool> Exists(const std::string& path, IoError& error) override {
-    return EntryExists(path, error);
+  std::optional<EntryKind> Entry(const std::string& path, IoError& error) override {
+    return EntryAt(path, error);
   }
 };
 

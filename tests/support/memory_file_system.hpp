@@ -52,6 +52,9 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   bool fail_next_mkdir = false;
   std::set<std::string> unlistable;  // existing directories whose listing fails with an I/O error
   std::set<std::string> other_entries;  // non-regular entries: not listed, but they exist
+  // Paths that are symbolic links. A link to a file also sits in `files` (listed and read through,
+  // as the system follows it); a link to a directory also sits in `directories`.
+  std::set<std::string> symbolic_links;
   bool fail_next_truncate = false;
   bool fail_next_rename = false;
   std::size_t renames_until_failure = 0;  // when nonzero, the Nth rename fails
@@ -230,9 +233,14 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
     durable_entries.erase(from);
     return IoError::kNone;
   }
-  std::optional<bool> Exists(const std::string& path, IoError& /*error*/) override {
-    log.push_back("exists " + path);
-    return files.count(path) != 0 || directories.count(path) != 0 || other_entries.count(path) != 0;
+  std::optional<journal::EntryKind> Entry(const std::string& path, IoError& /*error*/) override {
+    log.push_back("entry " + path);
+    using journal::EntryKind;
+    if (symbolic_links.count(path) != 0) return EntryKind::kSymbolicLink;
+    if (files.count(path) != 0) return EntryKind::kRegularFile;
+    if (directories.count(path) != 0) return EntryKind::kDirectory;
+    if (other_entries.count(path) != 0) return EntryKind::kOther;
+    return EntryKind::kNone;
   }
   void Close(FileHandle file) noexcept override {
     const auto it = handles_.find(file.value);

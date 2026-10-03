@@ -226,6 +226,13 @@ class Quarantine {
     if (!names.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("list", directory_));
     std::optional<std::string> failure;
     if (Contains(*names, result_.quarantine)) {
+      // Only a regular file is completed: a symbolic link would send the bytes outside the Journal.
+      if (const auto kind = file_system_.Entry(path, error); kind != EntryKind::kRegularFile) {
+        return kind.has_value()
+                   ? Finish(MaintenanceStatus::kRefused,
+                            "journal_quarantine_conflict: " + path + " is not a regular file")
+                   : Finish(MaintenanceStatus::kFailed, Failed("check", path));
+      }
       const auto existing = file_system_.ReadAll(path, error);
       if (!existing.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("read", path));
       if (existing->size() > tail.size() || !tail.starts_with(*existing)) {
@@ -479,6 +486,15 @@ class Prune {
   // archive/ (ReplayInterrupted).
   std::optional<PruneResult> Archive() {
     const auto archive = JoinPath(directory_, k_archive_directory);
+    // Segments must stay inside the Journal directory: an archive/ that is a symbolic link, or not
+    // a directory, is refused before anything moves.
+    IoError checked = IoError::kNone;
+    const auto kind = file_system_.Entry(archive, checked);
+    if (!kind.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("check", archive));
+    if (*kind != EntryKind::kNone && *kind != EntryKind::kDirectory) {
+      return Finish(MaintenanceStatus::kRefused,
+                    "journal_archive_conflict: " + archive + " is not a directory");
+    }
     if (file_system_.EnsureDirectory(archive) != IoError::kNone) {
       return Finish(MaintenanceStatus::kFailed, Failed("archive directory", archive));
     }
@@ -492,9 +508,9 @@ class Prune {
     for (const auto& name : result_.segments) {
       const auto to = JoinPath(archive, name);
       IoError error = IoError::kNone;
-      const auto exists = file_system_.Exists(to, error);
-      if (!exists.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("check", to));
-      if (*exists) {
+      const auto kind = file_system_.Entry(to, error);
+      if (!kind.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("check", to));
+      if (*kind != EntryKind::kNone) {
         return Finish(MaintenanceStatus::kRefused,
                       "journal_archive_conflict: " + to + " already exists");
       }
