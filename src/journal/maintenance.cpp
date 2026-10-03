@@ -489,9 +489,11 @@ class Prune {
     // Segments must stay inside the Journal directory: an archive/ that is a symbolic link, or not
     // a directory, is refused before anything moves.
     IoError checked = IoError::kNone;
-    const auto kind = file_system_.Entry(archive, checked);
-    if (!kind.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("check", archive));
-    if (*kind != EntryKind::kNone && *kind != EntryKind::kDirectory) {
+    const auto archive_kind = file_system_.Entry(archive, checked);
+    if (!archive_kind.has_value()) {
+      return Finish(MaintenanceStatus::kFailed, Failed("check", archive));
+    }
+    if (*archive_kind != EntryKind::kNone && *archive_kind != EntryKind::kDirectory) {
       return Finish(MaintenanceStatus::kRefused,
                     "journal_archive_conflict: " + archive + " is not a directory");
     }
