@@ -22,7 +22,9 @@ enum class EntryKind { kNone, kRegularFile, kDirectory, kSymbolicLink, kOther };
 
 class MaintenanceFileSystem : public FileSystem {
  public:
-  // Cuts the file at `path` back to `size` bytes and makes the new size durable.
+  // Cuts the file at `path` back to `size` bytes and makes the new size durable. Changes nothing
+  // and fails unless the file opened at `path`, without following a symbolic link, is a regular
+  // file with a single hard link.
   [[nodiscard]] virtual IoError Truncate(const std::string& path, std::uint64_t size) = 0;
   // Renames the file `from` to `to`. Returns kExists and changes nothing when `to` exists. The
   // caller makes both directory entries durable.
@@ -72,7 +74,9 @@ struct QuarantineResult {
 // `<segment>.torn-<offset>` next to it, makes that file durable, and cuts the segment back to its
 // last complete record. A clean Journal is kNothingToDo; any other replay refusal is kRefused. When
 // the highest segment still ends at the offset its quarantine file names, that cut is synced again
-// first (no byte changes), since a cut whose sync failed looks the same on disk.
+// first (no byte changes), since a cut whose sync failed looks the same on disk. The segment and an
+// existing quarantine file must each be a regular file with a single hard link
+// (journal_quarantine_conflict), so nothing outside the Journal is changed.
 [[nodiscard]] QuarantineResult QuarantineTornTail(MaintenanceFileSystem& file_system,
                                                   const std::string& directory);
 
@@ -102,7 +106,9 @@ struct PruneResult {
 // Moves the longest prunable prefix of sealed segments (ADR-0006 Section 8) into the archive
 // subdirectory, lowest first. Every Job with a record in the prefix has its last record there and
 // is terminal, released, and cleaned up after it. The highest non-empty segment always stays. The
-// retained Journal is verified by replay after the moves; moved bytes are not read back.
+// retained Journal is verified by replay after the moves; moved bytes are not read back. A segment
+// to be moved that is not a regular file, such as a symbolic link, is refused
+// (journal_archive_conflict) before anything moves, dry run included.
 //
 // When a Job spans a segment boundary inside the prefix, a crash or failure between moves leaves a
 // Journal whose first retained segment holds records of a Job created in an archived segment. The

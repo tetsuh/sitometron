@@ -96,6 +96,22 @@ std::string In(std::string_view detail, std::string_view directory) {
   return std::string(detail).append(" in ").append(directory);
 }
 
+// Why the entry at `path` may not be changed as a Journal file: a change through a symbolic link,
+// or through a file another hard link also names, would reach a file outside the Journal. Requires
+// a regular file, and a single hard link when `single_link` is set. Returns the reason, "" when
+// the entry may be changed, or nullopt when that cannot be told.
+std::optional<std::string> NotOwnFile(MaintenanceFileSystem& file_system, const std::string& path,
+                                      bool single_link) {
+  IoError error = IoError::kNone;
+  const auto kind = file_system.Entry(path, error);
+  if (!kind.has_value()) return std::nullopt;
+  if (*kind != EntryKind::kRegularFile) return path + " is not a regular file";
+  if (!single_link) return std::string();
+  const auto links = file_system.HardLinks(path, error);
+  if (!links.has_value()) return std::nullopt;
+  return *links == 1 ? std::string() : path + " has other hard links";
+}
+
 bool Contains(const std::vector<std::string>& names, const std::string& name) {
   return std::find(names.begin(), names.end(), name) != names.end();
 }
@@ -137,6 +153,8 @@ class Quarantine {
     }
     const std::string_view tail = std::string_view(*content).substr(result_.offset);
     result_.bytes = tail.size();
+    // The cut must stay inside the Journal: checked before the quarantine file is written.
+    if (auto refusal = RefuseForeign(segment_path)) return *refusal;
     if (auto failure = WriteQuarantine(tail)) return *failure;
     // Only now, with every torn byte durable in the quarantine file, is the segment cut.
     if (file_system_.Truncate(segment_path, result_.offset) != IoError::kNone) {
@@ -202,6 +220,7 @@ class Quarantine {
     if (!content.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("read", path));
     const auto quarantine = highest + ".torn-" + std::to_string(content->size());
     if (!Contains(*names, quarantine)) return std::nullopt;
+    if (auto refusal = RefuseForeign(path)) return *refusal;
     if (file_system_.Truncate(path, content->size()) != IoError::kNone) {
       return Finish(MaintenanceStatus::kFailed, Failed("truncate", path));
     }
@@ -217,6 +236,17 @@ class Quarantine {
     return std::nullopt;
   }
 
+  // Refuses unless `path` is a regular file with a single hard link, so neither the cut nor the
+  // quarantine write reaches a file outside the Journal; fails when that cannot be told.
+  std::optional<QuarantineResult> RefuseForeign(const std::string& path) {
+    const auto reason = NotOwnFile(file_system_, path, true);
+    if (!reason.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("check", path));
+    if (!reason->empty()) {
+      return Finish(MaintenanceStatus::kRefused, "journal_quarantine_conflict: " + *reason);
+    }
+    return std::nullopt;
+  }
+
   // Makes the quarantine file hold exactly `tail`, durably, with a durable directory entry. A file
   // left by an interrupted run is completed when it holds a prefix of `tail`.
   std::optional<QuarantineResult> WriteQuarantine(std::string_view tail) {
@@ -226,21 +256,9 @@ class Quarantine {
     if (!names.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("list", directory_));
     std::optional<std::string> failure;
     if (Contains(*names, result_.quarantine)) {
-      // Only a regular file is completed: a symbolic link would send the bytes outside the Journal.
-      if (const auto kind = file_system_.Entry(path, error); kind != EntryKind::kRegularFile) {
-        return kind.has_value()
-                   ? Finish(MaintenanceStatus::kRefused,
-                            "journal_quarantine_conflict: " + path + " is not a regular file")
-                   : Finish(MaintenanceStatus::kFailed, Failed("check", path));
-      }
-      // A file with another hard link, such as the segment itself, would lose the torn bytes when
-      // the segment is cut: only a file with a single link is completed.
-      const auto links = file_system_.HardLinks(path, error);
-      if (!links.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("check", path));
-      if (*links != 1) {
-        return Finish(MaintenanceStatus::kRefused,
-                      "journal_quarantine_conflict: " + path + " has other hard links");
-      }
+      // Only a file of its own is completed: through a symbolic link the bytes would leave the
+      // Journal, and a file another hard link also names could lose them to a later change there.
+      if (auto refusal = RefuseForeign(path)) return *refusal;
       const auto existing = file_system_.ReadAll(path, error);
       if (!existing.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("read", path));
       if (existing->size() > tail.size() || !tail.starts_with(*existing)) {
@@ -371,6 +389,16 @@ class Prune {
       if (replayed.spans[j].first_segment < length) result_.jobs.push_back(replayed.jobs[j].job_id);
     }
     result_.first_retained_sequence = replayed.segments[length].first;
+    // A rename moves only the directory entry: a symbolic link would leave its data outside the
+    // Journal, and a relative one would dangle in archive/. Only regular files are archived.
+    for (const auto& name : result_.segments) {
+      const auto path = JoinPath(directory_, name);
+      const auto reason = NotOwnFile(file_system_, path, false);
+      if (!reason.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("check", path));
+      if (!reason->empty()) {
+        return Finish(MaintenanceStatus::kRefused, "journal_archive_conflict: " + *reason);
+      }
+    }
     if (options_.dry_run) {
       return Finish(MaintenanceStatus::kPlanned, Summary("journal_prune_planned"));
     }

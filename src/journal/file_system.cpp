@@ -312,9 +312,18 @@ class WindowsMaintenanceFileSystem final : public WindowsFiles<MaintenanceFileSy
   IoError Truncate(const std::string& path, std::uint64_t size) override {
     const HANDLE handle =
         CreateFileW(std::filesystem::path(path).c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return FromLastError();
     const auto cut = [handle, size]() {
+      // The opened file itself must be a regular file that no other hard link names; a reparse
+      // point (a symbolic link) is opened as itself, not followed.
+      BY_HANDLE_FILE_INFORMATION information{};
+      if (!GetFileInformationByHandle(handle, &information)) return FromLastError();
+      if ((information.dwFileAttributes &
+           (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0 ||
+          information.nNumberOfLinks != 1) {
+        return IoError::kOther;
+      }
       LARGE_INTEGER current;
       current.QuadPart = 0;  // the member GetFileSizeEx fills and this function reads
       if (!GetFileSizeEx(handle, &current)) return FromLastError();
@@ -457,12 +466,15 @@ class PosixMaintenanceFileSystem final : public PosixFiles<MaintenanceFileSystem
   IoError Truncate(const std::string& path, std::uint64_t size) override {
     int descriptor = -1;
     do {
-      descriptor = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
+      // A symbolic link is never followed, and a FIFO never blocks the open.
+      descriptor = ::open(path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     } while (descriptor < 0 && errno == EINTR);
     if (descriptor < 0) return FromErrno(errno);
     const auto cut = [descriptor, size]() {
       struct stat status = {};
       if (::fstat(descriptor, &status) != 0) return FromErrno(errno);
+      // The opened file itself must be a regular file that no other hard link names.
+      if (!S_ISREG(status.st_mode) || status.st_nlink != 1) return IoError::kOther;
       // A cut never extends the file.
       if (static_cast<std::uint64_t>(status.st_size) < size) return IoError::kOther;
       if (::ftruncate(descriptor, static_cast<off_t>(size)) != 0) return FromErrno(errno);

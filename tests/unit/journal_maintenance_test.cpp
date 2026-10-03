@@ -178,6 +178,24 @@ int PrunePrefixOnly() {
                       !Changed(fs, mark),
                   "a second prune has nothing to do: " + again.detail);
 
+  // A segment to be moved must be a regular file: renaming a symbolic link would leave its data
+  // outside the Journal. Refused before anything moves, by the dry run too.
+  for (const bool dry_run : {true, false}) {
+    auto linked =
+        Journal({{1, ClosedJob(1, 1)}, {8, ClosedJob(8, 2)}, {15, Bytes(Created(15, 3))}});
+    linked.symbolic_links.insert(SegmentPath(8));
+    const auto files = linked.files;
+    const auto link_mark = linked.log.size();
+    const auto refused = Prune(linked, dry_run);
+    result |=
+        Check(refused.status == MaintenanceStatus::kRefused &&
+                  refused.detail.find("journal_archive_conflict: " + SegmentPath(8) +
+                                      " is not a regular file") != std::string::npos &&
+                  refused.moved.empty() && refused.segments.empty() && linked.files == files &&
+                  !Changed(linked, link_mark) && linked.CountOps("mkdir") == 0,
+              "a linked segment in the prefix refuses before any move: " + refused.detail);
+  }
+
   // A Journal over the daemon's resident capacity is still prunable, and then starts.
   auto crowded = Journal({{1, ClosedJob(1, 1)},
                           {8, ClosedJob(8, 2)},
@@ -342,6 +360,34 @@ int QuarantineTail() {
                                           std::to_string(complete.size())) != std::string::npos &&
                         again.detail.find("re-synced") == std::string::npos && fs.files == settled,
                     "a second run finds the Journal clean and unchanged: " + again.detail);
+    // A segment that ends at its quarantine offset but is not a file of its own is never cut again.
+    fs.symbolic_links.insert(SegmentPath(1));
+    const auto resync_mark = fs.log.size();
+    const auto linked = QuarantineTornTail(fs, k_dir);
+    result |= Check(linked.status == MaintenanceStatus::kRefused &&
+                        linked.detail.find("journal_quarantine_conflict: " + SegmentPath(1) +
+                                           " is not a regular file") != std::string::npos &&
+                        fs.files == settled && !Changed(fs, resync_mark),
+                    "a linked segment is not cut again: " + linked.detail);
+  }
+  // The cut segment must be a file of its own: a cut through a symbolic link or a file with another
+  // hard link would change a file outside the Journal. Refused before anything is written.
+  for (const bool symbolic : {true, false}) {
+    auto foreign = Journal({{1, complete + k_tail}});
+    if (symbolic) {
+      foreign.symbolic_links.insert(SegmentPath(1));
+    } else {
+      foreign.hard_links[SegmentPath(1)] = 2;
+    }
+    const auto files = foreign.files;
+    const auto mark = foreign.log.size();
+    const auto refused = QuarantineTornTail(foreign, k_dir);
+    const auto reason = symbolic ? " is not a regular file" : " has other hard links";
+    result |= Check(refused.status == MaintenanceStatus::kRefused &&
+                        refused.detail.find("journal_quarantine_conflict: " + SegmentPath(1) +
+                                            reason) != std::string::npos &&
+                        foreign.files == files && !Changed(foreign, mark),
+                    "a foreign segment refuses before any write: " + refused.detail);
   }
   {
     // The torn tail is in the highest of two segments; the sealed one is untouched.
@@ -427,13 +473,12 @@ int QuarantineTail() {
                         partial.files.at(quarantine_path) == k_tail &&
                         partial.files.at(SegmentPath(1)) == complete,
                     "a partial quarantine file is completed: " + completed.detail);
-    // An existing quarantine file with another hard link (here: the segment itself, whose whole
-    // content is the torn tail) would lose the torn bytes when the segment is cut: refused.
+    // An existing quarantine file with another hard link, here to a file outside the Journal,
+    // could lose the torn bytes to a change made there: refused before the cut.
     auto aliased = Journal({{1, k_tail}});
     const auto alias_path = JoinPath(k_dir, Name(1) + ".torn-0");
     aliased.files[alias_path] = k_tail;
     aliased.hard_links[alias_path] = 2;
-    aliased.hard_links[SegmentPath(1)] = 2;
     const auto alias_files = aliased.files;
     const auto refused_alias = QuarantineTornTail(aliased, k_dir);
     result |=
@@ -1096,7 +1141,43 @@ int SystemFileSystemCheck() {
                   refused.detail.find("has other hard links") != std::string::npos &&
                   read(aliased / Name(1)) == k_tail,
               "a hard-linked quarantine file refuses on the real file system: " + refused.detail);
+    // The cut itself checks the opened file: a file with another hard link is never cut.
+    result |= Check(fs.Truncate((aliased / Name(1)).string(), 0) != IoError::kNone &&
+                        read(aliased / Name(1)) == k_tail,
+                    "truncate refuses a file with another hard link");
   }
+#if !defined(_WIN32)
+  {
+    // A segment that is a symbolic link to a file outside the Journal: quarantine and prune refuse,
+    // and the cut itself never follows the link.
+    const auto outside = root / "outside.ndjson";
+    const auto complete = ClosedJob(1, 1);
+    write(outside, complete + k_tail);
+    const auto linked = root / "linked";
+    result |=
+        Check(fs.EnsureDirectory(linked.string()) == IoError::kNone, "create the linked Journal");
+    std::filesystem::create_symlink(outside, linked / Name(1));
+    const auto refused = QuarantineTornTail(fs, linked.string());
+    result |=
+        Check(refused.status == MaintenanceStatus::kRefused &&
+                  refused.detail.find("is not a regular file") != std::string::npos &&
+                  read(outside) == complete + k_tail &&
+                  !std::filesystem::exists(linked /
+                                           (Name(1) + ".torn-" + std::to_string(complete.size()))),
+              "a linked segment refuses quarantine on the real file system: " + refused.detail);
+    result |= Check(fs.Truncate((linked / Name(1)).string(), complete.size()) != IoError::kNone &&
+                        read(outside) == complete + k_tail,
+                    "truncate never follows a symbolic link");
+    write(outside, complete);
+    write(linked / Name(8), ClosedJob(8, 2));
+    write(linked / Name(15), Bytes(Created(15, 3)));
+    const auto kept = PruneClosedPrefix(fs, linked.string(), PruneOptions{});
+    result |= Check(kept.status == MaintenanceStatus::kRefused && kept.moved.empty() &&
+                        std::filesystem::is_symlink(linked / Name(1)) &&
+                        std::filesystem::exists(linked / Name(8)),
+                    "a linked segment refuses prune on the real file system: " + kept.detail);
+  }
+#endif
   std::error_code ignored;
   std::filesystem::remove_all(root, ignored);
   return result;

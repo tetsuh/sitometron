@@ -196,6 +196,11 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
     }
     const auto it = files.find(path);
     if (it == files.end() || size > it->second.size()) return IoError::kOther;
+    // As the system does: never through a symbolic link or a file with another hard link.
+    if (const auto links = hard_links.find(path);
+        symbolic_links.count(path) != 0 || (links != hard_links.end() && links->second != 1)) {
+      return IoError::kOther;
+    }
     if (next_truncate_to) {
       it->second.resize(static_cast<std::size_t>(*next_truncate_to));
       next_truncate_to.reset();
