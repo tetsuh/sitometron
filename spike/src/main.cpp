@@ -205,7 +205,9 @@ bool ParseToolOptions(int argc, char** argv, ToolOptions& options) {
   while (index < args.size()) {
     const auto flag = args[index];
     if (flag == "--journal") {
-      if (index + 1 >= args.size()) {
+      // A missing value, or the next option where the directory belongs, is a usage error.
+      if (index + 1 >= args.size() || args[index + 1].empty() ||
+          args[index + 1].starts_with("--")) {
         std::cerr << "error: --journal needs a directory\n" << k_tool_usage;
         return false;
       }

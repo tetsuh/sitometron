@@ -357,9 +357,14 @@ printf '%s\n' "$quarantined" | grep -q "^quarantined 12 bytes of $(basename "$hi
 [[ "$(cksum <"$highest")" == "$highest_bytes" ]] || { echo "the segment was not cut back to its last record"; exit 1; }
 [[ "$(cat "$highest".torn-*)" == '{"sequence":' ]] || { echo "quarantine file content: $(cat "$highest".torn-*)"; exit 1; }
 "$binary" journal quarantine-tail --journal "$maint" | grep -q 'journal_clean'
-status=0
-"$binary" journal prune --journal >"$scratch/tool.log" 2>&1 || status=$?
-[[ "$status" -eq 2 ]] && grep -q -- '--journal needs a directory' "$scratch/tool.log" || { echo "missing --journal value: exit $status: $(cat "$scratch/tool.log")"; exit 1; }
+# Malformed tool invocations are usage errors (exit 2) that touch no Journal.
+for args in "prune --journal" "prune --journal --dry-run" "prune --dry-run --journal" "quarantine-tail --journal ''" \
+    "prune" "quarantine-tail --dry-run --journal $maint" "prune --journal $maint extra" "bogus --journal $maint" ""; do
+  status=0
+  eval "\"\$binary\" journal $args" >"$scratch/tool.log" 2>&1 || status=$?
+  [[ "$status" -eq 2 ]] && grep -q 'usage: sitometron_spike journal' "$scratch/tool.log" || { echo "journal $args: exit $status: $(cat "$scratch/tool.log")"; exit 1; }
+done
+[[ ! -e ./--dry-run ]] || { echo "an option was taken as a Journal directory"; exit 1; }
 start_on "$maint" --segment-limit 1
 curl -fsS "$base/healthz" | grep -q '"ready":true'
 kill -TERM "$daemon"
