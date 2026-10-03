@@ -31,6 +31,10 @@ class MaintenanceFileSystem : public FileSystem {
   // not followed, so a dangling link is kSymbolicLink. nullopt with `error` set when that cannot be
   // told.
   [[nodiscard]] virtual std::optional<EntryKind> Entry(const std::string& path, IoError& error) = 0;
+  // The number of hard links to the file at `path`. nullopt with `error` set when it cannot be
+  // read.
+  [[nodiscard]] virtual std::optional<std::uintmax_t> HardLinks(const std::string& path,
+                                                                IoError& error) = 0;
 };
 
 // The maintenance file system of the current platform. The daemon never takes it.

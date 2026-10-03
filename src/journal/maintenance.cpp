@@ -233,6 +233,14 @@ class Quarantine {
                             "journal_quarantine_conflict: " + path + " is not a regular file")
                    : Finish(MaintenanceStatus::kFailed, Failed("check", path));
       }
+      // A file with another hard link, such as the segment itself, would lose the torn bytes when
+      // the segment is cut: only a file with a single link is completed.
+      const auto links = file_system_.HardLinks(path, error);
+      if (!links.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("check", path));
+      if (*links != 1) {
+        return Finish(MaintenanceStatus::kRefused,
+                      "journal_quarantine_conflict: " + path + " has other hard links");
+      }
       const auto existing = file_system_.ReadAll(path, error);
       if (!existing.has_value()) return Finish(MaintenanceStatus::kFailed, Failed("read", path));
       if (existing->size() > tail.size() || !tail.starts_with(*existing)) {

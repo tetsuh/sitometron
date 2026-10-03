@@ -108,6 +108,17 @@ std::optional<EntryKind> EntryAt(const std::string& path, IoError& error) {
   }
 }
 
+// The number of hard links to the file at `path`.
+std::optional<std::uintmax_t> HardLinkCount(const std::string& path, IoError& error) {
+  std::error_code code;
+  const auto count = std::filesystem::hard_link_count(std::filesystem::path(path), code);
+  if (code) {
+    error = IoError::kOther;
+    return std::nullopt;
+  }
+  return count;
+}
+
 std::optional<std::string> ReadWholeFile(const std::string& path, IoError& error) {
   std::ifstream input(std::filesystem::path(path), std::ios::binary);
   if (!input) {
@@ -332,6 +343,9 @@ class WindowsMaintenanceFileSystem final : public WindowsFiles<MaintenanceFileSy
   std::optional<EntryKind> Entry(const std::string& path, IoError& error) override {
     return EntryAt(path, error);
   }
+  std::optional<std::uintmax_t> HardLinks(const std::string& path, IoError& error) override {
+    return HardLinkCount(path, error);
+  }
 };
 
 #else
@@ -474,6 +488,9 @@ class PosixMaintenanceFileSystem final : public PosixFiles<MaintenanceFileSystem
   }
   std::optional<EntryKind> Entry(const std::string& path, IoError& error) override {
     return EntryAt(path, error);
+  }
+  std::optional<std::uintmax_t> HardLinks(const std::string& path, IoError& error) override {
+    return HardLinkCount(path, error);
   }
 };
 

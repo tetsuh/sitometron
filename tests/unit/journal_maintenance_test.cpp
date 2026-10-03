@@ -75,12 +75,12 @@ std::vector<Uuid> Ids(const std::vector<Snapshot>& snapshots) {
 }
 
 // True when an operation after log position `from` changed the file system.
-// A directory sync or an entry check changes no byte, so neither counts.
+// A directory sync, an entry check, or a link count changes no byte, so none counts.
 bool Changed(const MemoryFileSystem& fs, std::size_t from) {
   for (std::size_t i = from; i < fs.log.size(); ++i) {
     const auto op = fs.log[i].substr(0, fs.log[i].find(' '));
     if (op != "list" && op != "read" && op != "lock" && op != "close" && op != "syncdir" &&
-        op != "entry") {
+        op != "entry" && op != "links") {
       return true;
     }
   }
@@ -427,6 +427,20 @@ int QuarantineTail() {
                         partial.files.at(quarantine_path) == k_tail &&
                         partial.files.at(SegmentPath(1)) == complete,
                     "a partial quarantine file is completed: " + completed.detail);
+    // An existing quarantine file with another hard link (here: the segment itself, whose whole
+    // content is the torn tail) would lose the torn bytes when the segment is cut: refused.
+    auto aliased = Journal({{1, k_tail}});
+    const auto alias_path = JoinPath(k_dir, Name(1) + ".torn-0");
+    aliased.files[alias_path] = k_tail;
+    aliased.hard_links[alias_path] = 2;
+    aliased.hard_links[SegmentPath(1)] = 2;
+    const auto alias_files = aliased.files;
+    const auto refused_alias = QuarantineTornTail(aliased, k_dir);
+    result |=
+        Check(refused_alias.status == MaintenanceStatus::kRefused &&
+                  refused_alias.detail.find("has other hard links") != std::string::npos &&
+                  aliased.files == alias_files && aliased.CountOps("truncate") == 0,
+              "a hard-linked quarantine file refuses before the cut: " + refused_alias.detail);
     // An existing quarantine name that is a symbolic link is never written through.
     auto linked = Journal({{1, complete + k_tail}});
     linked.files[quarantine_path] = k_tail.substr(0, 3);
@@ -1066,6 +1080,22 @@ int SystemFileSystemCheck() {
                   std::filesystem::is_empty(outside) && std::filesystem::exists(blocked / Name(1)),
               "a linked archive/ refuses on the real file system: " + linked.detail);
 #endif
+  }
+  {
+    // The quarantine name is a hard link to a segment whose torn tail starts at byte 0: refused,
+    // and the segment keeps its bytes.
+    const auto aliased = root / "aliased";
+    result |=
+        Check(fs.EnsureDirectory(aliased.string()) == IoError::kNone, "create the aliased Journal");
+    write(aliased / Name(1), k_tail);
+    std::error_code linked;
+    std::filesystem::create_hard_link(aliased / Name(1), aliased / (Name(1) + ".torn-0"), linked);
+    const auto refused = QuarantineTornTail(fs, aliased.string());
+    result |=
+        Check(!linked && refused.status == MaintenanceStatus::kRefused &&
+                  refused.detail.find("has other hard links") != std::string::npos &&
+                  read(aliased / Name(1)) == k_tail,
+              "a hard-linked quarantine file refuses on the real file system: " + refused.detail);
   }
   std::error_code ignored;
   std::filesystem::remove_all(root, ignored);

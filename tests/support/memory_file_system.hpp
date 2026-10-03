@@ -50,8 +50,9 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
   bool throw_on_list = false;
   bool throw_on_read = false;
   bool fail_next_mkdir = false;
-  std::set<std::string> unreadable_entries;  // paths whose entry kind cannot be read
-  std::set<std::string> other_entries;       // non-regular entries: not listed, but they exist
+  std::set<std::string> unreadable_entries;          // paths whose entry kind cannot be read
+  std::map<std::string, std::uintmax_t> hard_links;  // link count per path; 1 when absent
+  std::set<std::string> other_entries;  // non-regular entries: not listed, but they exist
   // Paths that are symbolic links. A link to a file also sits in `files` (listed and read through,
   // as the system follows it); a link to a directory also sits in `directories`.
   std::set<std::string> symbolic_links;
@@ -241,6 +242,15 @@ class MemoryFileSystem final : public MaintenanceFileSystem {
     if (directories.count(path) != 0) return EntryKind::kDirectory;
     if (other_entries.count(path) != 0) return EntryKind::kOther;
     return EntryKind::kNone;
+  }
+  std::optional<std::uintmax_t> HardLinks(const std::string& path, IoError& error) override {
+    log.push_back("links " + path);
+    if (files.count(path) == 0) {
+      error = IoError::kOther;
+      return std::nullopt;
+    }
+    const auto it = hard_links.find(path);
+    return it == hard_links.end() ? 1 : it->second;
   }
   void Close(FileHandle file) noexcept override {
     const auto it = handles_.find(file.value);
