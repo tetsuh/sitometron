@@ -43,7 +43,7 @@ See [the architecture](02_architecture.md) and
 | Phase | Milestone | Result |
 |---|---|---|
 | 0A | `v0.1 / P0A Bootstrap` | Repository, core contracts, deterministic fake-driven lifecycle |
-| 0B | `v0.1 / P0B Durability` | Durable JobJournal foundation and a qualified logger |
+| 0B | `v0.1 / P0B Durability` | Durable JobJournal foundation; the logger is deferred by owner decision ([Gate #50](https://github.com/tetsuh/sitometron/issues/50)) |
 
 Later work (external REST and admission, the Worker protocol and local process supervision,
 resources and scheduling, Sitos integration, Artifact REST, and cross-platform qualification) is

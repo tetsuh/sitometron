@@ -80,8 +80,10 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
 > tracks assignment of each future Phase Gate and its design authorities for the mechanisms below.
 > Implementers must not treat this outline as a finalized contract.
 
-- Phase 0B owns the logger durability spike and production JobJournal foundation. Gate #50
-  tracks it, and Issue #51 owns the physical JobJournal design through Accepted ADR-0006.
+- Phase 0B owns the production JobJournal foundation. Gate #50 tracks it, and Issue #51 owns the
+  physical JobJournal design through Accepted ADR-0006. The logger is deferred by owner decision
+  (2026-10-04, Gate #50): the durability spike and the ADR-0004 dependency decision that ADR-0006
+  Section 9 requires are filed when a logger is needed.
 - Phase 1 owns external REST, Admission, and Application Registry contracts.
 - Phase 2 owns Worker protocol schemas and local process containment.
 - Phase 3 owns topology, ResourceProfile, scheduling, and reservation contracts.
