@@ -5,7 +5,7 @@
 | Phase | GitHub Milestone | Gate status |
 |---|---|---|
 | 0A | `v0.1 / P0A Bootstrap` | [Gate #1](https://github.com/tetsuh/sitometron/issues/1) closed on 2026-09-24 |
-| 0B | `v0.1 / P0B Durability` | [Gate #50](https://github.com/tetsuh/sitometron/issues/50) open |
+| 0B | `v0.1 / P0B Durability` | [Gate #50](https://github.com/tetsuh/sitometron/issues/50) closed on 2026-10-04 |
 
 Later work is planned one working increment at a time and has no Gate prepared in advance. A
 `[Gate]` Issue is created only when a contract must be frozen before implementation, as
@@ -83,7 +83,9 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
 - Phase 0B owns the production JobJournal foundation. Gate #50 tracks it, and Issue #51 owns the
   physical JobJournal design through Accepted ADR-0006. The logger is deferred by owner decision
   (2026-10-04, Gate #50): the durability spike and the ADR-0004 dependency decision that ADR-0006
-  Section 9 requires are filed when a logger is needed.
+  Section 9 requires are filed when a logger is needed. Gate #50 closed on 2026-10-04; the design
+  inputs it handed over to later Phases are tracked in
+  [Issue #73](https://github.com/tetsuh/sitometron/issues/73).
 - Phase 1 owns external REST, Admission, and Application Registry contracts.
 - Phase 2 owns Worker protocol schemas and local process containment.
 - Phase 3 owns topology, ResourceProfile, scheduling, and reservation contracts.

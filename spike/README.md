@@ -152,7 +152,7 @@ authorities, not decisions.
    `2 × max_jobs × trace_capacity` trace records. Phase 0B/1 need resident retirement, a bounded or
    rolling trace, and a documented daemon lifetime model. **Partly addressed** across restarts:
    offline pruning (Issue #69) removes closed Jobs from replay, so a restarted daemon regains their
-   slots. Retirement inside one run remains open (Gate #50 finding H7).
+   slots. Retirement inside one run is tracked in Issue #73 (Gate #50 finding H7).
 5. **Handoff ports run on the writer thread.** `HandoffLaunch` / `HandoffRetainSameIdentity` must
    not block or re-enter ingress. The skeleton uses per-Job mailboxes (`AwaitLaunch`,
    `AwaitRetain`); a production adapter needs the same discipline spelled out in its contract.
