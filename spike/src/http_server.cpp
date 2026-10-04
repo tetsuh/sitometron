@@ -74,7 +74,15 @@ void Respond(int fd, const HttpResponse& response) {
   (void)SendAll(fd, head.str() + response.body);
 }
 
-// Returns false when the request is malformed or too large; `status` carries the reason.
+// A failed or empty recv ends the request. The per-recv timeout (SO_RCVTIMEO) is a request that was
+// not received in time (408); a closed or broken connection keeps the caller's status. Always
+// returns false.
+bool ReceiveFailed(ssize_t count, int& status) {
+  if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) status = 408;
+  return false;
+}
+
+// Returns false when the request is malformed, too large, or late; `status` carries the reason.
 bool ReadRequest(int fd, HttpRequest& request, int& status) {
   const auto deadline = std::chrono::steady_clock::now() + k_request_deadline;
   auto expired = [&] {
@@ -89,7 +97,7 @@ bool ReadRequest(int fd, HttpRequest& request, int& status) {
     if (expired()) return false;
     const auto count = ::recv(fd, chunk, sizeof chunk, 0);
     if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) return false;
+    if (count <= 0) return ReceiveFailed(count, status);
     buffer.append(chunk, static_cast<std::size_t>(count));
     if (buffer.size() > k_max_request_bytes) {
       status = 413;
@@ -141,7 +149,7 @@ bool ReadRequest(int fd, HttpRequest& request, int& status) {
     if (expired()) return false;
     const auto count = ::recv(fd, chunk, sizeof chunk, 0);
     if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) return false;
+    if (count <= 0) return ReceiveFailed(count, status);
     request.body.append(chunk, static_cast<std::size_t>(count));
   }
   request.body.resize(content_length);

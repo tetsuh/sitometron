@@ -422,6 +422,7 @@ expect cancel-not-served 404 "$(envelope request route_not_found)" -X POST \
 expect method-jobs 405 "$(envelope request method_not_allowed)" -X DELETE "$base/v1/jobs"
 expect method-job 405 "$(envelope request method_not_allowed)" -X POST \
   "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001"
+expect method-options 405 "$(envelope request method_not_allowed)" -X OPTIONS "$base/v1/jobs"
 expect method-health 405 "$(envelope request method_not_allowed)" -X POST "$base/v1/health"
 curl -sS -D - -o /dev/null -X DELETE "$base/v1/jobs" | grep -qi '^allow: GET, POST' ||
   { echo "v1: 405 lacks the Allow header"; exit 1; }
@@ -444,6 +445,8 @@ expect empty-id 422 "$(envelope request validation_failed)" -X POST "$base/v1/jo
   -d '{"application_id":""}'
 expect unknown-application 422 "$(envelope job unknown_application)" -X POST "$base/v1/jobs" \
   -H "$json" -d '{"application_id":"nobody"}'
+expect query-on-prefix 404 "$(envelope request route_not_found)" "$base/v1?x=1"
+expect query-on-health 404 "$(envelope request route_not_found)" "$base/v1/health?x=1"
 expect query-on-list 404 "$(envelope request route_not_found)" "$base/v1/jobs?limit=1"
 expect query-on-job 404 "$(envelope request route_not_found)" \
   "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001?x=1"
@@ -452,6 +455,15 @@ expect upper-id 400 "$(envelope request invalid_job_id)" \
   "$base/v1/jobs/01890F3E-7B00-7ABC-8ABC-000000000001"
 expect unknown-job 404 "$(envelope job job_not_found)" \
   "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001"
+# A request that stops arriving is answered 408 after the listener's receive timeout.
+exec 3<>"/dev/tcp/127.0.0.1/$port"
+printf 'GET /v1/health HTTP/1.1\r\n' >&3
+late=$(timeout 10 cat <&3 || true)
+exec 3<&- 3>&-
+[[ "$late" == 'HTTP/1.1 408 '* && "$late" == *"$(envelope request request_timeout)"* ]] ||
+  { echo "v1 timeout: expected 408 request_timeout: $late"; exit 1; }
+# A request line that is not valid HTTP is refused before any route is known.
+expect malformed-http 400 "$(envelope request malformed_request)" -X 'BAD REQUEST' "$base/v1/health"
 head -c 70000 /dev/zero | tr '\0' 'a' >"$scratch/v1.big"
 expect too-large 413 "$(envelope request payload_too_large)" -X POST "$base/v1/jobs" -H "$json" \
   --data-binary "@$scratch/v1.big"

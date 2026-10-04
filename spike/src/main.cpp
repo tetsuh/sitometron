@@ -161,7 +161,9 @@ HttpResponse Route(sitometron::spike::JobDriver& driver,
   const auto& target = request.target;
   // The External REST v1 prototype (ADR-0008). The unversioned routes below are the walking
   // skeleton's own and are no contract.
-  if (target == "/v1" || target.rfind("/v1/", 0) == 0) {
+  // Dispatch on the path alone, so that /v1 targets with a query also get the /v1 answer.
+  if (const auto path = std::string_view(target).substr(0, target.find('?'));
+      path == "/v1" || path.starts_with("/v1/")) {
     return sitometron::spike::RouteV1(driver, applications, request);
   }
   if (target == "/healthz" && request.method == "GET") {
