@@ -7,6 +7,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,12 @@ class ProcessRunner final : public core::ApplicationRunnerPort {
 
   [[nodiscard]] static SpawnResult Spawn(const LaunchSpec& spec);
   [[nodiscard]] static ExitStatus Wait(pid_t pid);
+  // Registers the Job's child so that a cooperative stop can signal it. A stop that was handed
+  // off before the child existed is delivered here.
+  void Attach(const core::Uuid& job, pid_t pid);
+  // Waits for the attached child to exit, forgets it, and reaps it. The child is forgotten before
+  // it is reaped, so a stop never signals a process identifier that has been released.
+  [[nodiscard]] ExitStatus WaitAttached(const core::Uuid& job, pid_t pid);
   static void Signal(pid_t pid, int signal);
 
   void Abandon();  // wake every waiter; used at shutdown
@@ -55,6 +62,8 @@ class ProcessRunner final : public core::ApplicationRunnerPort {
   std::mutex mutex_;
   std::condition_variable ready_;
   std::map<std::string, core::ApplicationLaunchRequest> launches_;
+  std::map<std::string, pid_t> children_;     // attached and not yet reaped
+  std::set<std::string, std::less<>> stops_;  // Jobs whose cooperative stop was handed off
   bool abandoned_ = false;
 };
 

@@ -128,6 +128,42 @@ HttpResponse CreateJob(JobDriver& driver, const Applications& applications,
   return response;
 }
 
+// Cancel takes no body; a body, if present, must be an empty JSON object (ADR-0008 Section 3).
+HttpResponse CancelJob(JobDriver& driver, const std::string& job_id, const HttpRequest& request) {
+  if (!request.body.empty()) {
+    if (const auto media = request.headers.find("content-type");
+        media == request.headers.end() || !IsJsonMediaType(media->second)) {
+      return Error(415, "request", "unsupported_media_type", "the body must be application/json");
+    }
+    const auto body = ParseStrict(request.body);
+    if (!body) return Error(400, "request", "malformed_json", "the body is not well-formed JSON");
+    if (!body->is_object() || !body->empty()) {
+      return Error(422, "request", "validation_failed",
+                   "the body, if present, must be an empty object");
+    }
+  }
+  switch (driver.Cancel(job_id)) {
+    case CancelOutcome::kAccepted:
+      break;
+    case CancelOutcome::kJobNotFound:
+      return Error(404, "job", "job_not_found", "there is no such Job");
+    case CancelOutcome::kStopCauseAlreadyLatched:
+      return Error(409, "job", "stop_cause_already_latched", "the Job is already stopping");
+    case CancelOutcome::kCommandNotAllowedInState:
+      return Error(409, "job", "command_not_allowed_in_state",
+                   "the Job can no longer be cancelled");
+    case CancelOutcome::kNotReady:
+      return Refused(CreateRefusal::kNotReady);
+    case CancelOutcome::kBusy:
+      return Refused(CreateRefusal::kBusy);
+    default:
+      return Refused(CreateRefusal::kServiceFailed);
+  }
+  auto resource = driver.Resource(job_id);
+  if (resource.is_null()) return Refused(CreateRefusal::kServiceFailed);
+  return {202, resource.dump(), {}};
+}
+
 HttpResponse Ready(const JobDriver& driver) {
   auto reasons = driver.ReadinessReasons();
   const bool ready = reasons.empty();
@@ -155,16 +191,20 @@ HttpResponse RouteV1(JobDriver& driver, const Applications& applications,
     return MethodNotAllowed("GET, POST");
   }
   if (target.size() > k_jobs.size() + 1 && target.starts_with("/v1/jobs/")) {
-    const auto job_id = target.substr(k_jobs.size() + 1);
-    // Anything below a Job (such as cancel, which this prototype does not serve yet) is no route.
+    auto job_id = target.substr(k_jobs.size() + 1);
+    constexpr std::string_view k_cancel = "/cancel";
+    const bool cancel = job_id.ends_with(k_cancel);
+    if (cancel) job_id.remove_suffix(k_cancel.size());
+    // Nothing else is below a Job.
     if (job_id.find('/') != std::string_view::npos) {
       return Error(404, "request", "route_not_found", "there is no such resource");
     }
-    if (!get) return MethodNotAllowed("GET");
+    if (cancel ? request.method != "POST" : !get) return MethodNotAllowed(cancel ? "POST" : "GET");
     if (!IsJobId(job_id)) {
       return Error(400, "request", "invalid_job_id",
                    "the Job identifier is not a canonical UUIDv7");
     }
+    if (cancel) return CancelJob(driver, std::string(job_id), request);
     auto resource = driver.Resource(std::string(job_id));
     if (resource.is_null()) return Error(404, "job", "job_not_found", "there is no such Job");
     return {200, resource.dump(), {}};

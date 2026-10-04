@@ -35,7 +35,8 @@ files and exclusive lock; at startup every segment is validated and replayed, Is
 [Findings](#findings-for-phase-0b12)), `--trace-capacity N` (default 4096), `--segment-limit BYTES`
 (default 67108864; the segment size at which the Journal rotates), `--application ID=COMMAND`
 (repeatable; registers an Application for the `/v1` prototype below, run as `/bin/sh -c COMMAND`;
-`ID` is `[a-z0-9][a-z0-9._:-]*`, at most 128 characters).
+`ID` is `[a-z0-9][a-z0-9._:-]*`, at most 128 characters), `--cancel-principal NAME` (default
+`local-operator`; the principal recorded for a `/v1` cancel, 1 to 256 visible ASCII characters).
 
 ```sh
 curl -s localhost:8080/healthz
@@ -102,7 +103,8 @@ Smoke test (needs `curl`): `ctest --test-dir build/dev-linux -L spike --output-o
 ## External REST v1 prototype
 
 The skeleton also serves a prototype of the External REST v1 Job surface of Accepted
-[ADR-0008](../docs/adr/0008-define-the-external-rest-v1-job-surface.md) under `/v1` (Issue #82).
+[ADR-0008](../docs/adr/0008-define-the-external-rest-v1-job-surface.md) under `/v1` (Issues #82
+and #84).
 It is not the production adapter and activates none of the `API-*` checks; it exists to run the
 contract end to end and to find its gaps. The unversioned routes above stay the skeleton's own.
 
@@ -123,13 +125,25 @@ curl -s localhost:8080/v1/ready     # {"ready":true,"reasons":[]}
 curl -s -X POST localhost:8080/v1/jobs -H 'Content-Type: application/json' \
      -d '{"application_id":"hello","executable":"/bin/true"}'
 # 422 {"error":{"domain":"request","code":"validation_failed","message":"...","details":{}}}
+curl -s -X POST localhost:8080/v1/jobs/01a0d935-e6bb-7728-a438-650e3ba48ed4/cancel
+# 202 {"job_id":"01a0d935-...","outcome":null,"state":"stopping","terminal":false}
+# 409 {"error":{"domain":"job","code":"command_not_allowed_in_state",...}} once it is terminal
 ```
 
-Served: `POST /v1/jobs`, `GET /v1/jobs/{job_id}`, `GET /v1/jobs`, `GET /v1/health`, and
-`GET /v1/ready`, with the error envelope and status table of ADR-0008 Section 5. The client names a
-registered `application_id` only; the command comes from `--application`. Not served yet:
-`POST /v1/jobs/{job_id}/cancel` (it answers `404` `route_not_found`), because the driver cannot
-stop a Job yet.
+Served: `POST /v1/jobs`, `GET /v1/jobs/{job_id}`, `GET /v1/jobs`,
+`POST /v1/jobs/{job_id}/cancel`, `GET /v1/health`, and `GET /v1/ready`, with the error envelope and
+status table of ADR-0008 Section 5. The client names a registered `application_id` only; the
+command comes from `--application`.
+
+Cancel records `cancel_accepted` under one configured principal (`--cancel-principal NAME`,
+default `local-operator`) and sends `SIGTERM` to the Job's child process. The Job ends `cancelled`
+when the child exits. Limitations of the skeleton's stop (Issue #84):
+
+- There is no timer adapter, so the cooperative-stop timeout never fires and no forced stop
+  follows. A child that ignores `SIGTERM` stays `stopping` until it exits by itself or the daemon
+  shuts down.
+- The signal goes to the child process only, not to processes it started. A command that should
+  stop cleanly handles `SIGTERM` itself or replaces the shell with `exec`.
 
 Gaps between ADR-0008 and what a listener has to decide, found while building this:
 
@@ -157,12 +171,31 @@ Gaps between ADR-0008 and what a listener has to decide, found while building th
 9. **The characters of `application_id` are not defined.** ADR-0008 Section 4 gives only a length
    of 1 to 128, Section 1 says identifiers are lowercase ASCII, and the core records the
    Application identity as a stable identifier (`[A-Za-z0-9][A-Za-z0-9._:-]*`). The prototype
-   registers only `[a-z0-9][a-z0-9._:-]*`; a request with any other text is `unknown_application`.
+   registers only `[a-z0-9][a-z0-9._:-]*`; a request with any other text of 1 to 128 characters
+   is `unknown_application`, and an empty or longer string is `validation_failed`.
 10. **A JSON library is not a JSON validator.** The parser the skeleton uses reads a raw NUL byte
     as the end of its input and accepts the text before it, so a body could carry a valid object,
     a NUL, and anything after it. It also accepts duplicate keys. The prototype refuses both
     before parsing counts as success; the production adapter needs the same tests whatever library
     it uses. The unversioned `/jobs` route does not have these checks.
+11. **A cancel body that is not an empty object has no code.** ADR-0008 Section 3 says that a
+    body, if present, must be an empty JSON object, but names no error for the other cases. The
+    prototype treats a present body like the body of a creation: `415` without the JSON media
+    type, `400` `malformed_json`, and `422` `validation_failed` for anything but `{}`.
+12. **The `202` of a cancel does not always show `stopping`.** A cancel accepted before a process
+    exists moves the Job straight to `finalizing`, and a Job can leave `stopping` before the
+    response is built. A client can rely only on the status; the `state` is whatever is committed
+    when the resource is read.
+13. **The Job that keeps the daemon not ready cannot be cancelled.** A cancel is a normal ingress
+    input, so while admission is closed by an unresolved Job, a cancel of that Job is `503`
+    `not_ready` like any other request. ADR-0008 Section 5 says this for an unknown Job; it holds
+    for the unresolved Job too, which is worth stating for operators.
+14. **A cancel overtakes the supervisor at any step.** After `cancel_accepted` the driver's next
+    candidate is refused, and what it owes next depends on where the cancel landed: nothing to
+    launch or release (before `resources_committed`), a release only (before the launch intent),
+    or a `process_exit_confirmed` because no Worker will report (after the launch intent, before
+    `worker_running`). The skeleton reads the snapshot to decide. A production supervisor needs
+    this table written down (see finding 1 of the next list).
 
 ## What one Job does
 
@@ -191,8 +224,8 @@ a failed outcome.
 ## Intentionally missing
 
 Native Windows, TLS, authentication, request limits beyond 64 KiB, Admission, Application Registry,
-ResourceProfile/topology, the Worker protocol (`worker_running` is asserted at spawn), cancel and
-terminate (the stop ports are no-ops), timeouts (no timer adapter exists, so a hung child never
+ResourceProfile/topology, the Worker protocol (`worker_running` is asserted at spawn), terminate
+and the forced stop (that port is a no-op; cancel is served on `/v1` only), timeouts (no timer adapter exists, so a hung child never
 times out), recovery of Jobs left unresolved by a crash (they are replayed and shown, but the daemon
 then stays not ready with admission closed; Phase 2 owns their resolution), online Journal pruning, Sitos, Artifact
 REST, Quill logging, packaging, release. Bundle provenance is a placeholder digest.

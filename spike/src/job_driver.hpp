@@ -27,6 +27,8 @@ struct DriverConfig {
   std::size_t max_jobs = 32;          // resident slots: also the lifetime Job count (see README)
   std::size_t trace_capacity = 4096;  // writer trace + ingress log bound (see README)
   std::string working_directory;
+  // The principal recorded in cancel_accepted (ADR-0008 Section 3): one configured name.
+  std::string cancel_principal = "local-operator";
   // Replayed at startup (ADR-0006 Section 6): snapshots in creation order, and the unresolved Jobs
   // that keep admission closed for this run.
   std::vector<core::Snapshot> replayed_jobs;
@@ -55,6 +57,17 @@ struct CreateOutcome {
   std::string detail;  // diagnostic text for the daemon log and the unversioned route only
 };
 
+// The result of a cancel command, in the order ADR-0008 Sections 3 and 5 give the causes.
+enum class CancelOutcome {
+  kAccepted,
+  kServiceFailed,
+  kNotReady,
+  kBusy,
+  kJobNotFound,
+  kStopCauseAlreadyLatched,
+  kCommandNotAllowedInState
+};
+
 // The composition root's Job sequencer. One thread per Job drives the lifecycle candidates that
 // the core leaves to "the supervisor": resources, launch intent, session retention, finalization,
 // terminal outcome, process-exit confirmation, release, and cleanup. Every step submits one raw
@@ -70,6 +83,8 @@ class JobDriver {
   [[nodiscard]] std::optional<std::string> Submit(LaunchSpec spec, std::string& error);
   // The same creation, reporting why it was refused instead of a text.
   [[nodiscard]] CreateOutcome Create(LaunchSpec spec);
+  // Submits the ADR-0002 cancel command and waits until it is applied or refused.
+  [[nodiscard]] CancelOutcome Cancel(const std::string& job_id);
   // The External REST v1 Job resource (ADR-0008 Section 3) from the committed snapshot; null for a
   // Job that is not resident.
   [[nodiscard]] nlohmann::json Resource(const std::string& job_id) const;
@@ -97,6 +112,8 @@ class JobDriver {
   Step SubmitCandidate(const core::RawCandidateEvent& event, const char* what);
   void Record(const std::string& job_id, const std::string& step);
   void Fail(const std::string& job_id, const std::string& error);
+  // True once a committed cancel is the Job's latched reason.
+  bool Cancelled(const std::string& job_id) const;
   std::optional<JobRecord> Get(const std::string& job_id) const;
 
   DriverConfig config_;
