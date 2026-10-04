@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <charconv>
 #include <cstdint>
@@ -125,10 +126,20 @@ bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
       const char* raw = value();
       const std::string text = raw == nullptr ? "" : raw;
       const auto equals = text.find('=');
-      // ID=COMMAND with a 1 to 128 character identifier and a non-empty command.
-      if (equals == std::string::npos || equals == 0 || equals > 128 || equals + 1 == text.size() ||
-          !options.applications.emplace(text.substr(0, equals), text.substr(equals + 1)).second) {
-        error = "--application needs ID=COMMAND with a unique identifier of 1 to 128 characters";
+      // ID=COMMAND with a non-empty command. The identifier is lowercase ASCII (ADR-0008
+      // Section 1) within the core's stable-identifier form: [a-z0-9][a-z0-9._:-]*, at most 128.
+      const auto id = equals == std::string::npos ? std::string() : text.substr(0, equals);
+      const bool valid_id = !id.empty() && id.size() <= 128 && id.front() != '.' &&
+                            id.front() != '_' && id.front() != ':' && id.front() != '-' &&
+                            std::ranges::all_of(id, [](char c) {
+                              return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' ||
+                                     c == '_' || c == ':' || c == '-';
+                            });
+      if (!valid_id || equals + 1 == text.size() ||
+          !options.applications.try_emplace(id, text.substr(equals + 1)).second) {
+        error =
+            "--application needs ID=COMMAND with a unique lowercase identifier "
+            "([a-z0-9][a-z0-9._:-]*, at most 128 characters)";
         return false;
       }
     } else if (flag == "--help" || flag == "-h") {

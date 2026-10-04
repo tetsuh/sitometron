@@ -52,8 +52,8 @@ bool IsJsonMediaType(std::string value) {
     value.erase(semicolon);
   }
   while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.pop_back();
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::ranges::transform(value, value.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return value == "application/json";
 }
 
@@ -92,8 +92,8 @@ HttpResponse Refused(CreateRefusal refusal) {
 
 HttpResponse CreateJob(JobDriver& driver, const Applications& applications,
                        const HttpRequest& request) {
-  const auto media = request.headers.find("content-type");
-  if (!request.body.empty() &&
+  if (const auto media = request.headers.find("content-type");
+      !request.body.empty() &&
       (media == request.headers.end() || !IsJsonMediaType(media->second))) {
     return Error(415, "request", "unsupported_media_type", "the body must be application/json");
   }
@@ -113,6 +113,7 @@ HttpResponse CreateJob(JobDriver& driver, const Applications& applications,
     return Error(422, "job", "unknown_application", "the application is not registered");
   }
   LaunchSpec spec;
+  spec.application_id = application_id;
   spec.executable = "/bin/sh";
   spec.arguments = {"-c", application->second};
   const auto outcome = driver.Create(std::move(spec));
@@ -137,6 +138,10 @@ HttpResponse RouteV1(JobDriver& driver, const Applications& applications,
                      const HttpRequest& request) {
   const std::string_view target = request.target;
   const bool get = request.method == "GET";
+  // ADR-0008 defines no query parameters: a target with a query is no route of this contract.
+  if (target.find('?') != std::string_view::npos) {
+    return Error(404, "request", "route_not_found", "there is no such resource");
+  }
   if (target == "/v1/health") {
     return get ? HttpResponse{200, R"({"status":"ok"})", {}} : MethodNotAllowed("GET");
   }
@@ -146,7 +151,7 @@ HttpResponse RouteV1(JobDriver& driver, const Applications& applications,
     if (request.method == "POST") return CreateJob(driver, applications, request);
     return MethodNotAllowed("GET, POST");
   }
-  if (target.size() > k_jobs.size() + 1 && target.substr(0, k_jobs.size() + 1) == "/v1/jobs/") {
+  if (target.size() > k_jobs.size() + 1 && target.starts_with("/v1/jobs/")) {
     const auto job_id = target.substr(k_jobs.size() + 1);
     // Anything below a Job (such as cancel, which this prototype does not serve yet) is no route.
     if (job_id.find('/') != std::string_view::npos) {

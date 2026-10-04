@@ -444,6 +444,9 @@ expect empty-id 422 "$(envelope request validation_failed)" -X POST "$base/v1/jo
   -d '{"application_id":""}'
 expect unknown-application 422 "$(envelope job unknown_application)" -X POST "$base/v1/jobs" \
   -H "$json" -d '{"application_id":"nobody"}'
+expect query-on-list 404 "$(envelope request route_not_found)" "$base/v1/jobs?limit=1"
+expect query-on-job 404 "$(envelope request route_not_found)" \
+  "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001?x=1"
 expect invalid-id 400 "$(envelope request invalid_job_id)" "$base/v1/jobs/not-a-uuid"
 expect upper-id 400 "$(envelope request invalid_job_id)" \
   "$base/v1/jobs/01890F3E-7B00-7ABC-8ABC-000000000001"
@@ -463,7 +466,9 @@ v1_ok=$(printf '%s' "$created" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
 [[ -n "$v1_ok" ]] || { echo "v1 create: no job_id in $created"; exit 1; }
 printf '%s' "$headers" | tr -d '\r' | grep -qix "location: /v1/jobs/$v1_ok" ||
   { echo "v1 create: no Location for $v1_ok: $headers"; exit 1; }
-printf '%s' "$created" | grep -q '"terminal":false' || { echo "v1 create: $created"; exit 1; }
+# The Job is at least admitted; a fast command may already be terminal when the response is built.
+[[ "$created" == "{\"job_id\":\"$v1_ok\",\"outcome\":"*"\"state\":\""*"\"terminal\":"* ]] ||
+  { echo "v1 create: unexpected resource: $created"; exit 1; }
 [[ "$created" != *executable* && "$created" != *"/bin/"* ]] || { echo "v1 create leaks: $created"; exit 1; }
 
 # Polls a Job until it is terminal, and prints its resource.
@@ -495,6 +500,21 @@ expect capacity 503 "$(envelope service capacity_exhausted)" -X POST "$base/v1/j
 [[ "$(v1_records)" == "$before" ]] || { echo "v1: a refused creation reached the Journal"; exit 1; }
 kill -TERM "$daemon"
 wait "$daemon"
+# The Journal records the registered identifier, not one derived from the shell.
+for app in ok bad; do
+  grep -h '"worker_launch_intent"' "$v1"/journal-*.ndjson | grep -q "\"application_id\":\"$app\"" ||
+    { echo "v1: launch intent lacks application_id $app"; exit 1; }
+done
+# An identifier that is not lowercase ASCII in the stable-identifier form is refused at startup.
+for bad_id in 'UPPER=true' '.dot=true' 'sp ace=true' '=true' 'noequals' 'empty='; do
+  if "$binary" --listen 127.0.0.1:0 --journal "$scratch/v1-unused" --application "$bad_id" \
+    >"$scratch/v1-option.log" 2>&1; then
+    echo "expected --application $bad_id to be refused"; exit 1
+  fi
+  grep -q -- '--application needs ID=COMMAND' "$scratch/v1-option.log" ||
+    { echo "no option error for $bad_id: $(cat "$scratch/v1-option.log")"; exit 1; }
+done
+[[ ! -e "$scratch/v1-unused" ]] || { echo "a refused option created a Journal"; exit 1; }
 
 # kill -9 during a Job: after the restart readiness is false with the unresolved Job, creation is
 # refused with not_ready, and the Job is still readable.

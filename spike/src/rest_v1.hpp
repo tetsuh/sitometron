@@ -1,6 +1,7 @@
 #ifndef SITOMETRON_SPIKE_REST_V1_HPP_
 #define SITOMETRON_SPIKE_REST_V1_HPP_
 
+#include <functional>
 #include <map>
 #include <string>
 
@@ -12,7 +13,7 @@ namespace sitometron::spike {
 // The deployment-registered Applications of this run: identifier to the shell command the skeleton
 // launches for it. ADR-0008 Section 4: until the Application Registry exists, the registered set
 // comes from the startup configuration.
-using Applications = std::map<std::string, std::string>;
+using Applications = std::map<std::string, std::string, std::less<>>;
 
 // A non-normative prototype of the External REST v1 Job surface (Accepted ADR-0008): create, read,
 // list, health, and readiness. Cancel is not served yet. Handles every target under /v1.

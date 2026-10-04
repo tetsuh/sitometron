@@ -116,8 +116,9 @@ CreateOutcome JobDriver::Create(LaunchSpec spec) {
       // normal_full, and the pending results that serialized creation should not see.
       return {CreateRefusal::kBusy, {}, "job_created: the ingress queue is full"};
   }
-  const auto step = Await(created.ingress, "job_created");
-  if (!step.ok) return {CreateRefusal::kServiceFailed, {}, step.detail};
+  if (const auto step = Await(created.ingress, "job_created"); !step.ok) {
+    return {CreateRefusal::kServiceFailed, {}, step.detail};
+  }
   const auto& id = created.job_id;
   if (!id) {
     return {CreateRefusal::kServiceFailed, {}, "job_created committed without an identity"};
@@ -211,7 +212,9 @@ void JobDriver::Run(std::string job_id) {
   if (!step("worker_launch_intent",
             {{"operation_id", operation},
              {"application",
-              {{"application_id", StableApplicationId(record->spec.executable)},
+              {{"application_id", record->spec.application_id.empty()
+                                      ? StableApplicationId(record->spec.executable)
+                                      : record->spec.application_id},
                {"version", "0.0.0-spike"},
                {"bundle_sha256", k_bundle_placeholder}}},
              {"allocation_id", k_allocation_id},
@@ -349,7 +352,7 @@ json JobDriver::List() const {
 json JobDriver::Resource(const std::string& job_id) const {
   {
     std::lock_guard lock(mutex_);
-    if (jobs_.count(job_id) == 0) return nullptr;
+    if (!jobs_.contains(job_id)) return nullptr;
   }
   const auto snapshot = orchestrator_->SnapshotFor(core::Uuid{job_id});
   if (!snapshot) return nullptr;

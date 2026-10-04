@@ -34,7 +34,8 @@ files and exclusive lock; at startup every segment is validated and replayed, Is
 `--workdir DIR` (default working directory for children), `--max-jobs N` (default 32, see
 [Findings](#findings-for-phase-0b12)), `--trace-capacity N` (default 4096), `--segment-limit BYTES`
 (default 67108864; the segment size at which the Journal rotates), `--application ID=COMMAND`
-(repeatable; registers an Application for the `/v1` prototype below, run as `/bin/sh -c COMMAND`).
+(repeatable; registers an Application for the `/v1` prototype below, run as `/bin/sh -c COMMAND`;
+`ID` is `[a-z0-9][a-z0-9._:-]*`, at most 128 characters).
 
 ```sh
 curl -s localhost:8080/healthz
@@ -141,8 +142,8 @@ Gaps between ADR-0008 and what a listener has to decide, found while building th
 3. **`already_pending` has no status.** A second creation during identity generation gets this
    ingress result. The prototype serializes creation so that it never occurs; a production adapter
    must do the same or the ADR needs a row.
-4. **Query strings are not mentioned.** The prototype treats a target with a query as another
-   path, so it is `404` `route_not_found`.
+4. **Query strings are not mentioned.** The prototype answers every `/v1` target that has a query
+   with `404` `route_not_found`.
 5. **A `POST /v1/jobs` without a body** has no media type to check; it is `400` `malformed_json`.
 6. **`HEAD` and `OPTIONS`** are answered like any other method that a route does not allow.
 7. **`details` is always empty** here. ADR-0008 allows fields in it but names none, so a client
@@ -150,6 +151,11 @@ Gaps between ADR-0008 and what a listener has to decide, found while building th
 8. **`terminal` is true before cleanup is recorded.** The terminal outcome is committed before
    process-exit confirmation, release, and cleanup, so a client can see a terminal Job whose
    resident slot work is still finishing. ADR-0008 Section 3 allows this; it is worth stating.
+
+9. **The characters of `application_id` are not defined.** ADR-0008 Section 4 gives only a length
+   of 1 to 128, Section 1 says identifiers are lowercase ASCII, and the core records the
+   Application identity as a stable identifier (`[A-Za-z0-9][A-Za-z0-9._:-]*`). The prototype
+   registers only `[a-z0-9][a-z0-9._:-]*`; a request with any other text is `unknown_application`.
 
 ## What one Job does
 
