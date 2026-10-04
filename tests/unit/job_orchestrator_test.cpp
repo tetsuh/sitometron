@@ -2861,24 +2861,42 @@ int JobIngressCompletionAwait() {
                     "the turn is released");
   }
   {
-    // A waiter that starts before its turn commits is woken by the completion, and a later entry
-    // queued behind it does not delay it.
+    // A waiter that starts before its turn runs is woken by its completion while a later entry,
+    // queued behind it, is still held: the wait does not need the later turn or an idle writer.
     JobOrchestratorHarness harness(PositiveConfig());
-    result |= Check(harness.ArmBarrier(WriterPhase::kBeforeCommit), "before-commit barrier armed");
+    result |=
+        Check(harness.ArmBarrier(WriterPhase::kBeforeDequeue), "before-dequeue barrier armed");
     const auto created = harness.Create();
-    result |= Check(harness.WaitUntil(created.ingress_sequence, WriterPhase::kBeforeCommit),
-                    "the creation turn is held before its commit");
+    result |= Check(harness.WaitUntil(created.ingress_sequence, WriterPhase::kBeforeDequeue),
+                    "the creation entry is held before dequeue");
+    const auto later = harness.SubmitResourcesCommitted(
+        MakeResourcesCommitted(ids.primary_job, EmptyAllocation()));
+    result |= Check(later.code == IngressCode::kAdmitted &&
+                        later.ingress_sequence == created.ingress_sequence + 1,
+                    "a later entry is queued behind the awaited one");
     const auto attempts = harness.await_attempt_count();
     std::optional<Completion> woken;
     std::thread waiter([&] { woken = harness.AwaitCompletion(created.ingress_sequence); });
     result |= Check(harness.WaitForAwaitAttempts(attempts + 1), "the waiter is waiting");
     result |= Check(harness.completion_count() == created.completion_count_before,
-                    "nothing is complete while the turn is held");
-    result |= Check(harness.Release(created.ingress_sequence, WriterPhase::kBeforeCommit),
-                    "the turn is released");
+                    "nothing is complete while the entry is held");
+    // Re-arming the same barrier releases the held entry and holds the next one to arrive.
+    // ArmBarrier itself does not wake the held writer; ReleaseAdmissionPause notifies it (no
+    // admission pause is armed, so it changes nothing else).
+    result |=
+        Check(harness.ArmBarrier(WriterPhase::kBeforeDequeue) && harness.ReleaseAdmissionPause(),
+              "the barrier moves to the later entry");
     waiter.join();
     result |= Check(woken && woken->code == Completion::Code::kSuccess,
                     "the waiting caller is woken by its completion");
+    result |= Check(harness.WaitUntil(later.ingress_sequence, WriterPhase::kBeforeDequeue) &&
+                        harness.completion_count() == created.completion_count_before + 1,
+                    "the later entry is still held and incomplete when the wait returns");
+    result |= Check(harness.Release(later.ingress_sequence, WriterPhase::kBeforeDequeue),
+                    "the later entry is released");
+    const auto later_done = harness.AwaitCompletion(later.ingress_sequence);
+    result |= Check(later_done && later_done->code == Completion::Code::kSuccess,
+                    "the later entry completes after its release");
   }
   {
     // Two waiters for one sequence: exactly one takes the completion; the other returns nothing.
