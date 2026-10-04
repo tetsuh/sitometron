@@ -2835,6 +2835,16 @@ int JobIngressCompletionAwait() {
                                 RejectionReason::kJobNotFound);
     result |= Check(!harness.AwaitCompletion(taken.ingress_sequence).has_value(),
                     "a wait after TakeCompletion returns nothing");
+    // Each wait gives its registration back: more waits than the completion capacity still work.
+    bool all_returned = true;
+    for (std::size_t round = 0; round != PositiveConfig().completion_capacity + 1; ++round) {
+      const auto again =
+          harness.SubmitCancel(Command{1, CommandType::kCancel, ids.secondary_job, "operator"});
+      const auto answer = harness.AwaitCompletion(again.ingress_sequence);
+      all_returned = all_returned && again.code == IngressCode::kAdmitted && answer.has_value();
+    }
+    result |= Check(all_returned && !harness.failed(),
+                    "waits release their completion registrations for reuse");
   }
   {
     // The wait does not need an idle writer: it returns while the writer is still held inside the
@@ -2887,8 +2897,9 @@ int JobIngressCompletionAwait() {
                     "the turn is released");
     one.join();
     two.join();
-    result |= Check(first.has_value() != second.has_value() &&
-                        (first ? first : second)->code == Completion::Code::kSuccess,
+    const auto& taken = first ? first : second;
+    result |= Check(first.has_value() != second.has_value() && taken.has_value() &&
+                        taken.value_or(Completion{}).code == Completion::Code::kSuccess,
                     "exactly one of two waiters takes the completion");
   }
   {

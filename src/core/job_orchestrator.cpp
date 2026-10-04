@@ -2229,11 +2229,11 @@ std::optional<Completion> JobOrchestrator::AwaitCompletion(std::uint64_t s) {
     }
     return nullptr;
   };
-  if (find() == nullptr) return std::nullopt;
   ++impl_->await_attempts;
   impl_->cv.notify_all();
   // Every admitted entry is completed exactly once: by its turn, or by failure disposal with
-  // service_failed (ADR-0003). A second waiter is released when the first takes the registration.
+  // service_failed (ADR-0003). That completion wakes every waiter; the first to run takes the
+  // registration, and the others then find none. A sequence without a registration never waits.
   impl_->cv.wait(lock, [&find] {
     const auto* slot = find();
     return slot == nullptr || slot->completed;
@@ -2246,7 +2246,6 @@ std::optional<Completion> JobOrchestrator::AwaitCompletion(std::uint64_t s) {
   slot->sequence = 0;
   slot->value = {};
   --impl_->completion_used;
-  impl_->cv.notify_all();
   return result;
 }
 std::size_t JobOrchestrator::await_attempt_count() const noexcept {
@@ -2444,7 +2443,6 @@ std::optional<Completion> JobOrchestrator::TakeCompletion(std::uint64_t s) {
       slot.sequence = 0;
       slot.value = {};
       --impl_->completion_used;
-      impl_->cv.notify_all();  // a waiter for this sequence must see the registration is gone
       return result;
     }
   }
