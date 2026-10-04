@@ -143,8 +143,12 @@ authorities, not decisions.
 2. **There is no production completion notification.** The only way to learn that a submission was
    applied is `WaitUntil(sequence, phase)` (a test barrier that waits for the writer to go idle) plus
    `TakeCompletion(sequence)`. A daemon needs a completion callback or future per ingress sequence.
+   **Resolved** by `AwaitCompletion(sequence)` (Issue #80), which waits for that one sequence; the
+   driver uses it for every step and for the shutdown marker.
 3. **`Create()` does not return the new identity.** It is read back through the global
-   `LastCreated()`, so creation must be serialized by the caller (`create_mutex_`).
+   `LastCreated()`, so creation must be serialized by the caller (`create_mutex_`). **Resolved**
+   for the identity by `CreateJob()` (Issue #80). The driver still serializes creation, because a
+   second creation during identity generation is refused with `already_pending`.
 4. **Residents are never reclaimed.** `Reserve()` needs `!exists`, and `entity_exists` never becomes
    false after a terminal state, so `max_jobs` is the number of Jobs the daemon can ever accept.
    The trace and ingress-sequence logs are append-only and bounded by `trace_capacity`; the writer

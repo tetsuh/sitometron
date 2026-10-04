@@ -84,6 +84,12 @@ struct Completion {
   Code code = Code::kServiceFailed;
   std::optional<Rejection> rejection;
 };
+// The result of creating a Job: the ingress result and, when it is admitted, the generated Job
+// identity. The Job exists only once the completion of `ingress.ingress_sequence` reports success.
+struct CreatedJob {
+  IngressResult ingress{};
+  std::optional<Uuid> job_id;
+};
 class CallbackHandle;
 
 struct Config {
@@ -124,6 +130,9 @@ class JobOrchestrator final {
   JobOrchestrator& operator=(const JobOrchestrator&) = delete;
 
   IngressResult Create();
+  // Create() that also returns the identity it generated, so callers need not serialize creation
+  // around LastCreated().
+  CreatedJob CreateJob();
   // Production derives normal/critical class, resident reservation, and source
   // gate solely from the closed command/candidate vocabulary.
   IngressResult SubmitCandidate(const RawCandidateEvent&);
@@ -189,6 +198,14 @@ class JobOrchestrator final {
   std::size_t total_occupancy() const noexcept;
   std::size_t creation_claim_count(const Uuid&) const noexcept;
   std::optional<Completion> TakeCompletion(std::uint64_t);
+  // Blocks until the completion registered for this admitted ingress sequence is released, then
+  // takes it as TakeCompletion does. Waits for that sequence only, not for the writer to go idle.
+  // Returns nullopt at once when no completion is registered for the sequence (never admitted, or
+  // already taken). Call it from the submitting thread, never from a callback or the writer.
+  std::optional<Completion> AwaitCompletion(std::uint64_t);
+  // Test probe: the number of AwaitCompletion calls so far, including ones that returned at once.
+  std::size_t await_attempt_count() const noexcept;
+  bool WaitForAwaitAttempts(std::size_t);
   std::optional<Snapshot> SnapshotFor(const Uuid&) const;
   std::vector<TraceRecord> CopyTrace() const;
   std::vector<LogicalJobEvent> CopyJournalAttempts() const;
@@ -215,6 +232,7 @@ class JobOrchestrator final {
  private:
   friend class CallbackHandle;
   struct Impl;
+  IngressResult CreateWith(std::optional<Uuid>& created);
   void Run() noexcept;
   void Stop() noexcept;
   void ScheduleAcceptedEntry() noexcept;

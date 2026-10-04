@@ -43,7 +43,7 @@ LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the 67-test `dev-linux` baseline. It runs without suppressions using
+CTest-name parity with the 69-test `dev-linux` baseline. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -163,7 +163,7 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `JOB-005` | C++ test `job_timeout_vectors` | Active |
 | `JOB-006` | C++ test `job_late_cleanup_vectors` | Active |
 | `JOB-007` | C++ test `job_ordering_vectors` | Active |
-| `JOB-008` | C++ tests `job_ingress_linearization_order`, `job_ingress_single_writer`, `job_ingress_source_classification`, `job_ingress_capacity_and_reserve`, `job_ingress_coalescing`, `job_ingress_fail_closed` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13 |
+| `JOB-008` | C++ tests `job_ingress_linearization_order`, `job_ingress_single_writer`, `job_ingress_source_classification`, `job_ingress_capacity_and_reserve`, `job_ingress_coalescing`, `job_ingress_fail_closed`, `job_create_returns_identity`, `job_ingress_completion_await` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13; creation identity and the completion wait active under Issue #80 |
 | `OPS-001` | C++ tests `job_ingress_shutdown_quiescence`, `job_ingress_callback_lifetime`, `job_ingress_readiness_failure` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13 |
 | `JRN-001` | CTests `core_job_contract`, `job_fake_logical_commit_results`; C++ tests `job_journal_envelope_vectors`, `job_logical_sequence_exhaustion_fail_closed` | Contract, logical fake-result, complete writer-envelope construction, and non-wrapping sequence checks active; physical record encoding is active under `JRN-004` (Issue #57) and segment layout under `JRN-005` (Issue #59) |
 | `JRN-002` | C++ test `job_logical_commit_order`; CTest `job_fake_effect_observation`; C++ test `job_physical_disk_sync_order` | Logical commit-before-activation/effect ordering active under Issue #12 and deterministically qualified under Issue #13; physical append/data-sync ordering (`job_physical_disk_sync_order`) active under Issue #59 |

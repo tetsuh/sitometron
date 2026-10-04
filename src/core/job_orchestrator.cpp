@@ -261,6 +261,7 @@ struct JobOrchestrator::Impl {
   bool admission_inserting = false;
   std::size_t admission_attempts = 0;
   std::size_t wait_until_attempts = 0;
+  std::size_t await_attempts = 0;
   WriterPhase barrier = WriterPhase::kTurnFinished;
   bool barrier_armed = false;
   bool barrier_reached = false;
@@ -677,6 +678,7 @@ struct JobOrchestrator::Impl {
     if (slot.completed) return;
     slot.completed = true;
     slot.value = completion;
+    cv.notify_all();  // wake AwaitCompletion waiters
     ++completion_total;
     if (outstanding != 0) --outstanding;
     if (in_flight && in_flight_sequence == entry.sequence) in_flight = false;
@@ -1741,7 +1743,7 @@ static IngressResult KickIf(JobOrchestrator* orchestrator, IngressResult r) noex
   if (r.code == IngressCode::kAdmitted) orchestrator->Notify();
   return r;
 }
-IngressResult JobOrchestrator::Create() {
+IngressResult JobOrchestrator::CreateWith(std::optional<Uuid>& created) {
   // Identity sources are allowed to throw. Reserve one finite creation
   // operation under ingress ownership, then call the port with no ingress lock.
   {
@@ -1781,7 +1783,7 @@ IngressResult JobOrchestrator::Create() {
     LatchReadinessFailure();
     return impl_->Result(IngressCode::kServiceFailed);
   }
-  const auto id = std::get<GeneratedJobSessionIdentity>(job_result).value;
+  auto id = std::get<GeneratedJobSessionIdentity>(job_result).value;
   auto identities = Impl::GeneratedIdentityBundle{
       id, std::get<GeneratedWorkerIdentity>(worker_result).value,
       std::get<GeneratedLaunchOperationIdentity>(launch_result).value};
@@ -1804,10 +1806,23 @@ IngressResult JobOrchestrator::Create() {
     if (result.code == IngressCode::kAdmitted) {
       ++impl_->create_count;
       impl_->last_created = id;
+      // The entry is already admitted, so handing the identity to the caller must not fail: it
+      // is moved, never copied (ADR-0003 fail-closed disposal covers only the paths above).
+      static_assert(noexcept(created = std::move(id)));
+      created = std::move(id);
     }
     impl_->cv.notify_all();
   }
   return KickIf(this, result);
+}
+IngressResult JobOrchestrator::Create() {
+  std::optional<Uuid> ignored;
+  return CreateWith(ignored);
+}
+CreatedJob JobOrchestrator::CreateJob() {
+  CreatedJob created;
+  created.ingress = CreateWith(created.job_id);
+  return created;
 }
 IngressResult JobOrchestrator::SubmitCandidate(const RawCandidateEvent& e) {
   if (e.event_type == "timeout_expired") return impl_->Result(IngressCode::kAdmissionClosed);
@@ -2205,6 +2220,44 @@ bool JobOrchestrator::WaitForAdmissionAttempts(std::size_t c) {
 bool JobOrchestrator::WaitForWaitUntilAttempts(std::size_t c) {
   std::unique_lock lock(impl_->mutex);
   impl_->cv.wait(lock, [this, c] { return impl_->wait_until_attempts >= c; });
+  return true;
+}
+std::optional<Completion> JobOrchestrator::AwaitCompletion(std::uint64_t s) {
+  std::unique_lock lock(impl_->mutex);
+  // A registration exists from admission until its completion is taken. Slots are reused, so the
+  // registration is looked up by sequence on every wake.
+  const auto find = [this, s]() -> Impl::CompletionSlot* {
+    for (auto& slot : impl_->completions) {
+      if (slot.reserved && slot.sequence == s) return &slot;
+    }
+    return nullptr;
+  };
+  ++impl_->await_attempts;
+  impl_->cv.notify_all();
+  // Every admitted entry is completed exactly once: by its turn, or by failure disposal with
+  // service_failed (ADR-0003). That completion wakes every waiter; the first to run takes the
+  // registration, and the others then find none. A sequence without a registration never waits.
+  impl_->cv.wait(lock, [&find] {
+    const auto* slot = find();
+    return slot == nullptr || slot->completed;
+  });
+  auto* slot = find();
+  if (slot == nullptr) return std::nullopt;
+  auto result = slot->value;
+  slot->reserved = false;
+  slot->completed = false;
+  slot->sequence = 0;
+  slot->value = {};
+  --impl_->completion_used;
+  return result;
+}
+std::size_t JobOrchestrator::await_attempt_count() const noexcept {
+  std::lock_guard lock(impl_->mutex);
+  return impl_->await_attempts;
+}
+bool JobOrchestrator::WaitForAwaitAttempts(std::size_t c) {
+  std::unique_lock lock(impl_->mutex);
+  impl_->cv.wait(lock, [this, c] { return impl_->await_attempts >= c; });
   return true;
 }
 bool JobOrchestrator::ReleaseAdmissionPause() {
