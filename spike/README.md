@@ -190,12 +190,17 @@ Gaps between ADR-0008 and what a listener has to decide, found while building th
     input, so while admission is closed by an unresolved Job, a cancel of that Job is `503`
     `not_ready` like any other request. ADR-0008 Section 5 says this for an unknown Job; it holds
     for the unresolved Job too, which is worth stating for operators.
-14. **A cancel overtakes the supervisor at any step.** After `cancel_accepted` the driver's next
-    candidate is refused, and what it owes next depends on where the cancel landed: nothing to
-    launch or release (before `resources_committed`), a release only (before the launch intent),
-    or a `process_exit_confirmed` because no Worker will report (after the launch intent, before
-    `worker_running`). The skeleton reads the snapshot to decide. A production supervisor needs
-    this table written down (see finding 1 of the next list).
+14. **A cancel overtakes the supervisor between its steps.** After `cancel_accepted` the driver's
+    next candidate is refused, and what it owes next depends on where the cancel landed. The
+    smoke test cancels right after creation and has reached these landing points (which ones a
+    run reaches is timing): before the launch intent (the Job is already `finalizing`; nothing
+    was launched, only the release remains), after the launch intent or after
+    `worker_launch_observed` (the Job is `stopping` and no Worker will report, so the driver
+    submits `process_exit_confirmed` once the child has exited), and while running (the Worker's
+    report ends `stopping`). A cancel before `resources_committed` takes the same code path as
+    the first case with nothing to release; no run has reached it. The skeleton reads the
+    snapshot to decide. A production supervisor needs this table written down (see finding 1 of
+    the next list).
 
 ## What one Job does
 

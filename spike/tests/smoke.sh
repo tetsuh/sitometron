@@ -653,6 +653,7 @@ expect cancel-query 404 "$(envelope request route_not_found)" \
   { echo "v1 cancel: cancel_accepted lacks the configured principal"; exit 1; }
 # A cancel sent right after the creation overtakes the driver at whatever step it has reached
 # (before or after the launch). Wherever it lands, the Job ends cancelled without a driver error.
+early_steps=''
 for _ in 1 2 3 4 5; do
   early=$(v1 -X POST "$base/v1/jobs" -H "$json" -d '{"application_id":"prompt"}' |
     sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
@@ -665,7 +666,19 @@ for _ in 1 2 3 4 5; do
   done
   [[ "$early_body" == *'"cleanup_status_recorded"'*'"error":null'* || "$early_body" == *'"error":null'*'"cleanup_status_recorded"'* ]] ||
     { echo "v1 cancel: the driver did not finish the early Job cleanly: $early_body"; exit 1; }
+  # A Job that had a launch confirms its exit once; one cancelled before the launch intent has no
+  # launch to confirm.
+  steps=$(sed -n 's/.*"steps":\[\([^]]*\)\].*/\1/p' <<<"$early_body")
+  confirmations=$({ grep -o '"process_exit_confirmed"' <<<"$steps" || true; } | wc -l)
+  if [[ "$steps" == *'"worker_launch_intent"'* ]]; then
+    [[ "$confirmations" == 1 ]] || { echo "v1 cancel: $confirmations exit confirmations: $early_body"; exit 1; }
+  else
+    [[ "$confirmations" == 0 ]] || { echo "v1 cancel: an exit was confirmed without a launch: $early_body"; exit 1; }
+  fi
+  early_steps+="$steps"$'\n'
 done
+# Which landing points this run reached is timing; they are printed for the record.
+printf 'early cancel steps:\n%s' "$early_steps"
 kill -TERM "$daemon"
 wait "$daemon"
 # A principal that is empty or not visible ASCII is refused at startup.

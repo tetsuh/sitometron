@@ -331,10 +331,13 @@ void JobDriver::Run(std::string job_id) {
   // A cancel that found a process leaves the Job stopping until the Worker reports or the exit is
   // confirmed. The child has exited by now, so the exit is confirmed here.
   auto snapshot = orchestrator_->SnapshotFor(core::Uuid{job_id});
-  if (snapshot && snapshot->state == core::JobState::kStopping &&
-      !step("process_exit_confirmed",
-            {{"completion_mode", "cooperative"}, {"launch_operation_id", operation}}))
-    return;
+  bool exit_confirmed = false;
+  if (snapshot && snapshot->state == core::JobState::kStopping) {
+    if (!step("process_exit_confirmed",
+              {{"completion_mode", "cooperative"}, {"launch_operation_id", operation}}))
+      return;
+    exit_confirmed = true;
+  }
 
   // 4. finalizing: session retention, finalization, terminal outcome
   if (!step("session_retain_requested", {{"session_id", job_id}})) return;
@@ -362,7 +365,7 @@ void JobDriver::Run(std::string job_id) {
     Fail(job_id, "the terminal snapshot is missing");
     return;
   }
-  if (snapshot->launch_operation_id &&
+  if (snapshot->launch_operation_id && !exit_confirmed &&
       !step("process_exit_confirmed",
             {{"completion_mode", snapshot->completion_mode == core::CompletionMode::kCooperative
                                      ? "cooperative"
