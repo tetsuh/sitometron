@@ -157,6 +157,11 @@ Gaps between ADR-0008 and what a listener has to decide, found while building th
    of 1 to 128, Section 1 says identifiers are lowercase ASCII, and the core records the
    Application identity as a stable identifier (`[A-Za-z0-9][A-Za-z0-9._:-]*`). The prototype
    registers only `[a-z0-9][a-z0-9._:-]*`; a request with any other text is `unknown_application`.
+10. **A JSON library is not a JSON validator.** The parser the skeleton uses reads a raw NUL byte
+    as the end of its input and accepts the text before it, so a body could carry a valid object,
+    a NUL, and anything after it. It also accepts duplicate keys. The prototype refuses both
+    before parsing counts as success; the production adapter needs the same tests whatever library
+    it uses. The unversioned `/jobs` route does not have these checks.
 
 ## What one Job does
 

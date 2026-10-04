@@ -59,6 +59,9 @@ bool IsJsonMediaType(std::string value) {
 
 // Parses one JSON text and refuses duplicate object keys, which RFC 8259 leaves undefined.
 std::optional<json> ParseStrict(const std::string& text) {
+  // The parser reads a raw NUL as the end of its input and would accept the text before it. A raw
+  // NUL is never valid JSON (an escaped \u0000 inside a string is), so it is refused here.
+  if (text.find('\0') != std::string::npos) return std::nullopt;
   std::vector<std::set<std::string, std::less<>>> keys;
   bool duplicate = false;
   const auto callback = [&keys, &duplicate](int, json::parse_event_t event, json& parsed) {

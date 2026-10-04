@@ -450,6 +450,24 @@ expect malformed 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs
 expect no-body 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs"
 expect duplicate-key 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs" -H "$json" \
   -d '{"application_id":"ok","application_id":"ok"}'
+# A raw NUL is not JSON, wherever it is: the text before it must not be accepted on its own.
+nul_case() {
+  local label=$1
+  expect "$label" 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs" -H "$json" \
+    --data-binary "@$scratch/v1.nul"
+}
+printf '{"application_id":"ok"}\0' >"$scratch/v1.nul"
+nul_case nul-after-object
+printf '{"application_id":"ok"} \n\0' >"$scratch/v1.nul"
+nul_case nul-after-whitespace
+printf '{"application_id":"ok"}\0{"executable":"/bin/true"}' >"$scratch/v1.nul"
+nul_case nul-before-trailing-data
+printf '{"application_id":"o\0k"}' >"$scratch/v1.nul"
+nul_case nul-inside-string
+printf '\0{"application_id":"ok"}' >"$scratch/v1.nul"
+nul_case nul-first
+expect trailing-data 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":"ok"}{"application_id":"ok"}'
 expect unknown-field 422 "$(envelope request validation_failed)" -X POST "$base/v1/jobs" \
   -H "$json" -d '{"application_id":"ok","executable":"/bin/true"}'
 expect missing-field 422 "$(envelope request validation_failed)" -X POST "$base/v1/jobs" \
