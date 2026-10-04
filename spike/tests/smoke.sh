@@ -402,6 +402,15 @@ expect() {
   answer=$(call "$@")
   [[ "${answer%% *}" == "$status" ]] || { echo "v1 $label: expected $status: $answer"; exit 1; }
   [[ "$answer" == *"$needle"* ]] || { echo "v1 $label: expected $needle: $answer"; exit 1; }
+  no_leak "$label" "$answer"
+}
+# No /v1 response carries an executable, a file-system path, or a raw parser or system error text.
+no_leak() {
+  local label=$1 answer=$2 text
+  for text in executable /bin/ /tmp/ /home/ "$scratch" 'parse error' 'json.exception' \
+    'syntax error' 'No such file' 'Permission denied' errno; do
+    [[ "$answer" != *"$text"* ]] || { echo "v1 $label: the response leaks '$text': $answer"; exit 1; }
+  done
 }
 envelope() { printf '"error":{"domain":"%s","code":"%s",' "$1" "$2"; }
 json='Content-Type: application/json'
@@ -443,6 +452,10 @@ expect not-object 422 "$(envelope request validation_failed)" -X POST "$base/v1/
   -d '["ok"]'
 expect empty-id 422 "$(envelope request validation_failed)" -X POST "$base/v1/jobs" -H "$json" \
   -d '{"application_id":""}'
+expect path-in-malformed 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":"/bin/true"'
+expect path-as-application 422 "$(envelope job unknown_application)" -X POST "$base/v1/jobs" \
+  -H "$json" -d '{"application_id":"/bin/true"}'
 expect unknown-application 422 "$(envelope job unknown_application)" -X POST "$base/v1/jobs" \
   -H "$json" -d '{"application_id":"nobody"}'
 expect query-on-prefix 404 "$(envelope request route_not_found)" "$base/v1?x=1"
@@ -462,6 +475,7 @@ late=$(timeout 10 cat <&3 || true)
 exec 3<&- 3>&-
 [[ "$late" == 'HTTP/1.1 408 '* && "$late" == *"$(envelope request request_timeout)"* ]] ||
   { echo "v1 timeout: expected 408 request_timeout: $late"; exit 1; }
+no_leak timeout "$late"
 # A request line that is not valid HTTP is refused before any route is known.
 expect malformed-http 400 "$(envelope request malformed_request)" -X 'BAD REQUEST' "$base/v1/health"
 head -c 70000 /dev/zero | tr '\0' 'a' >"$scratch/v1.big"
@@ -481,7 +495,7 @@ printf '%s' "$headers" | tr -d '\r' | grep -qix "location: /v1/jobs/$v1_ok" ||
 # The Job is at least admitted; a fast command may already be terminal when the response is built.
 [[ "$created" == "{\"job_id\":\"$v1_ok\",\"outcome\":"*"\"state\":\""*"\"terminal\":"* ]] ||
   { echo "v1 create: unexpected resource: $created"; exit 1; }
-[[ "$created" != *executable* && "$created" != *"/bin/"* ]] || { echo "v1 create leaks: $created"; exit 1; }
+no_leak create "$created"
 
 # Polls a Job until it is terminal, and prints its resource.
 v1_terminal() {
