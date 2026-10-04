@@ -13,8 +13,8 @@ are implemented, so a client-facing contract can now be stated in terms of facts
 decides.
 
 A non-normative walking skeleton (`spike/README.md`) served an unversioned `/jobs` surface. It
-showed that `202` plus polling is enough for an operator (finding 12), and that a daemon needs a completion
-per ingress sequence and the new identity from creation (findings 2 and 3). Its request named an
+showed that `202` plus polling is enough for an operator (finding 12), and that a daemon needs a
+completion per ingress sequence and the new identity from creation (findings 2 and 3). Its request named an
 executable path, which the Application boundary forbids for the product: clients never submit
 commands, modules, executable paths, or scripts (`docs/02_architecture.md` Section 4).
 
