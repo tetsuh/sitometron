@@ -223,7 +223,9 @@ if(SITOMETRON_BUILD_TESTS)
       job_logical_sequence_exhaustion_fail_closed
       job_logical_commit_order
       job_logical_commit_failure_fail_closed
-      job_successful_lifecycle_slice)
+      job_successful_lifecycle_slice
+      job_create_returns_identity
+      job_ingress_completion_await)
     add_test(
       NAME ${_job_orchestration_check}
       COMMAND sitometron_job_orchestration_tests ${_job_orchestration_check})

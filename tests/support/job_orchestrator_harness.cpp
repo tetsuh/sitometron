@@ -506,6 +506,10 @@ JobOrchestratorHarness::JobOrchestratorHarness(Config config)
 JobOrchestratorHarness::~JobOrchestratorHarness() = default;
 
 IngressResult JobOrchestratorHarness::Create() { return Convert(impl_->orchestrator.Create()); }
+CreatedJob JobOrchestratorHarness::CreateJob() {
+  auto created = impl_->orchestrator.CreateJob();
+  return CreatedJob{Convert(created.ingress), std::move(created.job_id)};
+}
 std::optional<GeneratedIdentities> JobOrchestratorHarness::generated_identities() const {
   const auto job = impl_->orchestrator.LastCreated();
   if (!job) return std::nullopt;
@@ -717,6 +721,17 @@ std::optional<Completion> JobOrchestratorHarness::TakeCompletion(std::uint64_t s
   auto r = impl_->orchestrator.TakeCompletion(s);
   if (!r) return {};
   return Convert(*r);
+}
+std::optional<Completion> JobOrchestratorHarness::AwaitCompletion(std::uint64_t s) {
+  auto r = impl_->orchestrator.AwaitCompletion(s);
+  if (!r) return {};
+  return Convert(*r);
+}
+std::size_t JobOrchestratorHarness::await_attempt_count() const noexcept {
+  return impl_->orchestrator.await_attempt_count();
+}
+bool JobOrchestratorHarness::WaitForAwaitAttempts(std::size_t c) {
+  return impl_->orchestrator.WaitForAwaitAttempts(c);
 }
 std::optional<core::Snapshot> JobOrchestratorHarness::Snapshot(const core::Uuid& id) const {
   return impl_->orchestrator.SnapshotFor(id);

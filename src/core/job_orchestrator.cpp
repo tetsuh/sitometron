@@ -1809,6 +1809,7 @@ IngressResult JobOrchestrator::Create() {
   }
   return KickIf(this, result);
 }
+CreatedJob JobOrchestrator::CreateJob() { return {Create(), std::nullopt}; }
 IngressResult JobOrchestrator::SubmitCandidate(const RawCandidateEvent& e) {
   if (e.event_type == "timeout_expired") return impl_->Result(IngressCode::kAdmissionClosed);
   try {
@@ -2207,6 +2208,9 @@ bool JobOrchestrator::WaitForWaitUntilAttempts(std::size_t c) {
   impl_->cv.wait(lock, [this, c] { return impl_->wait_until_attempts >= c; });
   return true;
 }
+std::optional<Completion> JobOrchestrator::AwaitCompletion(std::uint64_t) { return std::nullopt; }
+std::size_t JobOrchestrator::await_attempt_count() const noexcept { return 0; }
+bool JobOrchestrator::WaitForAwaitAttempts(std::size_t) { return true; }
 bool JobOrchestrator::ReleaseAdmissionPause() {
   {
     std::lock_guard lock(impl_->mutex);

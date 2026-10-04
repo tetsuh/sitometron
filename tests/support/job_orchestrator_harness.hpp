@@ -267,6 +267,11 @@ struct ExpectedTrace {
   }
 };
 
+struct CreatedJob {
+  IngressResult ingress{};
+  std::optional<core::Uuid> job_id;
+};
+
 struct GeneratedIdentities {
   core::Uuid job_id;
   core::Uuid session_id;
@@ -298,6 +303,7 @@ class JobOrchestratorHarness final {
   // These private-harness operations model the one creation/materialization path owned by
   // the future writer.  They are deliberately not installed public APIs.
   [[nodiscard]] IngressResult Create();
+  [[nodiscard]] CreatedJob CreateJob();
   [[nodiscard]] std::optional<GeneratedIdentities> generated_identities() const;
   [[nodiscard]] IngressResult SubmitGeneratedLaunchIntent(const core::Uuid&,
                                                           const AllocationFixture&);
@@ -368,6 +374,9 @@ class JobOrchestratorHarness final {
   [[nodiscard]] std::size_t normal_occupancy() const noexcept;
   [[nodiscard]] std::size_t total_occupancy() const noexcept;
   [[nodiscard]] std::optional<Completion> TakeCompletion(std::uint64_t ingress_sequence);
+  [[nodiscard]] std::optional<Completion> AwaitCompletion(std::uint64_t ingress_sequence);
+  [[nodiscard]] std::size_t await_attempt_count() const noexcept;
+  [[nodiscard]] bool WaitForAwaitAttempts(std::size_t count);
   [[nodiscard]] std::optional<core::Snapshot> Snapshot(const core::Uuid&) const;
   [[nodiscard]] std::vector<TraceRecord> CopyTrace() const;
   [[nodiscard]] std::vector<core::LogicalJobEvent> CopyJournalAttempts() const;

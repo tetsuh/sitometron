@@ -2759,12 +2759,191 @@ int SuccessfulLifecycleSlice() {
   return result;
 }
 
+int JobCreateReturnsIdentity() {
+  int result = 0;
+  const auto ids = Ids();
+  JobOrchestratorHarness harness(PositiveConfig());
+  const auto first = harness.CreateJob();
+  result |= Check(first.ingress.code == IngressCode::kAdmitted && first.job_id == ids.primary_job,
+                  "CreateJob returns the generated Job identity with its admission");
+  const auto first_done = harness.AwaitCompletion(first.ingress.ingress_sequence);
+  const auto journal = harness.CopyJournalAttempts();
+  result |= Check(first_done && first_done->code == Completion::Code::kSuccess &&
+                      journal.size() == 1 && journal.back().event_type == EventType::kJobCreated &&
+                      first.job_id && journal.back().job_id == *first.job_id &&
+                      harness.Snapshot(*first.job_id).has_value(),
+                  "the returned identity is the Job that job_created commits");
+  const auto generated = harness.generated_identities();
+  result |= Check(generated && generated->job_id == ids.primary_job,
+                  "LastCreated still reports the same identity");
+  // The plain Create() is unchanged and consumes the next identity.
+  const auto second = harness.Create();
+  result |= ConsumeCompletion(harness, second, Completion::Code::kSuccess);
+  result |=
+      Check(harness.Snapshot(ids.secondary_job).has_value(), "Create still creates the next Job");
+  // A non-admitted creation carries no identity: the resident limit, then closed admission.
+  const auto full = harness.CreateJob();
+  result |= Check(full.ingress.code == IngressCode::kResidentLimit && !full.job_id,
+                  "a creation refused by the resident limit returns no identity");
+  result |= Check(harness.BeginShutdown(), "shutdown begins");
+  const auto closed = harness.CreateJob();
+  result |= Check(closed.ingress.code == IngressCode::kAdmissionClosed && !closed.job_id,
+                  "a creation refused by closed admission returns no identity");
+  JobOrchestratorHarness failing(PositiveConfig());
+  result |= Check(failing.LatchReadinessFailure(), "failure latch is set");
+  const auto failed = failing.CreateJob();
+  result |= Check(failed.ingress.code == IngressCode::kServiceFailed && !failed.job_id,
+                  "a creation after the failure latch returns no identity");
+  return result;
+}
+
+int JobIngressCompletionAwait() {
+  int result = 0;
+  const auto ids = Ids();
+  {
+    // The wait returns the completion of its own sequence and takes it exactly once.
+    JobOrchestratorHarness harness(PositiveConfig());
+    result |=
+        Check(!harness.AwaitCompletion(0).has_value() && !harness.AwaitCompletion(999).has_value(),
+              "a sequence that was never admitted returns at once with nothing");
+    const auto created = harness.Create();
+    const auto done = harness.AwaitCompletion(created.ingress_sequence);
+    result |= Check(done && done->code == Completion::Code::kSuccess,
+                    "the wait returns the success completion of its sequence");
+    result |= Check(!harness.AwaitCompletion(created.ingress_sequence).has_value() &&
+                        !harness.TakeCompletion(created.ingress_sequence).has_value(),
+                    "a second wait and a later take find nothing");
+    const auto rejected =
+        harness.SubmitCancel(Command{1, CommandType::kCancel, ids.secondary_job, "operator"});
+    const auto rejection = harness.AwaitCompletion(rejected.ingress_sequence);
+    result |=
+        Check(rejected.code == IngressCode::kAdmitted && rejection &&
+                  rejection->code == Completion::Code::kReducerRejection && rejection->rejection &&
+                  rejection->rejection->reason == RejectionReason::kJobNotFound,
+              "the wait returns the reducer rejection of its sequence");
+    // A completion taken by TakeCompletion is gone for a later wait.
+    const auto taken =
+        harness.SubmitCancel(Command{1, CommandType::kCancel, ids.secondary_job, "operator"});
+    result |= ConsumeCompletion(harness, taken, Completion::Code::kReducerRejection,
+                                RejectionReason::kJobNotFound);
+    result |= Check(!harness.AwaitCompletion(taken.ingress_sequence).has_value(),
+                    "a wait after TakeCompletion returns nothing");
+  }
+  {
+    // The wait does not need an idle writer: it returns while the writer is still held inside the
+    // same turn, after the response was released.
+    JobOrchestratorHarness harness(PositiveConfig());
+    result |= Check(harness.ArmBarrier(WriterPhase::kTurnFinished), "turn-finished barrier armed");
+    const auto created = harness.Create();
+    result |= Check(harness.WaitUntil(created.ingress_sequence, WriterPhase::kTurnFinished),
+                    "the writer is held at the end of the turn");
+    const auto done = harness.AwaitCompletion(created.ingress_sequence);
+    result |= Check(done && done->code == Completion::Code::kSuccess,
+                    "the wait returns while the writer is not idle");
+    result |= Check(harness.Release(created.ingress_sequence, WriterPhase::kTurnFinished),
+                    "the turn is released");
+  }
+  {
+    // A waiter that starts before its turn commits is woken by the completion, and a later entry
+    // queued behind it does not delay it.
+    JobOrchestratorHarness harness(PositiveConfig());
+    result |= Check(harness.ArmBarrier(WriterPhase::kBeforeCommit), "before-commit barrier armed");
+    const auto created = harness.Create();
+    result |= Check(harness.WaitUntil(created.ingress_sequence, WriterPhase::kBeforeCommit),
+                    "the creation turn is held before its commit");
+    const auto attempts = harness.await_attempt_count();
+    std::optional<Completion> woken;
+    std::thread waiter([&] { woken = harness.AwaitCompletion(created.ingress_sequence); });
+    result |= Check(harness.WaitForAwaitAttempts(attempts + 1), "the waiter is waiting");
+    result |= Check(harness.completion_count() == created.completion_count_before,
+                    "nothing is complete while the turn is held");
+    result |= Check(harness.Release(created.ingress_sequence, WriterPhase::kBeforeCommit),
+                    "the turn is released");
+    waiter.join();
+    result |= Check(woken && woken->code == Completion::Code::kSuccess,
+                    "the waiting caller is woken by its completion");
+  }
+  {
+    // Two waiters for one sequence: exactly one takes the completion; the other returns nothing.
+    JobOrchestratorHarness harness(PositiveConfig());
+    result |= Check(harness.ArmBarrier(WriterPhase::kBeforeCommit), "before-commit barrier armed");
+    const auto created = harness.Create();
+    result |= Check(harness.WaitUntil(created.ingress_sequence, WriterPhase::kBeforeCommit),
+                    "the creation turn is held before its commit");
+    const auto attempts = harness.await_attempt_count();
+    std::optional<Completion> first;
+    std::optional<Completion> second;
+    std::thread one([&] { first = harness.AwaitCompletion(created.ingress_sequence); });
+    std::thread two([&] { second = harness.AwaitCompletion(created.ingress_sequence); });
+    result |= Check(harness.WaitForAwaitAttempts(attempts + 2), "both waiters are waiting");
+    result |= Check(harness.Release(created.ingress_sequence, WriterPhase::kBeforeCommit),
+                    "the turn is released");
+    one.join();
+    two.join();
+    result |= Check(first.has_value() != second.has_value() &&
+                        (first ? first : second)->code == Completion::Code::kSuccess,
+                    "exactly one of two waiters takes the completion");
+  }
+  {
+    // A commit failure completes the waiting source with service_failed, and waits after the
+    // failure latch never hang.
+    auto config = PositiveConfig();
+    config.commit_result = LogicalCommitResult::kOutcomeUnknown;
+    JobOrchestratorHarness harness(config);
+    const auto created = harness.Create();
+    const auto done = harness.AwaitCompletion(created.ingress_sequence);
+    result |= Check(done && done->code == Completion::Code::kServiceFailed && harness.failed(),
+                    "the wait returns service_failed for a failed commit");
+    const auto refused = harness.Create();
+    result |= Check(refused.code == IngressCode::kServiceFailed &&
+                        !harness.AwaitCompletion(refused.ingress_sequence).has_value(),
+                    "a wait for a non-admitted sequence after the latch returns nothing");
+  }
+  {
+    // An entry still queued when the failure latch is set is disposed with service_failed, and its
+    // waiter is woken.
+    JobOrchestratorHarness harness(PositiveConfig());
+    result |=
+        Check(harness.ArmBarrier(WriterPhase::kBeforeDequeue), "before-dequeue barrier armed");
+    const auto created = harness.Create();
+    result |= Check(harness.WaitUntil(created.ingress_sequence, WriterPhase::kBeforeDequeue),
+                    "the entry is held before dequeue");
+    const auto attempts = harness.await_attempt_count();
+    std::optional<Completion> disposed;
+    std::thread waiter([&] { disposed = harness.AwaitCompletion(created.ingress_sequence); });
+    result |= Check(harness.WaitForAwaitAttempts(attempts + 1), "the waiter is waiting");
+    result |= Check(harness.LatchReadinessFailure(), "failure latch is set");
+    (void)harness.Release(created.ingress_sequence, WriterPhase::kBeforeDequeue);
+    waiter.join();
+    result |= Check(disposed && disposed->code == Completion::Code::kServiceFailed,
+                    "a queued entry disposed by the failure latch wakes its waiter");
+  }
+  {
+    // Across shutdown: the pre-marker entry and the marker both complete, and a wait after the
+    // writer sealed returns nothing instead of hanging.
+    JobOrchestratorHarness harness(PositiveConfig());
+    const auto created = harness.Create();
+    const auto marker = harness.SubmitShutdown();
+    const auto done = harness.AwaitCompletion(created.ingress_sequence);
+    const auto marked = harness.AwaitCompletion(marker.ingress_sequence);
+    result |= Check(done && done->code == Completion::Code::kSuccess && marked &&
+                        marked->code == Completion::Code::kSuccess,
+                    "waits across the shutdown marker return their completions");
+    const auto late = harness.Create();
+    result |= Check(late.code == IngressCode::kAdmissionClosed &&
+                        !harness.AwaitCompletion(late.ingress_sequence).has_value() &&
+                        !harness.AwaitCompletion(marker.ingress_sequence).has_value(),
+                    "waits after shutdown return nothing");
+  }
+  return result;
+}
+
 using Selector = int (*)();
 struct SelectorEntry {
   std::string_view name;
   Selector function;
 };
-constexpr std::array<SelectorEntry, 14> k_selectors{{
+constexpr std::array<SelectorEntry, 16> k_selectors{{
     {"job_ingress_linearization_order", JobIngressLinearizationOrder},
     {"job_ingress_single_writer", JobIngressSingleWriter},
     {"job_ingress_source_classification", JobIngressSourceClassification},
@@ -2779,6 +2958,8 @@ constexpr std::array<SelectorEntry, 14> k_selectors{{
     {"job_logical_commit_order", JobLogicalCommitOrder},
     {"job_logical_commit_failure_fail_closed", JobLogicalCommitFailureFailClosed},
     {"job_successful_lifecycle_slice", SuccessfulLifecycleSlice},
+    {"job_create_returns_identity", JobCreateReturnsIdentity},
+    {"job_ingress_completion_await", JobIngressCompletionAwait},
 }};
 }  // namespace
 
