@@ -38,6 +38,9 @@ implementation; anything they do not state is not part of v1.
 
 - The daemon serves HTTP/1.1 on a loopback address only. It refuses to start with a listen address
   that is not loopback. TLS and client authentication are the job of a reverse proxy in front of it.
+- The daemon does not authenticate a connection in this slice. Every local process that can reach
+  the loopback listener is trusted as the operator and can use every endpoint of this contract.
+  Restricting who can reach it is the deployment's responsibility until the roles ADR.
 - Every path of this contract starts with `/v1`. Paths outside `/v1` are not part of any contract.
 - Request and response bodies are JSON (RFC 8259) in UTF-8. A response with a body carries
   `Content-Type: application/json`.
@@ -227,6 +230,7 @@ This ADR adds the requirement domain `API` (external REST surface) and the requi
   to be decided then.
 - Bad: until roles exist, every cancel is recorded under the same configured principal, and nobody
   can force-stop a Job through the API.
+- Bad: until roles exist, any local process on the host can create and cancel Jobs.
 - Bad: a client that loses a create response cannot match it to a Job, because there is no
   idempotency key. It lists the Jobs and may see one it did not expect.
 - Bad: until the OpenAPI document exists, the contract is prose and tables only.
