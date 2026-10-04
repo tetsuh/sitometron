@@ -176,12 +176,12 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `OPS-003` | CTests `journal_replay_reproduces_vectors`, `journal_replay_dispatches_no_effects`, `journal_replay_sequence_continuation` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #61 |
 | `OPS-004` | CTests `journal_unresolved_jobs_block_admission`, `journal_resolved_jobs_seed_writer` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #64 |
 | `OPS-005` | CTests `journal_prune_prefix_only`, `journal_prune_refuses_open_jobs`, `journal_prune_keeps_last_record`, `journal_quarantine_torn_tail`, `journal_maintenance_requires_lock`, `journal_maintenance_faults`, `journal_maintenance_system_file_system` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #69 |
-| `API-001` | CTests `rest_v1_loopback_only`, `rest_v1_openapi_contract`, `rest_v1_unknown_route_and_method` | Planned under Proposed ADR-0008 under Issue #76; activated by the production adapter Issue |
-| `API-002` | CTests `rest_v1_create_commits_before_202`, `rest_v1_create_rejects_unknown_application`, `rest_v1_create_never_waits` | Planned under Proposed ADR-0008 under Issue #76; activated by the production adapter Issue |
-| `API-003` | CTests `rest_v1_job_resource_from_committed_state`, `rest_v1_list_resident_in_creation_order` | Planned under Proposed ADR-0008 under Issue #76; activated by the production adapter Issue |
-| `API-004` | CTests `rest_v1_cancel_status_mapping`, `rest_v1_cancel_records_configured_principal` | Planned under Proposed ADR-0008 under Issue #76; activated by the production adapter Issue |
-| `API-005` | CTests `rest_v1_validation_before_submission`, `rest_v1_error_envelope_and_codes`, `rest_v1_errors_leak_nothing` | Planned under Proposed ADR-0008 under Issue #76; activated by the production adapter Issue |
-| `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_not_ready_refuses_writes` | Planned under Proposed ADR-0008 under Issue #76; activated by the production adapter Issue |
+| `API-001` | CTests `rest_v1_loopback_only`, `rest_v1_openapi_contract`, `rest_v1_unknown_route_and_method` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
+| `API-002` | CTests `rest_v1_create_commits_before_202`, `rest_v1_create_rejects_unknown_application`, `rest_v1_create_never_waits` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
+| `API-003` | CTests `rest_v1_job_resource_from_committed_state`, `rest_v1_list_resident_in_creation_order` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
+| `API-004` | CTests `rest_v1_cancel_status_mapping`, `rest_v1_cancel_records_configured_principal` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
+| `API-005` | CTests `rest_v1_validation_before_submission`, `rest_v1_error_envelope_and_codes`, `rest_v1_errors_leak_nothing` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
+| `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_not_ready_refuses_writes` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even
