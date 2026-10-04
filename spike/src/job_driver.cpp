@@ -84,30 +84,43 @@ JobDriver::JobDriver(DriverConfig config, journal::SegmentJournal& journal)
 JobDriver::~JobDriver() { Shutdown(); }
 
 std::optional<std::string> JobDriver::Submit(LaunchSpec spec, std::string& error) {
+  auto outcome = Create(std::move(spec));
+  if (outcome.refusal == CreateRefusal::kNone) return outcome.job_id;
+  error = std::move(outcome.detail);
+  return std::nullopt;
+}
+
+CreateOutcome JobDriver::Create(LaunchSpec spec) {
   // A second creation during identity generation is refused with already_pending, so creation is
   // serialized here.
   std::lock_guard create(create_mutex_);
+  if (orchestrator_->failed()) return {CreateRefusal::kServiceFailed, {}, "the writer has failed"};
   {
     std::lock_guard lock(mutex_);
-    if (stopping_) {
-      error = "daemon is shutting down";
-      return std::nullopt;
-    }
+    if (stopping_) return {CreateRefusal::kNotReady, {}, "daemon is shutting down"};
   }
   if (!orchestrator_->unresolved().empty()) {
-    error = "admission closed: unresolved Jobs from a previous run";
-    return std::nullopt;
+    return {CreateRefusal::kNotReady, {}, "admission closed: unresolved Jobs from a previous run"};
   }
   const auto created = orchestrator_->CreateJob();
-  const auto step = Await(created.ingress, "job_created");
-  if (!step.ok) {
-    error = step.detail;
-    return std::nullopt;
+  switch (created.ingress.code) {
+    case IngressCode::kAdmitted:
+      break;
+    case IngressCode::kResidentLimit:
+      return {CreateRefusal::kCapacityExhausted, {}, "job_created: resident limit reached"};
+    case IngressCode::kAdmissionClosed:
+      return {CreateRefusal::kNotReady, {}, "job_created: admission closed"};
+    case IngressCode::kServiceFailed:
+      return {CreateRefusal::kServiceFailed, {}, "job_created: the writer has failed"};
+    default:
+      // normal_full, and the pending results that serialized creation should not see.
+      return {CreateRefusal::kBusy, {}, "job_created: the ingress queue is full"};
   }
+  const auto step = Await(created.ingress, "job_created");
+  if (!step.ok) return {CreateRefusal::kServiceFailed, {}, step.detail};
   const auto& id = created.job_id;
   if (!id) {
-    error = "job_created committed but no identity was published";
-    return std::nullopt;
+    return {CreateRefusal::kServiceFailed, {}, "job_created committed without an identity"};
   }
   JobRecord record;
   record.job_id = id->value;
@@ -123,7 +136,7 @@ std::optional<std::string> JobDriver::Submit(LaunchSpec spec, std::string& error
     order_.push_back(record.job_id);
     threads_.emplace_back(&JobDriver::Run, this, record.job_id);
   }
-  return record.job_id;
+  return {CreateRefusal::kNone, record.job_id, {}};
 }
 
 JobDriver::Step JobDriver::Await(const core::internal::IngressResult& admitted, const char* what) {
@@ -331,6 +344,47 @@ json JobDriver::List() const {
                      {"terminal", entry["terminal"]}});
   }
   return out;
+}
+
+json JobDriver::Resource(const std::string& job_id) const {
+  {
+    std::lock_guard lock(mutex_);
+    if (jobs_.count(job_id) == 0) return nullptr;
+  }
+  const auto snapshot = orchestrator_->SnapshotFor(core::Uuid{job_id});
+  if (!snapshot) return nullptr;
+  const auto state = std::string(core::ToString(snapshot->state));
+  const bool terminal = core::IsTerminalState(snapshot->state);
+  return {{"job_id", job_id},
+          {"state", state},
+          {"terminal", terminal},
+          {"outcome", terminal ? json(state) : json(nullptr)}};
+}
+
+json JobDriver::Resources() const {
+  std::vector<std::string> ids;
+  {
+    std::lock_guard lock(mutex_);
+    ids = order_;
+  }
+  json out = json::array();
+  for (const auto& id : ids) {
+    if (auto resource = Resource(id); !resource.is_null()) out.push_back(std::move(resource));
+  }
+  return out;
+}
+
+json JobDriver::ReadinessReasons() const {
+  json reasons = json::array();
+  if (orchestrator_->failed()) reasons.push_back({{"code", "service_failed"}});
+  if (const auto unresolved = Unresolved(); !unresolved.empty()) {
+    reasons.push_back({{"code", "unresolved_jobs"}, {"job_ids", unresolved}});
+  }
+  {
+    std::lock_guard lock(mutex_);
+    if (stopping_) reasons.push_back({{"code", "shutting_down"}});
+  }
+  return reasons;
 }
 
 bool JobDriver::Ready() const { return orchestrator_->ready(); }

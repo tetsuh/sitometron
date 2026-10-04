@@ -40,6 +40,10 @@ std::string_view ReasonPhrase(int status) {
       return "Method Not Allowed";
     case 413:
       return "Payload Too Large";
+    case 415:
+      return "Unsupported Media Type";
+    case 422:
+      return "Unprocessable Content";
     case 503:
       return "Service Unavailable";
     default:
@@ -64,8 +68,9 @@ void Respond(int fd, const HttpResponse& response) {
   std::ostringstream head;
   head << "HTTP/1.1 " << response.status << ' ' << ReasonPhrase(response.status) << "\r\n"
        << "Content-Type: application/json\r\n"
-       << "Content-Length: " << response.body.size() << "\r\n"
-       << "Connection: close\r\n\r\n";
+       << "Content-Length: " << response.body.size() << "\r\n";
+  for (const auto& [name, value] : response.headers) head << name << ": " << value << "\r\n";
+  head << "Connection: close\r\n\r\n";
   (void)SendAll(fd, head.str() + response.body);
 }
 
@@ -143,7 +148,30 @@ bool ReadRequest(int fd, HttpRequest& request, int& status) {
   return true;
 }
 
+// The listener's own refusals, in the ADR-0008 envelope. A malformed HTTP request and a request
+// timeout have no row in ADR-0008 Section 5 (see the README findings).
+HttpResponse TransportError(int status) {
+  switch (status) {
+    case 413:
+      return {413, ErrorEnvelope("request", "payload_too_large", "the request is too large"), {}};
+    case 408:
+      return {408, ErrorEnvelope("request", "request_timeout", "the request was not received"), {}};
+    default:
+      return {
+          400, ErrorEnvelope("request", "malformed_request", "the request is not valid HTTP"), {}};
+  }
+}
+
 }  // namespace
+
+std::string ErrorEnvelope(std::string_view domain, std::string_view code,
+                          std::string_view message) {
+  // Identifiers and messages are fixed ASCII texts chosen by the caller: no escaping is needed.
+  std::string body = R"({"error":{"domain":")";
+  body.append(domain).append(R"(","code":")").append(code).append(R"(","message":")");
+  body.append(message).append(R"(","details":{}}})");
+  return body;
+}
 
 HttpServer::HttpServer(std::string host, unsigned short port, Handler handler)
     : host_(std::move(host)), port_(port), handler_(std::move(handler)) {}
@@ -211,14 +239,15 @@ void HttpServer::HandleConnection(int client) {
   HttpRequest request;
   int status = 400;
   if (!ReadRequest(client, request, status)) {
-    Respond(client, {status, R"({"error":"malformed request"})"});
+    Respond(client, TransportError(status));
     return;
   }
   HttpResponse response;
   try {
     response = handler_(request);
-  } catch (const std::exception& e) {
-    response = {500, std::string(R"({"error":")") + e.what() + "\"}"};
+  } catch (const std::exception&) {
+    // The reason stays in the daemon: a response never carries a raw error text.
+    response = {500, ErrorEnvelope("service", "internal", "the request could not be handled"), {}};
   }
   Respond(client, response);
 }

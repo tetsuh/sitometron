@@ -11,6 +11,7 @@ add_executable(
   src/http_server.cpp
   src/job_driver.cpp
   src/process_runner.cpp
+  src/rest_v1.cpp
   src/system_ports.cpp)
 target_include_directories(sitometron_spike PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
                                                     ${CMAKE_SOURCE_DIR}/src/core)
