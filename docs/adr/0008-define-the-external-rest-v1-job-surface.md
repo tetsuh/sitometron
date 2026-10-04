@@ -99,7 +99,8 @@ from replay (ADR-0006 Section 8), or that a later retirement decision removes, i
   Section 5.
 - How an `application_id` resolves to something launchable belongs to the Application Registry ADR.
   This contract fixes only that an identifier the deployment does not know is refused with
-  `unknown_application` and creates nothing.
+  `unknown_application` and creates nothing. Until that ADR is Accepted, the registered set is a
+  list of identifiers in the daemon's startup configuration.
 
 **Forward compatibility with Admission.** A later ADR may add a waiting Admission path under `/v1`
 (for example tickets that are claimed when capacity frees). That path produces the same Job resource
@@ -134,7 +135,8 @@ submits the ADR-0002 `cancel` command for the Job:
 
 ### 5. Errors
 
-Every response with a status of `400` or above carries one object:
+Every response with a status of `400` or above, except the `503` of `GET /v1/ready` (Section 6),
+carries one object:
 
 ```json
 {"error": {"domain": "job", "code": "job_not_found", "message": "...", "details": {}}}
@@ -187,7 +189,8 @@ Every response with a status of `400` or above carries one object:
   - `unresolved_jobs`, with `job_ids`: replay found Jobs that are not resolved (`OPS-004`);
   - `service_failed`: the writer's failure latch is set (ADR-0003);
   - `shutting_down`: admission is closed for shutdown.
-- While readiness is false, `POST /v1/jobs` answers `503` `not_ready`. Reads and lists keep working
+- While readiness is false, `POST /v1/jobs` answers `503` with `service_failed` after the failure
+  latch and `not_ready` otherwise, as Section 5 orders them. Reads and lists keep working
   as long as the listener serves requests. A cancel is a normal ingress input (ADR-0003), so it is
   refused with `not_ready` while admission is closed and with `service_failed` after the failure
   latch, whatever the state of the Job.
