@@ -130,7 +130,10 @@ submits the ADR-0002 `cancel` command for the Job:
 
 - `202` means the cancel is recorded, not that the Job has stopped. The client reads the Job to see
   it reach a terminal state.
-- A repeated cancel is safe: it is answered with one of the `409` codes and changes nothing.
+- A repeated cancel is safe: it never records a second cancel. After a committed cancel, a repeat
+  that passes validation, is admitted by ingress, and still targets a resident Job is answered with
+  one of the `409` codes. Otherwise the validation, ingress, and absent-Job errors of Section 5
+  apply as for any request.
 - The principal recorded in `cancel_accepted` is one name from the daemon's startup configuration.
   No request header or field supplies or overrides it in this slice. The roles ADR decides how a
   proxy-authenticated principal replaces it.
