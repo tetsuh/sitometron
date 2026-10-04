@@ -2781,14 +2781,21 @@ int JobCreateReturnsIdentity() {
   result |= ConsumeCompletion(harness, second, Completion::Code::kSuccess);
   result |=
       Check(harness.Snapshot(ids.secondary_job).has_value(), "Create still creates the next Job");
-  // A non-admitted creation carries no identity: the resident limit, then closed admission.
-  const auto full = harness.CreateJob();
-  result |= Check(full.ingress.code == IngressCode::kResidentLimit && !full.job_id,
-                  "a creation refused by the resident limit returns no identity");
-  result |= Check(harness.BeginShutdown(), "shutdown begins");
+  // A non-admitted creation carries no identity: closed admission, the resident limit, and the
+  // failure latch.
+  const auto marker = harness.SubmitShutdown();
+  const auto marked = harness.AwaitCompletion(marker.ingress_sequence);
+  result |= Check(marked && marked->code == Completion::Code::kSuccess, "shutdown is processed");
   const auto closed = harness.CreateJob();
   result |= Check(closed.ingress.code == IngressCode::kAdmissionClosed && !closed.job_id,
                   "a creation refused by closed admission returns no identity");
+  auto single = PositiveConfig();
+  single.max_jobs = 1;
+  JobOrchestratorHarness limited(single);
+  result |= ConsumeCompletion(limited, limited.Create(), Completion::Code::kSuccess);
+  const auto full = limited.CreateJob();
+  result |= Check(full.ingress.code == IngressCode::kResidentLimit && !full.job_id,
+                  "a creation refused by the resident limit returns no identity");
   JobOrchestratorHarness failing(PositiveConfig());
   result |= Check(failing.LatchReadinessFailure(), "failure latch is set");
   const auto failed = failing.CreateJob();

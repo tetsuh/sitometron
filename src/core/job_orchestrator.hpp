@@ -231,6 +231,7 @@ class JobOrchestrator final {
  private:
   friend class CallbackHandle;
   struct Impl;
+  IngressResult CreateWith(std::optional<Uuid>& created);
   void Run() noexcept;
   void Stop() noexcept;
   void ScheduleAcceptedEntry() noexcept;

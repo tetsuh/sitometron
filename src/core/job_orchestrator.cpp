@@ -261,6 +261,7 @@ struct JobOrchestrator::Impl {
   bool admission_inserting = false;
   std::size_t admission_attempts = 0;
   std::size_t wait_until_attempts = 0;
+  std::size_t await_attempts = 0;
   WriterPhase barrier = WriterPhase::kTurnFinished;
   bool barrier_armed = false;
   bool barrier_reached = false;
@@ -677,6 +678,7 @@ struct JobOrchestrator::Impl {
     if (slot.completed) return;
     slot.completed = true;
     slot.value = completion;
+    cv.notify_all();  // wake AwaitCompletion waiters
     ++completion_total;
     if (outstanding != 0) --outstanding;
     if (in_flight && in_flight_sequence == entry.sequence) in_flight = false;
@@ -1741,7 +1743,7 @@ static IngressResult KickIf(JobOrchestrator* orchestrator, IngressResult r) noex
   if (r.code == IngressCode::kAdmitted) orchestrator->Notify();
   return r;
 }
-IngressResult JobOrchestrator::Create() {
+IngressResult JobOrchestrator::CreateWith(std::optional<Uuid>& created) {
   // Identity sources are allowed to throw. Reserve one finite creation
   // operation under ingress ownership, then call the port with no ingress lock.
   {
@@ -1804,12 +1806,21 @@ IngressResult JobOrchestrator::Create() {
     if (result.code == IngressCode::kAdmitted) {
       ++impl_->create_count;
       impl_->last_created = id;
+      created = id;
     }
     impl_->cv.notify_all();
   }
   return KickIf(this, result);
 }
-CreatedJob JobOrchestrator::CreateJob() { return {Create(), std::nullopt}; }
+IngressResult JobOrchestrator::Create() {
+  std::optional<Uuid> ignored;
+  return CreateWith(ignored);
+}
+CreatedJob JobOrchestrator::CreateJob() {
+  CreatedJob created;
+  created.ingress = CreateWith(created.job_id);
+  return created;
+}
 IngressResult JobOrchestrator::SubmitCandidate(const RawCandidateEvent& e) {
   if (e.event_type == "timeout_expired") return impl_->Result(IngressCode::kAdmissionClosed);
   try {
@@ -2208,9 +2219,45 @@ bool JobOrchestrator::WaitForWaitUntilAttempts(std::size_t c) {
   impl_->cv.wait(lock, [this, c] { return impl_->wait_until_attempts >= c; });
   return true;
 }
-std::optional<Completion> JobOrchestrator::AwaitCompletion(std::uint64_t) { return std::nullopt; }
-std::size_t JobOrchestrator::await_attempt_count() const noexcept { return 0; }
-bool JobOrchestrator::WaitForAwaitAttempts(std::size_t) { return true; }
+std::optional<Completion> JobOrchestrator::AwaitCompletion(std::uint64_t s) {
+  std::unique_lock lock(impl_->mutex);
+  // A registration exists from admission until its completion is taken. Slots are reused, so the
+  // registration is looked up by sequence on every wake.
+  const auto find = [this, s]() -> Impl::CompletionSlot* {
+    for (auto& slot : impl_->completions) {
+      if (slot.reserved && slot.sequence == s) return &slot;
+    }
+    return nullptr;
+  };
+  if (find() == nullptr) return std::nullopt;
+  ++impl_->await_attempts;
+  impl_->cv.notify_all();
+  // Every admitted entry is completed exactly once: by its turn, or by failure disposal with
+  // service_failed (ADR-0003). A second waiter is released when the first takes the registration.
+  impl_->cv.wait(lock, [&find] {
+    const auto* slot = find();
+    return slot == nullptr || slot->completed;
+  });
+  auto* slot = find();
+  if (slot == nullptr) return std::nullopt;
+  auto result = slot->value;
+  slot->reserved = false;
+  slot->completed = false;
+  slot->sequence = 0;
+  slot->value = {};
+  --impl_->completion_used;
+  impl_->cv.notify_all();
+  return result;
+}
+std::size_t JobOrchestrator::await_attempt_count() const noexcept {
+  std::lock_guard lock(impl_->mutex);
+  return impl_->await_attempts;
+}
+bool JobOrchestrator::WaitForAwaitAttempts(std::size_t c) {
+  std::unique_lock lock(impl_->mutex);
+  impl_->cv.wait(lock, [this, c] { return impl_->await_attempts >= c; });
+  return true;
+}
 bool JobOrchestrator::ReleaseAdmissionPause() {
   {
     std::lock_guard lock(impl_->mutex);
@@ -2397,6 +2444,7 @@ std::optional<Completion> JobOrchestrator::TakeCompletion(std::uint64_t s) {
       slot.sequence = 0;
       slot.value = {};
       --impl_->completion_used;
+      impl_->cv.notify_all();  // a waiter for this sequence must see the registration is gone
       return result;
     }
   }
