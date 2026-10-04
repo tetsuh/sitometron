@@ -135,7 +135,8 @@ Gaps between ADR-0008 and what a listener has to decide, found while building th
 
 1. **HTTP-level refusals have no row.** A request whose request line is not
    `METHOD /target HTTP/1.0` or `HTTP/1.1`, and one that is not received in time, are refused
-   before any route is known. (The skeleton's listener checks nothing else about HTTP syntax.) The prototype answers `400`
+   before any route is known. (The skeleton's listener checks the request-line form and the
+   `Content-Length` value and size; it does not validate HTTP syntax in general.) The prototype answers `400`
    `request`/`malformed_request` and `408` `request`/`request_timeout`.
 2. **The stated check order cannot hold for an oversized request.** ADR-0008 orders route, method,
    and media type before size, but a listener bounds the request while reading it, so an oversized
