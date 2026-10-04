@@ -203,6 +203,7 @@ class JobOrchestrator final {
   // Returns nullopt at once when no completion is registered for the sequence (never admitted, or
   // already taken). Call it from the submitting thread, never from a callback or the writer.
   std::optional<Completion> AwaitCompletion(std::uint64_t);
+  // Test probe: the number of AwaitCompletion calls so far, including ones that returned at once.
   std::size_t await_attempt_count() const noexcept;
   bool WaitForAwaitAttempts(std::size_t);
   std::optional<Snapshot> SnapshotFor(const Uuid&) const;

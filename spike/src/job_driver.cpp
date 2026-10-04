@@ -383,9 +383,7 @@ void JobDriver::Shutdown() {
   session_.Abandon();
   const auto marker = orchestrator_->SubmitShutdown();
   if (marker.code == IngressCode::kAdmitted) {
-    (void)orchestrator_->WaitUntil(marker.ingress_sequence,
-                                   core::internal::WriterPhase::kShutdownMarker);
-    (void)orchestrator_->TakeCompletion(marker.ingress_sequence);
+    (void)orchestrator_->AwaitCompletion(marker.ingress_sequence);
     (void)orchestrator_->BeginShutdown();
   }
 }

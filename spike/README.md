@@ -144,7 +144,7 @@ authorities, not decisions.
    applied is `WaitUntil(sequence, phase)` (a test barrier that waits for the writer to go idle) plus
    `TakeCompletion(sequence)`. A daemon needs a completion callback or future per ingress sequence.
    **Resolved** by `AwaitCompletion(sequence)` (Issue #80), which waits for that one sequence; the
-   driver uses it for every step.
+   driver uses it for every step and for the shutdown marker.
 3. **`Create()` does not return the new identity.** It is read back through the global
    `LastCreated()`, so creation must be serialized by the caller (`create_mutex_`). **Resolved**
    for the identity by `CreateJob()` (Issue #80). The driver still serializes creation, because a
