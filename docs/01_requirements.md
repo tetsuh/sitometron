@@ -111,7 +111,8 @@ implementation. Issues #57, #59, #61, #64, and #69 implement `JRN-004`–`JRN-00
 > tracks assignment of the owning future Phase Issues and ADRs for these mechanisms. Implementers
 > must not treat this outline as a finalized contract.
 
-The remaining `ADM`, `API`, `JRN`, `WRK`, `RES`, `APP`, `PAR`, `ART`, `SEC`, and `OPS` requirements are added
-by their future design authorities before implementation. Accepted ADR-0002 owns the current
-Normative `JOB-001`–`JOB-007` and `JRN-001`–`JRN-003` requirements. Issue #51 owns the Phase 0B
-physical JobJournal requirements in Section 7.
+The remaining `ADM`, `JRN`, `WRK`, `RES`, `APP`, `PAR`, `ART`, `SEC`, and `OPS` requirements, and any
+`API` requirement beyond `API-001`–`API-006`, are added by their future design authorities before
+implementation. Accepted ADR-0002 owns the current Normative `JOB-001`–`JOB-007` and
+`JRN-001`–`JRN-003` requirements. Issue #51 owns the Phase 0B physical JobJournal requirements in
+Section 7. Issue #76 owns the Planned `API-001`–`API-006` requirements in Section 8.
