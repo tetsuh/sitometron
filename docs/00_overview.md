@@ -56,13 +56,14 @@ planned one working increment at a time. A Gate is created only when a contract 
 Phase 0A closed on 2026-09-24 ([Gate #1](https://github.com/tetsuh/sitometron/issues/1)). The
 dependency boundary, pure Job reducer, lifecycle capability ports and fakes, bounded private single
 writer, complete logical JobJournal envelope and ordering, and the fake-driven lifecycle and
-adverse/race qualification are implemented. Phase 0B is active under
-[Gate #50](https://github.com/tetsuh/sitometron/issues/50): Accepted
+adverse/race qualification are implemented. Phase 0B closed on 2026-10-04
+([Gate #50](https://github.com/tetsuh/sitometron/issues/50)): Accepted
 [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) makes the physical JobJournal
 contract normative. The record codec (Issue #57), the durable segment writer (Issue #59), and
 startup validation and replay (Issue #61), starting the writer from the replayed state
-(Issue #64), and offline torn-tail quarantine and prefix pruning (Issue #69) are implemented. A
-non-normative Linux walking skeleton under
+(Issue #64), and offline torn-tail quarantine and prefix pruning (Issue #69) are implemented.
+Design inputs for later work are tracked in
+[Issue #73](https://github.com/tetsuh/sitometron/issues/73). A non-normative Linux walking skeleton under
 `spike/` exercises the core end to end and is not a product component. Production adapters remain
 Planned under their owners in the [Contract Registry](08_contract_registry.md). No production API or
 compatibility guarantee exists.
