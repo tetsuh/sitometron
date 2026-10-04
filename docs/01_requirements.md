@@ -9,6 +9,7 @@ requirements remain in history and point to their replacement or removal authori
 |---|---|
 | `JOB` | Job lifecycle, outcomes, controls, and reducer behavior |
 | `ADM` | Admission tickets, claims, bounds, and fairness |
+| `API` | External REST surface, compatibility, and error reporting |
 | `JRN` | JobJournal records, durability, and persistence authority |
 | `WRK` | Worker protocol, runner, process supervision, and containment |
 | `RES` | Resource profiles, topology, reservation, and scheduling |
@@ -90,13 +91,27 @@ implementation. Issues #57, #59, #61, #64, and #69 implement `JRN-004`–`JRN-00
 | `OPS-004` | MUST | Start with readiness false and admission closed while any replayed Job is unresolved, and report each such Job. | Accepted [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under [Issue #51](https://github.com/tetsuh/sitometron/issues/51) |
 | `OPS-005` | MUST | Prune only an offline prefix of sealed segments whose Jobs are fully closed within the prefix, and never reset or reuse sequences. | Accepted [ADR-0006](adr/0006-define-physical-jobjournal-durability-contract.md) under [Issue #51](https://github.com/tetsuh/sitometron/issues/51) |
 
-## 8. Planned domains
+## 8. Planned External REST v1 requirements
+
+> **Planned, not yet normative:** [Issue #76](https://github.com/tetsuh/sitometron/issues/76) owns these requirements through Proposed
+> [ADR-0008](adr/0008-define-the-external-rest-v1-job-surface.md). Implementers must not treat this outline as a finalized contract.
+
+| ID | Level | Requirement | Authority |
+|---|---|---|---|
+| `API-001` | MUST | Serve the external REST contract only under `/v1` on a loopback listener, and change it within `/v1` only by the additions ADR-0008 Section 2 allows. | Proposed [ADR-0008](adr/0008-define-the-external-rest-v1-job-surface.md) |
+| `API-002` | MUST | Create a Job only from a registered `application_id`, issue its identifier in the daemon, answer `202` only after `job_created` is committed, and never wait for capacity. | Proposed [ADR-0008](adr/0008-define-the-external-rest-v1-job-surface.md) |
+| `API-003` | MUST | Report Job state and outcome only from committed events, with the ADR-0002 vocabulary, for one Job and for the complete resident list in creation order. | Proposed [ADR-0008](adr/0008-define-the-external-rest-v1-job-surface.md) |
+| `API-004` | MUST | Map a cancel request to the ADR-0002 `cancel` command with the configured principal, and its result to the statuses of ADR-0008 Section 4. | Proposed [ADR-0008](adr/0008-define-the-external-rest-v1-job-surface.md) |
+| `API-005` | MUST | Reject invalid requests before any writer submission, and report every error with the stable `domain` and `code` of ADR-0008 Section 5 without paths, raw errors, records, or secrets. | Proposed [ADR-0008](adr/0008-define-the-external-rest-v1-job-surface.md) |
+| `API-006` | MUST | Report liveness and readiness as ADR-0008 Section 6 defines, with readiness false for unresolved replayed Jobs, a writer failure, or shutdown. | Proposed [ADR-0008](adr/0008-define-the-external-rest-v1-job-surface.md) |
+
+## 9. Planned domains
 
 > **Planned, not yet normative:** [Issue #35](https://github.com/tetsuh/sitometron/issues/35)
 > tracks assignment of the owning future Phase Issues and ADRs for these mechanisms. Implementers
 > must not treat this outline as a finalized contract.
 
-The remaining `ADM`, `JRN`, `WRK`, `RES`, `APP`, `PAR`, `ART`, `SEC`, and `OPS` requirements are added
+The remaining `ADM`, `API`, `JRN`, `WRK`, `RES`, `APP`, `PAR`, `ART`, `SEC`, and `OPS` requirements are added
 by their future design authorities before implementation. Accepted ADR-0002 owns the current
 Normative `JOB-001`–`JOB-007` and `JRN-001`–`JRN-003` requirements. Issue #51 owns the Phase 0B
 physical JobJournal requirements in Section 7.
