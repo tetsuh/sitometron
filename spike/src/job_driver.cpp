@@ -84,8 +84,8 @@ JobDriver::JobDriver(DriverConfig config, journal::SegmentJournal& journal)
 JobDriver::~JobDriver() { Shutdown(); }
 
 std::optional<std::string> JobDriver::Submit(LaunchSpec spec, std::string& error) {
-  // Create() serializes identity generation internally but exposes the new id only through
-  // LastCreated(), so creation is serialized here too.
+  // A second creation during identity generation is refused with already_pending, so creation is
+  // serialized here.
   std::lock_guard create(create_mutex_);
   {
     std::lock_guard lock(mutex_);
@@ -98,13 +98,13 @@ std::optional<std::string> JobDriver::Submit(LaunchSpec spec, std::string& error
     error = "admission closed: unresolved Jobs from a previous run";
     return std::nullopt;
   }
-  const auto admitted = orchestrator_->Create();
-  const auto step = Await(admitted, "job_created");
+  const auto created = orchestrator_->CreateJob();
+  const auto step = Await(created.ingress, "job_created");
   if (!step.ok) {
     error = step.detail;
     return std::nullopt;
   }
-  const auto id = orchestrator_->LastCreated();
+  const auto& id = created.job_id;
   if (!id) {
     error = "job_created committed but no identity was published";
     return std::nullopt;
@@ -131,13 +131,7 @@ JobDriver::Step JobDriver::Await(const core::internal::IngressResult& admitted, 
     return {false, std::string(what) + ": not admitted (ingress code " +
                        std::to_string(static_cast<int>(admitted.code)) + ")"};
   }
-  // WaitUntil without an armed barrier waits for the writer to go idle, which implies this
-  // sequence's turn has finished. There is no production completion notification yet.
-  if (!orchestrator_->WaitUntil(admitted.ingress_sequence,
-                                core::internal::WriterPhase::kTurnFinished)) {
-    return {false, std::string(what) + ": writer did not complete the turn"};
-  }
-  const auto completion = orchestrator_->TakeCompletion(admitted.ingress_sequence);
+  const auto completion = orchestrator_->AwaitCompletion(admitted.ingress_sequence);
   if (!completion) return {false, std::string(what) + ": completion slot missing"};
   switch (completion->code) {
     case core::internal::Completion::Code::kSuccess:
