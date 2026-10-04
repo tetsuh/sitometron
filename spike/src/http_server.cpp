@@ -111,8 +111,11 @@ bool ReadRequest(int fd, HttpRequest& request, int& status) {
   if (!line.empty() && line.back() == '\r') line.pop_back();
   std::istringstream request_line(line);
   std::string version;
+  std::string extra;
+  // Exactly "METHOD /target HTTP/1.0|1.1": an origin-form target and nothing after the version.
   if (!(request_line >> request.method >> request.target >> version) ||
-      version.rfind("HTTP/1.", 0) != 0) {
+      (version != "HTTP/1.1" && version != "HTTP/1.0") || request.target.front() != '/' ||
+      (request_line >> extra)) {
     status = 400;
     return false;
   }

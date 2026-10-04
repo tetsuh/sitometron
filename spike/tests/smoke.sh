@@ -484,8 +484,30 @@ exec 3<&- 3>&-
 [[ "$late" == 'HTTP/1.1 408 '* && "$late" == *"$(envelope request request_timeout)"* ]] ||
   { echo "v1 timeout: expected 408 request_timeout: $late"; exit 1; }
 no_leak timeout "$late"
-# A request line that is not valid HTTP is refused before any route is known.
+# A request line that is not "METHOD /target HTTP/1.0|1.1" is refused before any route is known.
 expect malformed-http 400 "$(envelope request malformed_request)" -X 'BAD REQUEST' "$base/v1/health"
+# raw <label> <request line>: sends one raw request and expects 400 malformed_request.
+raw() {
+  local label=$1 line=$2 answer
+  exec 3<>"/dev/tcp/127.0.0.1/$port"
+  printf '%s\r\n\r\n' "$line" >&3
+  answer=$(timeout 10 cat <&3 || true)
+  exec 3<&- 3>&-
+  [[ "$answer" == 'HTTP/1.1 400 '* && "$answer" == *"$(envelope request malformed_request)"* ]] ||
+    { echo "v1 $label: expected 400 malformed_request: $answer"; exit 1; }
+  no_leak "$label" "$answer"
+}
+raw bad-version 'GET /v1/health HTTP/1.foo'
+raw other-version 'GET /v1/health HTTP/2.0'
+raw trailing-token 'GET /v1/health HTTP/1.1 extra'
+raw no-version 'GET /v1/health'
+raw relative-target 'GET v1/health HTTP/1.1'
+raw absolute-target 'GET http://127.0.0.1/v1/health HTTP/1.1'
+# The same request line in its valid form is served.
+exec 3<>"/dev/tcp/127.0.0.1/$port"
+printf 'GET /v1/health HTTP/1.0\r\n\r\n' >&3
+[[ "$(timeout 10 cat <&3 || true)" == 'HTTP/1.1 200 '*'{"status":"ok"}' ]] || { echo "v1: HTTP/1.0 health refused"; exit 1; }
+exec 3<&- 3>&-
 head -c 70000 /dev/zero | tr '\0' 'a' >"$scratch/v1.big"
 expect too-large 413 "$(envelope request payload_too_large)" -X POST "$base/v1/jobs" -H "$json" \
   --data-binary "@$scratch/v1.big"
