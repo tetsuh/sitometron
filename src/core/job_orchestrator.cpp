@@ -1783,7 +1783,7 @@ IngressResult JobOrchestrator::CreateWith(std::optional<Uuid>& created) {
     LatchReadinessFailure();
     return impl_->Result(IngressCode::kServiceFailed);
   }
-  const auto id = std::get<GeneratedJobSessionIdentity>(job_result).value;
+  auto id = std::get<GeneratedJobSessionIdentity>(job_result).value;
   auto identities = Impl::GeneratedIdentityBundle{
       id, std::get<GeneratedWorkerIdentity>(worker_result).value,
       std::get<GeneratedLaunchOperationIdentity>(launch_result).value};
@@ -1806,7 +1806,10 @@ IngressResult JobOrchestrator::CreateWith(std::optional<Uuid>& created) {
     if (result.code == IngressCode::kAdmitted) {
       ++impl_->create_count;
       impl_->last_created = id;
-      created = id;
+      // The entry is already admitted, so handing the identity to the caller must not fail: it
+      // is moved, never copied (ADR-0003 fail-closed disposal covers only the paths above).
+      static_assert(noexcept(created = std::move(id)));
+      created = std::move(id);
     }
     impl_->cv.notify_all();
   }
