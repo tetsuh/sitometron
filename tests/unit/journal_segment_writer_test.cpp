@@ -414,29 +414,31 @@ int RestartContinues() {
     // A complete record whose data sync failed is outcome unknown to the process that wrote it. To
     // the next process it is committed (ADR-0006 §3): startup and replay count it, and the writer
     // continues after it.
-    MemoryFileSystem fs;
+    MemoryFileSystem unknown;
     {
-      SegmentJournal journal(fs);
+      SegmentJournal journal(unknown);
       result |= OpenFresh(journal);
       result |= Check(journal.Commit(Created(1, 1)) == LogicalCommitResult::kCommitted, "commit 1");
-      fs.fail_next_sync = true;
-      result |= Check(journal.Commit(Cancelled(2, 1)) == LogicalCommitResult::kOutcomeUnknown &&
-                          journal.Poisoned() &&
-                          fs.files[Segment(1)] == Bytes(Created(1, 1)) + Bytes(Cancelled(2, 1)),
-                      "a failed data sync leaves the complete record with an unknown outcome");
+      unknown.fail_next_sync = true;
+      result |=
+          Check(journal.Commit(Cancelled(2, 1)) == LogicalCommitResult::kOutcomeUnknown &&
+                    journal.Poisoned() &&
+                    unknown.files[Segment(1)] == Bytes(Created(1, 1)) + Bytes(Cancelled(2, 1)),
+                "a failed data sync leaves the complete record with an unknown outcome");
     }
-    const auto replayed = ReplayJournal(fs, k_dir, ReplayOptions{1});
+    const auto replayed = ReplayJournal(unknown, k_dir, ReplayOptions{1});
     result |= Check(replayed.status == ReplayStatus::kReplayed && replayed.records == 2 &&
                         replayed.next_sequence == 3,
                     "replay counts the unknown-outcome record: " + replayed.detail);
-    SegmentJournal reopened(fs);
+    SegmentJournal reopened(unknown);
     result |= OpenFresh(reopened, 3);
     const auto third =
         Recorded(3, 1, EventType::kSessionRetainRequested, core::SessionPayload{Uuid{Job(1)}});
-    result |= Check(
-        !reopened.Poisoned() && reopened.Commit(third) == LogicalCommitResult::kCommitted &&
-            fs.files[Segment(1)] == Bytes(Created(1, 1)) + Bytes(Cancelled(2, 1)) + Bytes(third),
-        "restart continues after the unknown-outcome record");
+    result |=
+        Check(!reopened.Poisoned() && reopened.Commit(third) == LogicalCommitResult::kCommitted &&
+                  unknown.files[Segment(1)] ==
+                      Bytes(Created(1, 1)) + Bytes(Cancelled(2, 1)) + Bytes(third),
+              "restart continues after the unknown-outcome record");
   }
   {
     // An exception while locating segments must not leak the directory lock (RAII in Open()).
