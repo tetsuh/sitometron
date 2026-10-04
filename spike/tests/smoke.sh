@@ -412,6 +412,13 @@ no_leak() {
     [[ "$answer" != *"$text"* ]] || { echo "v1 $label: the response leaks '$text': $answer"; exit 1; }
   done
 }
+# A successful /v1 request whose body the test parses: prints the body after the same leak check.
+v1() {
+  local out
+  out=$(curl -fsS "$@")
+  no_leak direct "$out"
+  printf '%s' "$out"
+}
 envelope() { printf '"error":{"domain":"%s","code":"%s",' "$1" "$2"; }
 json='Content-Type: application/json'
 # Journal records of the /v1 daemon so far.
@@ -433,8 +440,9 @@ expect method-job 405 "$(envelope request method_not_allowed)" -X POST \
   "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001"
 expect method-options 405 "$(envelope request method_not_allowed)" -X OPTIONS "$base/v1/jobs"
 expect method-health 405 "$(envelope request method_not_allowed)" -X POST "$base/v1/health"
-curl -sS -D - -o /dev/null -X DELETE "$base/v1/jobs" | grep -qi '^allow: GET, POST' ||
-  { echo "v1: 405 lacks the Allow header"; exit 1; }
+allow=$(curl -sS -D - -o /dev/null -X DELETE "$base/v1/jobs")
+no_leak allow-headers "$allow"
+printf '%s' "$allow" | grep -qi '^allow: GET, POST' || { echo "v1: 405 lacks the Allow header"; exit 1; }
 expect media 415 "$(envelope request unsupported_media_type)" -X POST "$base/v1/jobs" \
   -H 'Content-Type: text/plain' -d '{"application_id":"ok"}'
 expect malformed 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs" -H "$json" \
@@ -496,12 +504,13 @@ printf '%s' "$headers" | tr -d '\r' | grep -qix "location: /v1/jobs/$v1_ok" ||
 [[ "$created" == "{\"job_id\":\"$v1_ok\",\"outcome\":"*"\"state\":\""*"\"terminal\":"* ]] ||
   { echo "v1 create: unexpected resource: $created"; exit 1; }
 no_leak create "$created"
+no_leak create-headers "$headers"
 
 # Polls a Job until it is terminal, and prints its resource.
 v1_terminal() {
   local id=$1 body=''
   for _ in $(seq 1 200); do
-    body=$(curl -fsS "$base/v1/jobs/$id")
+    body=$(v1 "$base/v1/jobs/$id")
     if [[ "$body" == *'"terminal":true'* ]]; then printf '%s' "$body"; return 0; fi
     read -r -t 0.05 <> <(:) || true
   done
@@ -511,12 +520,12 @@ v1_terminal() {
 done_ok=$(v1_terminal "$v1_ok")
 [[ "$done_ok" == "{\"job_id\":\"$v1_ok\",\"outcome\":\"succeeded\",\"state\":\"succeeded\",\"terminal\":true}" ]] ||
   { echo "v1 read: unexpected resource: $done_ok"; exit 1; }
-v1_bad=$(curl -fsS -X POST "$base/v1/jobs" -H "$json; charset=utf-8" -d '{"application_id":"bad"}' |
+v1_bad=$(v1 -X POST "$base/v1/jobs" -H "$json; charset=utf-8" -d '{"application_id":"bad"}' |
   sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
 done_bad=$(v1_terminal "$v1_bad")
 [[ "$done_bad" == *'"outcome":"failed"'*'"state":"failed"'* ]] || { echo "v1 read: $done_bad"; exit 1; }
 # The list holds every resident Job in creation order.
-listing=$(curl -fsS "$base/v1/jobs")
+listing=$(v1 "$base/v1/jobs")
 [[ "$listing" == "{\"jobs\":[{\"job_id\":\"$v1_ok\","*"{\"job_id\":\"$v1_bad\","* ]] ||
   { echo "v1 list: $listing"; exit 1; }
 # Both resident slots are used: creation is refused at once, and nothing is written.
@@ -546,11 +555,11 @@ done
 # refused with not_ready, and the Job is still readable.
 v1crash="$scratch/v1crash"
 start_on "$v1crash" --application slow='sleep 30'
-v1_slow=$(curl -fsS -X POST "$base/v1/jobs" -H "$json" -d '{"application_id":"slow"}' |
+v1_slow=$(v1 -X POST "$base/v1/jobs" -H "$json" -d '{"application_id":"slow"}' |
   sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
 child=''
 for _ in $(seq 1 200); do
-  body=$(curl -fsS "$base/v1/jobs/$v1_slow")
+  body=$(v1 "$base/v1/jobs/$v1_slow")
   if [[ "$body" == *'"state":"running"'* ]]; then
     child=$(curl -fsS "$base/jobs/$v1_slow" | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
     break
