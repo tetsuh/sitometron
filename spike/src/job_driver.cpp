@@ -183,6 +183,43 @@ std::optional<JobRecord> JobDriver::Get(const std::string& job_id) const {
   return std::nullopt;
 }
 
+bool JobDriver::Cancelled(const std::string& job_id) const {
+  const auto snapshot = orchestrator_->SnapshotFor(core::Uuid{job_id});
+  return snapshot && snapshot->latched_reason == core::TerminalOutcome::kCancelled;
+}
+
+CancelOutcome JobDriver::Cancel(const std::string& job_id) {
+  const auto admitted = orchestrator_->SubmitCommand(
+      core::Command{1, core::CommandType::kCancel, core::Uuid{job_id}, config_.cancel_principal});
+  switch (admitted.code) {
+    case IngressCode::kAdmitted:
+      break;
+    case IngressCode::kAdmissionClosed:
+      return CancelOutcome::kNotReady;
+    case IngressCode::kServiceFailed:
+      return CancelOutcome::kServiceFailed;
+    default:
+      return CancelOutcome::kBusy;
+  }
+  const auto completion = orchestrator_->AwaitCompletion(admitted.ingress_sequence);
+  if (!completion) return CancelOutcome::kServiceFailed;
+  if (completion->code == core::internal::Completion::Code::kSuccess)
+    return CancelOutcome::kAccepted;
+  if (completion->code != core::internal::Completion::Code::kReducerRejection ||
+      !completion->rejection)
+    return CancelOutcome::kServiceFailed;
+  switch (completion->rejection->reason) {
+    case core::RejectionReason::kJobNotFound:
+      return CancelOutcome::kJobNotFound;
+    case core::RejectionReason::kStopCauseAlreadyLatched:
+      return CancelOutcome::kStopCauseAlreadyLatched;
+    case core::RejectionReason::kCommandNotAllowedInState:
+      return CancelOutcome::kCommandNotAllowedInState;
+    default:
+      return CancelOutcome::kServiceFailed;
+  }
+}
+
 void JobDriver::Run(std::string job_id) {
   const auto record = Get(job_id);
   if (!record || !record->worker_id || !record->launch_operation_id) {
@@ -191,85 +228,115 @@ void JobDriver::Run(std::string job_id) {
   }
   const auto& worker = *record->worker_id;
   const auto& operation = *record->launch_operation_id;
+  // A committed cancel moves the Job to stopping or finalizing, so the step this thread submits
+  // next is refused. Before finalization that is not a failure: the thread skips to finalization.
+  bool finalizing = false;
+  bool overtaken = false;
   auto step = [&](const char* type, const json& payload) {
     const auto result = SubmitCandidate(Candidate(job_id, type, payload), type);
     if (result.ok)
       Record(job_id, type);
+    else if (!finalizing && Cancelled(job_id))
+      overtaken = true;
     else
       Fail(job_id, result.detail);
     return result.ok;
   };
 
-  // 1. admitted -> preparing
-  if (!step("resources_committed",
-            {{"allocation_id", k_allocation_id},
-             {"allocation_digest", k_allocation_digest},
-             {"resolved_allocation",
-              {{"schema_id", "allocation.v1"}, {"schema_version", 1}, {"payload_utf8", "{}"}}}}))
-    return;
-
-  // 2. launch intent -> writer hands the launch to the runner port
-  if (!step("worker_launch_intent",
-            {{"operation_id", operation},
-             {"application",
-              {{"application_id", record->spec.application_id.empty()
-                                      ? StableApplicationId(record->spec.executable)
-                                      : record->spec.application_id},
-               {"version", "0.0.0-spike"},
-               {"bundle_sha256", k_bundle_placeholder}}},
-             {"allocation_id", k_allocation_id},
-             {"allocation_digest", k_allocation_digest},
-             {"worker_id", worker}}))
-    return;
-
-  const auto launch = runner_.AwaitLaunch(core::Uuid{job_id});
-  if (!launch) {
-    Fail(job_id, "launch handoff never arrived (shutdown?)");
-    return;
-  }
-
-  // 3. spawn the real process and report what the runner observed
-  LaunchSpec spec = record->spec;
-  if (spec.working_directory.empty()) spec.working_directory = config_.working_directory;
-  // Spawn and publish the pid under the same lock that Shutdown() scans with, so a shutdown
-  // either refuses the launch before it happens or sees the pid it has to signal.
-  SpawnResult spawned;
-  {
-    std::lock_guard lock(mutex_);
-    if (stopping_) {
-      spawned.error = "shutdown began before launch";
-    } else {
-      spawned = ProcessRunner::Spawn(spec);
-      jobs_[job_id].pid = spawned.pid;
-    }
-  }
-  const bool started = spawned.pid > 0;
-  if (!step("worker_launch_observed",
-            {{"operation_id", operation}, {"outcome", started ? "started" : "failed"}}))
-    return;
   bool worker_succeeded = false;
+  bool worker_reported = false;
   core::RawCandidateEvent worker_event;
-  if (started) {
+  // Steps 1 to 3. False when the Job cannot be driven further.
+  const auto launch_and_wait = [&] {
+    // 1. admitted -> preparing
+    if (!step("resources_committed",
+              {{"allocation_id", k_allocation_id},
+               {"allocation_digest", k_allocation_digest},
+               {"resolved_allocation",
+                {{"schema_id", "allocation.v1"}, {"schema_version", 1}, {"payload_utf8", "{}"}}}}))
+      return overtaken;
+
+    // 2. launch intent -> writer hands the launch to the runner port
+    if (!step("worker_launch_intent",
+              {{"operation_id", operation},
+               {"application",
+                {{"application_id", record->spec.application_id.empty()
+                                        ? StableApplicationId(record->spec.executable)
+                                        : record->spec.application_id},
+                 {"version", "0.0.0-spike"},
+                 {"bundle_sha256", k_bundle_placeholder}}},
+               {"allocation_id", k_allocation_id},
+               {"allocation_digest", k_allocation_digest},
+               {"worker_id", worker}}))
+      return overtaken;
+
+    const auto launch = runner_.AwaitLaunch(core::Uuid{job_id});
+    if (!launch) {
+      Fail(job_id, "launch handoff never arrived (shutdown?)");
+      return false;
+    }
+
+    // 3. spawn the real process and report what the runner observed
+    LaunchSpec spec = record->spec;
+    if (spec.working_directory.empty()) spec.working_directory = config_.working_directory;
+    // Spawn and publish the pid under the same lock that Shutdown() scans with, so a shutdown
+    // either refuses the launch before it happens or sees the pid it has to signal.
+    SpawnResult spawned;
+    {
+      std::lock_guard lock(mutex_);
+      if (stopping_) {
+        spawned.error = "shutdown began before launch";
+      } else {
+        spawned = ProcessRunner::Spawn(spec);
+        jobs_[job_id].pid = spawned.pid;
+      }
+    }
+    const bool started = spawned.pid > 0;
+    // A cancel committed after the launch intent finds no child yet; attaching delivers its stop.
+    if (started) runner_.Attach(core::Uuid{job_id}, spawned.pid);
+    const bool observed =
+        step("worker_launch_observed",
+             {{"operation_id", operation}, {"outcome", started ? "started" : "failed"}});
+    if (!started) {
+      Fail(job_id, "spawn failed: " + spawned.error);
+      // launch_observed{failed} already moved the Job to finalizing with a latched failure.
+      return observed || overtaken;
+    }
     // The skeleton has no Worker protocol: process start is taken as "running".
-    if (!step("worker_running", {{"worker_id", worker}})) return;
-    const auto exit = ProcessRunner::Wait(spawned.pid);
+    const bool running = observed && step("worker_running", {{"worker_id", worker}});
+    if (!running && !overtaken) return false;
+    const auto exit = runner_.WaitAttached(core::Uuid{job_id}, spawned.pid);
     {
       std::lock_guard lock(mutex_);
       jobs_[job_id].exit = exit;
       exited_.notify_all();
     }
+    // A cancel before worker_running leaves no Worker to report; the exit is confirmed below.
+    if (!running) return true;
     worker_succeeded = exit.exited_normally && exit.exit_code == 0;
     worker_event = Candidate(job_id, worker_succeeded ? "worker_completed" : "worker_failed",
                              {{"worker_id", worker}, {"event_sequence", 1}});
     const auto result = Await(orchestrator_->SubmitWorker(worker_event), "worker_terminal");
     if (!result.ok) {
       Fail(job_id, result.detail);
-      return;
+      return false;
     }
     Record(job_id, worker_event.event_type);
-  } else {
-    Fail(job_id, "spawn failed: " + spawned.error);
-    // launch_observed{failed} already moved the Job to finalizing with a latched failure.
+    worker_reported = true;
+    return true;
+  };
+  if (!launch_and_wait()) return;
+  finalizing = true;
+
+  // A cancel that found a process leaves the Job stopping until the Worker reports or the exit is
+  // confirmed. The child has exited by now, so the exit is confirmed here.
+  auto snapshot = orchestrator_->SnapshotFor(core::Uuid{job_id});
+  bool exit_confirmed = false;
+  if (snapshot && snapshot->state == core::JobState::kStopping) {
+    if (!step("process_exit_confirmed",
+              {{"completion_mode", "cooperative"}, {"launch_operation_id", operation}}))
+      return;
+    exit_confirmed = true;
   }
 
   // 4. finalizing: session retention, finalization, terminal outcome
@@ -280,16 +347,33 @@ void JobDriver::Run(std::string job_id) {
   }
   if (!step("session_retained", {{"session_id", job_id}})) return;
   if (!step("finalization_completed", json::object())) return;
-  if (!step("terminal_outcome_committed", {{"outcome", worker_succeeded ? "succeeded" : "failed"}}))
-    return;
-  if (started && !orchestrator_->RetireWorkerAck(worker_event))
+  // The latched reason decides the outcome; no cancel is accepted once the Job is finalizing.
+  const char* outcome = "failed";
+  if (Cancelled(job_id))
+    outcome = "cancelled";
+  else if (worker_succeeded)
+    outcome = "succeeded";
+  if (!step("terminal_outcome_committed", {{"outcome", outcome}})) return;
+  if (worker_reported && !orchestrator_->RetireWorkerAck(worker_event))
     Record(job_id, "worker_ack_not_retired");
 
-  // 5. terminal axes: process exit, resource release, cleanup
-  if (!step("process_exit_confirmed",
-            {{"completion_mode", "process_already_exited"}, {"launch_operation_id", operation}}))
+  // 5. terminal axes: process exit, resource release, cleanup. A cancel before the launch intent
+  // leaves no launch whose exit could be confirmed (the reducer has confirmed it), and a cancel
+  // before resources_committed leaves nothing to release.
+  snapshot = orchestrator_->SnapshotFor(core::Uuid{job_id});
+  if (!snapshot) {
+    Fail(job_id, "the terminal snapshot is missing");
     return;
-  if (!step("resources_released",
+  }
+  if (snapshot->launch_operation_id && !exit_confirmed &&
+      !step("process_exit_confirmed",
+            {{"completion_mode", snapshot->completion_mode == core::CompletionMode::kCooperative
+                                     ? "cooperative"
+                                     : "process_already_exited"},
+             {"launch_operation_id", operation}}))
+    return;
+  if (snapshot->resource_status == core::ResourceStatus::kCommitted &&
+      !step("resources_released",
             {{"allocation_id", k_allocation_id}, {"allocation_digest", k_allocation_digest}}))
     return;
   step("cleanup_status_recorded", {{"status", "completed"}});

@@ -433,8 +433,8 @@ expect empty-list 200 '{"jobs":[]}' "$base/v1/jobs"
 # reaches the writer, so the Journal does not grow.
 expect route 404 "$(envelope request route_not_found)" "$base/v1/nothing"
 expect bare-prefix 404 "$(envelope request route_not_found)" "$base/v1"
-expect cancel-not-served 404 "$(envelope request route_not_found)" -X POST \
-  "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001/cancel"
+expect below-job 404 "$(envelope request route_not_found)" -X POST \
+  "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001/terminate"
 expect method-jobs 405 "$(envelope request method_not_allowed)" -X DELETE "$base/v1/jobs"
 expect method-job 405 "$(envelope request method_not_allowed)" -X POST \
   "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001"
@@ -591,6 +591,107 @@ for bad_id in 'UPPER=true' '.dot=true' 'sp ace=true' '=true' 'noequals' 'empty='
 done
 [[ ! -e "$scratch/v1-unused" ]] || { echo "a refused option created a Journal"; exit 1; }
 
+# Cancel (ADR-0008 Section 3). "lingering" takes a second to stop, so a repeated cancel finds the
+# Job still stopping; "prompt" stops at once.
+v1cancel="$scratch/v1cancel"
+start_on "$v1cancel" --cancel-principal smoke-operator \
+  --application lingering='trap "sleep 1; exit 0" TERM; while :; do sleep 0.05; done' \
+  --application prompt='trap "exit 0" TERM; while :; do sleep 0.05; done'
+# Creates a Job for the application and waits until it is running; prints its identifier.
+v1_running() {
+  local id body=''
+  id=$(v1 -X POST "$base/v1/jobs" -H "$json" -d "{\"application_id\":\"$1\"}" |
+    sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+  for _ in $(seq 1 200); do
+    body=$(v1 "$base/v1/jobs/$id")
+    if [[ "$body" == *'"state":"running"'* ]]; then printf '%s' "$id"; return 0; fi
+    read -r -t 0.05 <> <(:) || true
+  done
+  echo "v1 job $id did not start running: $body" >&2
+  return 1
+}
+lingering=$(v1_running lingering)
+expect cancel 202 "{\"job_id\":\"$lingering\",\"outcome\":null,\"state\":\"stopping\",\"terminal\":false}" \
+  -X POST "$base/v1/jobs/$lingering/cancel"
+expect cancel-repeated 409 "$(envelope job stop_cause_already_latched)" \
+  -X POST "$base/v1/jobs/$lingering/cancel"
+cancelled="{\"job_id\":\"$lingering\",\"outcome\":\"cancelled\",\"state\":\"cancelled\",\"terminal\":true}"
+[[ "$(v1_terminal "$lingering")" == "$cancelled" ]] ||
+  { echo "v1 cancel: unexpected resource: $(v1 "$base/v1/jobs/$lingering")"; exit 1; }
+expect cancel-terminal 409 "$(envelope job command_not_allowed_in_state)" \
+  -X POST "$base/v1/jobs/$lingering/cancel"
+# The body is optional; an empty object is the only body accepted.
+prompt=$(v1_running prompt)
+expect cancel-empty-object 202 "\"job_id\":\"$prompt\"" -X POST "$base/v1/jobs/$prompt/cancel" \
+  -H "$json" -d '{}'
+[[ "$(v1_terminal "$prompt")" == *'"outcome":"cancelled"'* ]] || { echo "v1 cancel: prompt Job not cancelled"; exit 1; }
+# Refusals: none of them records a cancel.
+cancels() { { grep -h '"event_type":"cancel_accepted"' "$v1cancel"/journal-*.ndjson || true; } | wc -l; }
+[[ "$(cancels)" == 2 ]] || { echo "v1 cancel: expected two cancel_accepted records, got $(cancels)"; exit 1; }
+expect cancel-unknown 404 "$(envelope job job_not_found)" \
+  -X POST "$base/v1/jobs/01890000-0000-7000-8000-000000000000/cancel"
+expect cancel-invalid-id 400 "$(envelope request invalid_job_id)" \
+  -X POST "$base/v1/jobs/not-a-uuid/cancel"
+expect cancel-method 405 "$(envelope request method_not_allowed)" "$base/v1/jobs/$prompt/cancel"
+allow=$(curl -sS -D - -o /dev/null "$base/v1/jobs/$prompt/cancel")
+no_leak cancel-allow-headers "$allow"
+printf '%s' "$allow" | grep -qi '^Allow: POST' || { echo "v1 cancel: 405 without Allow: POST: $allow"; exit 1; }
+expect cancel-media 415 "$(envelope request unsupported_media_type)" \
+  -X POST "$base/v1/jobs/$prompt/cancel" -H 'Content-Type: text/plain' -d '{}'
+expect cancel-malformed 400 "$(envelope request malformed_json)" \
+  -X POST "$base/v1/jobs/$prompt/cancel" -H "$json" -d '{'
+expect cancel-body 422 "$(envelope request validation_failed)" \
+  -X POST "$base/v1/jobs/$prompt/cancel" -H "$json" -d '{"reason":"x"}'
+expect cancel-below 404 "$(envelope request route_not_found)" \
+  -X POST "$base/v1/jobs/$prompt/cancel/again"
+expect cancel-query 404 "$(envelope request route_not_found)" \
+  -X POST "$base/v1/jobs/$prompt/cancel?force=1"
+[[ "$(cancels)" == 2 ]] || { echo "v1 cancel: a refused cancel reached the Journal"; exit 1; }
+# Both records carry the configured principal and nothing else.
+[[ "$(grep -h '"event_type":"cancel_accepted"' "$v1cancel"/journal-*.ndjson |
+  grep -c '"payload":{"principal_subject":"smoke-operator"}')" == 2 ]] ||
+  { echo "v1 cancel: cancel_accepted lacks the configured principal"; exit 1; }
+# A cancel sent right after the creation overtakes the driver at whatever step it has reached
+# (before or after the launch). Wherever it lands, the Job ends cancelled without a driver error.
+early_steps=''
+for _ in 1 2 3 4 5; do
+  early=$(v1 -X POST "$base/v1/jobs" -H "$json" -d '{"application_id":"prompt"}' |
+    sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+  expect cancel-early 202 "\"job_id\":\"$early\"" -X POST "$base/v1/jobs/$early/cancel"
+  [[ "$(v1_terminal "$early")" == *'"outcome":"cancelled"'* ]] || { echo "v1 cancel: early Job not cancelled"; exit 1; }
+  for _ in $(seq 1 100); do
+    early_body=$(curl -fsS "$base/jobs/$early")
+    [[ "$early_body" == *'"cleanup_status_recorded"'* ]] && break
+    read -r -t 0.05 <> <(:) || true
+  done
+  [[ "$early_body" == *'"cleanup_status_recorded"'*'"error":null'* || "$early_body" == *'"error":null'*'"cleanup_status_recorded"'* ]] ||
+    { echo "v1 cancel: the driver did not finish the early Job cleanly: $early_body"; exit 1; }
+  # A Job that had a launch confirms its exit once; one cancelled before the launch intent has no
+  # launch to confirm.
+  steps=$(sed -n 's/.*"steps":\[\([^]]*\)\].*/\1/p' <<<"$early_body")
+  confirmations=$({ grep -o '"process_exit_confirmed"' <<<"$steps" || true; } | wc -l)
+  if [[ "$steps" == *'"worker_launch_intent"'* ]]; then
+    [[ "$confirmations" == 1 ]] || { echo "v1 cancel: $confirmations exit confirmations: $early_body"; exit 1; }
+  else
+    [[ "$confirmations" == 0 ]] || { echo "v1 cancel: an exit was confirmed without a launch: $early_body"; exit 1; }
+  fi
+  early_steps+="$steps"$'\n'
+done
+# Which landing points this run reached is timing; they are printed for the record.
+printf 'early cancel steps:\n%s' "$early_steps"
+kill -TERM "$daemon"
+wait "$daemon"
+# A principal that is empty or not visible ASCII is refused at startup.
+for bad_principal in '' 'two words'; do
+  if "$binary" --listen 127.0.0.1:0 --journal "$scratch/v1-unused" \
+    --cancel-principal "$bad_principal" >"$scratch/v1-option.log" 2>&1; then
+    echo "expected --cancel-principal '$bad_principal' to be refused"; exit 1
+  fi
+  grep -q -- '--cancel-principal needs a name' "$scratch/v1-option.log" ||
+    { echo "no option error for '$bad_principal': $(cat "$scratch/v1-option.log")"; exit 1; }
+done
+[[ ! -e "$scratch/v1-unused" ]] || { echo "a refused option created a Journal"; exit 1; }
+
 # kill -9 during a Job: after the restart readiness is false with the unresolved Job, creation is
 # refused with not_ready, and the Job is still readable.
 v1crash="$scratch/v1crash"
@@ -616,6 +717,9 @@ expect not-ready 503 "{\"ready\":false,\"reasons\":[{\"code\":\"unresolved_jobs\
 expect health-while-not-ready 200 '{"status":"ok"}' "$base/v1/health"
 expect create-not-ready 503 "$(envelope service not_ready)" -X POST "$base/v1/jobs" -H "$json" \
   -d '{"application_id":"slow"}'
+# A cancel is a normal ingress input: while admission is closed it is refused like a creation.
+expect cancel-not-ready 503 "$(envelope service not_ready)" \
+  -X POST "$base/v1/jobs/$v1_slow/cancel"
 expect read-recovered 200 "{\"job_id\":\"$v1_slow\",\"outcome\":null,\"state\":\"running\",\"terminal\":false}" \
   "$base/v1/jobs/$v1_slow"
 kill -TERM "$daemon"

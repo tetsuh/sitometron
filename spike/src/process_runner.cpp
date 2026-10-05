@@ -23,11 +23,39 @@ void ProcessRunner::HandoffLaunch(core::ApplicationLaunchRequest&& request) noex
   }
 }
 
-void ProcessRunner::HandoffCooperativeStop(core::ApplicationStopRequest&& /*request*/) noexcept {
-  // cancel/terminate are out of scope for the skeleton (Issue #48).
+void ProcessRunner::HandoffCooperativeStop(core::ApplicationStopRequest&& request) noexcept {
+  try {
+    std::lock_guard lock(mutex_);
+    stops_.insert(request.job_id.value);
+    if (const auto child = children_.find(request.job_id.value); child != children_.end())
+      Signal(child->second, SIGTERM);
+  } catch (...) {
+    // A lost stop leaves the Job stopping until its child exits by itself.
+  }
 }
 
+// The skeleton has no timer adapter, so the cooperative-stop timeout that requests a forced stop
+// never fires (Issue #84).
 void ProcessRunner::HandoffForcedStop(core::ApplicationStopRequest&& /*request*/) noexcept {}
+
+void ProcessRunner::Attach(const core::Uuid& job, pid_t pid) {
+  std::lock_guard lock(mutex_);
+  children_.insert_or_assign(job.value, pid);
+  if (stops_.contains(job.value)) Signal(pid, SIGTERM);
+}
+
+ExitStatus ProcessRunner::WaitAttached(const core::Uuid& job, pid_t pid) {
+  // Wait without reaping: the process identifier stays reserved while a stop may still signal it.
+  siginfo_t info{};
+  while (::waitid(P_PID, static_cast<id_t>(pid), &info, WEXITED | WNOWAIT) != 0 && errno == EINTR) {
+    // Interrupted by a signal: wait again.
+  }
+  {
+    std::lock_guard lock(mutex_);
+    children_.erase(job.value);
+  }
+  return Wait(pid);
+}
 
 std::optional<core::ApplicationLaunchRequest> ProcessRunner::AwaitLaunch(const core::Uuid& job) {
   std::unique_lock lock(mutex_);

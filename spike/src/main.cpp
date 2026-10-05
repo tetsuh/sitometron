@@ -58,6 +58,8 @@ struct Options {
   std::uint64_t segment_limit = sitometron::journal::SegmentJournalOptions{}.segment_limit_bytes;
   // The registered Applications of /v1: identifier to the shell command run for it.
   sitometron::spike::Applications applications;
+  // The principal recorded for every /v1 cancel (ADR-0008 Section 3).
+  std::string cancel_principal = "local-operator";
 };
 
 bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
@@ -142,6 +144,16 @@ bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
             "([a-z0-9][a-z0-9._:-]*, at most 128 characters)";
         return false;
       }
+    } else if (flag == "--cancel-principal") {
+      const char* raw = value();
+      const std::string_view text = raw == nullptr ? "" : raw;
+      // A visible ASCII name without spaces, within the core's principal bound.
+      if (text.empty() || text.size() > 256 ||
+          !std::ranges::all_of(text, [](char c) { return c > ' ' && c <= '~'; })) {
+        error = "--cancel-principal needs a name of 1 to 256 visible ASCII characters";
+        return false;
+      }
+      options.cancel_principal = text;
     } else if (flag == "--help" || flag == "-h") {
       error.clear();
       return false;
@@ -323,7 +335,7 @@ int main(int argc, char** argv) {
     if (!error.empty()) std::cerr << "error: " << error << '\n';
     std::cerr << "usage: sitometron_spike [--listen HOST:PORT] [--journal DIR] [--workdir DIR]"
                  " [--max-jobs N] [--trace-capacity N] [--segment-limit BYTES]"
-                 " [--application ID=COMMAND]...\n"
+                 " [--application ID=COMMAND]... [--cancel-principal NAME]\n"
                  "       sitometron_spike journal quarantine-tail --journal DIR\n"
                  "       sitometron_spike journal prune --journal DIR [--dry-run]\n";
     return error.empty() ? 0 : 2;
@@ -356,6 +368,7 @@ int main(int argc, char** argv) {
   config.max_jobs = options.max_jobs;
   config.trace_capacity = options.trace_capacity;
   config.working_directory = options.workdir;
+  config.cancel_principal = options.cancel_principal;
   sitometron::spike::JobDriver driver(config, journal);
 
   sitometron::spike::HttpServer server(options.host, options.port,
