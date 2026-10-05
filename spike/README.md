@@ -33,7 +33,9 @@ it), `--journal DIR` (the production `SegmentJournal` from `sitometron_journal`,
 files and exclusive lock; at startup every segment is validated and replayed, Issues #61 and #64),
 `--workdir DIR` (default working directory for children), `--max-jobs N` (default 32, see
 [Findings](#findings-for-phase-0b12)), `--trace-capacity N` (default 4096), `--segment-limit BYTES`
-(default 67108864; the segment size at which the Journal rotates).
+(default 67108864; the segment size at which the Journal rotates), `--application ID=COMMAND`
+(repeatable; registers an Application for the `/v1` prototype below, run as `/bin/sh -c COMMAND`;
+`ID` is `[a-z0-9][a-z0-9._:-]*`, at most 128 characters).
 
 ```sh
 curl -s localhost:8080/healthz
@@ -96,6 +98,71 @@ build/dev-linux/spike/sitometron_spike journal quarantine-tail --journal /tmp/si
 ```
 
 Smoke test (needs `curl`): `ctest --test-dir build/dev-linux -L spike --output-on-failure`.
+
+## External REST v1 prototype
+
+The skeleton also serves a prototype of the External REST v1 Job surface of Accepted
+[ADR-0008](../docs/adr/0008-define-the-external-rest-v1-job-surface.md) under `/v1` (Issue #82).
+It is not the production adapter and activates none of the `API-*` checks; it exists to run the
+contract end to end and to find its gaps. The unversioned routes above stay the skeleton's own.
+
+```sh
+build/dev-linux/spike/sitometron_spike --listen 127.0.0.1:8080 --journal /tmp/sitometron-journal \
+    --application hello='echo hello; sleep 1' --application broken='exit 3'
+
+curl -s -i -X POST localhost:8080/v1/jobs -H 'Content-Type: application/json' \
+     -d '{"application_id":"hello"}'
+# HTTP/1.1 202 Accepted
+# Location: /v1/jobs/01a0d935-e6bb-7728-a438-650e3ba48ed4
+# {"job_id":"01a0d935-...","outcome":null,"state":"admitted","terminal":false}
+curl -s localhost:8080/v1/jobs/01a0d935-e6bb-7728-a438-650e3ba48ed4
+# {"job_id":"01a0d935-...","outcome":"succeeded","state":"succeeded","terminal":true}
+curl -s localhost:8080/v1/jobs      # {"jobs":[...]} in creation order
+curl -s localhost:8080/v1/health    # {"status":"ok"}
+curl -s localhost:8080/v1/ready     # {"ready":true,"reasons":[]}
+curl -s -X POST localhost:8080/v1/jobs -H 'Content-Type: application/json' \
+     -d '{"application_id":"hello","executable":"/bin/true"}'
+# 422 {"error":{"domain":"request","code":"validation_failed","message":"...","details":{}}}
+```
+
+Served: `POST /v1/jobs`, `GET /v1/jobs/{job_id}`, `GET /v1/jobs`, `GET /v1/health`, and
+`GET /v1/ready`, with the error envelope and status table of ADR-0008 Section 5. The client names a
+registered `application_id` only; the command comes from `--application`. Not served yet:
+`POST /v1/jobs/{job_id}/cancel` (it answers `404` `route_not_found`), because the driver cannot
+stop a Job yet.
+
+Gaps between ADR-0008 and what a listener has to decide, found while building this:
+
+1. **HTTP-level refusals have no row.** A request whose request line is not
+   `METHOD /target HTTP/1.0` or `HTTP/1.1`, and one that is not received in time, are refused
+   before any route is known. (The skeleton's listener checks the request-line form and the
+   `Content-Length` value and size; it does not validate HTTP syntax in general.) The prototype answers `400`
+   `request`/`malformed_request` and `408` `request`/`request_timeout`.
+2. **The stated check order cannot hold for an oversized request.** ADR-0008 orders route, method,
+   and media type before size, but a listener bounds the request while reading it, so an oversized
+   request is `413` whatever its route.
+3. **`already_pending` has no status.** A second creation during identity generation gets this
+   ingress result. The prototype serializes creation so that it never occurs; a production adapter
+   must do the same or the ADR needs a row.
+4. **Query strings are not mentioned.** The prototype answers every `/v1` target that has a query
+   with `404` `route_not_found`.
+5. **A `POST /v1/jobs` without a body** has no media type to check; it is `400` `malformed_json`.
+6. **`HEAD` and `OPTIONS`** are answered like any other method that a route does not allow.
+7. **`details` is always empty** here. ADR-0008 allows fields in it but names none, so a client
+   cannot yet learn, for example, which field failed validation.
+8. **`terminal` is true before cleanup is recorded.** The terminal outcome is committed before
+   process-exit confirmation, release, and cleanup, so a client can see a terminal Job whose
+   resident slot work is still finishing. ADR-0008 Section 3 allows this; it is worth stating.
+
+9. **The characters of `application_id` are not defined.** ADR-0008 Section 4 gives only a length
+   of 1 to 128, Section 1 says identifiers are lowercase ASCII, and the core records the
+   Application identity as a stable identifier (`[A-Za-z0-9][A-Za-z0-9._:-]*`). The prototype
+   registers only `[a-z0-9][a-z0-9._:-]*`; a request with any other text is `unknown_application`.
+10. **A JSON library is not a JSON validator.** The parser the skeleton uses reads a raw NUL byte
+    as the end of its input and accepts the text before it, so a body could carry a valid object,
+    a NUL, and anything after it. It also accepts duplicate keys. The prototype refuses both
+    before parsing counts as success; the production adapter needs the same tests whatever library
+    it uses. The unversioned `/jobs` route does not have these checks.
 
 ## What one Job does
 

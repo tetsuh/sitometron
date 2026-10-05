@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <charconv>
 #include <cstdint>
@@ -25,6 +26,7 @@
 
 #include "http_server.hpp"
 #include "job_driver.hpp"
+#include "rest_v1.hpp"
 #include "sitometron/core/version.hpp"
 #include "sitometron/journal/maintenance.hpp"
 #include "sitometron/journal/replay.hpp"
@@ -54,6 +56,8 @@ struct Options {
   std::size_t max_jobs = 32;
   std::size_t trace_capacity = 4096;
   std::uint64_t segment_limit = sitometron::journal::SegmentJournalOptions{}.segment_limit_bytes;
+  // The registered Applications of /v1: identifier to the shell command run for it.
+  sitometron::spike::Applications applications;
 };
 
 bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
@@ -118,6 +122,26 @@ bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
         error = "--segment-limit needs a positive number of bytes";
         return false;
       }
+    } else if (flag == "--application") {
+      const char* raw = value();
+      const std::string text = raw == nullptr ? "" : raw;
+      const auto equals = text.find('=');
+      // ID=COMMAND with a non-empty command. The identifier is lowercase ASCII (ADR-0008
+      // Section 1) within the core's stable-identifier form: [a-z0-9][a-z0-9._:-]*, at most 128.
+      const auto id = equals == std::string::npos ? std::string() : text.substr(0, equals);
+      const bool valid_id = !id.empty() && id.size() <= 128 && id.front() != '.' &&
+                            id.front() != '_' && id.front() != ':' && id.front() != '-' &&
+                            std::ranges::all_of(id, [](char c) {
+                              return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' ||
+                                     c == '_' || c == ':' || c == '-';
+                            });
+      if (!valid_id || equals + 1 == text.size() ||
+          !options.applications.try_emplace(id, text.substr(equals + 1)).second) {
+        error =
+            "--application needs ID=COMMAND with a unique lowercase identifier "
+            "([a-z0-9][a-z0-9._:-]*, at most 128 characters)";
+        return false;
+      }
     } else if (flag == "--help" || flag == "-h") {
       error.clear();
       return false;
@@ -129,10 +153,19 @@ bool ParseOptions(int argc, char** argv, Options& options, std::string& error) {
   return true;
 }
 
-HttpResponse Json(int status, const json& body) { return {status, body.dump()}; }
+HttpResponse Json(int status, const json& body) { return {status, body.dump(), {}}; }
 
-HttpResponse Route(sitometron::spike::JobDriver& driver, const HttpRequest& request) {
+HttpResponse Route(sitometron::spike::JobDriver& driver,
+                   const sitometron::spike::Applications& applications,
+                   const HttpRequest& request) {
   const auto& target = request.target;
+  // The External REST v1 prototype (ADR-0008). The unversioned routes below are the walking
+  // skeleton's own and are no contract.
+  // Dispatch on the path alone, so that /v1 targets with a query also get the /v1 answer.
+  if (const auto path = std::string_view(target).substr(0, target.find('?'));
+      path == "/v1" || path.starts_with("/v1/")) {
+    return sitometron::spike::RouteV1(driver, applications, request);
+  }
   if (target == "/healthz" && request.method == "GET") {
     if (!driver.Ready()) {
       return Json(503, {{"status", "not_ready"},
@@ -289,7 +322,8 @@ int main(int argc, char** argv) {
   if (!ParseOptions(argc, argv, options, error)) {
     if (!error.empty()) std::cerr << "error: " << error << '\n';
     std::cerr << "usage: sitometron_spike [--listen HOST:PORT] [--journal DIR] [--workdir DIR]"
-                 " [--max-jobs N] [--trace-capacity N] [--segment-limit BYTES]\n"
+                 " [--max-jobs N] [--trace-capacity N] [--segment-limit BYTES]"
+                 " [--application ID=COMMAND]...\n"
                  "       sitometron_spike journal quarantine-tail --journal DIR\n"
                  "       sitometron_spike journal prune --journal DIR [--dry-run]\n";
     return error.empty() ? 0 : 2;
@@ -324,9 +358,10 @@ int main(int argc, char** argv) {
   config.working_directory = options.workdir;
   sitometron::spike::JobDriver driver(config, journal);
 
-  sitometron::spike::HttpServer server(
-      options.host, options.port,
-      [&driver](const HttpRequest& request) { return Route(driver, request); });
+  sitometron::spike::HttpServer server(options.host, options.port,
+                                       [&driver, &options](const HttpRequest& request) {
+                                         return Route(driver, options.applications, request);
+                                       });
   if (!server.Start(error)) {
     std::cerr << "error: cannot listen on " << options.host << ':' << options.port << ": " << error
               << '\n';

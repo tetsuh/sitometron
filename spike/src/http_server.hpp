@@ -5,7 +5,10 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace sitometron::spike {
 
@@ -18,8 +21,14 @@ struct HttpRequest {
 
 struct HttpResponse {
   int status = 200;
-  std::string body;  // JSON text
+  std::string body;                                          // JSON text
+  std::vector<std::pair<std::string, std::string>> headers;  // extra headers, e.g. Location
 };
+
+// The External REST v1 error envelope (ADR-0008 Section 5) as JSON text. `message` must not carry
+// a path, a raw error text, a Journal record, or a secret.
+[[nodiscard]] std::string ErrorEnvelope(std::string_view domain, std::string_view code,
+                                        std::string_view message);
 
 // Blocking loopback HTTP/1.1 listener over POSIX sockets: one connection at a time, no
 // keep-alive, bounded request size. Enough for curl; not a contract and not the Phase 1 surface.

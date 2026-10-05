@@ -15,6 +15,9 @@
 namespace sitometron::spike {
 
 struct LaunchSpec {
+  // The registered Application this launch is for. Empty on the unversioned route, where the
+  // driver derives an identifier from the executable.
+  std::string application_id;
   std::string executable;
   std::vector<std::string> arguments;
   std::string working_directory;

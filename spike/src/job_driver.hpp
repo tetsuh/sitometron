@@ -46,6 +46,15 @@ struct JobRecord {
   bool recovered = false;          // replayed from the Journal of a previous run
 };
 
+// Why a creation was refused, in the order ADR-0003 and ADR-0008 Section 5 give the causes.
+enum class CreateRefusal { kNone, kServiceFailed, kNotReady, kCapacityExhausted, kBusy };
+
+struct CreateOutcome {
+  CreateRefusal refusal = CreateRefusal::kServiceFailed;
+  std::string job_id;  // set when refusal is kNone
+  std::string detail;  // diagnostic text for the daemon log and the unversioned route only
+};
+
 // The composition root's Job sequencer. One thread per Job drives the lifecycle candidates that
 // the core leaves to "the supervisor": resources, launch intent, session retention, finalization,
 // terminal outcome, process-exit confirmation, release, and cleanup. Every step submits one raw
@@ -59,6 +68,15 @@ class JobDriver {
 
   // Creates the Job (job_created committed) and starts its driver thread.
   [[nodiscard]] std::optional<std::string> Submit(LaunchSpec spec, std::string& error);
+  // The same creation, reporting why it was refused instead of a text.
+  [[nodiscard]] CreateOutcome Create(LaunchSpec spec);
+  // The External REST v1 Job resource (ADR-0008 Section 3) from the committed snapshot; null for a
+  // Job that is not resident.
+  [[nodiscard]] nlohmann::json Resource(const std::string& job_id) const;
+  // Every resident Job's resource, in creation order.
+  [[nodiscard]] nlohmann::json Resources() const;
+  // The readiness reasons of ADR-0008 Section 6; empty when the daemon accepts new Jobs.
+  [[nodiscard]] nlohmann::json ReadinessReasons() const;
   [[nodiscard]] nlohmann::json Describe(const std::string& job_id) const;
   [[nodiscard]] nlohmann::json List() const;
   [[nodiscard]] nlohmann::json Stats() const;

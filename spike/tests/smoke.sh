@@ -387,6 +387,240 @@ if "$binary" --listen 127.0.0.1:0 --journal "$exhausted" >"$scratch/exhausted-st
   echo "expected the exhausted Journal to be refused"; exit 1
 fi
 grep -q 'exhausted' "$scratch/exhausted-start.log" || { echo "no exhaustion refusal: $(cat "$scratch/exhausted-start.log")"; exit 1; }
+
+# External REST v1 prototype (Accepted ADR-0008): create, read, list, health, readiness, and the
+# error envelope. The client names a registered Application; it never sends an executable.
+v1="$scratch/v1"
+start_on "$v1" --max-jobs 2 --application ok='echo v1-ok' --application bad='exit 3' \
+  --application slow='sleep 30'
+# Sends one request and prints "<status> <body>". Arguments are passed to curl.
+call() { curl -sS -o "$scratch/v1.body" -w '%{http_code}' "$@"; printf ' %s' "$(cat "$scratch/v1.body")"; }
+# expect <label> <status> <text the body must contain> <curl arguments...>
+expect() {
+  local label=$1 status=$2 needle=$3 answer
+  shift 3
+  answer=$(call "$@")
+  [[ "${answer%% *}" == "$status" ]] || { echo "v1 $label: expected $status: $answer"; exit 1; }
+  [[ "$answer" == *"$needle"* ]] || { echo "v1 $label: expected $needle: $answer"; exit 1; }
+  no_leak "$label" "$answer"
+}
+# No /v1 response carries an executable, a file-system path, or a raw parser or system error text.
+no_leak() {
+  local label=$1 answer=$2 text
+  for text in executable /bin/ /tmp/ /home/ "$scratch" 'parse error' 'json.exception' \
+    'syntax error' 'No such file' 'Permission denied' errno; do
+    [[ "$answer" != *"$text"* ]] || { echo "v1 $label: the response leaks '$text': $answer"; exit 1; }
+  done
+}
+# A successful /v1 request whose body the test parses: prints the body after the same leak check.
+v1() {
+  local out
+  out=$(curl -fsS "$@")
+  no_leak direct "$out"
+  printf '%s' "$out"
+}
+envelope() { printf '"error":{"domain":"%s","code":"%s",' "$1" "$2"; }
+json='Content-Type: application/json'
+# Journal records of the /v1 daemon so far.
+v1_records() { { cat "$v1"/journal-*.ndjson 2>/dev/null || true; } | wc -l; }
+before=$(v1_records)
+
+expect health 200 '{"status":"ok"}' "$base/v1/health"
+expect ready 200 '{"ready":true,"reasons":[]}' "$base/v1/ready"
+expect empty-list 200 '{"jobs":[]}' "$base/v1/jobs"
+
+# Every request and job error of ADR-0008 Section 5 that this increment can produce. None of them
+# reaches the writer, so the Journal does not grow.
+expect route 404 "$(envelope request route_not_found)" "$base/v1/nothing"
+expect bare-prefix 404 "$(envelope request route_not_found)" "$base/v1"
+expect cancel-not-served 404 "$(envelope request route_not_found)" -X POST \
+  "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001/cancel"
+expect method-jobs 405 "$(envelope request method_not_allowed)" -X DELETE "$base/v1/jobs"
+expect method-job 405 "$(envelope request method_not_allowed)" -X POST \
+  "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001"
+expect method-options 405 "$(envelope request method_not_allowed)" -X OPTIONS "$base/v1/jobs"
+expect method-health 405 "$(envelope request method_not_allowed)" -X POST "$base/v1/health"
+allow=$(curl -sS -D - -o /dev/null -X DELETE "$base/v1/jobs")
+no_leak allow-headers "$allow"
+printf '%s' "$allow" | grep -qi '^allow: GET, POST' || { echo "v1: 405 lacks the Allow header"; exit 1; }
+expect media 415 "$(envelope request unsupported_media_type)" -X POST "$base/v1/jobs" \
+  -H 'Content-Type: text/plain' -d '{"application_id":"ok"}'
+expect malformed 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":'
+expect no-body 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs"
+expect duplicate-key 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":"ok","application_id":"ok"}'
+# A raw NUL is not JSON, wherever it is: the text before it must not be accepted on its own.
+nul_case() {
+  local label=$1
+  expect "$label" 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs" -H "$json" \
+    --data-binary "@$scratch/v1.nul"
+}
+printf '{"application_id":"ok"}\0' >"$scratch/v1.nul"
+nul_case nul-after-object
+printf '{"application_id":"ok"} \n\0' >"$scratch/v1.nul"
+nul_case nul-after-whitespace
+printf '{"application_id":"ok"}\0{"executable":"/bin/true"}' >"$scratch/v1.nul"
+nul_case nul-before-trailing-data
+printf '{"application_id":"o\0k"}' >"$scratch/v1.nul"
+nul_case nul-inside-string
+printf '\0{"application_id":"ok"}' >"$scratch/v1.nul"
+nul_case nul-first
+expect trailing-data 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":"ok"}{"application_id":"ok"}'
+expect unknown-field 422 "$(envelope request validation_failed)" -X POST "$base/v1/jobs" \
+  -H "$json" -d '{"application_id":"ok","executable":"/bin/true"}'
+expect missing-field 422 "$(envelope request validation_failed)" -X POST "$base/v1/jobs" \
+  -H "$json" -d '{}'
+expect wrong-type 422 "$(envelope request validation_failed)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":7}'
+expect not-object 422 "$(envelope request validation_failed)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '["ok"]'
+expect empty-id 422 "$(envelope request validation_failed)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":""}'
+expect path-in-malformed 400 "$(envelope request malformed_json)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":"/bin/true"'
+expect path-as-application 422 "$(envelope job unknown_application)" -X POST "$base/v1/jobs" \
+  -H "$json" -d '{"application_id":"/bin/true"}'
+expect unknown-application 422 "$(envelope job unknown_application)" -X POST "$base/v1/jobs" \
+  -H "$json" -d '{"application_id":"nobody"}'
+expect query-on-prefix 404 "$(envelope request route_not_found)" "$base/v1?x=1"
+expect query-on-health 404 "$(envelope request route_not_found)" "$base/v1/health?x=1"
+expect query-on-list 404 "$(envelope request route_not_found)" "$base/v1/jobs?limit=1"
+expect query-on-job 404 "$(envelope request route_not_found)" \
+  "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001?x=1"
+expect invalid-id 400 "$(envelope request invalid_job_id)" "$base/v1/jobs/not-a-uuid"
+expect upper-id 400 "$(envelope request invalid_job_id)" \
+  "$base/v1/jobs/01890F3E-7B00-7ABC-8ABC-000000000001"
+expect unknown-job 404 "$(envelope job job_not_found)" \
+  "$base/v1/jobs/01890f3e-7b00-7abc-8abc-000000000001"
+# A request that stops arriving is answered 408 after the listener's receive timeout.
+exec 3<>"/dev/tcp/127.0.0.1/$port"
+printf 'GET /v1/health HTTP/1.1\r\n' >&3
+late=$(timeout 10 cat <&3 || true)
+exec 3<&- 3>&-
+[[ "$late" == 'HTTP/1.1 408 '* && "$late" == *"$(envelope request request_timeout)"* ]] ||
+  { echo "v1 timeout: expected 408 request_timeout: $late"; exit 1; }
+no_leak timeout "$late"
+# A request line that is not "METHOD /target HTTP/1.0|1.1" is refused before any route is known.
+expect malformed-http 400 "$(envelope request malformed_request)" -X 'BAD REQUEST' "$base/v1/health"
+# raw <label> <request line>: sends one raw request and expects 400 malformed_request.
+raw() {
+  local label=$1 line=$2 answer
+  exec 3<>"/dev/tcp/127.0.0.1/$port"
+  printf '%s\r\n\r\n' "$line" >&3
+  answer=$(timeout 10 cat <&3 || true)
+  exec 3<&- 3>&-
+  [[ "$answer" == 'HTTP/1.1 400 '* && "$answer" == *"$(envelope request malformed_request)"* ]] ||
+    { echo "v1 $label: expected 400 malformed_request: $answer"; exit 1; }
+  no_leak "$label" "$answer"
+}
+raw bad-version 'GET /v1/health HTTP/1.foo'
+raw other-version 'GET /v1/health HTTP/2.0'
+raw trailing-token 'GET /v1/health HTTP/1.1 extra'
+raw no-version 'GET /v1/health'
+raw relative-target 'GET v1/health HTTP/1.1'
+raw absolute-target 'GET http://127.0.0.1/v1/health HTTP/1.1'
+# The same request line in its valid form is served.
+exec 3<>"/dev/tcp/127.0.0.1/$port"
+printf 'GET /v1/health HTTP/1.0\r\n\r\n' >&3
+[[ "$(timeout 10 cat <&3 || true)" == 'HTTP/1.1 200 '*'{"status":"ok"}' ]] || { echo "v1: HTTP/1.0 health refused"; exit 1; }
+exec 3<&- 3>&-
+head -c 70000 /dev/zero | tr '\0' 'a' >"$scratch/v1.big"
+expect too-large 413 "$(envelope request payload_too_large)" -X POST "$base/v1/jobs" -H "$json" \
+  --data-binary "@$scratch/v1.big"
+[[ "$(v1_records)" == "$before" ]] || { echo "v1: a refused request reached the Journal"; exit 1; }
+
+# Create answers 202 with the Job resource and its Location; the Job is at least admitted.
+headers=$(curl -sS -D - -o "$scratch/v1.body" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":"ok"}')
+created=$(cat "$scratch/v1.body")
+printf '%s' "$headers" | head -n1 | grep -q ' 202 ' || { echo "v1 create: $headers $created"; exit 1; }
+v1_ok=$(printf '%s' "$created" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+[[ -n "$v1_ok" ]] || { echo "v1 create: no job_id in $created"; exit 1; }
+printf '%s' "$headers" | tr -d '\r' | grep -qix "location: /v1/jobs/$v1_ok" ||
+  { echo "v1 create: no Location for $v1_ok: $headers"; exit 1; }
+# The Job is at least admitted; a fast command may already be terminal when the response is built.
+[[ "$created" == "{\"job_id\":\"$v1_ok\",\"outcome\":"*"\"state\":\""*"\"terminal\":"* ]] ||
+  { echo "v1 create: unexpected resource: $created"; exit 1; }
+no_leak create "$created"
+no_leak create-headers "$headers"
+
+# Polls a Job until it is terminal, and prints its resource.
+v1_terminal() {
+  local id=$1 body=''
+  for _ in $(seq 1 200); do
+    body=$(v1 "$base/v1/jobs/$id")
+    if [[ "$body" == *'"terminal":true'* ]]; then printf '%s' "$body"; return 0; fi
+    read -r -t 0.05 <> <(:) || true
+  done
+  echo "v1 job $id did not become terminal: $body" >&2
+  return 1
+}
+done_ok=$(v1_terminal "$v1_ok")
+[[ "$done_ok" == "{\"job_id\":\"$v1_ok\",\"outcome\":\"succeeded\",\"state\":\"succeeded\",\"terminal\":true}" ]] ||
+  { echo "v1 read: unexpected resource: $done_ok"; exit 1; }
+v1_bad=$(v1 -X POST "$base/v1/jobs" -H "$json; charset=utf-8" -d '{"application_id":"bad"}' |
+  sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+done_bad=$(v1_terminal "$v1_bad")
+[[ "$done_bad" == *'"outcome":"failed"'*'"state":"failed"'* ]] || { echo "v1 read: $done_bad"; exit 1; }
+# The list holds every resident Job in creation order.
+listing=$(v1 "$base/v1/jobs")
+[[ "$listing" == "{\"jobs\":[{\"job_id\":\"$v1_ok\","*"{\"job_id\":\"$v1_bad\","* ]] ||
+  { echo "v1 list: $listing"; exit 1; }
+# Both resident slots are used: creation is refused at once, and nothing is written.
+before=$(v1_records)
+expect capacity 503 "$(envelope service capacity_exhausted)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":"ok"}'
+[[ "$(v1_records)" == "$before" ]] || { echo "v1: a refused creation reached the Journal"; exit 1; }
+kill -TERM "$daemon"
+wait "$daemon"
+# The Journal records the registered identifier, not one derived from the shell.
+for app in ok bad; do
+  grep -h '"worker_launch_intent"' "$v1"/journal-*.ndjson | grep -q "\"application_id\":\"$app\"" ||
+    { echo "v1: launch intent lacks application_id $app"; exit 1; }
+done
+# An identifier that is not lowercase ASCII in the stable-identifier form is refused at startup.
+for bad_id in 'UPPER=true' '.dot=true' 'sp ace=true' '=true' 'noequals' 'empty='; do
+  if "$binary" --listen 127.0.0.1:0 --journal "$scratch/v1-unused" --application "$bad_id" \
+    >"$scratch/v1-option.log" 2>&1; then
+    echo "expected --application $bad_id to be refused"; exit 1
+  fi
+  grep -q -- '--application needs ID=COMMAND' "$scratch/v1-option.log" ||
+    { echo "no option error for $bad_id: $(cat "$scratch/v1-option.log")"; exit 1; }
+done
+[[ ! -e "$scratch/v1-unused" ]] || { echo "a refused option created a Journal"; exit 1; }
+
+# kill -9 during a Job: after the restart readiness is false with the unresolved Job, creation is
+# refused with not_ready, and the Job is still readable.
+v1crash="$scratch/v1crash"
+start_on "$v1crash" --application slow='sleep 30'
+v1_slow=$(v1 -X POST "$base/v1/jobs" -H "$json" -d '{"application_id":"slow"}' |
+  sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+child=''
+for _ in $(seq 1 200); do
+  body=$(v1 "$base/v1/jobs/$v1_slow")
+  if [[ "$body" == *'"state":"running"'* ]]; then
+    child=$(curl -fsS "$base/jobs/$v1_slow" | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
+    break
+  fi
+  read -r -t 0.05 <> <(:) || true
+done
+[[ -n "$child" ]] || { echo "v1 crash job did not start running: $body"; exit 1; }
+kill -KILL "$daemon"
+wait "$daemon" 2>/dev/null || true
+kill -KILL "$child" 2>/dev/null || true
+start_on "$v1crash" --application slow='sleep 30'
+expect not-ready 503 "{\"ready\":false,\"reasons\":[{\"code\":\"unresolved_jobs\",\"job_ids\":[\"$v1_slow\"]}]}" \
+  "$base/v1/ready"
+expect health-while-not-ready 200 '{"status":"ok"}' "$base/v1/health"
+expect create-not-ready 503 "$(envelope service not_ready)" -X POST "$base/v1/jobs" -H "$json" \
+  -d '{"application_id":"slow"}'
+expect read-recovered 200 "{\"job_id\":\"$v1_slow\",\"outcome\":null,\"state\":\"running\",\"terminal\":false}" \
+  "$base/v1/jobs/$v1_slow"
+kill -TERM "$daemon"
+wait "$daemon"
+
 trap - EXIT
 echo "smoke ok: $lines journal lines, port $port"
 exit 0
