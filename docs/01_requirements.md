@@ -111,7 +111,7 @@ implementation. No implementation exists yet.
 
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
-| `API-007` | MUST | Refuse requests whose route cannot be known, apply the body bound after route, method, and media type, refuse a query, a body that is not exactly one strict JSON text, and a cancel body other than `{}`, and answer `already_pending` as `busy`, all as ADR-0009 defines. | Proposed [ADR-0009](adr/0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md) under [Issue #86](https://github.com/tetsuh/sitometron/issues/86) |
+| `API-007` | MUST | Refuse requests whose route cannot be known, apply the body bound after route, method, and media type, refuse a query, a body that is not exactly one strict JSON text, and a cancel body other than `{}`, answer `already_pending` as `busy`, and refuse to start with a registered `application_id` outside the identifier form, all as ADR-0009 defines. | Proposed [ADR-0009](adr/0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md) under [Issue #86](https://github.com/tetsuh/sitometron/issues/86) |
 
 ## 9. Planned domains
 

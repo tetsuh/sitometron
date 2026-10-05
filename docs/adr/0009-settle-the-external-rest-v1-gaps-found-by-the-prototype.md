@@ -61,9 +61,10 @@ creation. If it does, the request is answered `503` `service`/`busy`, and nothin
 ### 4. Query strings
 
 v1 defines no query parameter. A request whose target has a query component is answered `404`
-`request`/`route_not_found`, whatever its path. A later version that defines a query parameter
-turns this refusal into success for that parameter; Section 2 allows this as it allows an optional
-request field.
+`request`/`route_not_found`, whatever its path. ADR-0008 Section 4 foresees one later addition of
+this kind: an opt-in query parameter on `GET /v1/jobs` to expose more than the resident Jobs. Adding
+it turns this refusal into success for that parameter only. Any other query parameter needs an ADR
+that states its compatibility under Section 2.
 
 ### 5. Requests without a body
 
