@@ -182,7 +182,7 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `API-004` | CTests `rest_v1_cancel_status_mapping`, `rest_v1_cancel_records_configured_principal` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
 | `API-005` | CTests `rest_v1_validation_before_submission`, `rest_v1_error_envelope_and_codes`, `rest_v1_errors_leak_nothing` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
 | `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_not_ready_refuses_writes` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
-| `API-007` | CTests `rest_v1_refusals_before_routing`, `rest_v1_body_bound_after_routing`, `rest_v1_query_and_method_refusals`, `rest_v1_strict_json_input`, `rest_v1_cancel_body`, `rest_v1_create_serialized`, `rest_v1_registered_application_id_form` | Planned under Proposed ADR-0009 under Issue #86; activated by the production adapter Issue |
+| `API-007` | CTests `rest_v1_refusals_before_routing`, `rest_v1_body_bound_after_routing`, `rest_v1_query_and_method_refusals`, `rest_v1_json_rejects_raw_nul`, `rest_v1_json_rejects_invalid_utf8`, `rest_v1_json_rejects_trailing_data`, `rest_v1_json_rejects_duplicate_keys_at_any_depth`, `rest_v1_cancel_body`, `rest_v1_create_serialized`, `rest_v1_registered_application_id_form` | Planned under Proposed ADR-0009 under Issue #86; activated by the production adapter Issue |
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even

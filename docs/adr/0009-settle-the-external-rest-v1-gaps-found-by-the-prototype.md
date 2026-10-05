@@ -91,7 +91,8 @@ particular, each of the following is `malformed_json`, whatever the JSON library
 - data after the JSON value, other than whitespace; and
 - a duplicate key in any object, at any depth.
 
-An escaped `\u0000` inside a string is valid JSON and is decided by validation, not here.
+An escaped `\u0000` inside a string is valid JSON and is decided by validation, not here. Each of
+the four cases has its own named test, whatever JSON library the adapter uses.
 
 ### 9. Application identifiers
 
