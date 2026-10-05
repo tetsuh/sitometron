@@ -62,7 +62,7 @@ class ProcessRunner final : public core::ApplicationRunnerPort {
   std::mutex mutex_;
   std::condition_variable ready_;
   std::map<std::string, core::ApplicationLaunchRequest> launches_;
-  std::map<std::string, pid_t> children_;     // attached and not yet reaped
+  std::map<std::string, pid_t, std::less<>> children_;  // attached and not yet reaped
   std::set<std::string, std::less<>> stops_;  // Jobs whose cooperative stop was handed off
   bool abandoned_ = false;
 };

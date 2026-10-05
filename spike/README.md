@@ -136,8 +136,15 @@ status table of ADR-0008 Section 5. The client names a registered `application_i
 command comes from `--application`.
 
 Cancel records `cancel_accepted` under one configured principal (`--cancel-principal NAME`,
-default `local-operator`) and sends `SIGTERM` to the Job's child process. The Job ends `cancelled`
-when the child exits. Limitations of the skeleton's stop (Issue #84):
+default `local-operator`). What follows depends on whether the launch intent is recorded:
+
+- Before `worker_launch_intent` there is no process. The Job goes straight to `finalizing` and
+  ends `cancelled` without a signal.
+- From `worker_launch_intent` on, the Job is `stopping`. `SIGTERM` is sent to the Job's child
+  process, or delivered as soon as the child is spawned if it does not exist yet, and the Job
+  ends `cancelled` when the child has exited.
+
+Limitations of the skeleton's stop (Issue #84):
 
 - There is no timer adapter, so the cooperative-stop timeout never fires and no forced stop
   follows. A child that ignores `SIGTERM` stays `stopping` until it exits by itself or the daemon
@@ -182,9 +189,9 @@ Gaps between ADR-0008 and what a listener has to decide, found while building th
     body, if present, must be an empty JSON object, but names no error for the other cases. The
     prototype treats a present body like the body of a creation: `415` without the JSON media
     type, `400` `malformed_json`, and `422` `validation_failed` for anything but `{}`.
-12. **The `202` of a cancel does not always show `stopping`.** A cancel accepted before a process
-    exists moves the Job straight to `finalizing`, and a Job can leave `stopping` before the
-    response is built. A client can rely only on the status; the `state` is whatever is committed
+12. **The `202` of a cancel does not always show `stopping`.** A cancel accepted before the
+    launch intent is recorded moves the Job straight to `finalizing`, and a Job can leave
+    `stopping` before the response is built. A client can rely only on the status; the `state` is whatever is committed
     when the resource is read.
 13. **The Job that keeps the daemon not ready cannot be cancelled.** A cancel is a normal ingress
     input, so while admission is closed by an unresolved Job, a cancel of that Job is `503`

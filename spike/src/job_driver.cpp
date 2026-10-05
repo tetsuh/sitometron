@@ -247,7 +247,7 @@ void JobDriver::Run(std::string job_id) {
   bool worker_reported = false;
   core::RawCandidateEvent worker_event;
   // Steps 1 to 3. False when the Job cannot be driven further.
-  const auto launch_and_wait = [&]() -> bool {
+  const auto launch_and_wait = [&] {
     // 1. admitted -> preparing
     if (!step("resources_committed",
               {{"allocation_id", k_allocation_id},

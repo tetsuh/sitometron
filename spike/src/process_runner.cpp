@@ -48,6 +48,7 @@ ExitStatus ProcessRunner::WaitAttached(const core::Uuid& job, pid_t pid) {
   // Wait without reaping: the process identifier stays reserved while a stop may still signal it.
   siginfo_t info{};
   while (::waitid(P_PID, static_cast<id_t>(pid), &info, WEXITED | WNOWAIT) != 0 && errno == EINTR) {
+    // Interrupted by a signal: wait again.
   }
   {
     std::lock_guard lock(mutex_);

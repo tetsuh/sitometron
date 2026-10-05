@@ -171,6 +171,27 @@ HttpResponse Ready(const JobDriver& driver) {
   return {ready ? 200 : 503, json{{"ready", ready}, {"reasons", std::move(reasons)}}.dump(), {}};
 }
 
+// A Job and what is below it: the target after "/v1/jobs/".
+HttpResponse RouteJob(JobDriver& driver, std::string_view target, const HttpRequest& request) {
+  auto job_id = target;
+  constexpr std::string_view k_cancel = "/cancel";
+  const bool cancel = job_id.ends_with(k_cancel);
+  if (cancel) job_id.remove_suffix(k_cancel.size());
+  // Nothing else is below a Job.
+  if (job_id.find('/') != std::string_view::npos) {
+    return Error(404, "request", "route_not_found", "there is no such resource");
+  }
+  if (cancel ? request.method != "POST" : request.method != "GET")
+    return MethodNotAllowed(cancel ? "POST" : "GET");
+  if (!IsJobId(job_id)) {
+    return Error(400, "request", "invalid_job_id", "the Job identifier is not a canonical UUIDv7");
+  }
+  if (cancel) return CancelJob(driver, std::string(job_id), request);
+  auto resource = driver.Resource(std::string(job_id));
+  if (resource.is_null()) return Error(404, "job", "job_not_found", "there is no such Job");
+  return {200, resource.dump(), {}};
+}
+
 }  // namespace
 
 HttpResponse RouteV1(JobDriver& driver, const Applications& applications,
@@ -191,23 +212,7 @@ HttpResponse RouteV1(JobDriver& driver, const Applications& applications,
     return MethodNotAllowed("GET, POST");
   }
   if (target.size() > k_jobs.size() + 1 && target.starts_with("/v1/jobs/")) {
-    auto job_id = target.substr(k_jobs.size() + 1);
-    constexpr std::string_view k_cancel = "/cancel";
-    const bool cancel = job_id.ends_with(k_cancel);
-    if (cancel) job_id.remove_suffix(k_cancel.size());
-    // Nothing else is below a Job.
-    if (job_id.find('/') != std::string_view::npos) {
-      return Error(404, "request", "route_not_found", "there is no such resource");
-    }
-    if (cancel ? request.method != "POST" : !get) return MethodNotAllowed(cancel ? "POST" : "GET");
-    if (!IsJobId(job_id)) {
-      return Error(400, "request", "invalid_job_id",
-                   "the Job identifier is not a canonical UUIDv7");
-    }
-    if (cancel) return CancelJob(driver, std::string(job_id), request);
-    auto resource = driver.Resource(std::string(job_id));
-    if (resource.is_null()) return Error(404, "job", "job_not_found", "there is no such Job");
-    return {200, resource.dump(), {}};
+    return RouteJob(driver, target.substr(k_jobs.size() + 1), request);
   }
   return Error(404, "request", "route_not_found", "there is no such resource");
 }
