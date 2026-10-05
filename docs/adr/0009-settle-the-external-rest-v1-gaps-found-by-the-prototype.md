@@ -155,7 +155,8 @@ This ADR adds `API-007` in `docs/01_requirements.md`. Its checks are listed in
 - Bad: the identifier form is fixed before the Application Registry ADR, which must keep it or
   supersede this rule.
 - Neutral: the walking skeleton's listener refuses an oversized request with `413` before routing,
-  which differs from the first paragraph of Section 2 of this ADR. The skeleton is not normative and keeps that behavior.
+  which differs from the first paragraph of Section 2 of this ADR. The skeleton is not normative
+  and keeps that behavior.
 
 ## Options considered
 
