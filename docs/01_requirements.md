@@ -111,7 +111,7 @@ implementation. No implementation exists yet.
 
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
-| `API-007` | MUST | Apply the request rules of ADR-0009 Sections 1 to 10: refusals before a route is known, body checks after route, method, and media type, `already_pending` as `busy`, refusal of a query and of unlisted methods, a create without a body as `malformed_json`, empty `details`, strict JSON input, the registered identifier form, and the cancel body. | Proposed [ADR-0009](adr/0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md) under [Issue #86](https://github.com/tetsuh/sitometron/issues/86) |
+| `API-007` | MUST | Apply the request rules of ADR-0009 Sections 1 to 10: RFC 9112 message syntax and the refusals before a route is known, body checks after route, method, and media type, `already_pending` as `busy`, refusal of a query and of unlisted methods, a create without a body as `malformed_json`, empty `details`, strict JSON input, the registered identifier form, and the cancel body. | Proposed [ADR-0009](adr/0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md) under [Issue #86](https://github.com/tetsuh/sitometron/issues/86) |
 
 ## 9. Planned domains
 

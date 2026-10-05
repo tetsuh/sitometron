@@ -27,7 +27,8 @@ changes a rule of ADR-0008. The owner decided on 2026-10-06 under Issue #86:
 - the body bound keeps the order of ADR-0008, and only an oversized header section is refused
   before routing;
 - a body that stops arriving is `408` `request_timeout`;
-- an `HTTP/1.0` request is answered as RFC 9110 expects of an HTTP/1.1 server; and
+- an `HTTP/1.0` request is answered as RFC 9110 expects of an HTTP/1.1 server;
+- HTTP message syntax is RFC 9112's, not narrowed by this ADR; and
 - the order in which the supervisor owes events after a cancel is not part of this ADR (Issue #73,
   H10).
 
@@ -36,24 +37,31 @@ changes a rule of ADR-0008. The owner decided on 2026-10-06 under Issue #86:
 We will apply the following rules to External REST v1 in addition to ADR-0008. Section numbers in
 parentheses refer to ADR-0008.
 
-### 1. Refusals before a route is known
+### 1. HTTP message syntax and refusals before a route is known
 
-Some requests are refused before the order of ADR-0008 Section 5 can start, because no route can be
-determined. They precede every condition of that order and use the error envelope (Section 5):
+The daemon is an HTTP/1.1 server (ADR-0008 Section 1). The syntax and framing of a request message
+(request line, request-target forms, `Host`, header fields, `Content-Length`, and transfer codings)
+are those of RFC 9112; this ADR does not narrow or extend them. In particular:
+
+- a request whose version is `HTTP/1.0` is answered, as RFC 9110 Section 2.5 expects of an
+  HTTP/1.1 server, and every response carries `HTTP/1.1`;
+- a request-target in absolute-form is accepted as RFC 9112 Section 3.2.2 requires, and its path
+  and query are used as an origin-form target would be; and
+- the route is decided from the path; the query is handled by Section 4.
+
+A request that RFC 9112 or RFC 9110 requires or recommends a server to refuse before its route is
+known is refused with the status those documents name and the error envelope (Section 5):
 
 | Condition | Status | `domain` | `code` |
 |---|---|---|---|
-| The request line is not `METHOD SP origin-form SP HTTP/1.0` or `HTTP/1.1`, or the header section is not well-formed | `400` | `request` | `malformed_request` |
+| The message is not a valid HTTP/1.1 or HTTP/1.0 request | `400` | `request` | `malformed_request` |
 | The request line and header section are not received within the listener's time bound | `408` | `request` | `request_timeout` |
+| The request-target exceeds the listener's target bound | `414` | `request` | `target_too_long` |
 | The header section exceeds the listener's header bound | `431` | `request` | `headers_too_large` |
+| The request uses a transfer coding the daemon does not implement | `501` | `request` | `not_implemented` |
 
-The time bound and the header bound are fixed at startup; their values belong to the
-implementation Issue. The header bound is at least 8 KiB.
-
-The daemon is an HTTP/1.1 server (ADR-0008 Section 1). As RFC 9110 Section 2.5 expects of an
-HTTP/1.1 server, it also answers a request whose version is `HTTP/1.0`, with the same rules as any
-other request; every response carries `HTTP/1.1`. A request line with any other version is
-`malformed_request`.
+The time, target, and header bounds are fixed at startup; their values belong to the
+implementation Issue. The target bound is at least 2 KiB and the header bound at least 8 KiB.
 
 ### 2. Body checks keep the order of ADR-0008
 
@@ -155,8 +163,10 @@ This ADR adds `API-007` in `docs/01_requirements.md`. Its checks are listed in
   can rely on it.
 - Good: a JSON library's leniency cannot reach the core, because the refusals are a contract with
   named tests, not a property of a library.
-- Bad: three more error codes (`malformed_request`, `request_timeout`, `headers_too_large`) exist
-  before any client uses them.
+- Bad: five more error codes (`malformed_request`, `request_timeout`, `target_too_long`,
+  `headers_too_large`, `not_implemented`) exist before any client uses them.
+- Good: HTTP message syntax is RFC 9112's, so an HTTP library's standard parsing satisfies it and
+  the ADR cannot drift from the HTTP/1.1 promise of ADR-0008.
 - Bad: creation is serialized in the adapter; concurrent creations wait for each other for the time
   of one Journal commit.
 - Bad: the identifier form is fixed before the Application Registry ADR, which must keep it or
