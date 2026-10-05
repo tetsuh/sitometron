@@ -127,8 +127,9 @@ These add no obligation; they make explicit what ADR-0008 already decides.
   (Section 3). Exit confirmation, resource release, and cleanup records can follow it, so a
   terminal Job can still occupy its resident slot for a short time.
 - **The `202` of a cancel.** The Job resource in the `202` shows what is committed when it is read
-  after `cancel_accepted` (Section 4). It is `stopping` when a process may exist, `finalizing` when
-  the cancel arrived before a launch intent was recorded, and can already be terminal. A client
+  after `cancel_accepted` (Section 4), not the state the cancel itself produced. Other events can
+  be committed between the two, so the state can be `stopping`, `finalizing`, or terminal. In
+  particular, `finalizing` does not tell whether a process was launched or has exited. A client
   relies on the status, not on the state.
 - **The Job that keeps admission closed.** A cancel is a normal ingress input (Section 6), so a
   cancel of an unresolved replayed Job is `503` `service`/`not_ready` like any other cancel while
