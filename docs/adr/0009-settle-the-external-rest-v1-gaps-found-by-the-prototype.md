@@ -23,7 +23,10 @@ changes a rule of ADR-0008. The owner decided on 2026-10-06 under Issue #86:
 - creation is serialized by the adapter, and an `already_pending` that occurs anyway is `busy`;
 - `details` stays empty in v1;
 - a deployment registers only identifiers of the form `[a-z0-9][a-z0-9._:-]*`;
-- the unresolved Job that keeps admission closed is stated as a consequence only; and
+- the unresolved Job that keeps admission closed is stated as a consequence only;
+- the body bound keeps the order of ADR-0008, and only an oversized header section is refused
+  before routing;
+- a body that stops arriving is `408` `request_timeout`; and
 - the order in which the supervisor owes events after a cancel is not part of this ADR (Issue #73,
   H10).
 
@@ -46,12 +49,17 @@ determined. They precede every condition of that order and use the error envelop
 The time bound and the header bound are fixed at startup; their values belong to the
 implementation Issue. The header bound is at least 8 KiB.
 
-### 2. The body bound keeps the order of ADR-0008
+### 2. Body checks keep the order of ADR-0008
 
 Route, method, and media type are decided from the request line and the header section. The body
 bound (Section 5, `payload_too_large`) is applied after them: from `Content-Length` when it is
 present, and otherwise while the body is read. An oversized body on a route that does not exist is
 therefore `404`, and on a route that does not allow the method `405`.
+
+The body is received within the listener's time bound. A body that is not complete within it is
+answered `408` `request`/`request_timeout`. This is decided after route, method, media type, and a
+size known from `Content-Length`, and before JSON and validation; nothing is submitted to the
+writer.
 
 ### 3. `already_pending`
 
@@ -147,7 +155,7 @@ This ADR adds `API-007` in `docs/01_requirements.md`. Its checks are listed in
 - Bad: the identifier form is fixed before the Application Registry ADR, which must keep it or
   supersede this rule.
 - Neutral: the walking skeleton's listener refuses an oversized request with `413` before routing,
-  which differs from Section 2 of this ADR. The skeleton is not normative and keeps that behavior.
+  which differs from the first paragraph of Section 2 of this ADR. The skeleton is not normative and keeps that behavior.
 
 ## Options considered
 
