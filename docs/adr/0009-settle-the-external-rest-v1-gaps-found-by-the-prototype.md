@@ -26,7 +26,8 @@ changes a rule of ADR-0008. The owner decided on 2026-10-06 under Issue #86:
 - the unresolved Job that keeps admission closed is stated as a consequence only;
 - the body bound keeps the order of ADR-0008, and only an oversized header section is refused
   before routing;
-- a body that stops arriving is `408` `request_timeout`; and
+- a body that stops arriving is `408` `request_timeout`;
+- an `HTTP/1.0` request is answered as RFC 9110 expects of an HTTP/1.1 server; and
 - the order in which the supervisor owes events after a cancel is not part of this ADR (Issue #73,
   H10).
 
@@ -48,6 +49,11 @@ determined. They precede every condition of that order and use the error envelop
 
 The time bound and the header bound are fixed at startup; their values belong to the
 implementation Issue. The header bound is at least 8 KiB.
+
+The daemon is an HTTP/1.1 server (ADR-0008 Section 1). As RFC 9110 Section 2.5 expects of an
+HTTP/1.1 server, it also answers a request whose version is `HTTP/1.0`, with the same rules as any
+other request; every response carries `HTTP/1.1`. A request line with any other version is
+`malformed_request`.
 
 ### 2. Body checks keep the order of ADR-0008
 
