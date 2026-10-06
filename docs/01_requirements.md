@@ -106,6 +106,13 @@ implementation. No implementation exists yet.
 | `API-005` | MUST | Reject invalid requests before any writer submission, and report every error with the stable `domain` and `code` of ADR-0008 Section 5 without paths, raw errors, records, or secrets. | Accepted [ADR-0008](adr/0008-define-the-external-rest-v1-job-surface.md) under [Issue #76](https://github.com/tetsuh/sitometron/issues/76) |
 | `API-006` | MUST | Report liveness and readiness as ADR-0008 Section 6 defines, with readiness false for unresolved replayed Jobs, a writer failure, or shutdown. | Accepted [ADR-0008](adr/0008-define-the-external-rest-v1-job-surface.md) under [Issue #76](https://github.com/tetsuh/sitometron/issues/76) |
 
+Accepted [ADR-0009](adr/0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md) under
+[Issue #86](https://github.com/tetsuh/sitometron/issues/86) adds `API-007`, binding on implementation in the same way.
+
+| ID | Level | Requirement | Authority |
+|---|---|---|---|
+| `API-007` | MUST | Apply the request rules of ADR-0009 Sections 1 to 10: RFC 9112 message syntax and the refusals before a route is known, body checks after route, method, and media type, `already_pending` as `busy`, refusal of a query and of unlisted methods, a create without a body as `malformed_json`, empty `details`, strict JSON input, the registered identifier form, and the cancel body. | Accepted [ADR-0009](adr/0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md) under [Issue #86](https://github.com/tetsuh/sitometron/issues/86) |
+
 ## 9. Planned domains
 
 > **Planned, not yet normative:** [Issue #35](https://github.com/tetsuh/sitometron/issues/35)
@@ -113,7 +120,8 @@ implementation. No implementation exists yet.
 > must not treat this outline as a finalized contract.
 
 The remaining `ADM`, `JRN`, `WRK`, `RES`, `APP`, `PAR`, `ART`, `SEC`, and `OPS` requirements, and any
-`API` requirement beyond `API-001`–`API-006`, are added by their future design authorities before
+`API` requirement beyond `API-001`–`API-007`, are added by their future design authorities before
 implementation. Accepted ADR-0002 owns the current Normative `JOB-001`–`JOB-007` and
 `JRN-001`–`JRN-003` requirements. Issue #51 owns the Phase 0B physical JobJournal requirements in
-Section 7. Accepted ADR-0008 owns the Normative `API-001`–`API-006` requirements in Section 8.
+Section 7. Accepted ADR-0008 owns the Normative `API-001`–`API-006` requirements in Section 8. Accepted
+ADR-0009 owns the Normative `API-007` requirement in Section 8.
