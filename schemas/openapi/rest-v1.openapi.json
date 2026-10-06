@@ -8,7 +8,7 @@
       "docs/adr/0008-define-the-external-rest-v1-job-surface.md",
       "docs/adr/0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md"
     ],
-    "description": "The External REST v1 Job surface. Accepted ADR-0008 and Accepted ADR-0009 are the authority; where this document and an ADR differ, this document is wrong (ADR-0008 Section 8).\n\nRules this document cannot express, and where they are decided:\n\n- Transport: HTTP/1.1 on a loopback address only, no TLS and no authentication in v1; every local process that can reach the listener is trusted as the operator (ADR-0008 Section 1). HTTP message syntax is RFC 9112's; `HTTP/1.0` requests and absolute-form targets are answered, and `OPTIONS *` and authority-form targets are `404` `route_not_found` (ADR-0009 Section 1).\n- Compatibility: within `/v1` only additions are made. Clients ignore unknown response fields and classify an unknown error `code` by its status. The `state` and `outcome` vocabularies are closed (ADR-0008 Section 2).\n- Check order: refusals before routing (ADR-0009 Section 1), then route, method, media type, size, the body receive timeout, JSON, validation, the writer's ingress result (`service_failed`, `not_ready`, `capacity_exhausted`, `busy`), then the ADR-0002 result. The first matching condition decides (ADR-0008 Section 5, ADR-0009 Section 2).\n- Queries: v1 defines no query parameter; a target with a query is `404` `route_not_found` (ADR-0009 Section 4).\n- Strict JSON: a raw NUL, invalid UTF-8, data after the value, or a duplicate key at any depth is `malformed_json` (ADR-0009 Section 8).\n- Errors: every error status uses `ErrorEnvelope`, except the `503` of `GET /v1/ready`. `details` is `{}` in v1. Messages never contain a file-system path, a raw operating-system or library error, a Journal record, or a secret (ADR-0008 Section 5, ADR-0009 Section 7).\n- State: every Job value reflects only events committed in the JobJournal; `terminal` can be `true` before exit confirmation, release, and cleanup are recorded (ADR-0008 Section 3, ADR-0009 Section 11).\n- Nothing waits: no request blocks on capacity, on another Job, or on a Job reaching a state (ADR-0008 Section 7)."
+    "description": "The External REST v1 Job surface. Accepted ADR-0008 and Accepted ADR-0009 are the authority; where this document and an ADR differ, this document is wrong (ADR-0008 Section 8).\n\nRules this document cannot express, and where they are decided:\n\n- Transport: HTTP/1.1 on a loopback address only, no TLS and no authentication in v1; every local process that can reach the listener is trusted as the operator (ADR-0008 Section 1). HTTP message syntax is RFC 9112's; `HTTP/1.0` requests and absolute-form targets are answered, and `OPTIONS *` and authority-form targets are `404` `route_not_found` (ADR-0009 Section 1).\n- Compatibility: within `/v1` only additions are made. Clients ignore unknown response fields and classify an unknown error `code` by its status. The `state` and `outcome` vocabularies are closed (ADR-0008 Section 2).\n- Check order: refusals before routing (ADR-0009 Section 1), then route, method, media type, size, the body receive timeout, JSON, validation, the writer's ingress result (`service_failed`, `not_ready`, `capacity_exhausted`, `busy`), then the ADR-0002 result. The first matching condition decides (ADR-0008 Section 5, ADR-0009 Section 2).\n- Queries: v1 defines no query parameter; a target with a query is `404` `route_not_found` (ADR-0009 Section 4).\n- Bodies: the body rows of ADR-0008 Section 5 apply to any request that has a body, including an operation that defines none: `415` without `Content-Type: application/json`, `413`, `408` while it is received, `400` `malformed_json`, and `422` `validation_failed` for well-formed JSON, since such an operation expects no body (ADR-0008 Section 5, ADR-0009 Section 2). A request without a body has no media type to check (ADR-0009 Section 5).\n- Strict JSON: a raw NUL, invalid UTF-8, data after the value, or a duplicate key at any depth is `malformed_json` (ADR-0009 Section 8).\n- Errors: every error status uses `ErrorEnvelope`, except the `503` of `GET /v1/ready`. `details` is `{}` in v1. Messages never contain a file-system path, a raw operating-system or library error, a Journal record, or a secret (ADR-0008 Section 5, ADR-0009 Section 7).\n- State: every Job value reflects only events committed in the JobJournal; `terminal` can be `true` before exit confirmation, release, and cleanup are recorded (ADR-0008 Section 3, ADR-0009 Section 11).\n- Nothing waits: no request blocks on capacity, on another Job, or on a Job reaching a state (ADR-0008 Section 7)."
   },
   "servers": [
     {
@@ -29,7 +29,7 @@
       "post": {
         "operationId": "createJob",
         "summary": "Create a Job",
-        "description": "Creates a Job for a registered Application. Answers `202` only after `job_created` is committed; the Job is at least `admitted`. Never waits for capacity: it admits now or refuses. The client cannot choose a `job_id` and there is no idempotency key; a client that loses the response lists the Jobs (ADR-0008 Section 4). Creation is serialized by the adapter (ADR-0009 Section 3). A request without a body is `400` `malformed_json` (ADR-0009 Section 5).",
+        "description": "Creates a Job for a registered Application. Answers `202` only after `job_created` is committed; the Job is at least `admitted`. Never waits for capacity: it admits now or refuses. The client cannot choose a `job_id` and there is no idempotency key; a client that loses the response lists the Jobs (ADR-0008 Section 4). Creation is serialized by the adapter; a creation that meets `already_pending` anyway is `503` `busy` (ADR-0009 Section 3). A request without a body is `400` `malformed_json` (ADR-0009 Section 5).",
         "responses": {
           "202": {
             "description": "Created: `job_created` is committed.",
@@ -201,7 +201,7 @@
             }
           },
           "422": {
-            "description": "Unprocessable Content. Error codes:\n\n- `request`/`validation_failed`: Well-formed JSON that is not the expected object (ADR-0008 Section 5, ADR-0009 Sections 9 and 10).\n- `job`/`unknown_application`: The application_id is not registered in this deployment (ADR-0008 Sections 4 and 5, ADR-0009 Section 9).",
+            "description": "Unprocessable Content. Error codes:\n\n- `request`/`validation_failed`: Well-formed JSON that is not the expected object; an operation that defines no request body expects none (ADR-0008 Section 5, ADR-0009 Sections 9 and 10).\n- `job`/`unknown_application`: The application_id is not registered in this deployment (ADR-0008 Sections 4 and 5, ADR-0009 Section 9).",
             "content": {
               "application/json": {
                 "schema": {
@@ -209,7 +209,7 @@
                 },
                 "examples": {
                   "validation_failed": {
-                    "summary": "Well-formed JSON that is not the expected object",
+                    "summary": "Well-formed JSON that is not the expected object; an operation that defines no request body expects none",
                     "value": {
                       "error": {
                         "domain": "request",
@@ -304,7 +304,7 @@
             }
           },
           "503": {
-            "description": "Service Unavailable. Error codes:\n\n- `service`/`not_ready`: Admission is closed (unresolved_jobs or shutting_down) (ADR-0008 Sections 5 and 6).\n- `service`/`capacity_exhausted`: The resident Job capacity is exhausted (ADR-0008 Section 5).\n- `service`/`busy`: The ingress queue is full, or a creation met already_pending (ADR-0008 Section 5, ADR-0009 Section 3).\n- `service`/`service_failed`: The writer has failed closed, including a commit whose outcome is unknown (ADR-0008 Section 5).",
+            "description": "Service Unavailable. Error codes:\n\n- `service`/`not_ready`: Admission is closed (unresolved_jobs or shutting_down) (ADR-0008 Sections 5 and 6).\n- `service`/`capacity_exhausted`: The resident Job capacity is exhausted (ADR-0008 Section 5).\n- `service`/`busy`: The ingress queue is full (ADR-0008 Section 5).\n- `service`/`service_failed`: The writer has failed closed, including a commit whose outcome is unknown (ADR-0008 Section 5).",
             "content": {
               "application/json": {
                 "schema": {
@@ -334,7 +334,7 @@
                     }
                   },
                   "busy": {
-                    "summary": "The ingress queue is full, or a creation met already_pending",
+                    "summary": "The ingress queue is full",
                     "value": {
                       "error": {
                         "domain": "service",
@@ -387,7 +387,7 @@
             }
           },
           "400": {
-            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).",
+            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).\n- `request`/`malformed_json`: The body is not exactly one JSON text in UTF-8, or has a duplicate key (ADR-0008 Section 5, ADR-0009 Sections 5 and 8).",
             "content": {
               "application/json": {
                 "schema": {
@@ -400,6 +400,17 @@
                       "error": {
                         "domain": "request",
                         "code": "malformed_request",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "malformed_json": {
+                    "summary": "The body is not exactly one JSON text in UTF-8, or has a duplicate key",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_json",
                         "message": "Text for people; not part of the contract.",
                         "details": {}
                       }
@@ -524,6 +535,29 @@
               }
             }
           },
+          "422": {
+            "description": "Unprocessable Content. Error codes:\n\n- `request`/`validation_failed`: Well-formed JSON that is not the expected object; an operation that defines no request body expects none (ADR-0008 Section 5, ADR-0009 Sections 9 and 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "validation_failed": {
+                    "summary": "Well-formed JSON that is not the expected object; an operation that defines no request body expects none",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "validation_failed",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
           "431": {
             "description": "Request Header Fields Too Large. Error codes:\n\n- `request`/`headers_too_large`: The header section exceeds the listener's header bound (ADR-0009 Section 1).",
             "content": {
@@ -619,7 +653,7 @@
             }
           },
           "400": {
-            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).\n- `request`/`invalid_job_id`: The job_id in the path is not a canonical lowercase UUIDv7 (ADR-0008 Section 5).",
+            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).\n- `request`/`malformed_json`: The body is not exactly one JSON text in UTF-8, or has a duplicate key (ADR-0008 Section 5, ADR-0009 Sections 5 and 8).\n- `request`/`invalid_job_id`: The job_id in the path is not a canonical lowercase UUIDv7 (ADR-0008 Section 5).",
             "content": {
               "application/json": {
                 "schema": {
@@ -632,6 +666,17 @@
                       "error": {
                         "domain": "request",
                         "code": "malformed_request",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "malformed_json": {
+                    "summary": "The body is not exactly one JSON text in UTF-8, or has a duplicate key",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_json",
                         "message": "Text for people; not part of the contract.",
                         "details": {}
                       }
@@ -769,6 +814,29 @@
                       "error": {
                         "domain": "request",
                         "code": "unsupported_media_type",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content. Error codes:\n\n- `request`/`validation_failed`: Well-formed JSON that is not the expected object; an operation that defines no request body expects none (ADR-0008 Section 5, ADR-0009 Sections 9 and 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "validation_failed": {
+                    "summary": "Well-formed JSON that is not the expected object; an operation that defines no request body expects none",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "validation_failed",
                         "message": "Text for people; not part of the contract.",
                         "details": {}
                       }
@@ -1078,7 +1146,7 @@
             }
           },
           "422": {
-            "description": "Unprocessable Content. Error codes:\n\n- `request`/`validation_failed`: Well-formed JSON that is not the expected object (ADR-0008 Section 5, ADR-0009 Sections 9 and 10).",
+            "description": "Unprocessable Content. Error codes:\n\n- `request`/`validation_failed`: Well-formed JSON that is not the expected object; an operation that defines no request body expects none (ADR-0008 Section 5, ADR-0009 Sections 9 and 10).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1086,7 +1154,7 @@
                 },
                 "examples": {
                   "validation_failed": {
-                    "summary": "Well-formed JSON that is not the expected object",
+                    "summary": "Well-formed JSON that is not the expected object; an operation that defines no request body expects none",
                     "value": {
                       "error": {
                         "domain": "request",
@@ -1170,7 +1238,7 @@
             }
           },
           "503": {
-            "description": "Service Unavailable. Error codes:\n\n- `service`/`not_ready`: Admission is closed (unresolved_jobs or shutting_down) (ADR-0008 Sections 5 and 6).\n- `service`/`busy`: The ingress queue is full, or a creation met already_pending (ADR-0008 Section 5, ADR-0009 Section 3).\n- `service`/`service_failed`: The writer has failed closed, including a commit whose outcome is unknown (ADR-0008 Section 5).",
+            "description": "Service Unavailable. Error codes:\n\n- `service`/`not_ready`: Admission is closed (unresolved_jobs or shutting_down) (ADR-0008 Sections 5 and 6).\n- `service`/`busy`: The ingress queue is full (ADR-0008 Section 5).\n- `service`/`service_failed`: The writer has failed closed, including a commit whose outcome is unknown (ADR-0008 Section 5).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1189,7 +1257,7 @@
                     }
                   },
                   "busy": {
-                    "summary": "The ingress queue is full, or a creation met already_pending",
+                    "summary": "The ingress queue is full",
                     "value": {
                       "error": {
                         "domain": "service",
@@ -1246,7 +1314,7 @@
             }
           },
           "400": {
-            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).",
+            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).\n- `request`/`malformed_json`: The body is not exactly one JSON text in UTF-8, or has a duplicate key (ADR-0008 Section 5, ADR-0009 Sections 5 and 8).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1259,6 +1327,17 @@
                       "error": {
                         "domain": "request",
                         "code": "malformed_request",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "malformed_json": {
+                    "summary": "The body is not exactly one JSON text in UTF-8, or has a duplicate key",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_json",
                         "message": "Text for people; not part of the contract.",
                         "details": {}
                       }
@@ -1374,6 +1453,29 @@
                       "error": {
                         "domain": "request",
                         "code": "unsupported_media_type",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content. Error codes:\n\n- `request`/`validation_failed`: Well-formed JSON that is not the expected object; an operation that defines no request body expects none (ADR-0008 Section 5, ADR-0009 Sections 9 and 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "validation_failed": {
+                    "summary": "Well-formed JSON that is not the expected object; an operation that defines no request body expects none",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "validation_failed",
                         "message": "Text for people; not part of the contract.",
                         "details": {}
                       }
@@ -1473,7 +1575,7 @@
             }
           },
           "400": {
-            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).",
+            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).\n- `request`/`malformed_json`: The body is not exactly one JSON text in UTF-8, or has a duplicate key (ADR-0008 Section 5, ADR-0009 Sections 5 and 8).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1486,6 +1588,17 @@
                       "error": {
                         "domain": "request",
                         "code": "malformed_request",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "malformed_json": {
+                    "summary": "The body is not exactly one JSON text in UTF-8, or has a duplicate key",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_json",
                         "message": "Text for people; not part of the contract.",
                         "details": {}
                       }
@@ -1601,6 +1714,29 @@
                       "error": {
                         "domain": "request",
                         "code": "unsupported_media_type",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content. Error codes:\n\n- `request`/`validation_failed`: Well-formed JSON that is not the expected object; an operation that defines no request body expects none (ADR-0008 Section 5, ADR-0009 Sections 9 and 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "validation_failed": {
+                    "summary": "Well-formed JSON that is not the expected object; an operation that defines no request body expects none",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "validation_failed",
                         "message": "Text for people; not part of the contract.",
                         "details": {}
                       }
