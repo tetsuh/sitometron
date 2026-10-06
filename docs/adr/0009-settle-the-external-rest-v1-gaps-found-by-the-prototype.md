@@ -46,8 +46,11 @@ are those of RFC 9112; this ADR does not narrow or extend them. In particular:
 - a request whose version is `HTTP/1.0` is answered, as RFC 9110 Section 2.5 expects of an
   HTTP/1.1 server, and every response carries `HTTP/1.1`;
 - a request-target in absolute-form is accepted as RFC 9112 Section 3.2.2 requires, and its path
-  and query are used as an origin-form target would be; and
-- the route is decided from the path; the query is handled by Section 4.
+  and query are used as an origin-form target would be;
+- the route is decided from the path; the query is handled by Section 4. The authority of an
+  absolute-form target is not used for routing; the daemon is not a proxy; and
+- a request-target in asterisk-form (`OPTIONS *`) or authority-form (`CONNECT`) names no path and
+  therefore no route: it is answered `404` `request`/`route_not_found`.
 
 A request that RFC 9112 or RFC 9110 requires or recommends a server to refuse before its route is
 known is refused with the status those documents name and the error envelope (Section 5):
