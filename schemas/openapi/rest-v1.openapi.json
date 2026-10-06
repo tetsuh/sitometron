@@ -1,0 +1,1944 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Sitometron External REST v1",
+    "version": "1",
+    "x-sitometron-status": "normative",
+    "x-sitometron-authority": [
+      "docs/adr/0008-define-the-external-rest-v1-job-surface.md",
+      "docs/adr/0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md"
+    ],
+    "description": "The External REST v1 Job surface. Accepted ADR-0008 and Accepted ADR-0009 are the authority; where this document and an ADR differ, this document is wrong (ADR-0008 Section 8).\n\nRules this document cannot express, and where they are decided:\n\n- Transport: HTTP/1.1 on a loopback address only, no TLS and no authentication in v1; every local process that can reach the listener is trusted as the operator (ADR-0008 Section 1). HTTP message syntax is RFC 9112's; `HTTP/1.0` requests and absolute-form targets are answered, and `OPTIONS *` and authority-form targets are `404` `route_not_found` (ADR-0009 Section 1).\n- Compatibility: within `/v1` only additions are made. Clients ignore unknown response fields and classify an unknown error `code` by its status. The `state` and `outcome` vocabularies are closed (ADR-0008 Section 2).\n- Check order: refusals before routing (ADR-0009 Section 1), then route, method, media type, size, the body receive timeout, JSON, validation, the writer's ingress result (`service_failed`, `not_ready`, `capacity_exhausted`, `busy`), then the ADR-0002 result. The first matching condition decides (ADR-0008 Section 5, ADR-0009 Section 2).\n- Queries: v1 defines no query parameter; a target with a query is `404` `route_not_found` (ADR-0009 Section 4).\n- Strict JSON: a raw NUL, invalid UTF-8, data after the value, or a duplicate key at any depth is `malformed_json` (ADR-0009 Section 8).\n- Errors: every error status uses `ErrorEnvelope`, except the `503` of `GET /v1/ready`. `details` is `{}` in v1. Messages never contain a file-system path, a raw operating-system or library error, a Journal record, or a secret (ADR-0008 Section 5, ADR-0009 Section 7).\n- State: every Job value reflects only events committed in the JobJournal; `terminal` can be `true` before exit confirmation, release, and cleanup are recorded (ADR-0008 Section 3, ADR-0009 Section 11).\n- Nothing waits: no request blocks on capacity, on another Job, or on a Job reaching a state (ADR-0008 Section 7)."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:{port}",
+      "description": "The loopback listener; the address and port are startup configuration (an IPv6 loopback address is equally valid).",
+      "variables": {
+        "port": {
+          "default": "8080",
+          "description": "Configured at startup."
+        }
+      }
+    }
+  ],
+  "security": [],
+  "paths": {
+    "/v1/jobs": {
+      "description": "Every method other than GET, POST is answered `405` `request`/`method_not_allowed` with an `Allow: GET, POST` header (ADR-0008 Section 5, ADR-0009 Section 6); see the response `MethodNotAllowed` in `components`.",
+      "post": {
+        "operationId": "createJob",
+        "summary": "Create a Job",
+        "description": "Creates a Job for a registered Application. Answers `202` only after `job_created` is committed; the Job is at least `admitted`. Never waits for capacity: it admits now or refuses. The client cannot choose a `job_id` and there is no idempotency key; a client that loses the response lists the Jobs (ADR-0008 Section 4). Creation is serialized by the adapter (ADR-0009 Section 3). A request without a body is `400` `malformed_json` (ADR-0009 Section 5).",
+        "responses": {
+          "202": {
+            "description": "Created: `job_created` is committed.",
+            "headers": {
+              "Location": {
+                "description": "`/v1/jobs/{job_id}` of the new Job.",
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^/v1/jobs/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).\n- `request`/`malformed_json`: The body is not exactly one JSON text in UTF-8, or has a duplicate key (ADR-0008 Section 5, ADR-0009 Sections 5 and 8).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "malformed_request": {
+                    "summary": "The message is not a valid HTTP/1.1 or HTTP/1.0 request",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_request",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "malformed_json": {
+                    "summary": "The body is not exactly one JSON text in UTF-8, or has a duplicate key",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_json",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found. Error codes:\n\n- `request`/`route_not_found`: No route: the target has a query component, or names no path of this contract (ADR-0008 Section 5, ADR-0009 Sections 1 and 4).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "route_not_found": {
+                    "summary": "No route: the target has a query component, or names no path of this contract",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "route_not_found",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Request Timeout. Error codes:\n\n- `request`/`request_timeout`: The header section or the body was not received within the listener's time bound (ADR-0009 Sections 1 and 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "request_timeout": {
+                    "summary": "The header section or the body was not received within the listener's time bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "request_timeout",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Content Too Large. Error codes:\n\n- `request`/`payload_too_large`: The body exceeds the request size bound (ADR-0008 Section 5, ADR-0009 Section 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "payload_too_large": {
+                    "summary": "The body exceeds the request size bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "payload_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "URI Too Long. Error codes:\n\n- `request`/`target_too_long`: The request-target exceeds the listener's target bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "target_too_long": {
+                    "summary": "The request-target exceeds the listener's target bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "target_too_long",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type. Error codes:\n\n- `request`/`unsupported_media_type`: A body is present without Content-Type: application/json (ADR-0008 Section 5, ADR-0009 Section 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "unsupported_media_type": {
+                    "summary": "A body is present without Content-Type: application/json",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "unsupported_media_type",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content. Error codes:\n\n- `request`/`validation_failed`: Well-formed JSON that is not the expected object (ADR-0008 Section 5, ADR-0009 Sections 9 and 10).\n- `job`/`unknown_application`: The application_id is not registered in this deployment (ADR-0008 Sections 4 and 5, ADR-0009 Section 9).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "validation_failed": {
+                    "summary": "Well-formed JSON that is not the expected object",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "validation_failed",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "unknown_application": {
+                    "summary": "The application_id is not registered in this deployment",
+                    "value": {
+                      "error": {
+                        "domain": "job",
+                        "code": "unknown_application",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "431": {
+            "description": "Request Header Fields Too Large. Error codes:\n\n- `request`/`headers_too_large`: The header section exceeds the listener's header bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "headers_too_large": {
+                    "summary": "The header section exceeds the listener's header bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "headers_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error. Error codes:\n\n- `service`/`internal`: Any other failure inside the daemon (ADR-0008 Section 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "internal": {
+                    "summary": "Any other failure inside the daemon",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "internal",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented. Error codes:\n\n- `request`/`not_implemented`: The request uses a transfer coding the daemon does not implement (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "not_implemented": {
+                    "summary": "The request uses a transfer coding the daemon does not implement",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "not_implemented",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable. Error codes:\n\n- `service`/`not_ready`: Admission is closed (unresolved_jobs or shutting_down) (ADR-0008 Sections 5 and 6).\n- `service`/`capacity_exhausted`: The resident Job capacity is exhausted (ADR-0008 Section 5).\n- `service`/`busy`: The ingress queue is full, or a creation met already_pending (ADR-0008 Section 5, ADR-0009 Section 3).\n- `service`/`service_failed`: The writer has failed closed, including a commit whose outcome is unknown (ADR-0008 Section 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "not_ready": {
+                    "summary": "Admission is closed (unresolved_jobs or shutting_down)",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "not_ready",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "capacity_exhausted": {
+                    "summary": "The resident Job capacity is exhausted",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "capacity_exhausted",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "busy": {
+                    "summary": "The ingress queue is full, or a creation met already_pending",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "busy",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "service_failed": {
+                    "summary": "The writer has failed closed, including a commit whose outcome is unknown",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "service_failed",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateJobRequest"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listJobs",
+        "summary": "List resident Jobs",
+        "description": "Every resident Job, in creation order (ascending Journal sequence of `job_created`). Bounded by the resident Job capacity; no pagination and no filters in v1. Keeps working while readiness is false (ADR-0008 Sections 4 and 6).",
+        "responses": {
+          "200": {
+            "description": "Every resident Job.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "malformed_request": {
+                    "summary": "The message is not a valid HTTP/1.1 or HTTP/1.0 request",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_request",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found. Error codes:\n\n- `request`/`route_not_found`: No route: the target has a query component, or names no path of this contract (ADR-0008 Section 5, ADR-0009 Sections 1 and 4).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "route_not_found": {
+                    "summary": "No route: the target has a query component, or names no path of this contract",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "route_not_found",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Request Timeout. Error codes:\n\n- `request`/`request_timeout`: The header section or the body was not received within the listener's time bound (ADR-0009 Sections 1 and 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "request_timeout": {
+                    "summary": "The header section or the body was not received within the listener's time bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "request_timeout",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Content Too Large. Error codes:\n\n- `request`/`payload_too_large`: The body exceeds the request size bound (ADR-0008 Section 5, ADR-0009 Section 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "payload_too_large": {
+                    "summary": "The body exceeds the request size bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "payload_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "URI Too Long. Error codes:\n\n- `request`/`target_too_long`: The request-target exceeds the listener's target bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "target_too_long": {
+                    "summary": "The request-target exceeds the listener's target bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "target_too_long",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type. Error codes:\n\n- `request`/`unsupported_media_type`: A body is present without Content-Type: application/json (ADR-0008 Section 5, ADR-0009 Section 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "unsupported_media_type": {
+                    "summary": "A body is present without Content-Type: application/json",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "unsupported_media_type",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "431": {
+            "description": "Request Header Fields Too Large. Error codes:\n\n- `request`/`headers_too_large`: The header section exceeds the listener's header bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "headers_too_large": {
+                    "summary": "The header section exceeds the listener's header bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "headers_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error. Error codes:\n\n- `service`/`internal`: Any other failure inside the daemon (ADR-0008 Section 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "internal": {
+                    "summary": "Any other failure inside the daemon",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "internal",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented. Error codes:\n\n- `request`/`not_implemented`: The request uses a transfer coding the daemon does not implement (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "not_implemented": {
+                    "summary": "The request uses a transfer coding the daemon does not implement",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "not_implemented",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}": {
+      "description": "Every method other than GET is answered `405` `request`/`method_not_allowed` with an `Allow: GET` header (ADR-0008 Section 5, ADR-0009 Section 6); see the response `MethodNotAllowed` in `components`.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/JobId"
+        }
+      ],
+      "get": {
+        "operationId": "getJob",
+        "summary": "Read one Job",
+        "description": "A resident Job. A Job removed from replay by an offline prune, or by a later retirement decision, is answered like an unknown one (ADR-0008 Section 3).",
+        "responses": {
+          "200": {
+            "description": "The Job.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).\n- `request`/`invalid_job_id`: The job_id in the path is not a canonical lowercase UUIDv7 (ADR-0008 Section 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "malformed_request": {
+                    "summary": "The message is not a valid HTTP/1.1 or HTTP/1.0 request",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_request",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "invalid_job_id": {
+                    "summary": "The job_id in the path is not a canonical lowercase UUIDv7",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "invalid_job_id",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found. Error codes:\n\n- `request`/`route_not_found`: No route: the target has a query component, or names no path of this contract (ADR-0008 Section 5, ADR-0009 Sections 1 and 4).\n- `job`/`job_not_found`: The Job is unknown or no longer resident (ADR-0008 Sections 3 and 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "route_not_found": {
+                    "summary": "No route: the target has a query component, or names no path of this contract",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "route_not_found",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "job_not_found": {
+                    "summary": "The Job is unknown or no longer resident",
+                    "value": {
+                      "error": {
+                        "domain": "job",
+                        "code": "job_not_found",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Request Timeout. Error codes:\n\n- `request`/`request_timeout`: The header section or the body was not received within the listener's time bound (ADR-0009 Sections 1 and 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "request_timeout": {
+                    "summary": "The header section or the body was not received within the listener's time bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "request_timeout",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Content Too Large. Error codes:\n\n- `request`/`payload_too_large`: The body exceeds the request size bound (ADR-0008 Section 5, ADR-0009 Section 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "payload_too_large": {
+                    "summary": "The body exceeds the request size bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "payload_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "URI Too Long. Error codes:\n\n- `request`/`target_too_long`: The request-target exceeds the listener's target bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "target_too_long": {
+                    "summary": "The request-target exceeds the listener's target bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "target_too_long",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type. Error codes:\n\n- `request`/`unsupported_media_type`: A body is present without Content-Type: application/json (ADR-0008 Section 5, ADR-0009 Section 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "unsupported_media_type": {
+                    "summary": "A body is present without Content-Type: application/json",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "unsupported_media_type",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "431": {
+            "description": "Request Header Fields Too Large. Error codes:\n\n- `request`/`headers_too_large`: The header section exceeds the listener's header bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "headers_too_large": {
+                    "summary": "The header section exceeds the listener's header bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "headers_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error. Error codes:\n\n- `service`/`internal`: Any other failure inside the daemon (ADR-0008 Section 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "internal": {
+                    "summary": "Any other failure inside the daemon",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "internal",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented. Error codes:\n\n- `request`/`not_implemented`: The request uses a transfer coding the daemon does not implement (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "not_implemented": {
+                    "summary": "The request uses a transfer coding the daemon does not implement",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "not_implemented",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/cancel": {
+      "description": "Every method other than POST is answered `405` `request`/`method_not_allowed` with an `Allow: POST` header (ADR-0008 Section 5, ADR-0009 Section 6); see the response `MethodNotAllowed` in `components`.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/JobId"
+        }
+      ],
+      "post": {
+        "operationId": "cancelJob",
+        "summary": "Request a cooperative cancel",
+        "description": "Submits the ADR-0002 `cancel` command with the principal from the daemon's startup configuration; no request field or header supplies it (ADR-0008 Section 4). `202` means the cancel is recorded, not that the Job has stopped. The Job in the `202` is read after `cancel_accepted` and can be `stopping`, `finalizing`, or terminal (ADR-0009 Section 11). A repeated cancel never records a second cancel. A cancel is a normal ingress input: while admission is closed it is `503` `not_ready`, including for the unresolved Job that keeps admission closed (ADR-0008 Section 6, ADR-0009 Section 11). `terminate` has no endpoint in v1.",
+        "responses": {
+          "202": {
+            "description": "`cancel_accepted` is committed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).\n- `request`/`malformed_json`: The body is not exactly one JSON text in UTF-8, or has a duplicate key (ADR-0008 Section 5, ADR-0009 Sections 5 and 8).\n- `request`/`invalid_job_id`: The job_id in the path is not a canonical lowercase UUIDv7 (ADR-0008 Section 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "malformed_request": {
+                    "summary": "The message is not a valid HTTP/1.1 or HTTP/1.0 request",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_request",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "malformed_json": {
+                    "summary": "The body is not exactly one JSON text in UTF-8, or has a duplicate key",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_json",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "invalid_job_id": {
+                    "summary": "The job_id in the path is not a canonical lowercase UUIDv7",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "invalid_job_id",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found. Error codes:\n\n- `request`/`route_not_found`: No route: the target has a query component, or names no path of this contract (ADR-0008 Section 5, ADR-0009 Sections 1 and 4).\n- `job`/`job_not_found`: The Job is unknown or no longer resident (ADR-0008 Sections 3 and 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "route_not_found": {
+                    "summary": "No route: the target has a query component, or names no path of this contract",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "route_not_found",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "job_not_found": {
+                    "summary": "The Job is unknown or no longer resident",
+                    "value": {
+                      "error": {
+                        "domain": "job",
+                        "code": "job_not_found",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Request Timeout. Error codes:\n\n- `request`/`request_timeout`: The header section or the body was not received within the listener's time bound (ADR-0009 Sections 1 and 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "request_timeout": {
+                    "summary": "The header section or the body was not received within the listener's time bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "request_timeout",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict. Error codes:\n\n- `job`/`stop_cause_already_latched`: The Job is already stopping (ADR-0008 Section 4).\n- `job`/`command_not_allowed_in_state`: The Job can no longer be cancelled (ADR-0008 Section 4).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "stop_cause_already_latched": {
+                    "summary": "The Job is already stopping",
+                    "value": {
+                      "error": {
+                        "domain": "job",
+                        "code": "stop_cause_already_latched",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "command_not_allowed_in_state": {
+                    "summary": "The Job can no longer be cancelled",
+                    "value": {
+                      "error": {
+                        "domain": "job",
+                        "code": "command_not_allowed_in_state",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Content Too Large. Error codes:\n\n- `request`/`payload_too_large`: The body exceeds the request size bound (ADR-0008 Section 5, ADR-0009 Section 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "payload_too_large": {
+                    "summary": "The body exceeds the request size bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "payload_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "URI Too Long. Error codes:\n\n- `request`/`target_too_long`: The request-target exceeds the listener's target bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "target_too_long": {
+                    "summary": "The request-target exceeds the listener's target bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "target_too_long",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type. Error codes:\n\n- `request`/`unsupported_media_type`: A body is present without Content-Type: application/json (ADR-0008 Section 5, ADR-0009 Section 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "unsupported_media_type": {
+                    "summary": "A body is present without Content-Type: application/json",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "unsupported_media_type",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content. Error codes:\n\n- `request`/`validation_failed`: Well-formed JSON that is not the expected object (ADR-0008 Section 5, ADR-0009 Sections 9 and 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "validation_failed": {
+                    "summary": "Well-formed JSON that is not the expected object",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "validation_failed",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "431": {
+            "description": "Request Header Fields Too Large. Error codes:\n\n- `request`/`headers_too_large`: The header section exceeds the listener's header bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "headers_too_large": {
+                    "summary": "The header section exceeds the listener's header bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "headers_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error. Error codes:\n\n- `service`/`internal`: Any other failure inside the daemon (ADR-0008 Section 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "internal": {
+                    "summary": "Any other failure inside the daemon",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "internal",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented. Error codes:\n\n- `request`/`not_implemented`: The request uses a transfer coding the daemon does not implement (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "not_implemented": {
+                    "summary": "The request uses a transfer coding the daemon does not implement",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "not_implemented",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable. Error codes:\n\n- `service`/`not_ready`: Admission is closed (unresolved_jobs or shutting_down) (ADR-0008 Sections 5 and 6).\n- `service`/`busy`: The ingress queue is full, or a creation met already_pending (ADR-0008 Section 5, ADR-0009 Section 3).\n- `service`/`service_failed`: The writer has failed closed, including a commit whose outcome is unknown (ADR-0008 Section 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "not_ready": {
+                    "summary": "Admission is closed (unresolved_jobs or shutting_down)",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "not_ready",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "busy": {
+                    "summary": "The ingress queue is full, or a creation met already_pending",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "busy",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  },
+                  "service_failed": {
+                    "summary": "The writer has failed closed, including a commit whose outcome is unknown",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "service_failed",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "description": "No body, or exactly an empty JSON object (ADR-0008 Section 4, ADR-0009 Section 10).",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelJobRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/health": {
+      "description": "Every method other than GET is answered `405` `request`/`method_not_allowed` with an `Allow: GET` header (ADR-0008 Section 5, ADR-0009 Section 6); see the response `MethodNotAllowed` in `components`.",
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Liveness",
+        "description": "`200` whenever the listener serves requests; says nothing about readiness (ADR-0008 Section 6).",
+        "responses": {
+          "200": {
+            "description": "The listener serves requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "malformed_request": {
+                    "summary": "The message is not a valid HTTP/1.1 or HTTP/1.0 request",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_request",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found. Error codes:\n\n- `request`/`route_not_found`: No route: the target has a query component, or names no path of this contract (ADR-0008 Section 5, ADR-0009 Sections 1 and 4).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "route_not_found": {
+                    "summary": "No route: the target has a query component, or names no path of this contract",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "route_not_found",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Request Timeout. Error codes:\n\n- `request`/`request_timeout`: The header section or the body was not received within the listener's time bound (ADR-0009 Sections 1 and 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "request_timeout": {
+                    "summary": "The header section or the body was not received within the listener's time bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "request_timeout",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Content Too Large. Error codes:\n\n- `request`/`payload_too_large`: The body exceeds the request size bound (ADR-0008 Section 5, ADR-0009 Section 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "payload_too_large": {
+                    "summary": "The body exceeds the request size bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "payload_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "URI Too Long. Error codes:\n\n- `request`/`target_too_long`: The request-target exceeds the listener's target bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "target_too_long": {
+                    "summary": "The request-target exceeds the listener's target bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "target_too_long",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type. Error codes:\n\n- `request`/`unsupported_media_type`: A body is present without Content-Type: application/json (ADR-0008 Section 5, ADR-0009 Section 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "unsupported_media_type": {
+                    "summary": "A body is present without Content-Type: application/json",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "unsupported_media_type",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "431": {
+            "description": "Request Header Fields Too Large. Error codes:\n\n- `request`/`headers_too_large`: The header section exceeds the listener's header bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "headers_too_large": {
+                    "summary": "The header section exceeds the listener's header bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "headers_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error. Error codes:\n\n- `service`/`internal`: Any other failure inside the daemon (ADR-0008 Section 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "internal": {
+                    "summary": "Any other failure inside the daemon",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "internal",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented. Error codes:\n\n- `request`/`not_implemented`: The request uses a transfer coding the daemon does not implement (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "not_implemented": {
+                    "summary": "The request uses a transfer coding the daemon does not implement",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "not_implemented",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ready": {
+      "description": "Every method other than GET is answered `405` `request`/`method_not_allowed` with an `Allow: GET` header (ADR-0008 Section 5, ADR-0009 Section 6); see the response `MethodNotAllowed` in `components`.",
+      "get": {
+        "operationId": "getReady",
+        "summary": "Readiness",
+        "description": "Whether the daemon accepts new Jobs. While readiness is false, reads and lists keep working (ADR-0008 Section 6).",
+        "responses": {
+          "200": {
+            "description": "The daemon accepts new Jobs: `{\"ready\": true, \"reasons\": []}`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request. Error codes:\n\n- `request`/`malformed_request`: The message is not a valid HTTP/1.1 or HTTP/1.0 request (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "malformed_request": {
+                    "summary": "The message is not a valid HTTP/1.1 or HTTP/1.0 request",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "malformed_request",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found. Error codes:\n\n- `request`/`route_not_found`: No route: the target has a query component, or names no path of this contract (ADR-0008 Section 5, ADR-0009 Sections 1 and 4).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "route_not_found": {
+                    "summary": "No route: the target has a query component, or names no path of this contract",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "route_not_found",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Request Timeout. Error codes:\n\n- `request`/`request_timeout`: The header section or the body was not received within the listener's time bound (ADR-0009 Sections 1 and 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "request_timeout": {
+                    "summary": "The header section or the body was not received within the listener's time bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "request_timeout",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Content Too Large. Error codes:\n\n- `request`/`payload_too_large`: The body exceeds the request size bound (ADR-0008 Section 5, ADR-0009 Section 2).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "payload_too_large": {
+                    "summary": "The body exceeds the request size bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "payload_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "URI Too Long. Error codes:\n\n- `request`/`target_too_long`: The request-target exceeds the listener's target bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "target_too_long": {
+                    "summary": "The request-target exceeds the listener's target bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "target_too_long",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type. Error codes:\n\n- `request`/`unsupported_media_type`: A body is present without Content-Type: application/json (ADR-0008 Section 5, ADR-0009 Section 10).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "unsupported_media_type": {
+                    "summary": "A body is present without Content-Type: application/json",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "unsupported_media_type",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "431": {
+            "description": "Request Header Fields Too Large. Error codes:\n\n- `request`/`headers_too_large`: The header section exceeds the listener's header bound (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "headers_too_large": {
+                    "summary": "The header section exceeds the listener's header bound",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "headers_too_large",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error. Error codes:\n\n- `service`/`internal`: Any other failure inside the daemon (ADR-0008 Section 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "internal": {
+                    "summary": "Any other failure inside the daemon",
+                    "value": {
+                      "error": {
+                        "domain": "service",
+                        "code": "internal",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented. Error codes:\n\n- `request`/`not_implemented`: The request uses a transfer coding the daemon does not implement (ADR-0009 Section 1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                },
+                "examples": {
+                  "not_implemented": {
+                    "summary": "The request uses a transfer coding the daemon does not implement",
+                    "value": {
+                      "error": {
+                        "domain": "request",
+                        "code": "not_implemented",
+                        "message": "Text for people; not part of the contract.",
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The daemon does not accept new Jobs. This body is the readiness object, not the error envelope (ADR-0008 Section 6).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                },
+                "examples": {
+                  "unresolved_jobs": {
+                    "summary": "Replay found unresolved Jobs",
+                    "value": {
+                      "ready": false,
+                      "reasons": [
+                        {
+                          "code": "unresolved_jobs",
+                          "job_ids": [
+                            "01a10911-85d3-77f6-bd97-b67910d0aade"
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "JobId": {
+        "name": "job_id",
+        "in": "path",
+        "required": true,
+        "description": "The daemon-issued canonical lowercase UUIDv7. Any other text is `400` `invalid_job_id` (ADR-0008 Sections 1 and 5).",
+        "schema": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
+      }
+    },
+    "schemas": {
+      "Job": {
+        "type": "object",
+        "description": "A Job (ADR-0008 Section 3). Clients ignore fields they do not know.",
+        "required": [
+          "job_id",
+          "state",
+          "terminal",
+          "outcome"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "description": "The daemon-issued UUIDv7."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "admitted",
+              "preparing",
+              "running",
+              "stopping",
+              "finalizing",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "terminated",
+              "timed_out"
+            ],
+            "description": "The ADR-0002 Job state. Closed vocabulary."
+          },
+          "terminal": {
+            "type": "boolean",
+            "description": "`true` exactly when `state` is terminal."
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled",
+              "terminated",
+              "timed_out",
+              null
+            ],
+            "description": "Equal to `state` when `terminal` is `true`; `null` otherwise. Closed vocabulary."
+          }
+        }
+      },
+      "JobList": {
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            },
+            "description": "Every resident Job, in creation order."
+          }
+        }
+      },
+      "CreateJobRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "application_id"
+        ],
+        "description": "Exactly one field. An unknown field, a missing field, or a wrong type is `422` `validation_failed` (ADR-0008 Section 5).",
+        "properties": {
+          "application_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Names a deployment-registered Application. A deployment registers only `[a-z0-9][a-z0-9._:-]*`; a value of 1 to 128 characters that is not registered is `422` `job`/`unknown_application` whatever its characters (ADR-0008 Section 4, ADR-0009 Section 9)."
+          }
+        }
+      },
+      "CancelJobRequest": {
+        "type": "object",
+        "maxProperties": 0,
+        "description": "Only `{}`. Any other well-formed JSON is `422` `validation_failed` (ADR-0009 Section 10)."
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          }
+        }
+      },
+      "Readiness": {
+        "type": "object",
+        "required": [
+          "ready",
+          "reasons"
+        ],
+        "description": "The readiness object (ADR-0008 Section 6). `reasons` is empty exactly when `ready` is `true`.",
+        "properties": {
+          "ready": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReadinessReason"
+            }
+          }
+        }
+      },
+      "ReadinessReason": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "description": "One reason readiness is false. Codes and fields are additive (ADR-0008 Sections 2 and 6). The v1 codes: `unresolved_jobs` (with `job_ids`), `service_failed`, `shutting_down`.",
+        "properties": {
+          "code": {
+            "type": "string",
+            "examples": [
+              "unresolved_jobs",
+              "service_failed",
+              "shutting_down"
+            ]
+          },
+          "job_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "description": "With `unresolved_jobs`: the replayed Jobs that are not resolved."
+          }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "description": "The error body of every error status, except the `503` of `GET /v1/ready` (ADR-0008 Section 5).",
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "domain",
+              "code",
+              "message",
+              "details"
+            ],
+            "properties": {
+              "domain": {
+                "type": "string",
+                "description": "Stable machine identifier. v1 uses `request`, `job`, and `service`."
+              },
+              "code": {
+                "type": "string",
+                "description": "Stable machine identifier. Codes are additive; a client classifies an unknown code by its status (ADR-0008 Section 2)."
+              },
+              "message": {
+                "type": "string",
+                "description": "For people; not part of the contract."
+              },
+              "details": {
+                "type": "object",
+                "description": "`{}` in v1; fields may be added later (ADR-0009 Section 7)."
+              }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "MethodNotAllowed": {
+        "description": "Method Not Allowed: the route exists and does not list the method, including `HEAD` and `OPTIONS` (ADR-0008 Section 5, ADR-0009 Section 6).",
+        "headers": {
+          "Allow": {
+            "required": true,
+            "description": "The methods the route has.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "examples": {
+              "method_not_allowed": {
+                "summary": "The method is not allowed for this resource",
+                "value": {
+                  "error": {
+                    "domain": "request",
+                    "code": "method_not_allowed",
+                    "message": "Text for people; not part of the contract.",
+                    "details": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
