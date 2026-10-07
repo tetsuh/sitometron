@@ -19,6 +19,11 @@ Dependency-owned types remain out of public core headers, and baseline-resolved 
 are opaque build prerequisites rather than direct source-level authorization. Adapter targets own
 all other third-party, platform, I/O, and framework dependencies.
 
+Proposed [ADR-0010](adr/0010-use-boost-beast-and-asio-for-the-external-rest-v1-adapter.md) chooses
+`boost-beast` and `boost-asio` 1.91.0 for the `sitometron_http` adapter target and lists the
+headers it may include. A later integration Issue adds them to `vcpkg.json` with Linux and Windows
+evidence and records their closure.
+
 Issue #17 implemented the allowlist and activated all five stable `NFR-005` checks on Linux and
 Windows. Accepted ADR-0003 and Issue #12 later authorized only the private synchronization headers
 and private `Threads::Threads` linkage required by the single writer, without adding a manifest
