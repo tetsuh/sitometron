@@ -76,8 +76,8 @@ does not include `<boost/asio/spawn.hpp>` or the other headers that need them.
 - On Linux (`x64-linux`, static libraries), no object of them is linked into the program. The
   probe's binary, built through these targets, contains no symbol of any of the three.
 - On Windows (`x64-windows`, DLLs), their import libraries are on the link line, and a DLL becomes a
-  load-time dependency only if a symbol from it is used. The integration Issue confirms that the
-  program imports none of the three.
+  load-time dependency only if a symbol from it is used. That the program imports none of the three
+  is inferred, not verified, until the integration Issue builds it on Windows.
 
 WebSocket, TLS, and `beast::tcp_stream` are not authorized.
 
@@ -102,8 +102,9 @@ Beast decides these outcomes of ADR-0009 Section 1 and Section 2:
 
 - `431` `headers_too_large`, from its header limit;
 - `413` `payload_too_large` for a chunked body over the body bound, from its body limit; and
-- `400` `malformed_request` for a malformed method, request-target, version, field, or chunk, and
-  for a malformed or conflicting `Content-Length`.
+- `400` `malformed_request` for a malformed method, version, field, or chunk; for a malformed or
+  conflicting `Content-Length`; and for a request-target that contains a byte Beast does not accept
+  in a target, such as a control character.
 
 Beast also refuses some of the transfer coding cases below, but not all of them, so the adapter
 checks every one of them itself.
@@ -112,13 +113,14 @@ The adapter decides every other outcome:
 
 - `408` `request_timeout` for both time bounds of ADR-0009 Sections 1 and 2;
 - `414` `target_too_long`;
-- `400` `malformed_request` for a missing `Host` in `HTTP/1.1`, more than one `Host`, a request-target
-  of no valid form, a transfer coding list (over every `Transfer-Encoding` field) whose last coding
-  is not `chunked` or that names `chunked` more than once, `Transfer-Encoding` together with
-  `Content-Length`, and any transfer coding in `HTTP/1.0` (RFC 9112 Sections 3.2, 6.1, and 6.3);
+- `400` `malformed_request` for a missing `Host` in `HTTP/1.1`, more than one `Host`, a transfer
+  coding list (over every `Transfer-Encoding` field) whose last coding is not `chunked` or that
+  names `chunked` more than once, `Transfer-Encoding` together with `Content-Length`, and any
+  transfer coding in `HTTP/1.0` (RFC 9112 Sections 3.2, 6.1, and 6.3);
 - `501` `not_implemented` for a transfer coding other than `chunked` before a final `chunked`;
-- the request-target forms, including absolute-form, asterisk-form, and authority-form (ADR-0009
-  Section 1);
+- the form of every request-target that Beast has accepted: origin-form, absolute-form,
+  asterisk-form, and authority-form as ADR-0009 Section 1 decides, and `400` for a target of no
+  valid form;
 - the query, route, method, and media type checks, with `Allow` on `405` (ADR-0008 Section 5 and
   ADR-0009 Sections 4 and 6); and
 - `413` `payload_too_large` from `Content-Length`.
@@ -138,7 +140,8 @@ use `beast::tcp_stream` timeouts, because they close the socket.
 
 ### 5. The request line before parsing
 
-The adapter skips empty lines received before the request line (RFC 9112 Section 2.2). Then it
+The adapter skips empty lines received before the request line (RFC 9112 Section 2.2). Skipped
+empty lines do not count toward the header bound; the time bound applies to them. Then it
 passes no byte to the parser until the request line has ended at its first LF. When it has, the
 adapter rewrites a version of the form `HTTP/1.x` with a digit x greater than 1 to `HTTP/1.1`, and passes
 the bytes on. The response carries `HTTP/1.1`, as for every request. Every other version reaches
@@ -160,9 +163,9 @@ On `x64-linux`, the two ports add 47 ports to the 16 that the manifest resolves 
 a vcpkg dry run at the pinned baseline. A dry run for `x64-windows` cannot resolve on a Linux host.
 In the port manifests of the closure, the only dependencies with a platform qualifier are
 `boost-asio[spawn]` on `boost-context` and `boost-asio[ssl]` on `openssl`. Neither differs for
-Windows desktop, and `ssl` is not enabled. The Windows closure is confirmed by the integration Issue,
-which changes the manifest with Linux and Windows evidence as `docs/09_dependency_policy.md`
-requires.
+Windows desktop, and `ssl` is not enabled. The Windows closure is therefore inferred from the port
+manifests and is not verified until the integration Issue changes the manifest with Linux and
+Windows evidence, as `docs/09_dependency_policy.md` requires.
 
 Every Boost library port in the closure uses the Boost Software License 1.0, which is compatible
 with the project's Apache-2.0 license. The build helper port `boost-uninstall` and the vcpkg helper
