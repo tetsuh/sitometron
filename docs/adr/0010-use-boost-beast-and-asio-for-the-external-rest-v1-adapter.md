@@ -45,9 +45,12 @@ and the Beast 1.91.0 source showed:
 
 The owner decided on 2026-10-07 and 2026-10-08 under Issue #90:
 
-- the library is Boost.Beast with Boost.Asio; and
+- the library is Boost.Beast with Boost.Asio;
 - a request whose version is `HTTP/1.x` with x greater than 1 is processed as `HTTP/1.1` by
-  rewriting its minor version before the parser sees it.
+  rewriting its minor version before the parser sees it; and
+- such a request is a valid HTTP/1.1 request in the sense of the refusal table of ADR-0009
+  Section 1, so the rewrite changes no rule of ADR-0009 (2026-10-08, review decision
+  DEC-91-HTTP-MINOR-VERSION on PR #91).
 
 ## Decision
 
@@ -143,12 +146,19 @@ use `beast::tcp_stream` timeouts, because they close the socket.
 The adapter skips empty lines received before the request line (RFC 9112 Section 2.2). Skipped
 empty lines do not count toward the header bound; the time bound applies to them. Then it
 passes no byte to the parser until the request line has ended at its first LF. When it has, the
-adapter rewrites a version of the form `HTTP/1.x` with a digit x greater than 1 to `HTTP/1.1`, and passes
-the bytes on. The response carries `HTTP/1.1`, as for every request. Every other version reaches
+adapter rewrites a version of the form `HTTP/1.x` with a digit x greater than 1 to `HTTP/1.1`, and
+passes the bytes on. The response carries `HTTP/1.1`, as for every request. Every other version reaches
 Beast unchanged: `HTTP/1.0` and `HTTP/1.1` are accepted as ADR-0009 Section 1 requires, and the
 rest are `400`. While the adapter holds the request line, the header bound (`431`) and the time
 bound (`408`) still apply. Named tests send such a request split after its version and after the CR
 that ends its request line, and after a leading empty line.
+
+This rewrite keeps ADR-0009 Section 1 as it is. A request line with `HTTP/1.2` follows the
+`HTTP-version` syntax of RFC 9112 Section 2.3, and RFC 9110 Section 2.5 has the server process it as
+the highest `1.x` version the server implements, which is `HTTP/1.1`. Because ADR-0009 Section 1
+does not narrow RFC 9112, such a request is a valid HTTP/1.1 request in the sense of its refusal
+table. The `400` row of that table applies to a message that is not valid HTTP/1.1 or HTTP/1.0 at
+all.
 
 ### 6. `Expect: 100-continue`
 
