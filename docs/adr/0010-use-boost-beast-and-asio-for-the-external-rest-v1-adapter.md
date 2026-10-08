@@ -23,7 +23,10 @@ third-party dependency still needs its own dependency decision; this ADR is that
 A probe outside the repository built a loopback listener on Boost.Beast 1.91.0 and Boost.Asio
 1.91.0 from the pinned baseline `40f3c709db80acf154ac4b17a1f83c564ebd022e` (Issue #90). It
 sent 51 raw requests covering every refusal of ADR-0009 Section 1, the order of Section 2, and the
-`405` of Section 6. All 51 statuses and error codes matched. The probe ran on Linux only. The probe
+`405` of Section 6. All 51 statuses and error codes matched. The review of PR #91 later found five
+more requests the probe handled wrongly: invalid `Host` values, `chunked` with a parameter, and
+numerals above 2^64 - 1 in `Content-Length` and in a chunk size; Section 2 of this ADR covers them.
+The probe ran on Linux only. The probe
 and the Beast 1.91.0 source showed:
 
 - `beast::tcp_stream` closes the socket when its timer expires, so it cannot send a `408`. A read
@@ -47,10 +50,13 @@ The owner decided on 2026-10-07 and 2026-10-08 under Issue #90:
 
 - the library is Boost.Beast with Boost.Asio;
 - a request whose version is `HTTP/1.x` with x greater than 1 is processed as `HTTP/1.1` by
-  rewriting its minor version before the parser sees it; and
+  rewriting its minor version before the parser sees it;
 - such a request is a valid HTTP/1.1 request in the sense of the refusal table of ADR-0009
   Section 1, so the rewrite changes no rule of ADR-0009 (2026-10-08, review decision
-  DEC-91-HTTP-MINOR-VERSION on PR #91).
+  DEC-91-HTTP-MINOR-VERSION on PR #91); and
+- this ADR states the rule for `400` `malformed_request` and the cases known now, and the production
+  adapter Issue lists the refusals completely with named tests (2026-10-08, after the fourth review
+  of PR #91).
 
 ## Decision
 
@@ -101,32 +107,44 @@ The adapter owns the bytes it reads. It passes them to `http::request_parser::pu
 parsing off, so that parsing stops after the header section. Before route, method, and media type
 are decided, the parser has no body limit.
 
-Beast decides these outcomes of ADR-0009 Section 1 and Section 2:
+These outcomes have one owner each:
 
-- `431` `headers_too_large`, from its header limit;
-- `413` `payload_too_large` for a chunked body over the body bound, from its body limit; and
-- `400` `malformed_request` for a malformed method, version, field, or chunk; for a malformed or
-  conflicting `Content-Length`; and for a request-target that contains a byte Beast does not accept
-  in a target, such as a control character.
+- Beast: `431` `headers_too_large`, from its header limit, and `413` `payload_too_large` for a
+  chunked body over the body bound, from its body limit.
+- The adapter: `408` `request_timeout` for both time bounds of ADR-0009 Sections 1 and 2; `414`
+  `target_too_long`; `501` `not_implemented`; the request-target forms of ADR-0009 Section 1; the
+  query, route, method, and media type checks with `Allow` on `405` (ADR-0008 Section 5 and
+  ADR-0009 Sections 4 and 6); and `413` `payload_too_large` from `Content-Length`.
 
-Beast also refuses some of the transfer coding cases below, but not all of them, so the adapter
-checks every one of them itself.
+For `400` `malformed_request`, this ADR states a rule, not a list. Beast refuses what its parser
+refuses. Every other refusal that RFC 9112 or RFC 9110 requires or recommends of a server before
+routing is the adapter's, whether or not Beast also refuses some cases of it. The production
+adapter Issue lists these refusals completely, with one named test each. The cases known now are
+inputs to that list, not the list itself:
 
-The adapter decides every other outcome:
+- `Host`: missing in `HTTP/1.1`, repeated, or with a value that is not a valid `uri-host [ ":" port ]`
+  (an empty value is valid for a target without an authority) (RFC 9112 Section 3.2);
+- `Transfer-Encoding`, read over every field: a last coding that is not `chunked`, `chunked`
+  repeated or with parameters, a coding or parameter that is not valid syntax, a transfer coding
+  together with `Content-Length`, and any transfer coding in `HTTP/1.0` (RFC 9112 Sections 6.1,
+  6.3, and 7.1);
+- a request-target of no valid form (ADR-0009 Section 1); and
+- the request line cases of Section 5 of this ADR.
 
-- `408` `request_timeout` for both time bounds of ADR-0009 Sections 1 and 2;
-- `414` `target_too_long`;
-- `400` `malformed_request` for a missing `Host` in `HTTP/1.1`, more than one `Host`, a transfer
-  coding list (over every `Transfer-Encoding` field) whose last coding is not `chunked` or that
-  names `chunked` more than once, `Transfer-Encoding` together with `Content-Length`, and any
-  transfer coding in `HTTP/1.0` (RFC 9112 Sections 3.2, 6.1, and 6.3);
-- `501` `not_implemented` for a transfer coding other than `chunked` before a final `chunked`;
-- the form of every request-target that Beast has accepted: origin-form, absolute-form,
-  asterisk-form, and authority-form as ADR-0009 Section 1 decides, and `400` for a target of no
-  valid form;
-- the query, route, method, and media type checks, with `Allow` on `405` (ADR-0008 Section 5 and
-  ADR-0009 Sections 4 and 6); and
-- `413` `payload_too_large` from `Content-Length`.
+#### Refusals Beast makes too early
+
+Beast refuses some valid requests before the adapter has decided route, method, and media type, or
+with the wrong status. The adapter keeps the order of ADR-0009 Section 2 for them:
+
+- the version check of Section 5 of this ADR;
+- a `Content-Length` numeral larger than Beast can hold (above 2^64 - 1) is valid (RFC 9110
+  Section 8.6), but Beast refuses it with `400` while parsing the header section. The adapter
+  answers it as a body over the body bound: `413` after route, method, and media type, so a request
+  with no route stays `404` and one with a wrong method `405`; and
+- a chunk size larger than Beast can hold is a body over the body bound (RFC 9112 Section 7.1
+  requires a recipient to anticipate large numerals), so it is `413`, not Beast's `400`.
+
+How the adapter does this belongs to the production adapter Issue.
 
 ### 3. Bounds
 
@@ -185,8 +203,12 @@ The integration Issue records the closure in `docs/dependency_closure.md`.
 
 ## Consequences
 
-- Good: Beast's own parser and tests cover the RFC 9112 framing and field rules. The adapter tests
-  only the checks it adds.
+- Good: Beast's own parser and tests cover much of the RFC 9112 framing and field rules. The adapter
+  does not repeat Beast's parser unit tests, but it runs every `API-005` and `API-007` contract test,
+  including the refusals Beast decides.
+- Good: this ADR decides the owner of each status and the rule for `400`, as ADR-0009 Section 1
+  decides statuses and leaves syntax to RFC 9112. The complete list of `400` cases is proven by
+  named tests in the production adapter Issue rather than by prose.
 - Good: every refusal of ADR-0009 can be sent by the adapter, and the order of ADR-0009 Section 2
   holds, as the probe showed for 51 requests.
 - Good: Boost is already a reviewed dependency family, and Asio gives one socket and timer layer for
