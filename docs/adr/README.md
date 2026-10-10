@@ -14,6 +14,7 @@ ADRs use four-digit sequence numbers and lowercase hyphenated names.
 | [0008](0008-define-the-external-rest-v1-job-surface.md) | Accepted | Define the External REST v1 Job surface |
 | [0009](0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md) | Accepted | Settle the External REST v1 gaps found by the prototype |
 | [0010](0010-use-boost-beast-and-asio-for-the-external-rest-v1-adapter.md) | Accepted | Use Boost.Beast and Boost.Asio for the External REST v1 adapter |
+| [0011](0011-use-nlohmann-json-for-the-external-rest-v1-adapter.md) | Accepted | Use nlohmann-json for the External REST v1 adapter |
 
 Use [the ADR template](template.md). See [the ADR process](../10_adr_process.md) and
 [the development workflow](../development_workflow.md) for status, review, and merge rules.
