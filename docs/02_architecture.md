@@ -29,7 +29,7 @@ I/O/framework ownership. Only `sitometrond` composes concrete adapters.
 
 Later adapter targets are introduced only by their owning Issues:
 
-- `sitometron_http`, whose HTTP dependencies are Boost.Beast and Boost.Asio under Proposed
+- `sitometron_http`, whose HTTP dependencies are Boost.Beast and Boost.Asio under Accepted
   [ADR-0010](adr/0010-use-boost-beast-and-asio-for-the-external-rest-v1-adapter.md);
 - `sitometron_process`;
 - `sitometron_topology`;
