@@ -21,8 +21,11 @@ all other third-party, platform, I/O, and framework dependencies.
 
 Accepted [ADR-0010](adr/0010-use-boost-beast-and-asio-for-the-external-rest-v1-adapter.md) chooses
 `boost-beast` and `boost-asio` 1.91.0 for the `sitometron_http` adapter target and lists the
-headers it may include. A later integration Issue adds them to `vcpkg.json` with Linux and Windows
-evidence and records their closure.
+headers it may include. Proposed
+[ADR-0011](adr/0011-use-nlohmann-json-for-the-external-rest-v1-adapter.md) adds `nlohmann-json`, which
+the manifest already resolves, to the same target. A later integration Issue adds the Boost ports to
+`vcpkg.json` with Linux and Windows evidence, links all three to `sitometron_http`, and records the
+closure.
 
 Issue #17 implemented the allowlist and activated all five stable `NFR-005` checks on Linux and
 Windows. Accepted ADR-0003 and Issue #12 later authorized only the private synchronization headers

@@ -91,8 +91,10 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
   through Accepted ADR-0008, and [Issue #86](https://github.com/tetsuh/sitometron/issues/86)
   settles the gaps the prototype found through Accepted ADR-0009.
   [Issue #90](https://github.com/tetsuh/sitometron/issues/90) chooses the HTTP library of the
-  adapter through Accepted ADR-0010. No Gate exists until the first production implementation Issue
-  of Phase 1 is about to start.
+  adapter through Accepted ADR-0010, and
+  [Issue #94](https://github.com/tetsuh/sitometron/issues/94) its JSON library through Proposed
+  ADR-0011. No Gate exists until the first production implementation Issue of Phase 1 is about to
+  start.
 - Phase 2 owns Worker protocol schemas and local process containment.
 - Phase 3 owns topology, ResourceProfile, scheduling, and reservation contracts.
 - Phase 4 owns the installed Sitos adapter and required upstream contract gates.
