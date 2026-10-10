@@ -92,7 +92,7 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
   settles the gaps the prototype found through Accepted ADR-0009.
   [Issue #90](https://github.com/tetsuh/sitometron/issues/90) chooses the HTTP library of the
   adapter through Accepted ADR-0010, and
-  [Issue #94](https://github.com/tetsuh/sitometron/issues/94) its JSON library through Proposed
+  [Issue #94](https://github.com/tetsuh/sitometron/issues/94) its JSON library through Accepted
   ADR-0011. No Gate exists until the first production implementation Issue of Phase 1 is about to
   start.
 - Phase 2 owns Worker protocol schemas and local process containment.
