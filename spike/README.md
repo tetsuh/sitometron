@@ -207,9 +207,9 @@ contract or a Phase 4 decision.
 | zenoh-c archive download | official 1.9.0 standalone ZIP | 1.02 s | downloaded; SHA-256 `29f6a0dedc7ada0be007058e706df64ff26e62ae56f6efc2b098132c431c263d` |
 | zenoh-c extraction | `unzip` into `~/opt/zenoh-c-1.9.0` | 0.30 s | headers, static library, and shared library present |
 | Sitos C++ configure/build/install | Release, Zenoh ON, RocksDB/tests/Python OFF | 0.11 s / 4.97 s / 0.00 s | installed under `~/opt/sitos-0.1.3` |
-| Python venv | `python3.12 -m venv .venv-spike` | 1.66 s | Python 3.12.3, pip 24.0 |
-| Published Sitos wheel | `pip install --only-binary=:all: sitos==0.1.3` | 3.31 s | CPython 3.12 manylinux wheel; NumPy 2.5.4 |
-| Raw Python Zenoh wheel | `pip install --only-binary=:all: eclipse-zenoh==1.9.0` | 1.43 s | installed |
+| Python venv | `python3.12 -m venv ~/opt/venvs/sitometron-spike` (first measured inside the checkout, then recreated outside it so the tree stays clean) | 1.66 s | Python 3.12.3, pip 24.0 |
+| Published Sitos wheel | `~/opt/venvs/sitometron-spike/bin/python -m pip install --only-binary=:all: sitos==0.1.3` | 3.31 s | CPython 3.12 manylinux wheel; NumPy 2.5.4 |
+| Raw Python Zenoh wheel | `~/opt/venvs/sitometron-spike/bin/python -m pip install --only-binary=:all: eclipse-zenoh==1.9.0` | 1.43 s | installed |
 
 The ZIP download was **not checksum-verified before extraction**. Phase 4 provisioning must pin and
 verify the recorded SHA-256 before opening the archive. Sitos remains outside the vcpkg manifest.

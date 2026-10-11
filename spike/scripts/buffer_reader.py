@@ -96,6 +96,9 @@ def read_durable_buffer(
                 deadline = time.monotonic() + 4.0
             while time.monotonic() < deadline:
                 if _matches(_samples(session, key), expect_missing):
+                    if expect_missing:
+                        # An empty reply proves absence only if the node still answers.
+                        _require_control_reply(session, prefix, time.monotonic() + 4.0)
                     _report_success(key, expect_missing)
                     return True
                 time.sleep(0.05)
