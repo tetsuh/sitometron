@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 
 import zenoh
+
+
+class BufferReadError(RuntimeError):
+    """Indicate that the raw Zenoh query could not be completed reliably."""
 
 
 def _config(config_json: str | None):
@@ -13,8 +18,10 @@ def _config(config_json: str | None):
 
 
 def _reply_payload(reply, key: str) -> bytes | None:
-    if reply.err is not None or reply.ok is None:
-        return None
+    if reply.err is not None:
+        raise BufferReadError(f"Zenoh query returned an error for {key}: {reply.err}")
+    if reply.ok is None:
+        raise BufferReadError(f"Zenoh query returned no sample or error for {key}")
     sample = reply.ok
     if str(sample.key_expr) != key:
         return None
@@ -22,16 +29,18 @@ def _reply_payload(reply, key: str) -> bytes | None:
 
 
 def _samples(session, key: str) -> list[bytes]:
-    try:
+    try:  # noqa: BLE001 - normalize third-party query failures for the CLI and worker.
         replies = list(session.get(key, timeout=0.5))
-    except Exception:
-        return []
-    samples = []
-    for reply in replies:
-        payload = _reply_payload(reply, key)
-        if payload is not None:
-            samples.append(payload)
-    return samples
+        samples = []
+        for reply in replies:
+            payload = _reply_payload(reply, key)
+            if payload is not None:
+                samples.append(payload)
+        return samples
+    except BufferReadError:
+        raise
+    except Exception as error:  # noqa: BLE001 - the binding may expose different transport errors.
+        raise BufferReadError(f"Zenoh query failed for {key}: {type(error).__name__}: {error}") from error
 
 
 def _matches(samples: list[bytes], expect_missing: bool) -> bool:
@@ -55,12 +64,17 @@ def read_durable_buffer(
     """Wait for the expected durable value, or its absence after Session close."""
     key = f"{prefix}/buffers/{session_id}/durable/{buffer_key}"
     deadline = time.monotonic() + 4.0
-    with zenoh.open(_config(zenoh_config)) as session:
-        while time.monotonic() < deadline:
-            if _matches(_samples(session, key), expect_missing):
-                _report_success(key, expect_missing)
-                return True
-            time.sleep(0.05)
+    try:  # noqa: BLE001 - normalize third-party session failures for the CLI and worker.
+        with zenoh.open(_config(zenoh_config)) as session:
+            while time.monotonic() < deadline:
+                if _matches(_samples(session, key), expect_missing):
+                    _report_success(key, expect_missing)
+                    return True
+                time.sleep(0.05)
+    except BufferReadError:
+        raise
+    except Exception as error:  # noqa: BLE001 - the binding may expose different session errors.
+        raise BufferReadError(f"Zenoh session failed for {key}: {type(error).__name__}: {error}") from error
 
     if expect_missing:
         print(f"expected durable buffer to be absent: {key}", flush=True)
@@ -77,15 +91,18 @@ def main() -> int:
     parser.add_argument("--zenoh-config")
     parser.add_argument("--expect-missing", action="store_true")
     args = parser.parse_args()
-    return int(
-        not read_durable_buffer(
+    try:
+        succeeded = read_durable_buffer(
             args.prefix,
             args.sid,
             args.key,
             args.zenoh_config,
             args.expect_missing,
         )
-    )
+    except BufferReadError as error:
+        print(f"SITOS_READER_ERROR {error}", file=sys.stderr, flush=True)
+        return 1
+    return int(not succeeded)
 
 
 if __name__ == "__main__":

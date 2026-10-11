@@ -87,6 +87,10 @@ printf '%s' "$failed_body" | grep -q '"exit_code":3' || {
   echo "expected worker exit code 3: $failed_body"
   exit 1
 }
+grep -q 'SITOS_WORKER_SCENARIO_OK exit_code=3' "$log" || {
+  echo "failed worker scenario did not reach its completion marker"
+  exit 1
+}
 "$python" "$reader" --prefix "$prefix" --sid "$failed_id" --key worker/durable \
   --zenoh-config "$zenoh_config" --expect-missing
 

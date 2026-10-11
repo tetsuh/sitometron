@@ -16,6 +16,7 @@ DURABLE_KEY = "worker/durable"
 EPHEMERAL_KEY = "worker/ephemeral"
 PREFIX_FALLBACK = "sitometron-spike"
 SESSION_FALLBACK = "missing-session"
+UNEXPECTED_ERROR_EXIT_CODE = 70
 
 
 def main() -> int:
@@ -97,6 +98,7 @@ def main() -> int:
         )
         if args.sleep_after > 0:
             time.sleep(args.sleep_after)
+        print(f"SITOS_WORKER_SCENARIO_OK exit_code={args.exit_code}", flush=True)
         return args.exit_code
     except Exception as error:  # the process status is part of the scenario
         print(
@@ -106,7 +108,7 @@ def main() -> int:
             file=sys.stderr,
             flush=True,
         )
-        return args.exit_code if args.exit_code != 0 else 1
+        return UNEXPECTED_ERROR_EXIT_CODE
 
 
 if __name__ == "__main__":
