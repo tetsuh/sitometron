@@ -41,6 +41,7 @@ elseif(HTTP_NEGATIVE_MODE STREQUAL "include")
     "-DSITOMETRON_HTTP_LINK_TARGETS=${_allowed_targets_arg}"
     "-DSITOMETRON_HTTP_SCAN_FILES=${_approved_fixture}")
   foreach(_fixture IN ITEMS
+      http_dependency_forbidden_whitespace.hpp
       http_dependency_forbidden_beast_websocket.hpp
       http_dependency_forbidden_asio_spawn.hpp
       http_dependency_forbidden_asio_ssl.hpp
@@ -94,6 +95,46 @@ elseif(HTTP_NEGATIVE_MODE STREQUAL "public")
   if(NOT RUN_CHECK_OUTPUT MATCHES "dependency-owned public type")
     message(FATAL_ERROR
       "HTTP public dependency type did not report the violation: ${RUN_CHECK_OUTPUT}")
+  endif()
+  run_check(
+    "HTTP public Boost.System dependency" 1
+    check_http_public_api_isolation.cmake
+    "-DSITOMETRON_HTTP_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_public_api_forbidden_boost_system.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency-owned public include")
+    message(FATAL_ERROR
+      "HTTP public Boost.System dependency did not report the include violation: ${RUN_CHECK_OUTPUT}")
+  endif()
+  run_check(
+    "HTTP public Asio include" 1
+    check_http_public_api_isolation.cmake
+    "-DSITOMETRON_HTTP_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_public_api_forbidden_asio_include.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency-owned public include")
+    message(FATAL_ERROR
+      "HTTP public Asio include did not report the violation: ${RUN_CHECK_OUTPUT}")
+  endif()
+  run_check(
+    "HTTP public Asio type" 1
+    check_http_public_api_isolation.cmake
+    "-DSITOMETRON_HTTP_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_public_api_forbidden_asio_type.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency-owned public type")
+    message(FATAL_ERROR
+      "HTTP public Asio type did not report the violation: ${RUN_CHECK_OUTPUT}")
+  endif()
+  run_check(
+    "HTTP public nlohmann include" 1
+    check_http_public_api_isolation.cmake
+    "-DSITOMETRON_HTTP_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_public_api_forbidden_nlohmann_include.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency-owned public include")
+    message(FATAL_ERROR
+      "HTTP public nlohmann include did not report the violation: ${RUN_CHECK_OUTPUT}")
+  endif()
+  run_check(
+    "HTTP public nlohmann type" 1
+    check_http_public_api_isolation.cmake
+    "-DSITOMETRON_HTTP_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_public_api_forbidden_nlohmann_type.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency-owned public type")
+    message(FATAL_ERROR
+      "HTTP public nlohmann type did not report the violation: ${RUN_CHECK_OUTPUT}")
   endif()
 else()
   message(FATAL_ERROR "Unknown HTTP_NEGATIVE_MODE: ${HTTP_NEGATIVE_MODE}")

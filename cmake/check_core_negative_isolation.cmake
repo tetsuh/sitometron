@@ -35,7 +35,9 @@ if(CORE_NEGATIVE_MODE STREQUAL "private")
   endif()
   foreach(_fixture IN ITEMS
       core_dependency_forbidden_beast.hpp
-      core_dependency_forbidden_asio.hpp)
+      core_dependency_forbidden_beast_whitespace.hpp
+      core_dependency_forbidden_asio.hpp
+      core_dependency_forbidden_asio_whitespace.hpp)
     run_check(
       "unapproved core adapter include ${_fixture}" 1
       check_core_dependency_isolation.cmake

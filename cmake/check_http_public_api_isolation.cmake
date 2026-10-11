@@ -12,13 +12,13 @@ foreach(_file IN LISTS _files)
     message(FATAL_ERROR "HttpPublicApiIsolation setup failure: missing scan file ${_file}")
   endif()
   file(STRINGS "${_file}" _dependency_include_lines REGEX
-    "^[ \t]*#[ \t]*include[ \t]*[<\"](boost/beast/[^>\"]+|boost/asio/[^>\"]+|nlohmann/[^>\"]+)[>\"]")
+    "^[ \t]*#[ \t]*include[ \t]*[<\"](boost/[^>\"]+|nlohmann/[^>\"]+)[>\"]")
   if(_dependency_include_lines)
     message(FATAL_ERROR
       "HttpPublicApiIsolation dependency-owned public include: ${_file}")
   endif()
   file(READ "${_file}" _contents)
-  if(_contents MATCHES "(^|[^A-Za-z0-9_])(boost::beast|boost::asio|beast|asio|nlohmann)::")
+  if(_contents MATCHES "(^|[^A-Za-z0-9_])(boost::|beast::|asio::|nlohmann::)")
     message(FATAL_ERROR
       "HttpPublicApiIsolation dependency-owned public type: ${_file}")
   endif()

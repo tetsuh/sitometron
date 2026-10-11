@@ -40,12 +40,12 @@ Phase 0A PR CI requires:
 The Linux clang-tidy step resolves the absolute `clang-tidy-18` application and runs the
 standard-library-only `tools/run_clang_tidy.py` helper against
 `build/dev-linux/compile_commands.json`. The helper intersects tracked `apps/**/*.cpp`,
-`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 22-source set and
+`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 24-source set and
 LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection drift.
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the 69-test `dev-linux` baseline. It runs without suppressions using
+CTest-name parity with the 74-test `dev-linux` baseline. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
