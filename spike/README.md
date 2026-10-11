@@ -28,6 +28,40 @@ build/dev-linux/spike/sitometron_spike --listen 127.0.0.1:8080 \
     --journal /tmp/sitometron-journal --workdir /tmp
 ```
 
+The optional Issue #98 Sitos build is separate from the walking skeleton. Keep the Python virtual
+environment outside the checkout (here `~/opt/venvs/sitometron-spike`, with `sitos==0.1.3` and
+`eclipse-zenoh==1.9.0`), so the working tree stays clean:
+
+```sh
+./bootstrap.sh   # once: provisions build/vcpkg-installed/x64-linux and .cache/vcpkg/x64-linux
+cmake -S . -B build/spike-sitos -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE="$PWD/.cache/vcpkg/x64-linux/scripts/buildsystems/vcpkg.cmake" \
+    -DVCPKG_TARGET_TRIPLET=x64-linux \
+    -DVCPKG_INSTALLED_DIR="$PWD/build/vcpkg-installed/x64-linux" \
+    -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_APPLOCAL_DEPS=OFF \
+    -DSITOMETRON_BUILD_SPIKE=ON \
+    -DSITOMETRON_BUILD_SPIKE_SITOS=ON \
+    -DSITOMETRON_SPIKE_PYTHON="$HOME/opt/venvs/sitometron-spike/bin/python" \
+    -DCMAKE_PREFIX_PATH="$HOME/opt/sitos-0.1.3" \
+    -Dzenohc_ROOT="$HOME/opt/zenoh-c-1.9.0" \
+    -DZENOHC_ROOT="$HOME/opt/zenoh-c-1.9.0"
+cmake --build build/spike-sitos --target sitometron_spike
+LD_LIBRARY_PATH="$HOME/opt/sitos-0.1.3/lib:$HOME/opt/zenoh-c-1.9.0/lib" \
+  ctest --test-dir build/spike-sitos -R spike_sitos_session_smoke --output-on-failure
+```
+
+`SITOMETRON_BUILD_SPIKE_SITOS` is OFF by default. When ON, the driver hosts one Sitos
+`StorageNode`, creates one Session per Job, and passes `SITOS_PREFIX`, `SITOS_SESSION_ID`, and a
+client configuration to the child. The opt-in smoke test uses `scripts/session_worker.py` and
+`scripts/buffer_reader.py`; it covers success, non-zero exit, cancel, parameter round trips, raw
+buffer reading, and post-close buffer absence. For every post-close absence check, the reader first
+queries the seeded `<prefix>/base/input` parameter through the same Zenoh session and requires a
+reply; only then does zero replies for the durable route prove that `CloseSession` removed it
+while the StorageNode was reachable. A no-node reader invocation fails with `SITOS_READER_ERROR`
+instead of accepting an unobservable absence. For cancel, it waits for that Job's own
+`SITOS_READER_OK` marker before sending the cancel, so the post-close absence check proves cleanup
+of a published value.
+
 Options: `--listen HOST:PORT` (loopback addresses only; port `0` picks an ephemeral port and prints
 it), `--journal DIR` (the production `SegmentJournal` from `sitometron_journal`, Issue #59: segment
 files and exclusive lock; at startup every segment is validated and replayed, Issues #61 and #64),
@@ -99,6 +133,108 @@ build/dev-linux/spike/sitometron_spike journal quarantine-tail --journal /tmp/si
 ```
 
 Smoke test (needs `curl`): `ctest --test-dir build/dev-linux -L spike --output-on-failure`.
+
+## Issue #98: Sitos Session spike
+
+This section records the non-normative result of the opt-in build. It is a finding log, not a Sitos
+contract or a Phase 4 decision.
+
+### What worked with Sitos 0.1.3 as it is
+
+- The C++ package built from tag `v0.1.3` with one in-process `StorageNode`, an in-memory base
+  engine, and an in-memory durable-buffer engine factory.
+- A Job's canonical lowercase UUIDv7 was accepted as the Sitos Session ID. The driver created the
+  Session with both durable and ephemeral capabilities before spawning the child and closed it after
+  the terminal outcome.
+- With an explicit local TCP client configuration, the worker's `ParamCache` read the seeded base
+  value and `ParamStore` acknowledged and read back the Session output value.
+- A raw Zenoh reader read the durable bytes while the Session was active. After `CloseSession`, the
+  same reader received no durable value after its control query received the seeded
+  `<prefix>/base/input` reply. The smoke test waits for each Job's own `SITOS_READER_OK` marker
+  before terminal cleanup and observed this for success, non-zero exit, and cancel paths; a
+  separate no-node case fails rather than treating an unreachable node as absence.
+- The worker's raw fallback put both durable and ephemeral byte routes through the documented
+  `zenoh/bytes` wire shape. The durable route was visible before close and absent after close.
+
+### Usage pitfalls and observed behavior
+
+- The one-argument `CreateSession(sid)` overload leaves durable and ephemeral buffer routes
+  disabled. The spike therefore uses `CreateSession(sid, SessionOptions{durable_buffers=true,
+  ephemeral_buffers=true})`; a disabled-route push is not a usable buffer path.
+- Default Zenoh discovery did not connect the independently spawned Python wheel client to the C++
+  node in this environment. A Checkpoint 3b `zenoh.scout` run saw no Hello messages. The cause is
+  unknown because firewall state was not readable without root. The C++ host therefore listens on
+  local TCP port `27400` and passes an explicit client configuration to the worker and raw reader.
+  Concurrent opt-in daemons using this spike port are not supported.
+- The Sitos 0.1.3 Python API has no endpoint option other than the complete `zenoh_config_json`.
+  `src/transport/zenoh_transport.cpp` at v0.1.3 uses `z_config_default()` when no JSON is supplied;
+  it does not read `ZENOH_CONFIG`. Any caller JSON disables the Fence profile by design, so a
+  worker that needs explicit endpoints cannot use `BufferPublisher` Fence.
+- Sitos 0.1.3 rejects a caller-supplied Zenoh configuration for `BufferPublisher` with
+  `ValueError: Transport does not support Fence`. The reason is that the normal transport factory
+  disables the Fence capability whenever JSON configuration is supplied. The worker records this
+  exact result and uses raw `zenoh/bytes` puts as a visible fallback; consequently this run proves
+  the buffer routes and cleanup, but does not claim a successful `BufferPublisher` Fence.
+- The Sitos Python documentation warns that independently opened `ParamCache`, `ParamStore`, and
+  `BufferPublisher` sessions in one Python process are unsupported. The sequential Cache/Store
+  pairing worked with the explicit configuration here; the BufferPublisher limitation above
+  prevented a complete same-process three-client qualification. This remains a Phase 4 finding.
+- Durable buffers are owned by the in-memory Session engine and disappear when `CloseSession`
+  returns. A reader must run before terminal cleanup closes the Session; a post-close reader is
+  expected to receive no reply. A future durable product path needs an explicit retention/reader
+  decision.
+
+### Candidate Sitos changes, with evidence
+
+1. Add a supported raw durable-buffer reader API or a documented reader helper. Evidence: the
+   acceptance reader has to issue raw `get` on
+   `<prefix>/buffers/<sid>/durable/<key>` because Sitos 0.1.3 exposes no buffer reader.
+2. Provide a way to choose endpoints while retaining the verified Fence profile, or expose a
+   supported explicit-config Fence mode. Evidence: `src/transport/zenoh_transport.cpp` at v0.1.3
+   disables the profile for caller JSON; the local explicit TCP configuration makes parameters
+   reachable but produces the observed `Transport does not support Fence` refusal.
+3. Define durable-buffer lifetime and crash/cancel semantics for the adapter. Evidence: normal
+   non-zero and cancel Jobs close the Session and remove in-memory durable values; a reader cannot
+   inspect them after close, and a crash can leave an unresolved Job requiring startup recovery.
+4. Document the required StorageNode startup order and a collision-safe endpoint/configuration
+   handoff. Evidence: the C++ node must be ready before the worker's explicit client opens, while
+   the driver must close every Session before stopping the node.
+5. Keep the C++ and wheel zenoh-c pins aligned. Evidence: the C++ source/cache and the wheel NOTICE
+   both identify zenoh-c `1.9.0`; the standalone C++ SONAME and wheel-repaired SONAME differ only
+   because wheel repair renames the bundled file.
+
+### Consumer provisioning findings
+
+| Step | Command family | Elapsed | Result |
+|---|---|---:|---|
+| Project bootstrap after process-local environment cleanup | `env -u VCPKG_DEFAULT_TRIPLET -u VCPKG_FEATURE_FLAGS ./bootstrap.sh` | 51.41 s | 69/69 tests passed |
+| Sitos source checkout | `git clone --branch v0.1.3 --depth 1 --no-tags ...` | 0.75 s | commit `59f4dfb24bdde7e1d766f41216b169e5194442dd` |
+| zenoh-c archive download | official 1.9.0 standalone ZIP | 1.02 s | downloaded; SHA-256 `29f6a0dedc7ada0be007058e706df64ff26e62ae56f6efc2b098132c431c263d` |
+| zenoh-c extraction | `unzip` into `~/opt/zenoh-c-1.9.0` | 0.30 s | headers, static library, and shared library present |
+| Sitos C++ configure/build/install | Release, Zenoh ON, RocksDB/tests/Python OFF | 0.11 s / 4.97 s / 0.00 s | installed under `~/opt/sitos-0.1.3` |
+| Python venv | `python3.12 -m venv ~/opt/venvs/sitometron-spike` (first measured inside the checkout, then recreated outside it so the tree stays clean) | 1.66 s | Python 3.12.3, pip 24.0 |
+| Published Sitos wheel | `~/opt/venvs/sitometron-spike/bin/python -m pip install --only-binary=:all: sitos==0.1.3` | 3.31 s | CPython 3.12 manylinux wheel; NumPy 2.5.4 |
+| Raw Python Zenoh wheel | `~/opt/venvs/sitometron-spike/bin/python -m pip install --only-binary=:all: eclipse-zenoh==1.9.0` | 1.43 s | installed |
+
+The ZIP download was **not checksum-verified before extraction**. Phase 4 provisioning must pin and
+verify the recorded SHA-256 before opening the archive. Sitos remains outside the vcpkg manifest.
+
+### Inputs kept separate for the Phase 4 design
+
+- Provision the pinned Sitos source and zenoh-c tree outside the Sitometron repository, then consume
+  the installed CMake package with `find_package(sitos CONFIG REQUIRED)` only under the opt-in spike
+  option.
+- Provision the published CPython 3.12 wheel in an isolated environment; the raw reader additionally
+  needs `eclipse-zenoh==1.9.0`.
+- Make the zenoh-c archive checksum a repository-owned Phase 4 pin and verify it before extraction.
+- Decide whether Phase 4 owns a buffer reader, a durable retention boundary, and an explicit-config
+  Fence transport capability. This spike does not change Sitos or promote the raw fallback to a
+  product adapter.
+- Define the `CreateSession` failure path. With the test-only, opt-in
+  `SITOMETRON_SPIKE_FAIL_CREATE_SESSION=1` environment variable, the smoke test observed an admitted
+  Job reaching `failed` through `worker_launch_observed{failed}` and the normal finalization,
+  terminal, release, and cleanup events; no child ran, the refusal reason remained in the driver
+  error, and shutdown reported zero open Sessions. The variable is unset by default.
 
 ## External REST v1 prototype
 
@@ -231,7 +367,9 @@ process that starts and exits on its own, the Journal receives 13 records per Jo
 | 13 | `cleanup_status_recorded` | driver, `completed` |
 
 A spawn failure produces `worker_launch_observed{failed}` instead of 4–6 and continues from 7 with
-a failed outcome.
+a failed outcome. A Sitos `CreateSession` failure follows the same failed-launch path before any
+child is spawned; it records the driver error and continues through terminal cleanup without an
+open Sitos Session.
 
 ## Intentionally missing
 
