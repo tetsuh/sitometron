@@ -20,6 +20,24 @@ function(run_check _label _expected_result _script)
   set(RUN_CHECK_OUTPUT "${_combined}" PARENT_SCOPE)
 endfunction()
 
+function(assert_core_input_gap _fixture _line)
+  set(_path "${SITOMETRON_SOURCE_DIR}/tests/fixtures/${_fixture}")
+  run_check(
+    "core physical-line input ${_fixture}" 1
+    check_core_dependency_isolation.cmake
+    "-DSITOMETRON_CORE_SCAN_FILES=${_path}")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "unapproved core include")
+    message(FATAL_ERROR
+      "${_fixture} did not report the core include violation: ${RUN_CHECK_OUTPUT}")
+  endif()
+  string(FIND "${RUN_CHECK_OUTPUT}" "${_path}:${_line}:" _location)
+  if(_location EQUAL -1)
+    message(FATAL_ERROR
+      "${_fixture} did not report the physical file and line ${_path}:${_line}: "
+      "${RUN_CHECK_OUTPUT}")
+  endif()
+endfunction()
+
 if(CORE_NEGATIVE_MODE STREQUAL "private")
   run_check(
     "approved private include control" 0
@@ -33,6 +51,16 @@ if(CORE_NEGATIVE_MODE STREQUAL "private")
     message(FATAL_ERROR
       "unapproved private include did not report the include violation: ${RUN_CHECK_OUTPUT}")
   endif()
+  run_check(
+    "approved physical-line input control" 0
+    check_core_dependency_isolation.cmake
+    "-DSITOMETRON_CORE_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/dependency_scanner_approved_brackets.hpp")
+  assert_core_input_gap(dependency_scanner_forbidden_range_open.hpp 5)
+  assert_core_input_gap(dependency_scanner_forbidden_range_close.hpp 5)
+  assert_core_input_gap(dependency_scanner_forbidden_trailing_bracket.hpp 5)
+  assert_core_input_gap(dependency_scanner_forbidden_string_bracket.hpp 5)
+  assert_core_input_gap(dependency_scanner_forbidden_tabs.hpp 5)
+  assert_core_input_gap(dependency_scanner_forbidden_bom.hpp 1)
   foreach(_fixture IN ITEMS
       core_dependency_forbidden_beast.hpp
       core_dependency_forbidden_beast_whitespace.hpp
