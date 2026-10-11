@@ -33,7 +33,12 @@ environment outside the checkout (here `~/opt/venvs/sitometron-spike`, with `sit
 `eclipse-zenoh==1.9.0`), so the working tree stays clean:
 
 ```sh
+./bootstrap.sh   # once: provisions build/vcpkg-installed/x64-linux and .cache/vcpkg/x64-linux
 cmake -S . -B build/spike-sitos -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE="$PWD/.cache/vcpkg/x64-linux/scripts/buildsystems/vcpkg.cmake" \
+    -DVCPKG_TARGET_TRIPLET=x64-linux \
+    -DVCPKG_INSTALLED_DIR="$PWD/build/vcpkg-installed/x64-linux" \
+    -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_APPLOCAL_DEPS=OFF \
     -DSITOMETRON_BUILD_SPIKE=ON \
     -DSITOMETRON_BUILD_SPIKE_SITOS=ON \
     -DSITOMETRON_SPIKE_PYTHON="$HOME/opt/venvs/sitometron-spike/bin/python" \
