@@ -1,6 +1,6 @@
 #include <array>
-#include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/cancel_after.hpp>
+#include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -9,6 +9,7 @@
 #include <boost/beast/http/string_body.hpp>
 #include <chrono>
 #include <cstddef>
+#include <exception>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -46,7 +47,7 @@ int CheckAsioTotalCancellation() {
   using asio::ip::tcp;
 
   asio::io_context context;
-  tcp::acceptor acceptor(context, tcp::endpoint(tcp::v4(), 0));
+  tcp::acceptor acceptor(context, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
   tcp::socket client(context);
   client.connect(acceptor.local_endpoint());
   tcp::socket server(context);
@@ -71,8 +72,8 @@ int CheckAsioTotalCancellation() {
   result |= Check(canceled, "Asio cancel_after used total cancellation for the read");
   result |= Check(read_error == asio::error::operation_aborted,
                   "Asio canceled read returned operation_aborted");
-  result |= Check(!write_error && written == 1,
-                  "Asio socket remained writable after total cancellation");
+  result |=
+      Check(!write_error && written == 1, "Asio socket remained writable after total cancellation");
   std::cout << "http_dependency_api_smoke: cancel_after(total) read="
             << (canceled ? "PASS" : "FAIL")
             << " socket_write=" << ((!write_error && written == 1) ? "PASS" : "FAIL") << '\n';
@@ -80,8 +81,8 @@ int CheckAsioTotalCancellation() {
 }
 
 int CheckJsonKeyCallback() {
-  constexpr std::array<char, 14> bytes{
-      '{', '"', 'n', 'a', 'm', 'e', '"', ':', '"', 'j', 'o', 'b', '"', '}'};
+  constexpr std::array<char, 14> bytes{'{', '"', 'n', 'a', 'm', 'e', '"',
+                                       ':', '"', 'j', 'o', 'b', '"', '}'};
   std::size_t key_count = 0;
   std::string key;
   const auto value = nlohmann::json::parse(
@@ -96,8 +97,7 @@ int CheckJsonKeyCallback() {
   int result = 0;
   result |= Check(value.is_object() && value.at("name") == "job",
                   "nlohmann-json parsed the explicit byte range");
-  result |= Check(key_count == 1 && key == "name",
-                  "nlohmann-json invoked the key callback");
+  result |= Check(key_count == 1 && key == "name", "nlohmann-json invoked the key callback");
   return result;
 }
 
@@ -115,6 +115,10 @@ int main() try {
   std::cout << "http_dependency_api_smoke: JSON key callback "
             << (json_result == 0 ? "PASS" : "FAIL") << '\n';
   return result;
+} catch (const std::exception& error) {
+  std::cerr << "http_dependency_api_smoke: exception: " << error.what() << '\n';
+  return 1;
 } catch (...) {
+  std::cerr << "http_dependency_api_smoke: unknown exception\n";
   return 1;
 }
