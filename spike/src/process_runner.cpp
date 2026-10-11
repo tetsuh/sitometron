@@ -5,7 +5,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <utility>
@@ -95,13 +94,10 @@ SpawnResult ProcessRunner::Spawn(const LaunchSpec& spec) {
       return invalid;
     }
     const auto name = assignment.substr(0, separator);
-    environment.erase(std::remove_if(environment.begin(), environment.end(),
-                                     [&](const std::string& item) {
-                                       return item.size() > name.size() &&
-                                              item.compare(0, name.size(), name) == 0 &&
-                                              item[name.size()] == '=';
-                                     }),
-                      environment.end());
+    std::erase_if(environment, [&](const std::string& item) {
+      return item.size() > name.size() && item.compare(0, name.size(), name) == 0 &&
+             item[name.size()] == '=';
+    });
     environment.push_back(assignment);
   }
   std::vector<char*> envp;

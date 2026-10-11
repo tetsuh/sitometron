@@ -1,6 +1,7 @@
 #include "sitos_runtime.hpp"
 
 #include <chrono>
+#include <exception>
 #include <iostream>
 #include <mutex>
 #include <set>
@@ -31,6 +32,29 @@ std::string Failure(std::string_view operation, const sitos::Result<T>& result) 
   return detail;
 }
 
+void LogCloseError(std::string_view prefix, std::string_view session_id,
+                   std::string_view detail) noexcept {
+  try {
+    std::cerr << prefix << session_id << ": " << detail << '\n';
+  } catch (...) {
+  }
+}
+
+void LogCloseException(std::string_view prefix, std::string_view session_id,
+                       const std::exception& error) noexcept {
+  try {
+    std::cerr << prefix << session_id << ": " << error.what() << '\n';
+  } catch (...) {
+  }
+}
+
+void LogCloseUnknown(std::string_view prefix, std::string_view session_id) noexcept {
+  try {
+    std::cerr << prefix << session_id << ": unknown exception\n";
+  } catch (...) {
+  }
+}
+
 }  // namespace
 
 struct SitosRuntime::Impl {
@@ -43,16 +67,17 @@ struct SitosRuntime::Impl {
 };
 #endif
 
-SitosRuntime::SitosRuntime(std::string prefix) : prefix_(std::move(prefix)) {
+SitosRuntime::SitosRuntime(std::string prefix)
 #ifdef SITOMETRON_SPIKE_SITOS
-  enabled_ = true;
-  ready_ = false;
+    : prefix_(std::move(prefix)),
+      config_(
+          R"({"mode":"client","connect":{"endpoints":["tcp/127.0.0.1:27400"]},"scouting":{"multicast":{"enabled":false}}})"),
+      enabled_(true),
+      ready_(false) {
   impl_ = std::make_unique<Impl>();
 
   const std::string node_zenoh_config =
       R"({"mode":"peer","listen":{"endpoints":["tcp/127.0.0.1:27400"]}})";
-  config_ =
-      R"({"mode":"client","connect":{"endpoints":["tcp/127.0.0.1:27400"]},"scouting":{"multicast":{"enabled":false}}})";
   auto opened_transport = sitos::OpenZenohTransport(node_zenoh_config);
   if (!opened_transport.IsOk()) {
     error_ = Failure("OpenZenohTransport", opened_transport);
@@ -101,11 +126,12 @@ SitosRuntime::SitosRuntime(std::string prefix) : prefix_(std::move(prefix)) {
   ready_ = true;
   std::cout << "SITOS_RUNTIME_READY prefix=" << prefix_ << '\n' << std::flush;
 #else
+    : prefix_(std::move(prefix)), config_(), enabled_(false), ready_(true) {
   (void)prefix_;
 #endif
 }
 
-SitosRuntime::~SitosRuntime() {
+SitosRuntime::~SitosRuntime() noexcept {
   CloseAll();
 #ifdef SITOMETRON_SPIKE_SITOS
   // The owner calls CloseAll before this destructor while the node is still running. If
@@ -164,18 +190,30 @@ bool SitosRuntime::CloseSession(const std::string& session_id, std::string& erro
 #endif
 }
 
-void SitosRuntime::CloseAll() {
+void SitosRuntime::CloseAll() noexcept {
 #ifdef SITOMETRON_SPIKE_SITOS
-  if (!impl_ || !ready_) return;
-  std::vector<std::string> sessions;
-  {
-    std::lock_guard lock(impl_->mutex);
-    sessions.assign(impl_->active_sessions.begin(), impl_->active_sessions.end());
-  }
-  for (const auto& session_id : sessions) {
-    std::string error;
-    if (!CloseSession(session_id, error))
-      std::cerr << "SITOS_SESSION_CLOSE_ERROR " << session_id << ": " << error << '\n';
+  try {
+    if (!impl_ || !ready_) return;
+    std::vector<std::string> sessions;
+    {
+      std::lock_guard lock(impl_->mutex);
+      sessions.assign(impl_->active_sessions.begin(), impl_->active_sessions.end());
+    }
+    for (const auto& session_id : sessions) {
+      try {
+        std::string error;
+        if (!CloseSession(session_id, error))
+          LogCloseError("SITOS_SESSION_CLOSE_ERROR ", session_id, error);
+      } catch (const std::exception& error) {
+        LogCloseException("SITOS_SESSION_CLOSE_EXCEPTION ", session_id, error);
+      } catch (...) {
+        LogCloseUnknown("SITOS_SESSION_CLOSE_EXCEPTION ", session_id);
+      }
+    }
+  } catch (const std::exception& error) {
+    LogCloseException("SITOS_CLOSE_ALL_EXCEPTION ", {}, error);
+  } catch (...) {
+    LogCloseUnknown("SITOS_CLOSE_ALL_EXCEPTION ", {});
   }
 #endif
 }

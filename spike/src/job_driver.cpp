@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <exception>
 #include <utility>
 
 namespace sitometron::spike {
@@ -42,6 +43,26 @@ std::string StableApplicationId(const std::string& executable) {
   if (out.size() > 128) out.resize(128);
   return out;
 }
+
+template <typename Function>
+class ScopeExit final {
+ public:
+  explicit ScopeExit(Function function) : function_(std::move(function)) {}
+  ~ScopeExit() noexcept {
+    if (!active_) return;
+    try {
+      function_();
+    } catch (...) {
+    }
+  }
+
+  ScopeExit(const ScopeExit&) = delete;
+  ScopeExit& operator=(const ScopeExit&) = delete;
+
+ private:
+  Function function_;
+  bool active_ = true;
+};
 
 }  // namespace
 
@@ -251,12 +272,38 @@ void JobDriver::Run(std::string job_id) {
   bool worker_succeeded = false;
   bool worker_reported = false;
   bool session_created = false;
+  const auto record_session_close_failure = [&](const std::string& detail) noexcept {
+    try {
+      Fail(job_id, detail);
+    } catch (...) {
+    }
+  };
+  const auto close_session = [&]() noexcept {
+    if (!session_created) return;
+    try {
+      std::string session_error;
+      if (!sitos_.CloseSession(job_id, session_error)) {
+        if (session_error.empty())
+          record_session_close_failure("Sitos session close failed");
+        else
+          record_session_close_failure("Sitos session close failed: " + session_error);
+      }
+    } catch (const std::exception& error) {
+      try {
+        record_session_close_failure(std::string("Sitos session close threw: ") + error.what());
+      } catch (...) {
+      }
+    } catch (...) {
+      record_session_close_failure("Sitos session close threw an unknown exception");
+    }
+    session_created = false;
+  };
+  [[maybe_unused]] const auto session_closer = ScopeExit(close_session);
   core::RawCandidateEvent worker_event;
   // Steps 1 to 3. False when the Job cannot be driven further.
   const auto launch_and_wait = [&] {
     // The Session is created before any child launch handoff reaches ProcessRunner.
-    std::string session_error;
-    if (!sitos_.CreateSession(job_id, session_error)) {
+    if (std::string session_error; !sitos_.CreateSession(job_id, session_error)) {
       Fail(job_id, "Sitos session creation failed: " + session_error);
       return false;
     }
@@ -373,11 +420,7 @@ void JobDriver::Run(std::string job_id) {
   else if (worker_succeeded)
     outcome = "succeeded";
   if (!step("terminal_outcome_committed", {{"outcome", outcome}})) return;
-  if (session_created) {
-    std::string session_error;
-    if (!sitos_.CloseSession(job_id, session_error))
-      Fail(job_id, "Sitos session close failed: " + session_error);
-  }
+  close_session();
   if (worker_reported && !orchestrator_->RetireWorkerAck(worker_event))
     Record(job_id, "worker_ack_not_retired");
 
@@ -487,7 +530,7 @@ json JobDriver::Resources() const {
 
 json JobDriver::ReadinessReasons() const {
   json reasons = json::array();
-  if (orchestrator_->failed()) reasons.push_back({{"code", "service_failed"}});
+  if (orchestrator_->failed() || !sitos_.Ready()) reasons.push_back({{"code", "service_failed"}});
   if (const auto unresolved = Unresolved(); !unresolved.empty()) {
     reasons.push_back({{"code", "unresolved_jobs"}, {"job_ids", unresolved}});
   }
@@ -498,7 +541,7 @@ json JobDriver::ReadinessReasons() const {
   return reasons;
 }
 
-bool JobDriver::Ready() const { return orchestrator_->ready(); }
+bool JobDriver::Ready() const { return orchestrator_->ready() && sitos_.Ready(); }
 
 std::vector<std::string> JobDriver::Unresolved() const {
   std::vector<std::string> ids;

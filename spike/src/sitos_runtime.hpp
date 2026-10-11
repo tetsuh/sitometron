@@ -11,7 +11,7 @@ namespace sitometron::spike {
 class SitosRuntime final {
  public:
   explicit SitosRuntime(std::string prefix);
-  ~SitosRuntime();
+  ~SitosRuntime() noexcept;
   SitosRuntime(const SitosRuntime&) = delete;
   SitosRuntime& operator=(const SitosRuntime&) = delete;
 
@@ -23,7 +23,7 @@ class SitosRuntime final {
 
   [[nodiscard]] bool CreateSession(const std::string& session_id, std::string& error);
   [[nodiscard]] bool CloseSession(const std::string& session_id, std::string& error);
-  void CloseAll();
+  void CloseAll() noexcept;
 
  private:
   std::string prefix_;

@@ -10,8 +10,27 @@ option(SITOMETRON_BUILD_SPIKE_SITOS
        OFF)
 
 if(SITOMETRON_BUILD_SPIKE_SITOS)
-  set(SITOMETRON_SPIKE_PYTHON "python3" CACHE STRING
-      "Python interpreter used by the opt-in Sitos spike smoke test")
+  set(SITOMETRON_SPIKE_PYTHON "" CACHE FILEPATH
+      "Absolute Python interpreter used by the opt-in Sitos spike smoke test")
+  if(SITOMETRON_SPIKE_PYTHON)
+    if(NOT IS_ABSOLUTE "${SITOMETRON_SPIKE_PYTHON}")
+      message(FATAL_ERROR
+              "SITOMETRON_SPIKE_PYTHON must be an absolute executable path: ${SITOMETRON_SPIKE_PYTHON}")
+    endif()
+    find_program(_sitometron_spike_python NAMES "${SITOMETRON_SPIKE_PYTHON}" NO_DEFAULT_PATH)
+    if(NOT _sitometron_spike_python)
+      message(FATAL_ERROR
+              "SITOMETRON_SPIKE_PYTHON is not an executable: ${SITOMETRON_SPIKE_PYTHON}")
+    endif()
+    set(SITOMETRON_SPIKE_PYTHON "${_sitometron_spike_python}" CACHE FILEPATH
+        "Absolute Python interpreter used by the opt-in Sitos spike smoke test" FORCE)
+    unset(_sitometron_spike_python CACHE)
+  else()
+    find_program(_sitometron_spike_python NAMES python3 REQUIRED)
+    set(SITOMETRON_SPIKE_PYTHON "${_sitometron_spike_python}" CACHE FILEPATH
+        "Absolute Python interpreter used by the opt-in Sitos spike smoke test" FORCE)
+    unset(_sitometron_spike_python CACHE)
+  endif()
   find_package(sitos CONFIG REQUIRED)
 endif()
 

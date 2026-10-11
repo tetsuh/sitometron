@@ -19,7 +19,7 @@ command -v curl >/dev/null || { echo "curl is required"; exit 2; }
 [[ -x "$python" ]] || { echo "Python interpreter is not executable: $python"; exit 2; }
 [[ -f "$worker" && -f "$reader" ]] || { echo "worker or reader script is missing"; exit 2; }
 
-worker_command="exec \"$python\" \"$worker\" --reader \"$reader\""
+worker_command="exec \"$python\" \"$worker\""
 failed_command="$worker_command --exit-code 3"
 cancel_command="$worker_command --sleep-after 30"
 "$binary" --listen 127.0.0.1:0 --journal "$journal" --workdir "$scratch" \

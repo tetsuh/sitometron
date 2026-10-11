@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 import time
 
 import sitos
 import zenoh
+
+from buffer_reader import read_durable_buffer
 
 DURABLE_KEY = "worker/durable"
 EPHEMERAL_KEY = "worker/ephemeral"
@@ -19,7 +20,6 @@ SESSION_FALLBACK = "missing-session"
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--reader", required=True)
     parser.add_argument("--exit-code", type=int, default=0)
     parser.add_argument("--sleep-after", type=float, default=0.0)
     args = parser.parse_args()
@@ -68,7 +68,7 @@ def main() -> int:
             durable.fence(sitos.FenceDurability.APPLIED, timeout=2.0)
             ephemeral.fence(sitos.FenceDurability.APPLIED, timeout=2.0)
             print("SITOS_BUFFER_PUBLISHER_OK", flush=True)
-        except BaseException as error:
+        except Exception as error:
             # Sitos 0.1.3 rejects caller-supplied Zenoh configuration for BufferPublisher because
             # it cannot prove the Fence QoS profile. Keep the raw wire fallback visible as a spike
             # finding so the parameter/session path can still be exercised end to end.
@@ -89,19 +89,8 @@ def main() -> int:
                 )
             print(f"SITOS_BUFFER_PUBLISHER_LIMITATION {publisher_error}", flush=True)
 
-        reader_command = [
-            sys.executable,
-            args.reader,
-            "--prefix",
-            prefix,
-            "--sid",
-            session_id,
-            "--key",
-            DURABLE_KEY,
-        ]
-        if zenoh_config:
-            reader_command.extend(["--zenoh-config", zenoh_config])
-        subprocess.run(reader_command, check=True)
+        if not read_durable_buffer(prefix, session_id, DURABLE_KEY, zenoh_config):
+            raise RuntimeError("durable buffer was not readable")
         print(
             f"SITOS_WORKER_PARAMETER_OK input={input_value} output={output_value}",
             flush=True,
@@ -109,7 +98,7 @@ def main() -> int:
         if args.sleep_after > 0:
             time.sleep(args.sleep_after)
         return args.exit_code
-    except BaseException as error:  # the process status is part of the scenario
+    except Exception as error:  # the process status is part of the scenario
         print(
             f"SITOS_WORKER_ERROR prefix={prefix} sid={session_id} "
             f"zenoh_config_len={len(zenoh_config or '')} "
