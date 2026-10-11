@@ -49,7 +49,11 @@ LD_LIBRARY_PATH="$HOME/opt/sitos-0.1.3/lib:$HOME/opt/zenoh-c-1.9.0/lib" \
 `StorageNode`, creates one Session per Job, and passes `SITOS_PREFIX`, `SITOS_SESSION_ID`, and a
 client configuration to the child. The opt-in smoke test uses `scripts/session_worker.py` and
 `scripts/buffer_reader.py`; it covers success, non-zero exit, cancel, parameter round trips, raw
-buffer reading, and post-close buffer absence. For cancel, it waits for that Job's own
+buffer reading, and post-close buffer absence. For every post-close absence check, the reader first
+queries the seeded `<prefix>/base/input` parameter through the same Zenoh session and requires a
+reply; only then does zero replies for the durable route prove that `CloseSession` removed it
+while the StorageNode was reachable. A no-node reader invocation fails with `SITOS_READER_ERROR`
+instead of accepting an unobservable absence. For cancel, it waits for that Job's own
 `SITOS_READER_OK` marker before sending the cancel, so the post-close absence check proves cleanup
 of a published value.
 
@@ -140,8 +144,10 @@ contract or a Phase 4 decision.
 - With an explicit local TCP client configuration, the worker's `ParamCache` read the seeded base
   value and `ParamStore` acknowledged and read back the Session output value.
 - A raw Zenoh reader read the durable bytes while the Session was active. After `CloseSession`, the
-  same reader received no durable value. The smoke test waits for each Job's own `SITOS_READER_OK`
-  marker before terminal cleanup and observed this for success, non-zero exit, and cancel paths.
+  same reader received no durable value after its control query received the seeded
+  `<prefix>/base/input` reply. The smoke test waits for each Job's own `SITOS_READER_OK` marker
+  before terminal cleanup and observed this for success, non-zero exit, and cancel paths; a
+  separate no-node case fails rather than treating an unreachable node as absence.
 - The worker's raw fallback put both durable and ephemeral byte routes through the documented
   `zenoh/bytes` wire shape. The durable route was visible before close and absent after close.
 

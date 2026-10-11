@@ -13,6 +13,9 @@ class BufferReadError(RuntimeError):
     """Indicate that the raw Zenoh query could not be completed reliably."""
 
 
+CONTROL_KEY = "base/input"
+
+
 def _config(config_json: str | None):
     return zenoh.Config.from_json5(config_json) if config_json else zenoh.Config()
 
@@ -47,6 +50,28 @@ def _matches(samples: list[bytes], expect_missing: bool) -> bool:
     return not samples if expect_missing else samples == [b"durable-value"]
 
 
+def _require_control_reply(session, prefix: str, deadline: float) -> None:
+    key = f"{prefix}/{CONTROL_KEY}"
+    last_error: BufferReadError | None = None
+    while time.monotonic() < deadline:
+        try:
+            samples = _samples(session, key)
+        except BufferReadError as error:
+            last_error = error
+        else:
+            if samples:
+                return
+            last_error = None
+        time.sleep(0.05)
+    if last_error is not None:
+        raise BufferReadError(
+            f"control query failed for {key}; cannot prove the node is alive: {last_error}"
+        ) from last_error
+    raise BufferReadError(
+        f"control query received no reply for {key}; cannot prove durable absence"
+    )
+
+
 def _report_success(key: str, expect_missing: bool) -> None:
     if expect_missing:
         print(f"SITOS_READER_MISSING {key}", flush=True)
@@ -63,9 +88,12 @@ def read_durable_buffer(
 ) -> bool:
     """Wait for the expected durable value, or its absence after Session close."""
     key = f"{prefix}/buffers/{session_id}/durable/{buffer_key}"
-    deadline = time.monotonic() + 4.0
     try:  # noqa: BLE001 - normalize third-party session failures for the CLI and worker.
         with zenoh.open(_config(zenoh_config)) as session:
+            deadline = time.monotonic() + 4.0
+            if expect_missing:
+                _require_control_reply(session, prefix, deadline)
+                deadline = time.monotonic() + 4.0
             while time.monotonic() < deadline:
                 if _matches(_samples(session, key), expect_missing):
                     _report_success(key, expect_missing)
