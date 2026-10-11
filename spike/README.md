@@ -49,7 +49,9 @@ LD_LIBRARY_PATH="$HOME/opt/sitos-0.1.3/lib:$HOME/opt/zenoh-c-1.9.0/lib" \
 `StorageNode`, creates one Session per Job, and passes `SITOS_PREFIX`, `SITOS_SESSION_ID`, and a
 client configuration to the child. The opt-in smoke test uses `scripts/session_worker.py` and
 `scripts/buffer_reader.py`; it covers success, non-zero exit, cancel, parameter round trips, raw
-buffer reading, and post-close buffer absence.
+buffer reading, and post-close buffer absence. For cancel, it waits for that Job's own
+`SITOS_READER_OK` marker before sending the cancel, so the post-close absence check proves cleanup
+of a published value.
 
 Options: `--listen HOST:PORT` (loopback addresses only; port `0` picks an ephemeral port and prints
 it), `--journal DIR` (the production `SegmentJournal` from `sitometron_journal`, Issue #59: segment
@@ -138,8 +140,8 @@ contract or a Phase 4 decision.
 - With an explicit local TCP client configuration, the worker's `ParamCache` read the seeded base
   value and `ParamStore` acknowledged and read back the Session output value.
 - A raw Zenoh reader read the durable bytes while the Session was active. After `CloseSession`, the
-  same reader received no durable value. The smoke test observed this for success, non-zero exit,
-  and cancel paths.
+  same reader received no durable value. The smoke test waits for each Job's own `SITOS_READER_OK`
+  marker before terminal cleanup and observed this for success, non-zero exit, and cancel paths.
 - The worker's raw fallback put both durable and ephemeral byte routes through the documented
   `zenoh/bytes` wire shape. The durable route was visible before close and absent after close.
 
@@ -217,6 +219,11 @@ verify the recorded SHA-256 before opening the archive. Sitos remains outside th
 - Decide whether Phase 4 owns a buffer reader, a durable retention boundary, and an explicit-config
   Fence transport capability. This spike does not change Sitos or promote the raw fallback to a
   product adapter.
+- Define the `CreateSession` failure path. With the test-only, opt-in
+  `SITOMETRON_SPIKE_FAIL_CREATE_SESSION=1` environment variable, the smoke test observed an admitted
+  Job reaching `failed` through `worker_launch_observed{failed}` and the normal finalization,
+  terminal, release, and cleanup events; no child ran, the refusal reason remained in the driver
+  error, and shutdown reported zero open Sessions. The variable is unset by default.
 
 ## External REST v1 prototype
 
@@ -349,7 +356,9 @@ process that starts and exits on its own, the Journal receives 13 records per Jo
 | 13 | `cleanup_status_recorded` | driver, `completed` |
 
 A spawn failure produces `worker_launch_observed{failed}` instead of 4–6 and continues from 7 with
-a failed outcome.
+a failed outcome. A Sitos `CreateSession` failure follows the same failed-launch path before any
+child is spawned; it records the driver error and continues through terminal cleanup without an
+open Sitos Session.
 
 ## Intentionally missing
 

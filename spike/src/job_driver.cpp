@@ -302,13 +302,6 @@ void JobDriver::Run(std::string job_id) {
   core::RawCandidateEvent worker_event;
   // Steps 1 to 3. False when the Job cannot be driven further.
   const auto launch_and_wait = [&] {
-    // The Session is created before any child launch handoff reaches ProcessRunner.
-    if (std::string session_error; !sitos_.CreateSession(job_id, session_error)) {
-      Fail(job_id, "Sitos session creation failed: " + session_error);
-      return false;
-    }
-    session_created = true;
-
     // 1. admitted -> preparing
     if (!step("resources_committed",
               {{"allocation_id", k_allocation_id},
@@ -336,6 +329,15 @@ void JobDriver::Run(std::string job_id) {
       Fail(job_id, "launch handoff never arrived (shutdown?)");
       return false;
     }
+
+    // The Session is created after launch intent is committed but before any child launch.
+    if (std::string session_error; !sitos_.CreateSession(job_id, session_error)) {
+      Fail(job_id, "Sitos session creation failed: " + session_error);
+      const bool observed =
+          step("worker_launch_observed", {{"operation_id", operation}, {"outcome", "failed"}});
+      return observed || overtaken;
+    }
+    session_created = true;
 
     // 3. spawn the real process and report what the runner observed
     LaunchSpec spec = record->spec;

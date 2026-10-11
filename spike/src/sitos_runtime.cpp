@@ -1,6 +1,7 @@
 #include "sitos_runtime.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <mutex>
@@ -148,6 +149,11 @@ bool SitosRuntime::CreateSession(const std::string& session_id, std::string& err
     return false;
   }
 #ifdef SITOMETRON_SPIKE_SITOS
+  if (const char* refusal = std::getenv("SITOMETRON_SPIKE_FAIL_CREATE_SESSION");
+      refusal != nullptr && std::string_view(refusal) == "1") {
+    error = "test-only CreateSession refusal";
+    return false;
+  }
   sitos::SessionOptions options;
   options.durable_buffers = true;
   options.ephemeral_buffers = true;
@@ -210,6 +216,12 @@ void SitosRuntime::CloseAll() noexcept {
         LogCloseUnknown("SITOS_SESSION_CLOSE_EXCEPTION ", session_id);
       }
     }
+    std::size_t remaining = 0;
+    {
+      std::lock_guard lock(impl_->mutex);
+      remaining = impl_->active_sessions.size();
+    }
+    std::cout << "SITOS_SESSIONS_OPEN " << remaining << '\n' << std::flush;
   } catch (const std::exception& error) {
     LogCloseException("SITOS_CLOSE_ALL_EXCEPTION ", {}, error);
   } catch (...) {

@@ -73,7 +73,9 @@ def main() -> int:
             durable.fence(sitos.FenceDurability.APPLIED, timeout=2.0)
             ephemeral.fence(sitos.FenceDurability.APPLIED, timeout=2.0)
             print("SITOS_BUFFER_PUBLISHER_OK", flush=True)
-        except Exception as error:
+        except ValueError as error:
+            if str(error) != "Transport does not support Fence":
+                raise
             # Sitos 0.1.3 rejects caller-supplied Zenoh configuration for BufferPublisher because
             # it cannot prove the Fence QoS profile. Keep the raw wire fallback visible as a spike
             # finding so the parameter/session path can still be exercised end to end.
