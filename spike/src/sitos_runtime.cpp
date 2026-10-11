@@ -108,9 +108,9 @@ SitosRuntime::SitosRuntime(std::string prefix) : prefix_(std::move(prefix)) {
 SitosRuntime::~SitosRuntime() {
   CloseAll();
 #ifdef SITOMETRON_SPIKE_SITOS
-  // The owner calls CloseAll before this destructor while the node is still running. If construction
-  // failed, the partially initialized node and client objects are released by Impl in dependency
-  // order here.
+  // The owner calls CloseAll before this destructor while the node is still running. If
+  // construction failed, the partially initialized node and client objects are released by Impl in
+  // dependency order here.
   impl_.reset();
 #endif
 }

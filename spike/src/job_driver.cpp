@@ -96,7 +96,8 @@ CreateOutcome JobDriver::Create(LaunchSpec spec) {
   std::lock_guard create(create_mutex_);
   if (orchestrator_->failed()) return {CreateRefusal::kServiceFailed, {}, "the writer has failed"};
   if (!sitos_.Ready()) {
-    return {CreateRefusal::kServiceFailed, {},
+    return {CreateRefusal::kServiceFailed,
+            {},
             sitos_.Error().empty() ? "the Sitos runtime is not ready" : sitos_.Error()};
   }
   {

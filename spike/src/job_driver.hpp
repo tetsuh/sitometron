@@ -17,9 +17,9 @@
 
 #include "job_orchestrator.hpp"
 #include "process_runner.hpp"
-#include "sitos_runtime.hpp"
 #include "sitometron/core/job_ports.hpp"
 #include "sitometron/journal/segment_journal.hpp"
+#include "sitos_runtime.hpp"
 #include "system_ports.hpp"
 
 namespace sitometron::spike {

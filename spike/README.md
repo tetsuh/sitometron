@@ -147,10 +147,14 @@ contract or a Phase 4 decision.
   disabled. The spike therefore uses `CreateSession(sid, SessionOptions{durable_buffers=true,
   ephemeral_buffers=true})`; a disabled-route push is not a usable buffer path.
 - Default Zenoh discovery did not connect the independently spawned Python wheel client to the C++
-  node in this environment. The C++ host therefore listens on local TCP port `27400` and passes an
-  explicit client configuration to the worker and raw reader. This is a deployment requirement for
-  this run, not a Sitos wire change; concurrent opt-in daemons using this spike port are not
-  supported.
+  node in this environment. A Checkpoint 3b `zenoh.scout` run saw no Hello messages. The cause is
+  unknown because firewall state was not readable without root. The C++ host therefore listens on
+  local TCP port `27400` and passes an explicit client configuration to the worker and raw reader.
+  Concurrent opt-in daemons using this spike port are not supported.
+- The Sitos 0.1.3 Python API has no endpoint option other than the complete `zenoh_config_json`.
+  `src/transport/zenoh_transport.cpp` at v0.1.3 uses `z_config_default()` when no JSON is supplied;
+  it does not read `ZENOH_CONFIG`. Any caller JSON disables the Fence profile by design, so a
+  worker that needs explicit endpoints cannot use `BufferPublisher` Fence.
 - Sitos 0.1.3 rejects a caller-supplied Zenoh configuration for `BufferPublisher` with
   `ValueError: Transport does not support Fence`. The reason is that the normal transport factory
   disables the Fence capability whenever JSON configuration is supplied. The worker records this
@@ -170,10 +174,10 @@ contract or a Phase 4 decision.
 1. Add a supported raw durable-buffer reader API or a documented reader helper. Evidence: the
    acceptance reader has to issue raw `get` on
    `<prefix>/buffers/<sid>/durable/<key>` because Sitos 0.1.3 exposes no buffer reader.
-2. Allow `BufferPublisher` to use a caller-supplied transport/configuration while retaining a
-   verified Fence QoS capability, or expose a supported explicit-config Fence mode. Evidence: the
-   local explicit TCP configuration makes parameters reachable but produces the observed
-   `Transport does not support Fence` refusal.
+2. Provide a way to choose endpoints while retaining the verified Fence profile, or expose a
+   supported explicit-config Fence mode. Evidence: `src/transport/zenoh_transport.cpp` at v0.1.3
+   disables the profile for caller JSON; the local explicit TCP configuration makes parameters
+   reachable but produces the observed `Transport does not support Fence` refusal.
 3. Define durable-buffer lifetime and crash/cancel semantics for the adapter. Evidence: normal
    non-zero and cancel Jobs close the Session and remove in-memory durable values; a reader cannot
    inspect them after close, and a crash can leave an unresolved Job requiring startup recovery.

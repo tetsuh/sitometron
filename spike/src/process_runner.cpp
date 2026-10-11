@@ -95,12 +95,13 @@ SpawnResult ProcessRunner::Spawn(const LaunchSpec& spec) {
       return invalid;
     }
     const auto name = assignment.substr(0, separator);
-    environment.erase(
-        std::remove_if(environment.begin(), environment.end(), [&](const std::string& item) {
-          return item.size() > name.size() && item.compare(0, name.size(), name) == 0 &&
-                 item[name.size()] == '=';
-        }),
-        environment.end());
+    environment.erase(std::remove_if(environment.begin(), environment.end(),
+                                     [&](const std::string& item) {
+                                       return item.size() > name.size() &&
+                                              item.compare(0, name.size(), name) == 0 &&
+                                              item[name.size()] == '=';
+                                     }),
+                      environment.end());
     environment.push_back(assignment);
   }
   std::vector<char*> envp;
@@ -123,8 +124,8 @@ SpawnResult ProcessRunner::Spawn(const LaunchSpec& spec) {
       return result;
     }
   }
-  const int status =
-      posix_spawnp(&result.pid, spec.executable.c_str(), &actions, nullptr, argv.data(), envp.data());
+  const int status = posix_spawnp(&result.pid, spec.executable.c_str(), &actions, nullptr,
+                                  argv.data(), envp.data());
   posix_spawn_file_actions_destroy(&actions);
   if (status != 0) {
     result.pid = -1;
