@@ -23,6 +23,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--exit-code", type=int, default=0)
     parser.add_argument("--sleep-after", type=float, default=0.0)
+    parser.add_argument("--publish-delay", type=float, default=0.0)
     args = parser.parse_args()
 
     prefix = os.environ.get("SITOS_PREFIX", PREFIX_FALLBACK)
@@ -47,6 +48,9 @@ def main() -> int:
             store.put(scope, "output", output_value, ack=True, ack_timeout_ms=5000)
             if store.get(scope, "output", type=str) != output_value:
                 raise RuntimeError("Session output parameter did not round-trip")
+
+        if args.publish_delay > 0:
+            time.sleep(args.publish_delay)
 
         publisher_error = None
         try:
