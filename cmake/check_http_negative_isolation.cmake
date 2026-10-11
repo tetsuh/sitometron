@@ -56,6 +56,15 @@ elseif(HTTP_NEGATIVE_MODE STREQUAL "include")
         "${_fixture} did not report the include violation: ${RUN_CHECK_OUTPUT}")
     endif()
   endforeach()
+  run_check(
+    "unparseable HTTP include macro" 1
+    check_http_dependency_allowlist.cmake
+    "-DSITOMETRON_HTTP_LINK_TARGETS=${_allowed_targets_arg}"
+    "-DSITOMETRON_HTTP_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_dependency_forbidden_macro.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "unparseable HTTP include directive")
+    message(FATAL_ERROR
+      "HTTP include macro did not report the directive violation: ${RUN_CHECK_OUTPUT}")
+  endif()
 elseif(HTTP_NEGATIVE_MODE STREQUAL "target")
   run_check(
     "approved HTTP target control" 0
@@ -135,6 +144,14 @@ elseif(HTTP_NEGATIVE_MODE STREQUAL "public")
   if(NOT RUN_CHECK_OUTPUT MATCHES "dependency-owned public type")
     message(FATAL_ERROR
       "HTTP public nlohmann type did not report the violation: ${RUN_CHECK_OUTPUT}")
+  endif()
+  run_check(
+    "HTTP public macro include" 1
+    check_http_public_api_isolation.cmake
+    "-DSITOMETRON_HTTP_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_public_api_forbidden_macro.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "unparseable HTTP public include directive")
+    message(FATAL_ERROR
+      "HTTP public macro include did not report the directive violation: ${RUN_CHECK_OUTPUT}")
   endif()
 else()
   message(FATAL_ERROR "Unknown HTTP_NEGATIVE_MODE: ${HTTP_NEGATIVE_MODE}")

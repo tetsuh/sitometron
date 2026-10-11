@@ -226,7 +226,9 @@ When `SITOMETRON_ENABLE_HTTP=ON`, the dependency integration registers these CTe
 `http_dependency_allowlist`, `http_dependency_rejects_unapproved_include`,
 `http_dependency_rejects_unapproved_target`, `http_public_api_dependency_isolation`, and
 `http_dependency_api_smoke`. The HTTP checks are conditional on that option; all core dependency
-checks remain unconditional.
+checks remain unconditional. These scanners guard against accidental use of unapproved headers,
+require literal `<...>` or `"..."` include directives, refuse every other form, and do not attempt
+to defeat deliberate evasion.
 
 ## 7. Packaging
 

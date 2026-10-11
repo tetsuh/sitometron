@@ -47,6 +47,14 @@ if(CORE_NEGATIVE_MODE STREQUAL "private")
         "${_fixture} did not report the include violation: ${RUN_CHECK_OUTPUT}")
     endif()
   endforeach()
+  run_check(
+    "unparseable core include macro" 1
+    check_core_dependency_isolation.cmake
+    "-DSITOMETRON_CORE_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/core_dependency_forbidden_macro.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "unparseable core include directive")
+    message(FATAL_ERROR
+      "core include macro did not report the directive violation: ${RUN_CHECK_OUTPUT}")
+  endif()
 elseif(CORE_NEGATIVE_MODE STREQUAL "public")
   run_check(
     "actual public API boundary" 0
