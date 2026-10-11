@@ -103,7 +103,7 @@ int CheckJsonKeyCallback() {
 
 }  // namespace
 
-int main() {
+int main() try {
   int result = 0;
   const int beast_result = CheckBeastHeaderParsing();
   result |= beast_result;
@@ -115,4 +115,6 @@ int main() {
   std::cout << "http_dependency_api_smoke: JSON key callback "
             << (json_result == 0 ? "PASS" : "FAIL") << '\n';
   return result;
+} catch (...) {
+  return 1;
 }
