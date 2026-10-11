@@ -28,13 +28,15 @@ build/dev-linux/spike/sitometron_spike --listen 127.0.0.1:8080 \
     --journal /tmp/sitometron-journal --workdir /tmp
 ```
 
-The optional Issue #98 Sitos build is separate from the walking skeleton:
+The optional Issue #98 Sitos build is separate from the walking skeleton. Keep the Python virtual
+environment outside the checkout (here `~/opt/venvs/sitometron-spike`, with `sitos==0.1.3` and
+`eclipse-zenoh==1.9.0`), so the working tree stays clean:
 
 ```sh
 cmake -S . -B build/spike-sitos -G Ninja \
     -DSITOMETRON_BUILD_SPIKE=ON \
     -DSITOMETRON_BUILD_SPIKE_SITOS=ON \
-    -DSITOMETRON_SPIKE_PYTHON="$PWD/.venv-spike/bin/python" \
+    -DSITOMETRON_SPIKE_PYTHON="$HOME/opt/venvs/sitometron-spike/bin/python" \
     -DCMAKE_PREFIX_PATH="$HOME/opt/sitos-0.1.3" \
     -Dzenohc_ROOT="$HOME/opt/zenoh-c-1.9.0" \
     -DZENOHC_ROOT="$HOME/opt/zenoh-c-1.9.0"
