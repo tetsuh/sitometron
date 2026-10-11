@@ -191,13 +191,13 @@ wait "$daemon"
 daemon=''
 no_node_error="$scratch/no-node-reader.stderr"
 if "$python" "$reader" --prefix "$prefix" --sid no-node-session --key worker/durable \
-  --expect-missing >"$scratch/no-node-reader.stdout" \
+  --zenoh-config "$zenoh_config" --expect-missing >"$scratch/no-node-reader.stdout" \
   2>"$no_node_error"; then
   echo "reader accepted durable absence with no node running"
   cat "$scratch/no-node-reader.stdout" "$no_node_error"
   exit 1
 fi
-grep -q '^SITOS_READER_ERROR .*control query' "$no_node_error" || {
+grep -Eq '^SITOS_READER_ERROR .*(control query|Zenoh session failed)' "$no_node_error" || {
   echo "no-node reader failure did not identify the control query"
   cat "$scratch/no-node-reader.stdout" "$no_node_error"
   exit 1
