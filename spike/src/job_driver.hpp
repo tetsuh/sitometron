@@ -17,6 +17,7 @@
 
 #include "job_orchestrator.hpp"
 #include "process_runner.hpp"
+#include "sitos_runtime.hpp"
 #include "sitometron/core/job_ports.hpp"
 #include "sitometron/journal/segment_journal.hpp"
 #include "system_ports.hpp"
@@ -27,6 +28,8 @@ struct DriverConfig {
   std::size_t max_jobs = 32;          // resident slots: also the lifetime Job count (see README)
   std::size_t trace_capacity = 4096;  // writer trace + ingress log bound (see README)
   std::string working_directory;
+  // Prefix of the optional in-process Sitos StorageNode (Issue #98).
+  std::string sitos_prefix = "sitometron-spike";
   // The principal recorded in cancel_accepted (ADR-0008 Section 3): one configured name.
   std::string cancel_principal = "local-operator";
   // Replayed at startup (ADR-0006 Section 6): snapshots in creation order, and the unresolved Jobs
@@ -122,6 +125,7 @@ class JobDriver {
   ProcessRunner runner_;
   NullSessionRetainer session_;
   journal::SegmentJournal& journal_;
+  SitosRuntime sitos_;
   std::unique_ptr<core::internal::JobOrchestrator> orchestrator_;
 
   mutable std::mutex mutex_;

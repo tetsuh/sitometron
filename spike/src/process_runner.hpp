@@ -22,6 +22,8 @@ struct LaunchSpec {
   std::string executable;
   std::vector<std::string> arguments;
   std::string working_directory;
+  // Environment assignments override inherited values for the child only.
+  std::vector<std::string> environment;
 };
 
 struct SpawnResult {

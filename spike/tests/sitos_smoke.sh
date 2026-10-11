@@ -12,6 +12,7 @@ mkdir -p -- "$scratch"
 journal="$scratch/journal"
 log="$scratch/daemon.log"
 prefix='sitometron-spike'
+zenoh_config='{"mode":"client","connect":{"endpoints":["tcp/127.0.0.1:27400"]},"scouting":{"multicast":{"enabled":false}}}'
 daemon=''
 
 command -v curl >/dev/null || { echo "curl is required"; exit 2; }
@@ -72,7 +73,9 @@ printf '%s' "$success_body" | grep -q '"error":null' || {
 }
 grep -q 'SITOS_WORKER_PARAMETER_OK input=spike-input output=worker:spike-input' "$log"
 grep -q 'SITOS_READER_OK .*durable-value' "$log"
-"$python" "$reader" --prefix "$prefix" --sid "$success_id" --key worker/durable --expect-missing
+grep -q 'SITOS_BUFFER_PUBLISHER_LIMITATION\|SITOS_BUFFER_PUBLISHER_OK' "$log"
+"$python" "$reader" --prefix "$prefix" --sid "$success_id" --key worker/durable \
+  --zenoh-config "$zenoh_config" --expect-missing
 
 failed_id=$(create_job failed)
 failed_body=$(wait_cleanup "$failed_id")
@@ -84,7 +87,8 @@ printf '%s' "$failed_body" | grep -q '"exit_code":3' || {
   echo "expected worker exit code 3: $failed_body"
   exit 1
 }
-"$python" "$reader" --prefix "$prefix" --sid "$failed_id" --key worker/durable --expect-missing
+"$python" "$reader" --prefix "$prefix" --sid "$failed_id" --key worker/durable \
+  --zenoh-config "$zenoh_config" --expect-missing
 
 cancel_id=$(create_job cancel)
 cancel_body=''
@@ -103,7 +107,9 @@ printf '%s' "$cancel_body" | grep -q '"state":"cancelled"' || {
   echo "expected cancel outcome: $cancel_body"
   exit 1
 }
-"$python" "$reader" --prefix "$prefix" --sid "$cancel_id" --key worker/durable --expect-missing
+"$python" "$reader" --prefix "$prefix" --sid "$cancel_id" --key worker/durable \
+  --zenoh-config "$zenoh_config" --expect-missing
+[[ "$(grep -c '^SITOS_SESSION_CLOSED ' "$log")" -eq 3 ]]
 
 kill -TERM "$daemon"
 wait "$daemon"

@@ -13,12 +13,15 @@ def main() -> int:
     parser.add_argument("--prefix", required=True)
     parser.add_argument("--sid", required=True)
     parser.add_argument("--key", required=True)
+    parser.add_argument("--zenoh-config")
     parser.add_argument("--expect-missing", action="store_true")
     args = parser.parse_args()
 
     key = f"{args.prefix}/buffers/{args.sid}/durable/{args.key}"
     deadline = time.monotonic() + 4.0
-    with zenoh.open(zenoh.Config()) as session:
+    config_json = args.zenoh_config
+    config = zenoh.Config.from_json5(config_json) if config_json else zenoh.Config()
+    with zenoh.open(config) as session:
         while time.monotonic() < deadline:
             try:
                 replies = list(session.get(key, timeout=0.5))

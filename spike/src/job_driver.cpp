@@ -46,7 +46,7 @@ std::string StableApplicationId(const std::string& executable) {
 }  // namespace
 
 JobDriver::JobDriver(DriverConfig config, journal::SegmentJournal& journal)
-    : config_(std::move(config)), journal_(journal) {
+    : config_(std::move(config)), journal_(journal), sitos_(config_.sitos_prefix) {
   core::internal::Config orchestration;
   orchestration.max_jobs = config_.max_jobs;
   // Continue after the last durable record, with every replayed Job resident (OPS-003, OPS-004).
@@ -95,6 +95,10 @@ CreateOutcome JobDriver::Create(LaunchSpec spec) {
   // serialized here.
   std::lock_guard create(create_mutex_);
   if (orchestrator_->failed()) return {CreateRefusal::kServiceFailed, {}, "the writer has failed"};
+  if (!sitos_.Ready()) {
+    return {CreateRefusal::kServiceFailed, {},
+            sitos_.Error().empty() ? "the Sitos runtime is not ready" : sitos_.Error()};
+  }
   {
     std::lock_guard lock(mutex_);
     if (stopping_) return {CreateRefusal::kNotReady, {}, "daemon is shutting down"};
@@ -245,9 +249,18 @@ void JobDriver::Run(std::string job_id) {
 
   bool worker_succeeded = false;
   bool worker_reported = false;
+  bool session_created = false;
   core::RawCandidateEvent worker_event;
   // Steps 1 to 3. False when the Job cannot be driven further.
   const auto launch_and_wait = [&] {
+    // The Session is created before any child launch handoff reaches ProcessRunner.
+    std::string session_error;
+    if (!sitos_.CreateSession(job_id, session_error)) {
+      Fail(job_id, "Sitos session creation failed: " + session_error);
+      return false;
+    }
+    session_created = true;
+
     // 1. admitted -> preparing
     if (!step("resources_committed",
               {{"allocation_id", k_allocation_id},
@@ -279,6 +292,11 @@ void JobDriver::Run(std::string job_id) {
     // 3. spawn the real process and report what the runner observed
     LaunchSpec spec = record->spec;
     if (spec.working_directory.empty()) spec.working_directory = config_.working_directory;
+    if (sitos_.Enabled()) {
+      spec.environment.push_back("SITOS_PREFIX=" + sitos_.Prefix());
+      spec.environment.push_back("SITOS_SESSION_ID=" + job_id);
+      spec.environment.push_back("SITOS_ZENOH_CONFIG=" + sitos_.Config());
+    }
     // Spawn and publish the pid under the same lock that Shutdown() scans with, so a shutdown
     // either refuses the launch before it happens or sees the pid it has to signal.
     SpawnResult spawned;
@@ -354,6 +372,11 @@ void JobDriver::Run(std::string job_id) {
   else if (worker_succeeded)
     outcome = "succeeded";
   if (!step("terminal_outcome_committed", {{"outcome", outcome}})) return;
+  if (session_created) {
+    std::string session_error;
+    if (!sitos_.CloseSession(job_id, session_error))
+      Fail(job_id, "Sitos session close failed: " + session_error);
+  }
   if (worker_reported && !orchestrator_->RetireWorkerAck(worker_event))
     Record(job_id, "worker_ack_not_retired");
 
@@ -520,6 +543,7 @@ void JobDriver::Shutdown() {
   }
   for (auto& thread : threads)
     if (thread.joinable()) thread.join();
+  sitos_.CloseAll();
   runner_.Abandon();
   session_.Abandon();
   const auto marker = orchestrator_->SubmitShutdown();

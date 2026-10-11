@@ -5,6 +5,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <utility>
@@ -83,6 +84,30 @@ SpawnResult ProcessRunner::Spawn(const LaunchSpec& spec) {
   for (auto& item : owned) argv.push_back(item.data());
   argv.push_back(nullptr);
 
+  std::vector<std::string> environment;
+  for (char** item = environ; item != nullptr && *item != nullptr; ++item)
+    environment.emplace_back(*item);
+  for (const auto& assignment : spec.environment) {
+    const auto separator = assignment.find('=');
+    if (separator == std::string::npos || separator == 0) {
+      SpawnResult invalid;
+      invalid.error = "invalid environment assignment";
+      return invalid;
+    }
+    const auto name = assignment.substr(0, separator);
+    environment.erase(
+        std::remove_if(environment.begin(), environment.end(), [&](const std::string& item) {
+          return item.size() > name.size() && item.compare(0, name.size(), name) == 0 &&
+                 item[name.size()] == '=';
+        }),
+        environment.end());
+    environment.push_back(assignment);
+  }
+  std::vector<char*> envp;
+  envp.reserve(environment.size() + 1);
+  for (auto& item : environment) envp.push_back(item.data());
+  envp.push_back(nullptr);
+
   SpawnResult result;
   posix_spawn_file_actions_t actions;
   if (const int status = posix_spawn_file_actions_init(&actions); status != 0) {
@@ -99,7 +124,7 @@ SpawnResult ProcessRunner::Spawn(const LaunchSpec& spec) {
     }
   }
   const int status =
-      posix_spawnp(&result.pid, spec.executable.c_str(), &actions, nullptr, argv.data(), environ);
+      posix_spawnp(&result.pid, spec.executable.c_str(), &actions, nullptr, argv.data(), envp.data());
   posix_spawn_file_actions_destroy(&actions);
   if (status != 0) {
     result.pid = -1;

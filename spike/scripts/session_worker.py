@@ -9,6 +9,7 @@ import sys
 import time
 
 import sitos
+import zenoh
 
 DURABLE_KEY = "worker/durable"
 EPHEMERAL_KEY = "worker/ephemeral"
@@ -25,48 +26,82 @@ def main() -> int:
 
     prefix = os.environ.get("SITOS_PREFIX", PREFIX_FALLBACK)
     session_id = os.environ.get("SITOS_SESSION_ID", SESSION_FALLBACK)
+    zenoh_config = os.environ.get("SITOS_ZENOH_CONFIG")
     try:
-        with sitos.ParamCache(prefix=prefix, query_timeout_ms=2000) as cache:
+        with sitos.ParamCache(
+            prefix=prefix,
+            zenoh_config_json=zenoh_config,
+            query_timeout_ms=5000,
+        ) as cache:
             cache.attach(session_id)
             input_value = cache.get("input", type=str)
 
         output_value = f"worker:{input_value}"
-        with sitos.ParamStore(prefix=prefix, query_timeout_ms=2000) as store:
+        with sitos.ParamStore(
+            prefix=prefix,
+            zenoh_config_json=zenoh_config,
+            query_timeout_ms=5000,
+        ) as store:
             scope = f"session/{session_id}"
-            store.put(scope, "output", output_value, ack=True, ack_timeout_ms=2000)
+            store.put(scope, "output", output_value, ack=True, ack_timeout_ms=5000)
             if store.get(scope, "output", type=str) != output_value:
                 raise RuntimeError("Session output parameter did not round-trip")
 
-        durable = sitos.BufferPublisher(
-            session_id,
-            sitos.BufferClass.DURABLE,
-            prefix=prefix,
-            query_timeout_ms=2000,
-        )
-        ephemeral = sitos.BufferPublisher(
-            session_id,
-            sitos.BufferClass.EPHEMERAL,
-            prefix=prefix,
-            query_timeout_ms=2000,
-        )
-        durable.push(DURABLE_KEY, b"durable-value")
-        ephemeral.push(EPHEMERAL_KEY, b"ephemeral-value")
-        durable.fence(sitos.FenceDurability.APPLIED, timeout=2.0)
-        ephemeral.fence(sitos.FenceDurability.APPLIED, timeout=2.0)
-
-        subprocess.run(
-            [
-                sys.executable,
-                args.reader,
-                "--prefix",
-                prefix,
-                "--sid",
+        publisher_error = None
+        try:
+            durable = sitos.BufferPublisher(
                 session_id,
-                "--key",
-                DURABLE_KEY,
-            ],
-            check=True,
-        )
+                sitos.BufferClass.DURABLE,
+                prefix=prefix,
+                zenoh_config_json=zenoh_config,
+                query_timeout_ms=5000,
+            )
+            ephemeral = sitos.BufferPublisher(
+                session_id,
+                sitos.BufferClass.EPHEMERAL,
+                prefix=prefix,
+                zenoh_config_json=zenoh_config,
+                query_timeout_ms=5000,
+            )
+            durable.push(DURABLE_KEY, b"durable-value")
+            ephemeral.push(EPHEMERAL_KEY, b"ephemeral-value")
+            durable.fence(sitos.FenceDurability.APPLIED, timeout=2.0)
+            ephemeral.fence(sitos.FenceDurability.APPLIED, timeout=2.0)
+            print("SITOS_BUFFER_PUBLISHER_OK", flush=True)
+        except BaseException as error:
+            # Sitos 0.1.3 rejects caller-supplied Zenoh configuration for BufferPublisher because
+            # it cannot prove the Fence QoS profile. Keep the raw wire fallback visible as a spike
+            # finding so the parameter/session path can still be exercised end to end.
+            publisher_error = f"{type(error).__name__}: {error}"
+            config = (
+                zenoh.Config.from_json5(zenoh_config)
+                if zenoh_config
+                else zenoh.Config()
+            )
+            with zenoh.open(config) as raw:
+                raw.put(
+                    f"{prefix}/buffers/{session_id}/durable/{DURABLE_KEY}",
+                    b"durable-value",
+                )
+                raw.put(
+                    f"{prefix}/buffers/{session_id}/ephemeral/{EPHEMERAL_KEY}",
+                    b"ephemeral-value",
+                )
+            print(f"SITOS_BUFFER_PUBLISHER_LIMITATION {publisher_error}", flush=True)
+
+        reader_command = [
+            sys.executable,
+            args.reader,
+            "--prefix",
+            prefix,
+            "--sid",
+            session_id,
+            "--key",
+            DURABLE_KEY,
+        ]
+        if zenoh_config:
+            reader_command.extend(["--zenoh-config", zenoh_config])
+        subprocess.run(reader_command, check=True)
         print(
             f"SITOS_WORKER_PARAMETER_OK input={input_value} output={output_value}",
             flush=True,
@@ -76,7 +111,9 @@ def main() -> int:
         return args.exit_code
     except BaseException as error:  # the process status is part of the scenario
         print(
-            f"SITOS_WORKER_ERROR {type(error).__name__}: {error}",
+            f"SITOS_WORKER_ERROR prefix={prefix} sid={session_id} "
+            f"zenoh_config_len={len(zenoh_config or '')} "
+            f"{type(error).__name__}: {error}",
             file=sys.stderr,
             flush=True,
         )
