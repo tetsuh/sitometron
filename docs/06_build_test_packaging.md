@@ -15,8 +15,10 @@ asan-ubsan
 tsan
 ```
 
-Production adapters are disabled by default until their owning Phase enables and qualifies them.
-See [the dependency policy](09_dependency_policy.md).
+Production adapter behavior remains disabled until its owning Phase enables and qualifies it. The
+Issue #96 dependency-only `sitometron_http` target is enabled by default; the other adapter options
+remain disabled because their dependencies are not in the manifest. See [the dependency
+policy](09_dependency_policy.md).
 
 ## 2. C++ style and analysis
 
@@ -219,6 +221,12 @@ The direct manifest and closure/license evidence are recorded in
 [`dependency_closure.md`](dependency_closure.md). The manifest, immutable baseline, and separately
 verified tool checkout are the resolution authority; closure tables are audit evidence and not an
 unofficial lock file.
+
+When `SITOMETRON_ENABLE_HTTP=ON`, the dependency integration registers these CTests:
+`http_dependency_allowlist`, `http_dependency_rejects_unapproved_include`,
+`http_dependency_rejects_unapproved_target`, `http_public_api_dependency_isolation`, and
+`http_dependency_api_smoke`. The HTTP checks are conditional on that option; all core dependency
+checks remain unconditional.
 
 ## 7. Packaging
 

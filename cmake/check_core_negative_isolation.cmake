@@ -33,6 +33,18 @@ if(CORE_NEGATIVE_MODE STREQUAL "private")
     message(FATAL_ERROR
       "unapproved private include did not report the include violation: ${RUN_CHECK_OUTPUT}")
   endif()
+  foreach(_fixture IN ITEMS
+      core_dependency_forbidden_beast.hpp
+      core_dependency_forbidden_asio.hpp)
+    run_check(
+      "unapproved core adapter include ${_fixture}" 1
+      check_core_dependency_isolation.cmake
+      "-DSITOMETRON_CORE_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/${_fixture}")
+    if(NOT RUN_CHECK_OUTPUT MATCHES "unapproved core include")
+      message(FATAL_ERROR
+        "${_fixture} did not report the include violation: ${RUN_CHECK_OUTPUT}")
+    endif()
+  endforeach()
 elseif(CORE_NEGATIVE_MODE STREQUAL "public")
   run_check(
     "actual public API boundary" 0
@@ -127,6 +139,16 @@ include("@HELPER@")
     message(FATAL_ERROR
       "unapproved target did not report the target violation: ${RUN_CHECK_OUTPUT}")
   endif()
+  foreach(_forbidden_target IN ITEMS Boost::beast Boost::asio)
+    run_target_probe(
+      "unapproved core adapter target ${_forbidden_target}" 1 FALSE
+      nlohmann_json::nlohmann_json Boost::uuid Boost::hash2 Threads::Threads
+      ${_forbidden_target})
+    if(NOT RUN_CHECK_OUTPUT MATCHES "unapproved core link target")
+      message(FATAL_ERROR
+        "${_forbidden_target} did not report the target violation: ${RUN_CHECK_OUTPUT}")
+    endif()
+  endforeach()
   run_target_probe(
     "missing approved target" 1 FALSE
     nlohmann_json::nlohmann_json Boost::uuid Threads::Threads)

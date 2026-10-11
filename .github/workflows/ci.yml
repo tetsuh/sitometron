@@ -236,6 +236,23 @@ jobs:
           if (-not (Test-Path -LiteralPath $buildNinja -PathType Leaf)) { throw "readable build.ninja is missing: $buildNinja" }
           if (-not (Select-String -LiteralPath $buildNinja -Pattern 'z-applocal' -Quiet -ErrorAction Stop)) { return }
           throw 'project build still invokes vcpkg z-applocal'
+      - name: Record HTTP smoke imports and cancellation evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -property installationPath
+          Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
+          $smoke = Join-Path $env:GITHUB_WORKSPACE 'build/dev-windows/sitometron_http_dependency_api_smoke.exe'
+          if (-not (Test-Path -LiteralPath $smoke -PathType Leaf)) { throw "HTTP smoke executable is missing: $smoke" }
+          $imports = & dumpbin.exe /dependents $smoke 2>&1
+          $imports | Write-Output
+          foreach ($forbidden in 'boost_context', 'boost_date_time', 'boost_container') {
+            if ($imports -match "(?i)$forbidden") { throw "HTTP smoke executable imports forbidden DLL family: $forbidden" }
+          }
+          & $smoke
       - name: Save vcpkg filesystem binary cache
         if: success() && steps.vcpkg-cache-identity.outputs.available == 'true' && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

@@ -7,7 +7,7 @@ endif()
 project(sitometron VERSION 0.1.0 LANGUAGES CXX)
 
 option(SITOMETRON_BUILD_TESTS "Build sitometron tests" ON)
-option(SITOMETRON_ENABLE_HTTP "Build the HTTP adapter" OFF)
+option(SITOMETRON_ENABLE_HTTP "Build the HTTP adapter" ON)
 option(SITOMETRON_ENABLE_SITOS "Build the sitos adapter" OFF)
 option(SITOMETRON_ENABLE_HWLOC "Build the hwloc topology adapter" OFF)
 option(SITOMETRON_ENABLE_QUILL "Build the Quill logging adapter" OFF)
@@ -79,6 +79,42 @@ endif()
 set(SITOMETRON_CORE_LINK_TARGETS ${SITOMETRON_CORE_LINK_LIBRARIES})
 set(SITOMETRON_CORE_INTERFACE_LINK_TARGETS ${SITOMETRON_CORE_INTERFACE_LINK_LIBRARIES})
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_link_target_allowlist.cmake)
+
+if(SITOMETRON_ENABLE_HTTP)
+  find_package(Boost CONFIG REQUIRED COMPONENTS beast asio)
+
+  add_library(sitometron_http STATIC src/http/placeholder.cpp)
+  add_library(sitometron::http ALIAS sitometron_http)
+  target_include_directories(
+    sitometron_http
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      $<INSTALL_INTERFACE:include>)
+  target_compile_features(sitometron_http PUBLIC cxx_std_20)
+  target_link_libraries(
+    sitometron_http
+    PRIVATE
+      sitometron::core
+      Boost::beast
+      Boost::asio
+      nlohmann_json::nlohmann_json)
+  sitometron_enable_project_warnings(sitometron_http)
+  sitometron_enable_sanitizers(sitometron_http)
+
+  get_target_property(SITOMETRON_HTTP_LINK_LIBRARIES sitometron_http LINK_LIBRARIES)
+  if(NOT SITOMETRON_HTTP_LINK_LIBRARIES)
+    message(FATAL_ERROR "sitometron_http must link the approved private dependency targets")
+  endif()
+  set(SITOMETRON_HTTP_LINK_TARGETS ${SITOMETRON_HTTP_LINK_LIBRARIES})
+  file(GLOB_RECURSE SITOMETRON_HTTP_SCAN_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/http/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/http/*.hpp")
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_dependency_allowlist.cmake)
+
+  file(GLOB_RECURSE SITOMETRON_HTTP_PUBLIC_SCAN_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/sitometron/http/*.hpp")
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_public_api_isolation.cmake)
+endif()
 
 add_library(
   sitometron_journal STATIC
@@ -352,6 +388,56 @@ if(SITOMETRON_BUILD_TESTS)
   sitometron_enable_project_warnings(sitometron_core_dependency_api_smoke)
   sitometron_enable_sanitizers(sitometron_core_dependency_api_smoke)
   add_test(NAME core_dependency_api_smoke COMMAND sitometron_core_dependency_api_smoke)
+
+  if(SITOMETRON_ENABLE_HTTP)
+    add_executable(
+      sitometron_http_dependency_api_smoke
+      tests/unit/http_dependency_api_smoke.cpp)
+    target_link_libraries(
+      sitometron_http_dependency_api_smoke
+      PRIVATE
+        sitometron::http
+        Boost::beast
+        Boost::asio
+        nlohmann_json::nlohmann_json)
+    sitometron_enable_project_warnings(sitometron_http_dependency_api_smoke)
+    sitometron_enable_sanitizers(sitometron_http_dependency_api_smoke)
+    add_test(
+      NAME http_dependency_api_smoke
+      COMMAND sitometron_http_dependency_api_smoke)
+
+    add_test(
+      NAME http_dependency_allowlist
+      COMMAND
+        ${CMAKE_COMMAND}
+        -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DHTTP_NEGATIVE_MODE=allowlist
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_negative_isolation.cmake)
+
+    add_test(
+      NAME http_dependency_rejects_unapproved_include
+      COMMAND
+        ${CMAKE_COMMAND}
+        -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DHTTP_NEGATIVE_MODE=include
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_negative_isolation.cmake)
+
+    add_test(
+      NAME http_dependency_rejects_unapproved_target
+      COMMAND
+        ${CMAKE_COMMAND}
+        -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DHTTP_NEGATIVE_MODE=target
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_negative_isolation.cmake)
+
+    add_test(
+      NAME http_public_api_dependency_isolation
+      COMMAND
+        ${CMAKE_COMMAND}
+        -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DHTTP_NEGATIVE_MODE=public
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_negative_isolation.cmake)
+  endif()
 
   add_test(
     NAME core_dependency_allowlist
