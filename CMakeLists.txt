@@ -108,7 +108,8 @@ if(SITOMETRON_ENABLE_HTTP)
   set(SITOMETRON_HTTP_LINK_TARGETS ${SITOMETRON_HTTP_LINK_LIBRARIES})
   file(GLOB_RECURSE SITOMETRON_HTTP_SCAN_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/http/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/http/*.hpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/http/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/sitometron/http/*.hpp")
   include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_dependency_allowlist.cmake)
 
   file(GLOB_RECURSE SITOMETRON_HTTP_PUBLIC_SCAN_FILES

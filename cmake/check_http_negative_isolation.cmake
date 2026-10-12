@@ -65,6 +65,24 @@ function(assert_http_public_input_gap _fixture _line)
   endif()
 endfunction()
 
+function(assert_http_public_root_word_gap _fixture _line)
+  set(_path "${SITOMETRON_SOURCE_DIR}/tests/fixtures/${_fixture}")
+  run_check(
+    "HTTP public dependency root word ${_fixture}" 1
+    check_http_public_api_isolation.cmake
+    "-DSITOMETRON_HTTP_PUBLIC_SCAN_FILES=${_path}")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency root word")
+    message(FATAL_ERROR
+      "${_fixture} did not report the dependency root word violation: ${RUN_CHECK_OUTPUT}")
+  endif()
+  string(FIND "${RUN_CHECK_OUTPUT}" "${_path}:${_line}:" _location)
+  if(_location EQUAL -1)
+    message(FATAL_ERROR
+      "${_fixture} did not report the physical file and line ${_path}:${_line}: "
+      "${RUN_CHECK_OUTPUT}")
+  endif()
+endfunction()
+
 if(HTTP_NEGATIVE_MODE STREQUAL "allowlist")
   run_check(
     "approved HTTP dependency control" 0
@@ -82,6 +100,20 @@ elseif(HTTP_NEGATIVE_MODE STREQUAL "include")
     check_http_dependency_allowlist.cmake
     "-DSITOMETRON_HTTP_LINK_TARGETS=${_allowed_targets_arg}"
     "-DSITOMETRON_HTTP_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/dependency_scanner_approved_brackets.hpp")
+  run_check(
+    "approved HTTP public include control" 0
+    check_http_dependency_allowlist.cmake
+    "-DSITOMETRON_HTTP_LINK_TARGETS=${_allowed_targets_arg}"
+    "-DSITOMETRON_HTTP_SCAN_FILES=${_approved_public_fixture}")
+  run_check(
+    "unapproved HTTP public include" 1
+    check_http_dependency_allowlist.cmake
+    "-DSITOMETRON_HTTP_LINK_TARGETS=${_allowed_targets_arg}"
+    "-DSITOMETRON_HTTP_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_public_api_forbidden_unapproved_include.hpp")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "unapproved HTTP include")
+    message(FATAL_ERROR
+      "HTTP public unapproved include did not report the include violation: ${RUN_CHECK_OUTPUT}")
+  endif()
   assert_http_include_input_gap(dependency_scanner_forbidden_range_open.hpp 5)
   assert_http_include_input_gap(dependency_scanner_forbidden_range_close.hpp 5)
   assert_http_include_input_gap(dependency_scanner_forbidden_trailing_bracket.hpp 5)
@@ -159,7 +191,7 @@ elseif(HTTP_NEGATIVE_MODE STREQUAL "public")
     "HTTP public dependency type" 1
     check_http_public_api_isolation.cmake
     "-DSITOMETRON_HTTP_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_public_api_forbidden_type.hpp")
-  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency-owned public type")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency root word")
     message(FATAL_ERROR
       "HTTP public dependency type did not report the violation: ${RUN_CHECK_OUTPUT}")
   endif()
@@ -183,7 +215,7 @@ elseif(HTTP_NEGATIVE_MODE STREQUAL "public")
     "HTTP public Asio type" 1
     check_http_public_api_isolation.cmake
     "-DSITOMETRON_HTTP_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_public_api_forbidden_asio_type.hpp")
-  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency-owned public type")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency root word")
     message(FATAL_ERROR
       "HTTP public Asio type did not report the violation: ${RUN_CHECK_OUTPUT}")
   endif()
@@ -199,10 +231,23 @@ elseif(HTTP_NEGATIVE_MODE STREQUAL "public")
     "HTTP public nlohmann type" 1
     check_http_public_api_isolation.cmake
     "-DSITOMETRON_HTTP_PUBLIC_SCAN_FILES=${SITOMETRON_SOURCE_DIR}/tests/fixtures/http_public_api_forbidden_nlohmann_type.hpp")
-  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency-owned public type")
+  if(NOT RUN_CHECK_OUTPUT MATCHES "dependency root word")
     message(FATAL_ERROR
       "HTTP public nlohmann type did not report the violation: ${RUN_CHECK_OUTPUT}")
   endif()
+  foreach(_fixture IN ITEMS
+      http_public_api_forbidden_boost_spaced.hpp
+      http_public_api_forbidden_boost_tab.hpp
+      http_public_api_forbidden_boost_comment.hpp
+      http_public_api_forbidden_boost_alias.hpp
+      http_public_api_forbidden_boost_using.hpp
+      http_public_api_forbidden_nlohmann_spaced.hpp
+      http_public_api_forbidden_nlohmann_tab.hpp
+      http_public_api_forbidden_nlohmann_comment.hpp
+      http_public_api_forbidden_nlohmann_alias.hpp
+      http_public_api_forbidden_nlohmann_using.hpp)
+    assert_http_public_root_word_gap(${_fixture} 5)
+  endforeach()
   run_check(
     "HTTP public macro include" 1
     check_http_public_api_isolation.cmake
