@@ -15,8 +15,10 @@ asan-ubsan
 tsan
 ```
 
-Production adapters are disabled by default until their owning Phase enables and qualifies them.
-See [the dependency policy](09_dependency_policy.md).
+Production adapter behavior remains disabled until its owning Phase enables and qualifies it. The
+Issue #96 dependency-only `sitometron_http` target is enabled by default; the other adapter options
+remain disabled because their dependencies are not in the manifest. See [the dependency
+policy](09_dependency_policy.md).
 
 ## 2. C++ style and analysis
 
@@ -38,12 +40,12 @@ Phase 0A PR CI requires:
 The Linux clang-tidy step resolves the absolute `clang-tidy-18` application and runs the
 standard-library-only `tools/run_clang_tidy.py` helper against
 `build/dev-linux/compile_commands.json`. The helper intersects tracked `apps/**/*.cpp`,
-`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 22-source set and
+`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 24-source set and
 LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection drift.
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the 69-test `dev-linux` baseline. It runs without suppressions using
+CTest-name parity with the 74-test `dev-linux` baseline. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -219,6 +221,15 @@ The direct manifest and closure/license evidence are recorded in
 [`dependency_closure.md`](dependency_closure.md). The manifest, immutable baseline, and separately
 verified tool checkout are the resolution authority; closure tables are audit evidence and not an
 unofficial lock file.
+
+When `SITOMETRON_ENABLE_HTTP=ON`, the dependency integration registers these CTests:
+`http_dependency_allowlist`, `http_dependency_rejects_unapproved_include`,
+`http_dependency_rejects_unapproved_target`, `http_public_api_dependency_isolation`, and
+`http_dependency_api_smoke`. The HTTP checks are conditional on that option; all core dependency
+checks remain unconditional. These scanners guard against accidental use of unapproved dependencies rather than deliberate
+evasion, require literal `<...>` or `"..."` include directives, reject the dependency root words
+`boost` and `nlohmann` outright in public headers, and track unusual directive spellings in
+[Issue #100](https://github.com/tetsuh/sitometron/issues/100).
 
 ## 7. Packaging
 
