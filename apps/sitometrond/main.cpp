@@ -5,6 +5,7 @@
 #ifdef SITOMETRON_ENABLE_HTTP
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <string>
 #include <thread>
@@ -67,7 +68,7 @@ int main(int argc, char** argv) {
     std::cout << "sitometrond " << sitometron::Version() << " listening on "
               << parsed.config.http.listen_address << ':' << composition.listen_port() << '\n'
               << std::flush;
-    while (!g_stopping.load()) std::this_thread::yield();
+    while (!g_stopping.load()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     composition.Stop();
     return 0;
 #endif
