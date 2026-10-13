@@ -138,8 +138,10 @@ int ExpectError(const Response& response, std::string_view name, int status,
   try {
     const auto body = nlohmann::json::parse(response.body);
     const auto& error = body.at("error");
-    result |= Check(error.at("domain") == domain, name, "error domain mismatch");
-    result |= Check(error.at("code") == code, name, "error code mismatch");
+    result |= Check(error.at("domain").get<std::string>() == std::string(domain), name,
+                    "error domain mismatch");
+    result |= Check(error.at("code").get<std::string>() == std::string(code), name,
+                    "error code mismatch");
     result |= Check(error.at("details").is_object() && error.at("details").empty(), name,
                     "error details is not an empty object");
   } catch (const std::exception& error) {
