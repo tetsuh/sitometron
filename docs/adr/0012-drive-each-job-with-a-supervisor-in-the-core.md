@@ -48,7 +48,9 @@ The owner decided on 2026-10-14 under Issue #104:
 - the supervisor is specified as a function of committed state, with its cases in a
   machine-readable contract and a completeness check, not as a list of cases;
 - the supervisor lives inside `sitometron_core` and submits through the existing ingress; and
-- the scope is the one stated under "Not decided here" below.
+- the scope is the one stated under "Not decided here" below; and
+- after the first review, the decision function has no failure branches; later phases add them
+  inside the closed event set.
 
 ## Decision
 
@@ -110,25 +112,24 @@ The rules, first match wins:
 | 4 | `preparing`, launch `not_started` | `Submit worker_launch_intent` |
 | 5 | `preparing` after the intent, `running`, or `stopping` | `Wait`: application runner, Worker protocol, timer port, commands |
 | 6 | `finalizing`, retention `not_started` | `Submit session_retain_requested` for the bound Session |
-| 7 | `finalizing`, retention `requested`, the retainer reported a failure | `Submit finalization_failed` |
-| 8 | `finalizing`, retention `requested` | `Wait`: Session retainer |
-| 9 | `finalizing`, retention `retained`, finalization `pending`, the finalization work failed | `Submit finalization_failed` |
-| 10 | `finalizing`, retention `retained`, finalization `pending` | `Submit finalization_completed` |
-| 11 | `finalizing`, finalization `completed` or `failed` | `Submit terminal_outcome_committed` with the latched reason, or `succeeded` when no reason is latched and the success candidate is set |
-| 12 | terminal, exit not confirmed, cleanup `pending` | `Wait`: application runner, timer port |
-| 13 | terminal, exit confirmed, resources `committed`, the release work failed | `Submit cleanup_status_recorded{incomplete}` |
-| 14 | terminal, exit confirmed, resources `committed` | `Submit resources_released` |
-| 15 | terminal, cleanup `pending` | `Submit cleanup_status_recorded{completed}` |
-| 16 | otherwise | `Done` |
+| 7 | `finalizing`, retention `requested` | `Wait`: Session retainer |
+| 8 | `finalizing`, retention `retained`, finalization `pending` | `Submit finalization_completed` |
+| 9 | `finalizing`, finalization `completed` or `failed` | `Submit terminal_outcome_committed` with the latched reason, or `succeeded` when no reason is latched and the success candidate is set |
+| 10 | terminal, exit not confirmed, cleanup `pending` | `Wait`: application runner, timer port |
+| 11 | terminal, exit confirmed, resources `committed` | `Submit resources_released` |
+| 12 | terminal, cleanup `pending` | `Submit cleanup_status_recorded{completed}` |
+| 13 | otherwise | `Done` |
 
-Rows 7, 9, and 13 take a failure signal that is not in the snapshot: from the Session retainer
-(Phase 4), from the finalization work, and from the release work (Phase 3). Until those components
-exist, their placeholders never fail. A failure is reported only inside the closed ADR-0002 event
-set: a retention or finalization failure through `finalization_failed`, and a release failure through
-`cleanup_status_recorded{incomplete}`. If a later phase needs an event outside that set, it needs
-its own ADR.
+The function decides from the committed snapshot and the launch inputs only. It has no failure
+branch for Session retention, finalization, or resource release, because no component that can fail
+at those steps exists yet: their placeholders (Section 6) never fail, and ADR-0005's retention
+handoff returns no result. When a later phase gives one of these steps a way to fail, its design
+decides how the failure reaches the supervisor and adds the rows. It must report the failure inside
+the closed ADR-0002 event set: a retention or finalization failure through `finalization_failed`,
+and a release failure through `cleanup_status_recorded{incomplete}`. A failure that needs an event
+outside that set needs its own ADR (owner decision of 2026-10-14 under Issue #104).
 
-Row 16 also covers a terminal Job whose process-exit-confirmation timeout has already recorded
+Row 13 also covers a terminal Job whose process-exit-confirmation timeout has already recorded
 cleanup `incomplete` while the exit is still unconfirmed. The supervisor does nothing more for it;
 what happens to such a Job afterwards is not decided here.
 
@@ -137,8 +138,8 @@ what happens to such a Job afterwards is not decided here.
 The rules above are normative. The implementation Issue writes them as a machine-readable decision
 contract, `schemas/core/v1/supervisor-decision-contract.json`, in the pattern of
 `job-reducer-contract.json`:
-- each vector is a committed snapshot class, with the launch inputs present or absent and the
-  failure signals, and the expected decision; and
+- each vector is a committed snapshot class, with the launch inputs present or absent, and the
+  expected decision; and
 - the 25 cases of the Issue #104 inventory are among its seeds.
 
 `tools/validate_core_contract.py` gains two checks:
@@ -169,8 +170,8 @@ is a bounded, non-blocking update that cannot fail and does not re-enter ingress
 
 - **Resources:** until the Phase 3 resource design exists, `resources_committed` carries one fixed
   empty allocation, schema `allocation.v1` with payload `{}` and its SHA-256 digest, as the walking
-  skeleton does. The release work always succeeds.
-- **Finalization:** until a later phase gives it work, finalization always succeeds.
+  skeleton does. Releasing it has no work and cannot fail.
+- **Finalization:** until a later phase gives it work, finalization has none and cannot fail.
 - **Session retention:** until the Phase 4 Sitos adapter exists, the composition's Session retainer
   placeholder reports `session_retained` for the same identity and never fails.
 
@@ -229,6 +230,9 @@ Its named checks, Planned until the implementation Issue activates them:
 - **Add retention-failure and release-failure events**: rejected for now because
   `finalization_failed` and `cleanup_status_recorded{incomplete}` already carry both outcomes inside
   the closed event set.
+- **Define a failure input and its delivery path now**: rejected because the components that could
+  fail (Phase 3 resources, Phase 4 Sitos, later finalization work) are not designed yet, and the
+  retention handoff of ADR-0005 returns no result.
 
 ## References
 
