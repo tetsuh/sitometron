@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "sitometron/http/server.hpp"
 
@@ -15,6 +16,15 @@ struct StartupConfig {
   std::size_t max_jobs = 32;
   http::Options http;
 };
+
+struct ParseResult {
+  bool ok = false;
+  bool help = false;
+  std::string error;
+  StartupConfig config;
+};
+
+[[nodiscard]] ParseResult ParseStartupOptions(const std::vector<std::string>& args);
 
 class Phase1Composition final {
  public:

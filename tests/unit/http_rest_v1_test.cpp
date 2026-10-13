@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "apps/sitometrond/composition.hpp"
 #include "sitometron/http/server.hpp"
@@ -129,6 +130,68 @@ Response SendPartial(Backend& backend, Options options, std::string prefix) {
   return ParseResponse(bytes);
 }
 
+std::string ReadUntilHeaders(boost::asio::ip::tcp::socket& socket, boost::system::error_code& ec) {
+  std::string bytes;
+  std::array<char, 4096> buffer{};
+  while (!ec && bytes.find("\r\n\r\n") == std::string::npos) {
+    const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
+    if (count != 0) bytes.append(buffer.data(), count);
+  }
+  return bytes;
+}
+
+Response SendChunkedParts(Backend& backend, Options options, std::string header,
+                          const std::vector<std::string>& parts) {
+  options.listen_port = 0;
+  Server server(std::move(options), backend);
+  std::string error;
+  if (!server.Start(error)) {
+    std::cerr << "server start: " << error << '\n';
+    return {};
+  }
+  boost::asio::io_context context;
+  boost::asio::ip::tcp::socket socket(context);
+  boost::system::error_code ec;
+  ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
+  if (!ec) boost::asio::write(socket, boost::asio::buffer(header.data(), header.size()), ec);
+  const auto interim = ReadUntilHeaders(socket, ec);
+  if (ec || !interim.starts_with("HTTP/1.1 100 Continue")) {
+    ec = socket.close(ec);
+    server.Stop();
+    return ParseResponse(interim);
+  }
+  for (const auto& part : parts) {
+    boost::asio::write(socket, boost::asio::buffer(part.data(), part.size()), ec);
+    if (ec) break;
+  }
+  std::string bytes;
+  std::array<char, 4096> buffer{};
+  while (!ec) {
+    const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
+    if (count != 0) bytes.append(buffer.data(), count);
+  }
+  ec = socket.close(ec);
+  server.Stop();
+  return ParseResponse(bytes);
+}
+
+Response SendToPort(std::uint16_t port, std::string request) {
+  boost::asio::io_context context;
+  boost::asio::ip::tcp::socket socket(context);
+  boost::system::error_code ec;
+  ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), port}, ec);
+  if (ec) return {};
+  boost::asio::write(socket, boost::asio::buffer(request.data(), request.size()), ec);
+  std::string bytes;
+  std::array<char, 4096> buffer{};
+  while (!ec) {
+    const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
+    if (count != 0) bytes.append(buffer.data(), count);
+  }
+  ec = socket.close(ec);
+  return ParseResponse(bytes);
+}
+
 int ExpectError(const Response& response, std::string_view name, int status,
                 std::string_view domain, const char* code) {
   int result = Check(response.status == status, name,
@@ -205,6 +268,13 @@ int JobRoutesNotReady() {
       ExpectError(Send(backend, Options{},
                        HealthRequest("POST", "/v1/jobs/" + std::string(k_job_id) + "/cancel")),
                   "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+  result |= ExpectError(
+      SendChunkedParts(
+          backend, Options{},
+          "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+          "Transfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n",
+          {"1", "\r\nx\r\n0\r\n\r\n"}),
+      "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
   return result;
 }
 
@@ -301,30 +371,60 @@ int HeadersTooLarge() {
 
 int UnknownTransferCoding() {
   FakeBackend backend;
-  return ExpectError(
+  int result = ExpectError(
       Send(backend, Options{},
            "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: gzip\r\n\r\n"),
       "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
+  result |= ExpectError(Send(backend, Options{},
+                             "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
+                             "Transfer-Encoding: gzip, chunked\r\n\r\n"),
+                        "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
+  return result;
 }
 
 int BodyBoundAfterRouting() {
   FakeBackend backend;
   int result = 0;
-  const auto unknown_route =
-      "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
-      "Content-Length: 65537\r\n\r\n";
-  result |= ExpectError(Send(backend, Options{}, unknown_route), "rest_v1_body_bound_after_routing",
-                        404, "request", "route_not_found");
-  const auto known_route =
+  const auto large_unknown_route =
+      "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\nContent-Length: 1048577\r\n\r\n";
+  result |= ExpectError(Send(backend, Options{}, large_unknown_route),
+                        "rest_v1_body_bound_after_routing", 404, "request", "route_not_found");
+  const auto large_wrong_method =
+      "PUT /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 1048577\r\n\r\n";
+  result |= ExpectError(Send(backend, Options{}, large_wrong_method),
+                        "rest_v1_body_bound_after_routing", 405, "request", "method_not_allowed");
+  const auto large_wrong_media_type =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: text/plain\r\n"
+      "Content-Length: 1048577\r\n\r\n";
+  result |=
+      ExpectError(Send(backend, Options{}, large_wrong_media_type),
+                  "rest_v1_body_bound_after_routing", 415, "request", "unsupported_media_type");
+  const auto large_known_route =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
-      "Content-Length: 65537\r\nExpect: 100-continue\r\n\r\n";
-  result |= ExpectError(Send(backend, Options{}, known_route), "rest_v1_body_bound_after_routing",
-                        413, "request", "payload_too_large");
+      "Content-Length: 1048577\r\n\r\n";
+  result |= ExpectError(Send(backend, Options{}, large_known_route),
+                        "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
+
+  Options exact_options;
+  exact_options.body_limit_bytes = 4096;
+  const auto exact_body =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 4096\r\n\r\n" +
+      std::string(4096, 'x');
+  result |= ExpectError(Send(backend, exact_options, exact_body),
+                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+
   const auto overflow =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
       "Content-Length: 18446744073709551616\r\n\r\n";
   result |= ExpectError(Send(backend, Options{}, overflow), "rest_v1_body_bound_after_routing", 413,
                         "request", "payload_too_large");
+  const auto conflicting_overflow =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 18446744073709551616, 18446744073709551617\r\n\r\n";
+  result |= ExpectError(Send(backend, Options{}, conflicting_overflow),
+                        "rest_v1_body_bound_after_routing", 400, "request", "malformed_request");
   const auto chunk_overflow =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
       "Transfer-Encoding: chunked\r\n\r\nFFFFFFFFFFFFFFFFF\r\n";
@@ -369,8 +469,19 @@ int ErrorDetailsEmpty() {
 
 int InvalidTarget() {
   FakeBackend backend;
-  return ExpectError(Send(backend, Options{}, HealthRequest("GET", "foo")),
-                     "rest_v1_invalid_request_target_refused", 400, "request", "malformed_request");
+  int result =
+      ExpectError(Send(backend, Options{}, HealthRequest("GET", "foo")),
+                  "rest_v1_invalid_request_target_refused", 400, "request", "malformed_request");
+  result |=
+      ExpectError(Send(backend, Options{}, HealthRequest("GET", "http://host:bad/v1/health")),
+                  "rest_v1_invalid_request_target_refused", 400, "request", "malformed_request");
+  result |=
+      ExpectError(Send(backend, Options{}, HealthRequest("GET", "*")),
+                  "rest_v1_invalid_request_target_refused", 400, "request", "malformed_request");
+  result |=
+      ExpectError(Send(backend, Options{}, HealthRequest("CONNECT", "[:::]:443")),
+                  "rest_v1_invalid_request_target_refused", 400, "request", "malformed_request");
+  return result;
 }
 
 int MissingHost() {
@@ -388,8 +499,18 @@ int RepeatedHost() {
 
 int InvalidHost() {
   FakeBackend backend;
-  return ExpectError(Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: bad host\r\n\r\n"),
-                     "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
+  int result =
+      ExpectError(Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: bad host\r\n\r\n"),
+                  "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
+  result |= ExpectError(Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: [:::]\r\n\r\n"),
+                        "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
+  result |=
+      ExpectError(Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: host:bad\r\n\r\n"),
+                  "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
+  result |=
+      ExpectError(Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: [::1]junk\r\n\r\n"),
+                  "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
+  return result;
 }
 
 int NonfinalTransferCoding() {
@@ -419,11 +540,17 @@ int ChunkedParameters() {
 
 int InvalidTransferCoding() {
   FakeBackend backend;
-  return ExpectError(Send(backend, Options{},
-                          "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n"
-                          "Transfer-Encoding: gzip;foo\r\n\r\n"),
-                     "rest_v1_invalid_transfer_coding_refused", 400, "request",
-                     "malformed_request");
+  int result =
+      ExpectError(Send(backend, Options{},
+                       "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n"
+                       "Transfer-Encoding: gzip;foo\r\n\r\n"),
+                  "rest_v1_invalid_transfer_coding_refused", 400, "request", "malformed_request");
+  result |=
+      ExpectError(Send(backend, Options{},
+                       "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n"
+                       "Transfer-Encoding:\r\nTransfer-Encoding: chunked\r\n\r\n"),
+                  "rest_v1_invalid_transfer_coding_refused", 400, "request", "malformed_request");
+  return result;
 }
 
 int Http10TransferEncoding() {
@@ -480,6 +607,65 @@ int Phase1PortsNotCalled() {
   return result;
 }
 
+int SitometrondOptions() {
+  int result = 0;
+  const auto valid = sitometron::daemon::ParseStartupOptions(
+      {"--journal", "/tmp/issue105-cli-journal", "--listen", "127.0.0.1:0", "--cancel-principal",
+       "operator", "--max-jobs", "7", "--target-limit", "4096", "--header-limit", "8192",
+       "--body-limit", "4096", "--header-timeout-ms", "17", "--body-timeout-ms", "19"});
+  result |= Check(valid.ok, "rest_v1_sitometrond_options",
+                  "documented valid configuration was refused: " + valid.error);
+  if (valid.ok) {
+    result |= Check(valid.config.http.listen_address == "127.0.0.1", "rest_v1_sitometrond_options",
+                    "listen address mismatch");
+    result |= Check(valid.config.http.listen_port == 0, "rest_v1_sitometrond_options",
+                    "listen port mismatch");
+    result |= Check(valid.config.max_jobs == 7, "rest_v1_sitometrond_options", "max-jobs mismatch");
+    result |= Check(valid.config.http.combined_request_limit_bytes == 16384,
+                    "rest_v1_sitometrond_options", "combined request bound mismatch");
+  }
+
+  const auto expect_rejected = [&](const std::vector<std::string>& args,
+                                   std::string_view case_name) {
+    const auto parsed = sitometron::daemon::ParseStartupOptions(args);
+    return Check(!parsed.ok, "rest_v1_sitometrond_options",
+                 std::string(case_name) + " command line was accepted");
+  };
+  result |=
+      expect_rejected({"--journal", "/tmp/issue105-cli-journal", "--unknown", "x"}, "unknown");
+  result |=
+      expect_rejected({"--journal", "/tmp/issue105-cli-journal", "--journal", "other"}, "repeated");
+  result |= expect_rejected({"--journal", "/tmp/issue105-cli-journal", "--max-jobs"}, "missing");
+  result |= expect_rejected({"--journal", "/tmp/issue105-cli-journal", "--body-limit", "nope"},
+                            "malformed");
+  result |= expect_rejected({"--journal", "/tmp/issue105-cli-journal", "--body-limit", "1048577"},
+                            "out-of-range");
+
+  const auto directory =
+      std::filesystem::temp_directory_path() / "issue105-sitometrond-options-journal";
+  std::error_code filesystem_error;
+  std::filesystem::remove_all(directory, filesystem_error);
+  sitometron::daemon::StartupConfig config;
+  config.journal_path = directory.string();
+  config.max_jobs = 2;
+  config.http.listen_port = 0;
+  sitometron::daemon::Phase1Composition composition(std::move(config));
+  std::string error;
+  result |= Check(composition.Start(error), "rest_v1_sitometrond_options",
+                  "composed daemon failed to start: " + error);
+  if (error.empty() && composition.listen_port() != 0) {
+    result |= ExpectStatus(SendToPort(composition.listen_port(), HealthRequest()),
+                           "rest_v1_sitometrond_options", 200);
+    result |= ExpectStatus(SendToPort(composition.listen_port(), HealthRequest("GET", "/v1/ready")),
+                           "rest_v1_sitometrond_options", 200);
+    result |= ExpectError(SendToPort(composition.listen_port(), HealthRequest("GET", "/v1/jobs")),
+                          "rest_v1_sitometrond_options", 503, "service", "not_ready");
+  }
+  composition.Stop();
+  std::filesystem::remove_all(directory, filesystem_error);
+  return result;
+}
+
 int Run(std::string_view name) {
   if (name == "rest_v1_loopback_only") return LoopbackOnly();
   if (name == "rest_v1_unknown_route_and_method") return UnknownRouteAndMethod();
@@ -508,6 +694,7 @@ int Run(std::string_view name) {
   if (name == "rest_v1_invalid_transfer_coding_refused") return InvalidTransferCoding();
   if (name == "rest_v1_http10_transfer_encoding_refused") return Http10TransferEncoding();
   if (name == "rest_v1_phase1_ports_not_called") return Phase1PortsNotCalled();
+  if (name == "rest_v1_sitometrond_options") return SitometrondOptions();
   std::cerr << "unknown check " << name << '\n';
   return 2;
 }

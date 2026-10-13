@@ -493,7 +493,8 @@ if(SITOMETRON_BUILD_TESTS)
         rest_v1_chunked_parameters_refused
         rest_v1_invalid_transfer_coding_refused
         rest_v1_http10_transfer_encoding_refused
-        rest_v1_phase1_ports_not_called)
+        rest_v1_phase1_ports_not_called
+        rest_v1_sitometrond_options)
       add_test(
         NAME ${_rest_v1_check}
         COMMAND sitometron_http_tests ${_rest_v1_check})

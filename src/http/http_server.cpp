@@ -63,6 +63,7 @@ struct TargetInfo {
   TargetKind kind = TargetKind::kOrigin;
   std::string path;
   bool has_query = false;
+  bool has_authority = false;
 };
 
 struct RequestInfo {
@@ -175,66 +176,199 @@ bool HasInvalidTargetOctet(std::string_view target) {
   return std::ranges::any_of(target, [](unsigned char c) { return c <= 0x20U || c == 0x7fU; });
 }
 
+bool IsHex(char value) {
+  return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
+         (value >= 'A' && value <= 'F');
+}
+
+bool IsUnreserved(char value) {
+  return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+         (value >= '0' && value <= '9') || value == '-' || value == '.' || value == '_' ||
+         value == '~';
+}
+
+bool IsSubDelim(char value) {
+  return std::string_view("!$&'()*+,;=").find(value) != std::string_view::npos;
+}
+
+bool IsPctEncoded(std::string_view value, std::size_t position) {
+  return position + 2 < value.size() && value[position] == '%' && IsHex(value[position + 1]) &&
+         IsHex(value[position + 2]);
+}
+
+bool IsValidRegName(std::string_view value) {
+  if (value.empty()) return false;
+  for (std::size_t position = 0; position < value.size(); ++position) {
+    const char character = value[position];
+    if (IsUnreserved(character) || IsSubDelim(character)) continue;
+    if (!IsPctEncoded(value, position)) return false;
+    position += 2;
+  }
+  return true;
+}
+
+bool IsValidIpLiteral(std::string_view value) {
+  if (value.empty()) return false;
+  if (value.front() == 'v' || value.front() == 'V') {
+    const auto dot = value.find('.');
+    if (dot == std::string_view::npos || dot <= 1 || dot + 1 >= value.size()) return false;
+    if (!std::ranges::all_of(value.substr(1, dot - 1), IsHex)) return false;
+    return std::ranges::all_of(value.substr(dot + 1), [](char character) {
+      return IsUnreserved(character) || IsSubDelim(character) || character == ':';
+    });
+  }
+  boost::system::error_code error;
+  if (value.find('%') != std::string_view::npos) return false;
+  const auto address = asio::ip::make_address(std::string(value), error);
+  return !error && address.is_v6();
+}
+
+bool IsValidUriHost(std::string_view value) { return IsValidRegName(value); }
+
+bool IsValidAuthority(std::string_view value, bool require_port, bool allow_userinfo) {
+  if (value.empty()) return false;
+  const auto at = value.rfind('@');
+  if (at != std::string_view::npos) {
+    if (!allow_userinfo) return false;
+    const auto userinfo = value.substr(0, at);
+    for (std::size_t position = 0; position < userinfo.size(); ++position) {
+      const char character = userinfo[position];
+      if (IsUnreserved(character) || IsSubDelim(character) || character == ':') continue;
+      if (!IsPctEncoded(userinfo, position)) return false;
+      position += 2;
+    }
+    value.remove_prefix(at + 1);
+  }
+  if (value.empty()) return false;
+
+  std::string_view host;
+  std::string_view port;
+  bool has_port = false;
+  if (value.front() == '[') {
+    const auto close = value.find(']');
+    if (close == std::string_view::npos || !IsValidIpLiteral(value.substr(1, close - 1)))
+      return false;
+    host = value.substr(1, close - 1);
+    const auto suffix = value.substr(close + 1);
+    if (!suffix.empty()) {
+      if (suffix.front() != ':') return false;
+      has_port = true;
+      port = suffix.substr(1);
+    }
+  } else {
+    const auto colon = value.find(':');
+    if (colon != std::string_view::npos) {
+      if (value.find(':', colon + 1) != std::string_view::npos) return false;
+      has_port = true;
+      host = value.substr(0, colon);
+      port = value.substr(colon + 1);
+    } else {
+      host = value;
+    }
+    if (!IsValidUriHost(host)) return false;
+  }
+  if (value.front() == '[' && host.empty()) return false;
+  if (require_port && !has_port) return false;
+  if (!has_port) return true;
+  return std::ranges::all_of(port,
+                             [](char character) { return character >= '0' && character <= '9'; });
+}
+
 bool IsValidHost(std::string_view value, bool absolute_target) {
   value = TrimOws(value);
   if (value.empty()) return !absolute_target;
-  if (value.front() == '[') {
-    const auto close = value.find(']');
-    if (close == std::string_view::npos || close == 1) return false;
-    for (const char c : value.substr(1, close - 1)) {
-      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') ||
-            c == ':' || c == '.'))
-        return false;
-    }
-    value.remove_prefix(close + 1);
-    if (value.empty()) return true;
-    if (value.front() != ':') return false;
-    value.remove_prefix(1);
-    return std::ranges::all_of(value, [](char c) { return c >= '0' && c <= '9'; });
-  }
-  const auto colon = value.find(':');
-  const auto host = colon == std::string_view::npos ? value : value.substr(0, colon);
-  if (host.empty() || host.find(':') != std::string_view::npos) return false;
-  for (const char c : host) {
-    const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                         (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_' || c == '!' ||
-                         c == '$' || c == '&' || c == '\'' || c == '(' || c == ')' || c == '*' ||
-                         c == '+' || c == ',' || c == ';' || c == '=';
-    if (!allowed) return false;
-  }
-  if (colon == std::string_view::npos) return true;
-  return std::ranges::all_of(value.substr(colon + 1), [](char c) { return c >= '0' && c <= '9'; });
+  return IsValidAuthority(value, false, false);
 }
 
-std::optional<TargetInfo> ParseTarget(std::string_view method, std::string_view target) {
-  if (target == "*") return TargetInfo{TargetKind::kNoPath, {}, false};
+bool IsValidScheme(std::string_view value) {
+  if (value.empty() || ((value.front() < 'A' || value.front() > 'Z') &&
+                        (value.front() < 'a' || value.front() > 'z')))
+    return false;
+  return std::ranges::all_of(value.substr(1), [](char character) {
+    return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+           (character >= '0' && character <= '9') || character == '+' || character == '-' ||
+           character == '.';
+  });
+}
+
+bool IsValidPathAndQuery(std::string_view value) {
+  const auto query = value.find('?');
+  const auto path = value.substr(0, query);
+  const auto query_part =
+      query == std::string_view::npos ? std::string_view{} : value.substr(query + 1);
+  const auto valid_pchar = [](char character) {
+    return IsUnreserved(character) || IsSubDelim(character) || character == ':' || character == '@';
+  };
+  for (std::size_t position = 0; position < path.size(); ++position) {
+    if (path[position] == '/') continue;
+    if (path[position] == '%' && IsPctEncoded(path, position)) {
+      position += 2;
+      continue;
+    }
+    if (!valid_pchar(path[position])) return false;
+  }
+  for (std::size_t position = 0; position < query_part.size(); ++position) {
+    if (query_part[position] == '/' || query_part[position] == '?' ||
+        valid_pchar(query_part[position]))
+      continue;
+    if (query_part[position] == '%' && IsPctEncoded(query_part, position)) {
+      position += 2;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+struct TargetInput {
+  std::string_view method;
+  std::string_view target;
+};
+
+std::optional<TargetInfo> ParseTarget(TargetInput input) {
+  const auto method = input.method;
+  const auto target = input.target;
   if (HasInvalidTargetOctet(target) || target.find('#') != std::string_view::npos)
     return std::nullopt;
-  if (method == "CONNECT" && target.find('/') == std::string_view::npos &&
-      target.find('?') == std::string_view::npos) {
-    const auto colon = target.rfind(':');
-    if (colon != std::string_view::npos && colon != 0 && colon + 1 < target.size() &&
-        std::ranges::all_of(target.substr(colon + 1), [](char c) { return c >= '0' && c <= '9'; }))
-      return TargetInfo{TargetKind::kNoPath, {}, false};
+  if (target == "*") {
+    if (method != "OPTIONS") return std::nullopt;
+    return TargetInfo{TargetKind::kNoPath, {}, false, false};
   }
-  const auto scheme = target.find("://");
-  if (scheme != std::string_view::npos && scheme != 0) {
-    if (!std::ranges::all_of(target.substr(0, scheme), IsTchar)) return std::nullopt;
-    const auto authority_begin = scheme + 3;
+  if (method == "CONNECT") {
+    if (!IsValidAuthority(target, true, false)) return std::nullopt;
+    return TargetInfo{TargetKind::kNoPath, {}, false, true};
+  }
+
+  const auto colon = target.find(':');
+  const auto first_path_delimiter = target.find_first_of("/?");
+  const bool is_absolute =
+      colon != std::string_view::npos &&
+      (first_path_delimiter == std::string_view::npos || colon < first_path_delimiter);
+  if (is_absolute) {
+    if (!IsValidScheme(target.substr(0, colon)) || target.substr(colon + 1, 2) != "//")
+      return std::nullopt;
+    const auto authority_begin = colon + 3;
     const auto path_begin = target.find_first_of("/?", authority_begin);
     const auto authority = target.substr(authority_begin, path_begin == std::string_view::npos
                                                               ? std::string_view::npos
                                                               : path_begin - authority_begin);
-    if (authority.empty()) return std::nullopt;
-    if (path_begin == std::string_view::npos) return TargetInfo{TargetKind::kAbsolute, "/", false};
-    if (target[path_begin] == '?') return TargetInfo{TargetKind::kAbsolute, "/", true};
+    if (!IsValidAuthority(authority, false, true)) return std::nullopt;
+    if (path_begin == std::string_view::npos)
+      return TargetInfo{TargetKind::kAbsolute, "/", false, true};
+    if (target[path_begin] == '?') {
+      if (!IsValidPathAndQuery(target.substr(path_begin))) return std::nullopt;
+      return TargetInfo{TargetKind::kAbsolute, "/", true, true};
+    }
     const auto path = target.substr(path_begin);
-    return TargetInfo{TargetKind::kAbsolute, std::string(path),
-                      path.find('?') != std::string_view::npos};
+    if (!IsValidPathAndQuery(path)) return std::nullopt;
+    const auto query = path.find('?');
+    return TargetInfo{TargetKind::kAbsolute, std::string(path.substr(0, query)),
+                      query != std::string_view::npos, true};
   }
-  if (target.empty() || target.front() != '/') return std::nullopt;
-  return TargetInfo{TargetKind::kOrigin, std::string(target),
-                    target.find('?') != std::string_view::npos};
+  if (target.empty() || target.front() != '/' || !IsValidPathAndQuery(target)) return std::nullopt;
+  const auto query = target.find('?');
+  return TargetInfo{TargetKind::kOrigin, std::string(target.substr(0, query)),
+                    query != std::string_view::npos, false};
 }
 
 std::optional<std::uint64_t> ParseUint64(std::string_view value, bool& overflow) {
@@ -462,7 +596,7 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
   request.method = std::string(line.substr(0, first_space));
   request.target = std::string(line.substr(first_space + 1, second_space - first_space - 1));
   request.version = std::string(line.substr(second_space + 1));
-  const auto target_info = ParseTarget(request.method, request.target);
+  const auto target_info = ParseTarget(TargetInput{request.method, request.target});
   if (!target_info) {
     error = EarlyError::kMalformed;
     return request;
@@ -538,20 +672,22 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
     error = EarlyError::kMalformed;
     return request;
   }
-  if (host_count == 1 && !IsValidHost(HeaderValue(request, "host"),
-                                      request.target_info.kind == TargetKind::kAbsolute)) {
+  if (host_count == 1 &&
+      !IsValidHost(HeaderValue(request, "host"), request.target_info.has_authority)) {
     error = EarlyError::kMalformed;
     return request;
   }
 
   bool length_overflow = false;
   std::optional<std::uint64_t> length;
+  std::optional<std::string> overflow_value;
   for (const auto& value : content_lengths) {
     std::size_t item_start = 0;
     while (item_start <= value.size()) {
       const auto comma = value.find(',', item_start);
       const auto item = std::string_view(value).substr(
           item_start, comma == std::string::npos ? std::string::npos : comma - item_start);
+      const auto original_item = std::string(TrimOws(item));
       bool overflow = false;
       const auto parsed = ParseUint64(item, overflow);
       if (!parsed && !overflow) {
@@ -559,11 +695,17 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
         return request;
       }
       if (overflow) {
+        if (length || (overflow_value && *overflow_value != original_item)) {
+          error = EarlyError::kMalformed;
+          return request;
+        }
         length_overflow = true;
-      } else if (length && *length != *parsed) {
-        error = EarlyError::kMalformed;
-        return request;
-      } else if (parsed) {
+        overflow_value = original_item;
+      } else {
+        if (length_overflow || overflow_value || (length && *length != *parsed)) {
+          error = EarlyError::kMalformed;
+          return request;
+        }
         length = parsed;
       }
       if (comma == std::string::npos) break;
@@ -578,14 +720,11 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
     request.has_transfer_encoding = true;
     std::vector<std::string> codings;
     bool chunked_parameter = false;
-    std::string combined;
     for (const auto& value : transfer_values) {
-      if (!combined.empty()) combined.push_back(',');
-      combined.append(value);
-    }
-    if (!ParseTransferCoding(combined, codings, chunked_parameter)) {
-      error = EarlyError::kMalformed;
-      return request;
+      if (!ParseTransferCoding(value, codings, chunked_parameter)) {
+        error = EarlyError::kMalformed;
+        return request;
+      }
     }
     const auto chunked_count = static_cast<std::size_t>(
         std::count(codings.begin(), codings.end(), std::string("chunked")));
@@ -594,7 +733,9 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
       error = EarlyError::kMalformed;
       return request;
     }
-    if (chunked_count == 0) {
+    if (chunked_count == 0 || std::ranges::any_of(codings, [](const std::string& coding) {
+          return coding != "chunked";
+        })) {
       error = EarlyError::kNotImplemented;
       return request;
     }
@@ -771,11 +912,12 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
 
   http::request_parser<http::string_body> parser;
   parser.eager(false);
+  parser.body_limit(std::numeric_limits<std::uint64_t>::max());
   parser.header_limit(static_cast<std::uint32_t>(impl.options.header_limit_bytes));
   ErrorCode parser_error;
   parser.put(asio::buffer(request.normalized_header.data(), request.normalized_header.size()),
              parser_error);
-  if (parser_error) {
+  if (parser_error && parser_error != http::error::need_more) {
     const auto status = parser_error == http::error::header_limit ? 431 : 400;
     const auto code = status == 431 ? "headers_too_large" : "malformed_request";
     (void)co_await WriteResponse(socket,
@@ -815,22 +957,29 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
                                                        "the request body is too large"));
     co_return;
   }
+  parser.body_limit(impl.options.body_limit_bytes);
   if (request.expect_continue && body_present) {
     if (!(co_await WriteRaw(socket, "HTTP/1.1 100 Continue\r\n\r\n"))) co_return;
   }
 
-  parser.body_limit(impl.options.body_limit_bytes);
   std::string body_bytes;
   std::size_t raw_total = header.end + 4;
   ChunkScanner scanner;
+  std::string pending;
   const auto feed = [&](std::string_view bytes) -> ErrorCode {
     if (request.chunked) {
       scanner.Feed(bytes);
       if (scanner.overflow) return http::error::body_limit;
     }
-    ErrorCode error;
-    parser.put(asio::buffer(bytes.data(), bytes.size()), error);
-    return error;
+    pending.append(bytes.data(), bytes.size());
+    while (!pending.empty() && !parser.is_done()) {
+      ErrorCode error;
+      const auto consumed = parser.put(asio::buffer(pending.data(), pending.size()), error);
+      pending.erase(0, consumed);
+      if (error && error != http::error::need_more) return error;
+      if (error == http::error::need_more || consumed == 0) break;
+    }
+    return {};
   };
   const auto prebody = std::string_view(header.bytes).substr(header.end + 4);
   if (!prebody.empty()) {

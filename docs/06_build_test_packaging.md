@@ -45,7 +45,7 @@ LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the 101-test `dev-linux` baseline. It runs without suppressions using
+CTest-name parity with the 102-test `dev-linux` baseline. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -205,6 +205,10 @@ invalid request-line syntax, invalid field syntax, invalid Content-Length syntax
 Transfer-Encoding combined with Content-Length. The adapter must not duplicate those cases. The
 adapter-owned list above was established by the RED probe against the pinned Beast source and
 header parser behavior; a final report records the exact probe command and representative output.
+
+The startup configuration and composed-daemon smoke are covered by `rest_v1_sitometrond_options`,
+which also exercises representative unknown, repeated, missing, malformed, and out-of-range command
+line values.
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even
