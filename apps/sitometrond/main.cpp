@@ -198,37 +198,42 @@ void PrintUsage() {
 #endif
 
 int main(int argc, char** argv) {
+  try {
 #ifndef SITOMETRON_ENABLE_HTTP
-  (void)argc;
-  (void)argv;
-  std::cout << "sitometrond " << sitometron::Version() << '\n';
-  return 0;
-#else
-  const auto parsed = ParseOptions(argc, argv);
-  if (!parsed.ok) {
-    if (!parsed.error.empty()) std::cerr << "error: " << parsed.error << '\n';
-    PrintUsage();
-    return parsed.help ? 0 : 2;
-  }
-  if (parsed.help) {
-    PrintUsage();
+    (void)argc;
+    (void)argv;
+    std::cout << "sitometrond " << sitometron::Version() << '\n';
     return 0;
-  }
-  sitometron::daemon::Phase1Composition composition(parsed.config);
-  std::string error;
-  if (!composition.Start(error)) {
-    std::cerr << "error: sitometrond startup failed: " << error << '\n';
+#else
+    const auto parsed = ParseOptions(argc, argv);
+    if (!parsed.ok) {
+      if (!parsed.error.empty()) std::cerr << "error: " << parsed.error << '\n';
+      PrintUsage();
+      return parsed.help ? 0 : 2;
+    }
+    if (parsed.help) {
+      PrintUsage();
+      return 0;
+    }
+    sitometron::daemon::Phase1Composition composition(parsed.config);
+    std::string error;
+    if (!composition.Start(error)) {
+      std::cerr << "error: sitometrond startup failed: " << error << '\n';
+      return 1;
+    }
+    std::signal(SIGINT, HandleSignal);
+#ifdef SIGTERM
+    std::signal(SIGTERM, HandleSignal);
+#endif
+    std::cout << "sitometrond " << sitometron::Version() << " listening on "
+              << parsed.config.http.listen_address << ':' << composition.listen_port() << '\n'
+              << std::flush;
+    while (!g_stopping.load()) std::this_thread::yield();
+    composition.Stop();
+    return 0;
+#endif
+  } catch (...) {
+    std::cerr << "error: sitometrond terminated unexpectedly\n";
     return 1;
   }
-  std::signal(SIGINT, HandleSignal);
-#ifdef SIGTERM
-  std::signal(SIGTERM, HandleSignal);
-#endif
-  std::cout << "sitometrond " << sitometron::Version() << " listening on "
-            << parsed.config.http.listen_address << ':' << composition.listen_port() << '\n'
-            << std::flush;
-  while (!g_stopping.load()) std::this_thread::yield();
-  composition.Stop();
-  return 0;
-#endif
 }

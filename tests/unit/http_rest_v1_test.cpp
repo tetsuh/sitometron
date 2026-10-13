@@ -85,7 +85,7 @@ Response Send(Backend& backend, Options options, std::string request) {
   boost::asio::io_context context;
   boost::asio::ip::tcp::socket socket(context);
   boost::system::error_code ec;
-  socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
+  ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
   if (ec) {
     server.Stop();
     return {};
@@ -100,7 +100,7 @@ Response Send(Backend& backend, Options options, std::string request) {
   if (ec != boost::asio::error::eof) {
     // A complete response may still have been received before the peer closes it.
   }
-  socket.close(ec);
+  ec = socket.close(ec);
   server.Stop();
   return ParseResponse(bytes);
 }
@@ -116,7 +116,7 @@ Response SendPartial(Backend& backend, Options options, std::string prefix) {
   boost::asio::io_context context;
   boost::asio::ip::tcp::socket socket(context);
   boost::system::error_code ec;
-  socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
+  ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
   if (!ec) boost::asio::write(socket, boost::asio::buffer(prefix.data(), prefix.size()), ec);
   std::string bytes;
   std::array<char, 4096> buffer{};
@@ -124,13 +124,13 @@ Response SendPartial(Backend& backend, Options options, std::string prefix) {
     const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
     if (count != 0) bytes.append(buffer.data(), count);
   }
-  socket.close(ec);
+  ec = socket.close(ec);
   server.Stop();
   return ParseResponse(bytes);
 }
 
 int ExpectError(const Response& response, std::string_view name, int status,
-                std::string_view domain, std::string_view code) {
+                std::string_view domain, const char* code) {
   int result = Check(response.status == status, name,
                      "expected HTTP status " + std::to_string(status) + ", got " +
                          std::to_string(response.status));
@@ -513,9 +513,14 @@ int Run(std::string_view name) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 2) {
-    std::cerr << "usage: sitometron_http_tests <check>\n";
-    return 2;
+  try {
+    if (argc != 2) {
+      std::cerr << "usage: sitometron_http_tests <check>\n";
+      return 2;
+    }
+    return Run(argv[1]);
+  } catch (...) {
+    std::cerr << "uncaught test exception\n";
+    return 1;
   }
-  return Run(argv[1]);
 }

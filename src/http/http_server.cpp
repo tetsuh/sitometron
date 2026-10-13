@@ -55,9 +55,9 @@ struct HeaderField {
   std::string value;
 };
 
-enum class EarlyError { kNone, kMalformed, kTargetTooLong, kNotImplemented };
+enum class EarlyError : std::uint8_t { kNone, kMalformed, kTargetTooLong, kNotImplemented };
 
-enum class TargetKind { kOrigin, kAbsolute, kNoPath };
+enum class TargetKind : std::uint8_t { kOrigin, kAbsolute, kNoPath };
 
 struct TargetInfo {
   TargetKind kind = TargetKind::kOrigin;
@@ -83,13 +83,18 @@ struct RequestInfo {
 };
 
 struct HeaderRead {
-  enum class Result { kComplete, kTimeout, kClosed, kTooLarge } result = Result::kClosed;
+  enum class Result : std::uint8_t {
+    kComplete,
+    kTimeout,
+    kClosed,
+    kTooLarge
+  } result = Result::kClosed;
   std::string bytes;
   std::size_t end = 0;
 };
 
 struct ChunkScanner {
-  enum class State { kSize, kData, kDataCrlf, kTrailer } state = State::kSize;
+  enum class State : std::uint8_t { kSize, kData, kDataCrlf, kTrailer } state = State::kSize;
   std::string line;
   std::uint64_t remaining = 0;
   bool overflow = false;
@@ -115,9 +120,9 @@ struct ChunkScanner {
             if (digit >= '0' && digit <= '9')
               number = static_cast<std::uint64_t>(digit - '0');
             else if (digit >= 'a' && digit <= 'f')
-              number = static_cast<std::uint64_t>(digit - 'a' + 10);
+              number = static_cast<std::uint64_t>(digit - 'a') + 10U;
             else if (digit >= 'A' && digit <= 'F')
-              number = static_cast<std::uint64_t>(digit - 'A' + 10);
+              number = static_cast<std::uint64_t>(digit - 'A') + 10U;
             else
               return;
             if (parsed > (std::numeric_limits<std::uint64_t>::max() - number) / 16U) {
@@ -350,7 +355,7 @@ ResponseSpec ErrorResponse(int status, std::string_view domain, std::string_view
   return {status, ErrorBody(domain, code, message), std::nullopt};
 }
 
-enum class Route { kNone, kJobs, kJob, kCancel, kHealth, kReady };
+enum class Route : std::uint8_t { kNone, kJobs, kJob, kCancel, kHealth, kReady };
 
 Route ClassifyRoute(std::string_view path, std::string& job_id) {
   if (path == "/v1/jobs") return Route::kJobs;
@@ -526,10 +531,10 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
   request.header_bytes = header_end + 4;
 
   const auto host_count = HeaderCount(request, "host");
-  const bool HTTP11OrLater =
+  const bool http11_or_later =
       version_for_rules == "HTTP/1.1" ||
       (version_for_rules.size() == 8 && version_for_rules.starts_with("HTTP/1."));
-  if (HTTP11OrLater && host_count != 1) {
+  if (http11_or_later && host_count != 1) {
     error = EarlyError::kMalformed;
     return request;
   }
@@ -559,7 +564,7 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
         error = EarlyError::kMalformed;
         return request;
       } else if (parsed) {
-        length = *parsed;
+        length = parsed;
       }
       if (comma == std::string::npos) break;
       item_start = comma + 1;
@@ -612,13 +617,16 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
     while (line_start < request.normalized_header.size()) {
       const auto line_end = request.normalized_header.find("\r\n", line_start);
       if (line_end == std::string::npos) break;
-      const auto line =
+      const auto normalized_line =
           std::string_view(request.normalized_header).substr(line_start, line_end - line_start);
-      const auto colon = line.find(':');
-      if (colon != std::string_view::npos && Lower(line.substr(0, colon)) == "content-length") {
-        rebuilt.append(line.substr(0, colon)).append(": ").append(std::to_string(sentinel));
+      const auto colon = normalized_line.find(':');
+      if (colon != std::string_view::npos &&
+          Lower(normalized_line.substr(0, colon)) == "content-length") {
+        rebuilt.append(normalized_line.substr(0, colon))
+            .append(": ")
+            .append(std::to_string(sentinel));
       } else {
-        rebuilt.append(line);
+        rebuilt.append(normalized_line);
       }
       rebuilt.append("\r\n");
       line_start = line_end + 2;
@@ -944,17 +952,18 @@ bool Server::Start(std::string& error) {
     return false;
   }
   boost::system::error_code open_error;
-  impl_->acceptor.open(address.is_v4() ? tcp::v4() : tcp::v6(), open_error);
+  open_error = impl_->acceptor.open(address.is_v4() ? tcp::v4() : tcp::v6(), open_error);
   if (open_error) {
     error = "cannot open listener";
     return false;
   }
-  impl_->acceptor.set_option(tcp::acceptor::reuse_address(true), open_error);
-  impl_->acceptor.bind({address, impl_->options.listen_port}, open_error);
-  if (!open_error) impl_->acceptor.listen(asio::socket_base::max_listen_connections, open_error);
+  open_error = impl_->acceptor.set_option(tcp::acceptor::reuse_address(true), open_error);
+  open_error = impl_->acceptor.bind({address, impl_->options.listen_port}, open_error);
+  if (!open_error)
+    open_error = impl_->acceptor.listen(asio::socket_base::max_listen_connections, open_error);
   if (open_error) {
     error = "cannot bind listener";
-    impl_->acceptor.close(open_error);
+    open_error = impl_->acceptor.close(open_error);
     return false;
   }
   impl_->port = impl_->acceptor.local_endpoint().port();
@@ -969,8 +978,8 @@ void Server::Stop() noexcept {
   if (!impl_ || !impl_->thread.joinable()) return;
   impl_->stopping.store(true);
   boost::system::error_code error;
-  impl_->acceptor.cancel(error);
-  impl_->acceptor.close(error);
+  error = impl_->acceptor.cancel(error);
+  error = impl_->acceptor.close(error);
   impl_->io.stop();
   impl_->thread.join();
 }
