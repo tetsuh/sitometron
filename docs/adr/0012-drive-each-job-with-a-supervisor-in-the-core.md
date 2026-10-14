@@ -44,14 +44,22 @@ ADR-0003 closes the ingress input classes; every event the supervisor submits is
 Its source-gate table names the positions of the resource-release and cleanup-status gates but not
 their owner. ADR-0005 adds no ingress, queue, or thread API for components outside the core.
 
-The owner decided on 2026-10-14 under Issue #104:
+The owner decided under Issue #104:
 
-- the supervisor is specified as a function of committed state, with its cases in a
-  machine-readable contract and a completeness check, not as a list of cases;
-- the supervisor lives inside `sitometron_core` and submits through the existing ingress; and
-- the scope is the one stated under "Not decided here" below; and
-- after the first review, the decision function has no failure branches; later phases add them
-  inside the closed event set.
+- on 2026-10-14, that the supervisor is specified as a function of committed state, with its cases
+  in a machine-readable contract and a completeness check, not as a list of cases;
+- on 2026-10-14, that the supervisor lives inside `sitometron_core` and submits through the
+  existing ingress;
+- on 2026-10-14, that the scope is the one stated under "Not decided here" below;
+- on 2026-10-14, after the first review, that the decision function has no failure branches, and
+  later phases add them inside the closed event set;
+- on 2026-10-14, after the second review, that the overtake check derives its set from the reducer
+  contract;
+- on 2026-10-14, after the third review, that a Job refused with `normal_full` waits for a writer
+  capacity signal; and
+- on 2026-10-15, after the fourth review, that `JOB-009` holds while ADR-0003 admission is open, and
+  a Job still open at shutdown or after the fail-closed latch is left to the next start's unresolved
+  report.
 
 ## Decision
 
