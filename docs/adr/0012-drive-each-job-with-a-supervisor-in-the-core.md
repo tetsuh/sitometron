@@ -176,7 +176,7 @@ The supervisor submits through the existing ingress of ADR-0003 and treats its r
 - `resident_limit`: cannot occur for the supervisor, because it never creates a Job and every one of
   its submissions targets a resident Job.
 - `admission_closed` or `service_failed`: stop driving. This happens during shutdown, while replay
-  keeps admission closed, and after a fail-closed latch.
+  keeps admission closed, and after a fail-closed latch. Every open Job then stays as committed.
 
 ### 5. Threading
 
@@ -184,6 +184,12 @@ The supervisor runs on its own thread inside `sitometron_core`, which ADR-0003's
 synchronization headers already allow. It never runs on the writer thread and never inside a
 handoff (ADR-0005). It holds no lock across an ingress call. The writer's post-commit mark (Section 2)
 is a bounded, non-blocking update that cannot fail and does not re-enter ingress.
+
+Shutdown stops the supervisor when ADR-0003 closes normal admission. After that point it makes no
+new submission for any Job, including the critical release and cleanup inputs. It waits for the
+completions of submissions that ingress already admitted, which drain in FIFO order before the
+shutdown marker, and is joined with the other producers before ingress reaches `sealed`. It reads
+no snapshot after that.
 
 ### 6. Placeholders until Phase 3 and Phase 4
 
@@ -208,13 +214,15 @@ is a bounded, non-blocking update that cannot fail and does not re-enter ingress
 
 ## Requirements and checks
 
-This ADR adds `JOB-009` (MUST): drive every Job that the running daemon admits to a terminal outcome
-and a recorded cleanup status by submitting, after each committed change, exactly the input the
-supervisor decision contract assigns to the latest committed snapshot, and hold no other sequencing
-state. "After each committed change" means on the latest committed snapshot after the change, with
-undrained commits coalesced as Section 2 states. A Job admitted before a restart is outside it:
-replay leaves such a Job unresolved and closes admission (ADR-0006), and Section 7 leaves its
-resolution open.
+This ADR adds `JOB-009` (MUST): while ADR-0003 admission is open, drive every Job that the running
+daemon admits to a terminal outcome and a recorded cleanup status by submitting, after each
+committed change, exactly the input the supervisor decision contract assigns to the latest committed
+snapshot, and hold no other sequencing state. "After each committed change" means on the latest
+committed snapshot after the change, with undrained commits coalesced as Section 2 states. Two kinds
+of Job are outside it. A Job admitted before a restart: replay leaves it unresolved and closes
+admission (ADR-0006), and Section 7 leaves its resolution open. A Job still open when shutdown
+closes normal admission or the fail-closed latch is set: it stays as committed, and the next start
+reports it as unresolved under ADR-0006, so its resolution is the same open question (#35, #73).
 
 Its named checks, Planned until the implementation Issue activates them:
 
@@ -232,7 +240,9 @@ Its named checks, Planned until the implementation Issue activates them:
   by the same input;
 - `job_supervisor_ingress_results`: a `normal_full` submission parks the Job and resumes after the
   writer frees a normal slot, including a slot freed before the parking, without polling; an
-  `already_pending` result is reported as an invariant breach; and two or more commits drained as
+  `already_pending` result is reported as an invariant breach; an `admission_closed` or
+  `service_failed` result, or the start of shutdown, stops all driving and leaves each open Job as
+  committed; and two or more commits drained as
   one mark lead to one decision on the latest snapshot that still reaches the outcome and cleanup
   the rules give; and
 - `job_supervisor_no_writer_reentry`: no supervisor code runs on the writer thread or inside a
@@ -248,6 +258,8 @@ Its named checks, Planned until the implementation Issue activates them:
 - Bad: `sitometron_core` gains a thread and a bounded post-commit mark set.
 - Bad: the launch inputs live only in memory until `worker_launch_intent` commits. A restart in that
   window leaves the Job unresolved, which is the same as for any open Job today.
+- Bad: a Job still open when shutdown begins or the fail-closed latch is set is not driven further.
+  The next start reports it as unresolved, as for a crash.
 - Neutral: the placeholders of Section 6 stay until Phase 3 and Phase 4 replace them.
 
 ## Options considered
@@ -257,10 +269,14 @@ Its named checks, Planned until the implementation Issue activates them:
 - **Reserve ingress capacity for supervisor inputs** so that `normal_full` cannot occur: rejected
   because it changes ADR-0003's closed input classes and capacity formula, which needs a superseding
   ADR.
-- **Retry after `normal_full` on a timer**: rejected because the timer port is not designed (H11) and
-  a timed retry makes the check depend on timing.
+- **Retry after `normal_full` on a timer**: rejected because the timer port is not designed (H11)
+  and a timed retry makes the check depend on timing.
 - **Treat `normal_full` as a breach**: rejected because a Job would be abandoned under load, which
   `JOB-009` forbids.
+- **Drive or cancel open Jobs during shutdown**: rejected because `cancel` and the supervisor's
+  normal inputs are refused once ADR-0003 closes normal admission. Admitting them would change
+  ADR-0003's closed input classes or shutdown rule, which needs a superseding ADR, and finishing a
+  Job during shutdown would launch Workers and retain Sessions, which is #35's process containment.
 - **Place the supervisor in the composition root**: rejected because it needs the ingress,
   completion, and snapshot calls as a public port, which ADR-0005 excludes, so that ADR would need
   superseding.
