@@ -24,7 +24,8 @@ Application.
 A cancel, a terminate, a timeout, or a Worker or process fact can arrive between any two of the
 supervisor's submissions. External REST v1 finding 14 lists four landing points for a cancel. An
 inventory of the normative reducer contract (`schemas/core/v1/job-reducer-contract.json`) for
-Issue #104 finds 25 distinct cases across cancel, terminate, and timeout, including:
+Issue #104 finds 25 distinct cases across cancel, terminate, and timeout alone, before any Worker or
+process fact is counted, including:
 
 - a cancel before the launch intent still owes Session retention, finalization, the terminal
   outcome, and cleanup, not only the release; and
@@ -189,9 +190,11 @@ is a bounded, non-blocking update that cannot fail and does not re-enter ingress
 
 ## Requirements and checks
 
-This ADR adds `JOB-009` (MUST): drive every admitted Job to a terminal outcome and a recorded cleanup
-status by submitting, after each committed change, exactly the input the supervisor decision
-contract assigns to the committed snapshot, and hold no other sequencing state.
+This ADR adds `JOB-009` (MUST): drive every Job that the running daemon admits to a terminal
+outcome and a recorded cleanup status by submitting, after each committed change, exactly the input
+the supervisor decision contract assigns to the committed snapshot, and hold no other sequencing
+state. A Job admitted before a restart is outside it: replay leaves such a Job unresolved and closes
+admission (ADR-0006), and Section 7 leaves its resolution open.
 
 Its named checks, Planned until the implementation Issue activates them:
 
@@ -199,8 +202,12 @@ Its named checks, Planned until the implementation Issue activates them:
 - `core_supervisor_decision_complete`: every reachable snapshot class has exactly one decision;
 - `job_supervisor_drives_to_cleanup`: with fakes, a Job reaches each terminal outcome and recorded
   cleanup without a test-driven step;
-- `job_supervisor_overtakes`: every inventory case, injected between two supervisor submissions,
-  ends in the outcome and cleanup the rules give;
+- `job_supervisor_overtakes`: the overtake set is derived from the reducer contract, not listed.
+  For each committed state whose decision is `Submit`, it takes every command and event that another
+  producer of the Section 1 table submits and that the reducer contract does not reject in that
+  state. This covers cancel, terminate, timeout, Worker, and process-exit inputs alike. Each one,
+  injected between that decision and its submission, ends without a test-driven step in the outcome
+  and cleanup the rules give;
 - `job_supervisor_rejection_rederives`: a rejected submission is followed by a fresh decision, never
   by the same input; and
 - `job_supervisor_no_writer_reentry`: no supervisor code runs on the writer thread or inside a
