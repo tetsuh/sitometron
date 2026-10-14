@@ -131,4 +131,4 @@ ADR-0009 owns the Normative `API-007` requirement in Section 8.
 
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
-| `JOB-009` | MUST | Drive every Job that the running daemon admits to a terminal outcome and a recorded cleanup status by submitting, after each committed change, exactly the input the supervisor decision contract assigns to the committed snapshot, and hold no other sequencing state. | Proposed [ADR-0012](adr/0012-drive-each-job-with-a-supervisor-in-the-core.md) under [Issue #104](https://github.com/tetsuh/sitometron/issues/104) |
+| `JOB-009` | MUST | Drive every Job that the running daemon admits to a terminal outcome and a recorded cleanup status by submitting, after each committed change, exactly the input the supervisor decision contract assigns to the latest committed snapshot, and hold no other sequencing state. | Proposed [ADR-0012](adr/0012-drive-each-job-with-a-supervisor-in-the-core.md) under [Issue #104](https://github.com/tetsuh/sitometron/issues/104) |

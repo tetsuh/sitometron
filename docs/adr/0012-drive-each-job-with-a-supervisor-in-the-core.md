@@ -96,6 +96,14 @@ snapshot, after each of these:
 - any commit for the Job by another producer. The writer signals this after the commit by marking
   the Job in a bounded set the supervisor drains; the set holds at most one mark per resident Job.
 
+A mark is a coalesced notification: several commits the supervisor has not yet drained leave one
+mark, and the supervisor decides once, on the latest committed snapshot. No skipped intermediate
+snapshot needs a submission of its own. `Decide` depends on the snapshot alone, so an input that an
+earlier snapshot assigned is either still assigned by the latest one or no longer owed.
+
+The supervisor has at most one submission in flight per Job. A mark that arrives while a submission
+is in flight is drained after that submission completes.
+
 A rejection is never retried as the same input. The supervisor reads the snapshot again and decides
 again. The late execution timeout above is handled this way: the second decision reads `timed_out`
 and submits `terminal_outcome_committed{timed_out}`. If two consecutive decisions for one Job yield
@@ -153,10 +161,20 @@ contract, `schemas/core/v1/supervisor-decision-contract.json`, in the pattern of
 
 The supervisor submits through the existing ingress of ADR-0003 and treats its results as follows:
 
-- `admitted` or `coalesced_pending`: wait for the completion, then decide again.
-- `normal_full`: retry the same decision after the writer frees normal capacity, without busy
-  waiting.
-- `already_pending`: wait for the pending input's completion.
+- `admitted(sequence)` or `coalesced_pending(sequence)`: wait for the completion of that ingress
+  sequence, then decide again.
+- `normal_full`: park the Job and decide again once the writer frees normal capacity. After any turn
+  that frees a normal slot, the writer sets one daemon-wide capacity signal. Like the post-commit
+  mark, setting it is bounded, cannot fail, and does not re-enter ingress. The signal is
+  level-triggered. The supervisor checks it after parking a Job, so a slot freed between the
+  `normal_full` result and the parking is not lost. When it drains the signal, the supervisor
+  decides again for every parked Job. Nothing busy-waits and no timer is involved.
+- `already_pending`: cannot occur for the supervisor. Its normal inputs have no source gate. It is
+  the sole owner of the resource-release and cleanup-status gates, and it never submits while its own
+  submission is in flight. If the result does occur, the supervisor treats it as the invariant
+  breach of Section 2.
+- `resident_limit`: cannot occur for the supervisor, because it never creates a Job and every one of
+  its submissions targets a resident Job.
 - `admission_closed` or `service_failed`: stop driving. This happens during shutdown, while replay
   keeps admission closed, and after a fail-closed latch.
 
@@ -190,11 +208,13 @@ is a bounded, non-blocking update that cannot fail and does not re-enter ingress
 
 ## Requirements and checks
 
-This ADR adds `JOB-009` (MUST): drive every Job that the running daemon admits to a terminal
-outcome and a recorded cleanup status by submitting, after each committed change, exactly the input
-the supervisor decision contract assigns to the committed snapshot, and hold no other sequencing
-state. A Job admitted before a restart is outside it: replay leaves such a Job unresolved and closes
-admission (ADR-0006), and Section 7 leaves its resolution open.
+This ADR adds `JOB-009` (MUST): drive every Job that the running daemon admits to a terminal outcome
+and a recorded cleanup status by submitting, after each committed change, exactly the input the
+supervisor decision contract assigns to the latest committed snapshot, and hold no other sequencing
+state. "After each committed change" means on the latest committed snapshot after the change, with
+undrained commits coalesced as Section 2 states. A Job admitted before a restart is outside it:
+replay leaves such a Job unresolved and closes admission (ADR-0006), and Section 7 leaves its
+resolution open.
 
 Its named checks, Planned until the implementation Issue activates them:
 
@@ -209,7 +229,12 @@ Its named checks, Planned until the implementation Issue activates them:
   injected between that decision and its submission, ends without a test-driven step in the outcome
   and cleanup the rules give;
 - `job_supervisor_rejection_rederives`: a rejected submission is followed by a fresh decision, never
-  by the same input; and
+  by the same input;
+- `job_supervisor_ingress_results`: a `normal_full` submission parks the Job and resumes after the
+  writer frees a normal slot, including a slot freed before the parking, without polling; an
+  `already_pending` result is reported as an invariant breach; and two or more commits drained as
+  one mark lead to one decision on the latest snapshot that still reaches the outcome and cleanup
+  the rules give; and
 - `job_supervisor_no_writer_reentry`: no supervisor code runs on the writer thread or inside a
   handoff.
 
@@ -229,6 +254,13 @@ Its named checks, Planned until the implementation Issue activates them:
 
 - **List every overtake case in this ADR**: rejected because completeness could only be claimed,
   not checked, and each review could add a case.
+- **Reserve ingress capacity for supervisor inputs** so that `normal_full` cannot occur: rejected
+  because it changes ADR-0003's closed input classes and capacity formula, which needs a superseding
+  ADR.
+- **Retry after `normal_full` on a timer**: rejected because the timer port is not designed (H11) and
+  a timed retry makes the check depend on timing.
+- **Treat `normal_full` as a breach**: rejected because a Job would be abandoned under load, which
+  `JOB-009` forbids.
 - **Place the supervisor in the composition root**: rejected because it needs the ingress,
   completion, and snapshot calls as a public port, which ADR-0005 excludes, so that ADR would need
   superseding.
