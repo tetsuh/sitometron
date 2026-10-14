@@ -578,7 +578,15 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
   RequestInfo request;
   error = EarlyError::kNone;
   std::size_t start = 0;
-  while (start + 1 < header_end && bytes[start] == '\r' && bytes[start + 1] == '\n') start += 2;
+  while (start < header_end) {
+    if (start + 1 < header_end && bytes[start] == '\r' && bytes[start + 1] == '\n') {
+      start += 2;
+    } else if (bytes[start] == '\n') {
+      ++start;
+    } else {
+      break;
+    }
+  }
   const auto first_end = bytes.find("\r\n", start);
   if (first_end == std::string_view::npos || first_end > header_end) {
     error = EarlyError::kMalformed;
@@ -668,7 +676,7 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
   const bool http11_or_later =
       version_for_rules == "HTTP/1.1" ||
       (version_for_rules.size() == 8 && version_for_rules.starts_with("HTTP/1."));
-  if (http11_or_later && host_count != 1) {
+  if (host_count > 1 || (http11_or_later && host_count != 1)) {
     error = EarlyError::kMalformed;
     return request;
   }
@@ -718,6 +726,10 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
 
   if (!transfer_values.empty()) {
     request.has_transfer_encoding = true;
+    if (request.has_content_length) {
+      error = EarlyError::kMalformed;
+      return request;
+    }
     std::vector<std::string> codings;
     bool chunked_parameter = false;
     for (const auto& value : transfer_values) {
@@ -729,23 +741,16 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
     const auto chunked_count = static_cast<std::size_t>(
         std::count(codings.begin(), codings.end(), std::string("chunked")));
     if (version_for_rules == "HTTP/1.0" || chunked_parameter || chunked_count > 1 ||
-        (chunked_count == 1 && codings.back() != "chunked")) {
+        codings.back() != "chunked") {
       error = EarlyError::kMalformed;
       return request;
     }
-    if (chunked_count == 0 || std::ranges::any_of(codings, [](const std::string& coding) {
-          return coding != "chunked";
-        })) {
+    if (std::ranges::any_of(codings,
+                            [](const std::string& coding) { return coding != "chunked"; })) {
       error = EarlyError::kNotImplemented;
       return request;
     }
     request.chunked = true;
-  }
-  if (request.has_transfer_encoding && request.has_content_length) {
-    // Beast owns this malformed framing case; returning the same refusal here preserves the
-    // pre-routing owner and avoids ever reading a body with ambiguous framing.
-    error = EarlyError::kMalformed;
-    return request;
   }
   request.body_present = request.chunked || request.content_length_overflow ||
                          (request.content_length && *request.content_length != 0);
@@ -845,10 +850,17 @@ asio::awaitable<HeaderRead> ReadHeader(tcp::socket& socket, const Options& optio
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(options.header_timeout_ms);
   for (;;) {
-    const auto end = bytes.find("\r\n\r\n");
     std::size_t leading = 0;
-    while (leading + 1 < bytes.size() && bytes[leading] == '\r' && bytes[leading + 1] == '\n')
-      leading += 2;
+    while (leading < bytes.size()) {
+      if (leading + 1 < bytes.size() && bytes[leading] == '\r' && bytes[leading + 1] == '\n') {
+        leading += 2;
+      } else if (bytes[leading] == '\n') {
+        ++leading;
+      } else {
+        break;
+      }
+    }
+    const auto end = bytes.find("\r\n\r\n", leading);
     if (end != std::string::npos) {
       const auto header_size = end + 4 - leading;
       if (header_size > options.header_limit_bytes) {

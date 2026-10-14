@@ -1,18 +1,22 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/write.hpp>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -129,6 +133,69 @@ Response SendPartial(Backend& backend, Options options, std::string prefix) {
   server.Stop();
   return ParseResponse(bytes);
 }
+
+Response SendParts(Backend& backend, Options options, const std::vector<std::string>& parts) {
+  options.listen_port = 0;
+  Server server(std::move(options), backend);
+  std::string error;
+  if (!server.Start(error)) {
+    std::cerr << "server start: " << error << '\n';
+    return {};
+  }
+  boost::asio::io_context context;
+  boost::asio::ip::tcp::socket socket(context);
+  boost::system::error_code ec;
+  ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
+  for (const auto& part : parts) {
+    if (ec) break;
+    boost::asio::write(socket, boost::asio::buffer(part.data(), part.size()), ec);
+  }
+  std::string bytes;
+  std::array<char, 4096> buffer{};
+  while (!ec) {
+    const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
+    if (count != 0) bytes.append(buffer.data(), count);
+  }
+  ec = socket.close(ec);
+  server.Stop();
+  return ParseResponse(bytes);
+}
+
+class ScopedTempDirectory final {
+ public:
+  explicit ScopedTempDirectory(std::string_view label) {
+    const auto base = std::filesystem::temp_directory_path();
+    for (std::size_t attempt = 0; attempt < 1000; ++attempt) {
+      path_ = base / ("issue105-" + std::string(label) + "-" +
+                      std::to_string(next.fetch_add(1, std::memory_order_relaxed)));
+      std::error_code error;
+      if (std::filesystem::create_directory(path_, error)) {
+        owned_ = true;
+        return;
+      }
+      if (error == std::errc::file_exists || (!error && std::filesystem::exists(path_))) continue;
+      throw std::filesystem::filesystem_error("create_directory", path_, error);
+    }
+    throw std::runtime_error("could not create a unique temporary directory");
+  }
+
+  ~ScopedTempDirectory() {
+    if (owned_) {
+      std::error_code error;
+      std::filesystem::remove_all(path_, error);
+    }
+  }
+
+  ScopedTempDirectory(const ScopedTempDirectory&) = delete;
+  ScopedTempDirectory& operator=(const ScopedTempDirectory&) = delete;
+
+  [[nodiscard]] const std::filesystem::path& Path() const noexcept { return path_; }
+
+ private:
+  static inline std::atomic_uint64_t next{0};
+  std::filesystem::path path_;
+  bool owned_ = false;
+};
 
 std::string ReadUntilHeaders(boost::asio::ip::tcp::socket& socket, boost::system::error_code& ec) {
   std::string bytes;
@@ -317,10 +384,22 @@ int MalformedRequest() {
 
 int Http10Answered() {
   FakeBackend backend;
-  const auto response = Send(backend, Options{}, HealthRequest("GET", "/v1/health", "HTTP/1.0"));
-  int result = ExpectStatus(response, "rest_v1_http10_request_answered", 200);
-  result |= Check(response.version == "HTTP/1.1", "rest_v1_http10_request_answered",
-                  "response version is not HTTP/1.1");
+  int result = 0;
+  const auto expect_http11 = [&](const Response& response) {
+    int check = ExpectStatus(response, "rest_v1_http10_request_answered", 200);
+    check |= Check(response.version == "HTTP/1.1", "rest_v1_http10_request_answered",
+                   "response version is not HTTP/1.1");
+    return check;
+  };
+  result |= expect_http11(Send(backend, Options{}, HealthRequest("GET", "/v1/health", "HTTP/1.0")));
+  result |= expect_http11(
+      SendParts(backend, Options{}, {"GET /v1/health HTTP/1.2", "\r\nHost: loopback\r\n\r\n"}));
+  result |= expect_http11(
+      SendParts(backend, Options{}, {"GET /v1/health HTTP/1.2\r", "\nHost: loopback\r\n\r\n"}));
+  result |= expect_http11(
+      SendParts(backend, Options{}, {"\r\n", "GET /v1/health HTTP/1.2\r\nHost: loopback\r\n\r\n"}));
+  result |= expect_http11(SendParts(
+      backend, Options{}, {"\r\n\n\r\n", "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n\r\n"}));
   return result;
 }
 
@@ -374,11 +453,15 @@ int UnknownTransferCoding() {
   int result = ExpectError(
       Send(backend, Options{},
            "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: gzip\r\n\r\n"),
-      "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
+      "rest_v1_unknown_transfer_coding", 400, "request", "malformed_request");
   result |= ExpectError(Send(backend, Options{},
                              "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
                              "Transfer-Encoding: gzip, chunked\r\n\r\n"),
                         "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
+  result |= ExpectError(Send(backend, Options{},
+                             "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
+                             "Transfer-Encoding: gzip, chunked\r\nContent-Length: 0\r\n\r\n"),
+                        "rest_v1_unknown_transfer_coding", 400, "request", "malformed_request");
   return result;
 }
 
@@ -492,9 +575,14 @@ int MissingHost() {
 
 int RepeatedHost() {
   FakeBackend backend;
-  return ExpectError(Send(backend, Options{},
-                          "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nHost: loopback\r\n\r\n"),
-                     "rest_v1_repeated_host_refused", 400, "request", "malformed_request");
+  int result =
+      ExpectError(Send(backend, Options{},
+                       "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nHost: loopback\r\n\r\n"),
+                  "rest_v1_repeated_host_refused", 400, "request", "malformed_request");
+  result |= ExpectError(Send(backend, Options{},
+                             "GET /v1/health HTTP/1.0\r\nHost: loopback\r\nHost: loopback\r\n\r\n"),
+                        "rest_v1_repeated_host_refused", 400, "request", "malformed_request");
+  return result;
 }
 
 int InvalidHost() {
@@ -509,6 +597,9 @@ int InvalidHost() {
                   "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
   result |=
       ExpectError(Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: [::1]junk\r\n\r\n"),
+                  "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
+  result |=
+      ExpectError(Send(backend, Options{}, "GET /v1/health HTTP/1.0\r\nHost: bad host\r\n\r\n"),
                   "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
   return result;
 }
@@ -563,13 +654,10 @@ int Http10TransferEncoding() {
 }
 
 int Phase1PortsNotCalled() {
-  const auto directory =
-      std::filesystem::temp_directory_path() / "issue105-phase1-composition-journal";
-  std::error_code filesystem_error;
-  std::filesystem::remove_all(directory, filesystem_error);
+  const ScopedTempDirectory directory("phase1-composition-journal");
   {
     sitometron::journal::SegmentJournal journal(sitometron::journal::SystemFileSystem());
-    const auto opened = journal.Open(directory.string());
+    const auto opened = journal.Open(directory.Path().string());
     if (!opened.ok) {
       return Check(false, "rest_v1_phase1_ports_not_called", "test Journal did not open");
     }
@@ -586,7 +674,7 @@ int Phase1PortsNotCalled() {
     }
   }
   sitometron::daemon::StartupConfig config;
-  config.journal_path = directory.string();
+  config.journal_path = directory.Path().string();
   config.max_jobs = 1;
   config.http.listen_port = 0;
   sitometron::daemon::Phase1Composition composition(std::move(config));
@@ -603,16 +691,17 @@ int Phase1PortsNotCalled() {
     result |= Check(composition.identity_reads() == 0, "rest_v1_phase1_ports_not_called",
                     "Phase 1 identity source was read during replay/serve/shutdown");
   }
-  std::filesystem::remove_all(directory, filesystem_error);
   return result;
 }
 
 int SitometrondOptions() {
   int result = 0;
+  const ScopedTempDirectory directory("sitometrond-options-journal");
+  const auto journal_path = directory.Path().string();
   const auto valid = sitometron::daemon::ParseStartupOptions(
-      {"--journal", "/tmp/issue105-cli-journal", "--listen", "127.0.0.1:0", "--cancel-principal",
-       "operator", "--max-jobs", "7", "--target-limit", "4096", "--header-limit", "8192",
-       "--body-limit", "4096", "--header-timeout-ms", "17", "--body-timeout-ms", "19"});
+      {"--journal", journal_path, "--listen", "127.0.0.1:0", "--cancel-principal", "operator",
+       "--max-jobs", "7", "--target-limit", "4096", "--header-limit", "8192", "--body-limit",
+       "4096", "--header-timeout-ms", "17", "--body-timeout-ms", "19"});
   result |= Check(valid.ok, "rest_v1_sitometrond_options",
                   "documented valid configuration was refused: " + valid.error);
   if (valid.ok) {
@@ -631,22 +720,14 @@ int SitometrondOptions() {
     return Check(!parsed.ok, "rest_v1_sitometrond_options",
                  std::string(case_name) + " command line was accepted");
   };
-  result |=
-      expect_rejected({"--journal", "/tmp/issue105-cli-journal", "--unknown", "x"}, "unknown");
-  result |=
-      expect_rejected({"--journal", "/tmp/issue105-cli-journal", "--journal", "other"}, "repeated");
-  result |= expect_rejected({"--journal", "/tmp/issue105-cli-journal", "--max-jobs"}, "missing");
-  result |= expect_rejected({"--journal", "/tmp/issue105-cli-journal", "--body-limit", "nope"},
-                            "malformed");
-  result |= expect_rejected({"--journal", "/tmp/issue105-cli-journal", "--body-limit", "1048577"},
-                            "out-of-range");
+  result |= expect_rejected({"--journal", journal_path, "--unknown", "x"}, "unknown");
+  result |= expect_rejected({"--journal", journal_path, "--journal", "other"}, "repeated");
+  result |= expect_rejected({"--journal", journal_path, "--max-jobs"}, "missing");
+  result |= expect_rejected({"--journal", journal_path, "--body-limit", "nope"}, "malformed");
+  result |= expect_rejected({"--journal", journal_path, "--body-limit", "1048577"}, "out-of-range");
 
-  const auto directory =
-      std::filesystem::temp_directory_path() / "issue105-sitometrond-options-journal";
-  std::error_code filesystem_error;
-  std::filesystem::remove_all(directory, filesystem_error);
   sitometron::daemon::StartupConfig config;
-  config.journal_path = directory.string();
+  config.journal_path = journal_path;
   config.max_jobs = 2;
   config.http.listen_port = 0;
   sitometron::daemon::Phase1Composition composition(std::move(config));
@@ -662,7 +743,6 @@ int SitometrondOptions() {
                           "rest_v1_sitometrond_options", 503, "service", "not_ready");
   }
   composition.Stop();
-  std::filesystem::remove_all(directory, filesystem_error);
   return result;
 }
 
