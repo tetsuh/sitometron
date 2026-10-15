@@ -97,6 +97,8 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
   integration precedes it by owner decision (2026-10-10) and is implemented by
   [Issue #96](https://github.com/tetsuh/sitometron/issues/96).
 - Phase 2 owns Worker protocol schemas and local process containment.
+  [Issue #104](https://github.com/tetsuh/sitometron/issues/104) designs the Job lifecycle supervisor
+  through Proposed ADR-0012 as a Phase 2 input, before the Phase 2 Gate exists.
 - Phase 3 owns topology, ResourceProfile, scheduling, and reservation contracts.
 - Phase 4 owns the installed Sitos adapter and required upstream contract gates.
 - Phase 5 owns Artifact REST and terminal-manifest contracts.
