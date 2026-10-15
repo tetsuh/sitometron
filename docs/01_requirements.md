@@ -125,3 +125,10 @@ implementation. Accepted ADR-0002 owns the current Normative `JOB-001`–`JOB-00
 `JRN-001`–`JRN-003` requirements. Issue #51 owns the Phase 0B physical JobJournal requirements in
 Section 7. Accepted ADR-0008 owns the Normative `API-001`–`API-006` requirements in Section 8. Accepted
 ADR-0009 owns the Normative `API-007` requirement in Section 8.
+
+> **Planned, not yet normative:** [Issue #104](https://github.com/tetsuh/sitometron/issues/104) owns `JOB-009` through Proposed
+> [ADR-0012](adr/0012-drive-each-job-with-a-supervisor-in-the-core.md). Implementers must not treat it as a finalized contract.
+
+| ID | Level | Requirement | Authority |
+|---|---|---|---|
+| `JOB-009` | MUST | While ingress admission is open (ADR-0003), drive every Job that the running daemon admits to a terminal outcome and a recorded cleanup status by submitting, after each committed change, exactly the input the supervisor decision contract assigns to the latest committed snapshot, and hold no other sequencing state. | Proposed [ADR-0012](adr/0012-drive-each-job-with-a-supervisor-in-the-core.md) under [Issue #104](https://github.com/tetsuh/sitometron/issues/104) |
