@@ -492,6 +492,7 @@ if(SITOMETRON_BUILD_TESTS)
         rest_v1_repeated_chunked_refused
         rest_v1_chunked_parameters_refused
         rest_v1_invalid_transfer_coding_refused
+        rest_v1_transfer_encoding_with_content_length_refused
         rest_v1_http10_transfer_encoding_refused
         rest_v1_phase1_ports_not_called
         rest_v1_sitometrond_options)

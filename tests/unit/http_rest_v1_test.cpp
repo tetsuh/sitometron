@@ -458,10 +458,6 @@ int UnknownTransferCoding() {
                              "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
                              "Transfer-Encoding: gzip, chunked\r\n\r\n"),
                         "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
-  result |= ExpectError(Send(backend, Options{},
-                             "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
-                             "Transfer-Encoding: gzip, chunked\r\nContent-Length: 0\r\n\r\n"),
-                        "rest_v1_unknown_transfer_coding", 400, "request", "malformed_request");
   return result;
 }
 
@@ -508,10 +504,28 @@ int BodyBoundAfterRouting() {
       "Content-Length: 18446744073709551616, 18446744073709551617\r\n\r\n";
   result |= ExpectError(Send(backend, Options{}, conflicting_overflow),
                         "rest_v1_body_bound_after_routing", 400, "request", "malformed_request");
-  const auto chunk_overflow =
+  const auto bare_lf_after_chunk_data =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\n\r\n1\r\nx\nFFFFFFFFFFFFFFFFF\r\n";
+  result |= ExpectError(Send(backend, Options{}, bare_lf_after_chunk_data),
+                        "rest_v1_body_bound_after_routing", 400, "request",
+                        "malformed_request");
+  const auto overflow_with_non_hex_suffix =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\n\r\nFFFFFFFFFFFFFFFFFzz\r\n";
+  result |= ExpectError(Send(backend, Options{}, overflow_with_non_hex_suffix),
+                        "rest_v1_body_bound_after_routing", 400, "request",
+                        "malformed_request");
+  const auto leading_space_before_overflow =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\n\r\n FFFFFFFFFFFFFFFFF\r\n";
+  result |= ExpectError(Send(backend, Options{}, leading_space_before_overflow),
+                        "rest_v1_body_bound_after_routing", 400, "request",
+                        "malformed_request");
+  const auto valid_chunk_overflow =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
       "Transfer-Encoding: chunked\r\n\r\nFFFFFFFFFFFFFFFFF\r\n";
-  result |= ExpectError(Send(backend, Options{}, chunk_overflow),
+  result |= ExpectError(Send(backend, Options{}, valid_chunk_overflow),
                         "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
   return result;
 }
@@ -641,6 +655,47 @@ int InvalidTransferCoding() {
                        "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n"
                        "Transfer-Encoding:\r\nTransfer-Encoding: chunked\r\n\r\n"),
                   "rest_v1_invalid_transfer_coding_refused", 400, "request", "malformed_request");
+
+  const auto transfer_prefix =
+      "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: gzip;foo=\"";
+  auto raw_control = std::string(transfer_prefix);
+  raw_control.push_back(static_cast<char>(0x01));
+  raw_control.append("\", chunked\r\n\r\n");
+  result |= ExpectError(Send(backend, Options{}, raw_control),
+                        "rest_v1_invalid_transfer_coding_refused", 400, "request",
+                        "malformed_request");
+
+  auto escaped_control = std::string(transfer_prefix);
+  escaped_control.append("\\");
+  escaped_control.push_back(static_cast<char>(0x01));
+  escaped_control.append("\", chunked\r\n\r\n");
+  result |= ExpectError(Send(backend, Options{}, escaped_control),
+                        "rest_v1_invalid_transfer_coding_refused", 400, "request",
+                        "malformed_request");
+
+  auto valid_obs_text = std::string(transfer_prefix);
+  valid_obs_text.push_back(static_cast<char>(0x80));
+  valid_obs_text.append("\", chunked\r\n\r\n");
+  result |= ExpectError(Send(backend, Options{}, valid_obs_text),
+                        "rest_v1_invalid_transfer_coding_refused", 501, "request",
+                        "not_implemented");
+  return result;
+}
+
+int TransferEncodingWithContentLengthRefused() {
+  FakeBackend backend;
+  int result = ExpectError(
+      Send(backend, Options{},
+           "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+           "Transfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n"),
+      "rest_v1_transfer_encoding_with_content_length_refused", 400, "request",
+      "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{},
+           "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+           "Transfer-Encoding: gzip, chunked\r\nContent-Length: 0\r\n\r\n"),
+      "rest_v1_transfer_encoding_with_content_length_refused", 400, "request",
+      "malformed_request");
   return result;
 }
 
@@ -772,6 +827,8 @@ int Run(std::string_view name) {
   if (name == "rest_v1_repeated_chunked_refused") return RepeatedChunked();
   if (name == "rest_v1_chunked_parameters_refused") return ChunkedParameters();
   if (name == "rest_v1_invalid_transfer_coding_refused") return InvalidTransferCoding();
+  if (name == "rest_v1_transfer_encoding_with_content_length_refused")
+    return TransferEncodingWithContentLengthRefused();
   if (name == "rest_v1_http10_transfer_encoding_refused") return Http10TransferEncoding();
   if (name == "rest_v1_phase1_ports_not_called") return Phase1PortsNotCalled();
   if (name == "rest_v1_sitometrond_options") return SitometrondOptions();
