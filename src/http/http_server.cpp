@@ -94,65 +94,187 @@ struct HeaderRead {
   std::size_t end = 0;
 };
 
+bool IsTchar(char value) {
+  return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+         (value >= '0' && value <= '9') ||
+         std::string_view("!#$%&'*+-.^_`|~").find(value) != std::string_view::npos;
+}
+
+bool IsHex(char value) {
+  return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
+         (value >= 'A' && value <= 'F');
+}
+
+bool IsQdText(char value) {
+  const auto byte = static_cast<unsigned char>(value);
+  return byte == 0x09U || byte == 0x20U || byte == 0x21U || (byte >= 0x23U && byte <= 0x5bU) ||
+         (byte >= 0x5dU && byte <= 0x7eU) || byte >= 0x80U;
+}
+
+bool IsQuotedPair(char value) {
+  const auto byte = static_cast<unsigned char>(value);
+  return byte == 0x09U || byte == 0x20U || (byte >= 0x21U && byte <= 0x7eU) || byte >= 0x80U;
+}
+
 struct ChunkScanner {
   enum class State : std::uint8_t { kSize, kData, kDataCrlf, kTrailer } state = State::kSize;
   std::string line;
   std::uint64_t remaining = 0;
   bool overflow = false;
+  bool stopped = false;
+  bool size_cr_seen = false;
+  bool data_cr_seen = false;
+
+  struct SizeResult {
+    std::uint64_t value = 0;
+    bool overflow = false;
+  };
+
+  static std::optional<SizeResult> ParseSizeLine(std::string_view value) {
+    SizeResult result;
+    if (value.empty() || !IsHex(value.front())) return std::nullopt;
+
+    std::size_t position = 0;
+    while (position < value.size() && IsHex(value[position])) {
+      const char digit = value[position++];
+      const auto number = digit >= '0' && digit <= '9' ? static_cast<std::uint64_t>(digit - '0')
+                          : digit >= 'a' && digit <= 'f'
+                              ? static_cast<std::uint64_t>(digit - 'a') + 10U
+                              : static_cast<std::uint64_t>(digit - 'A') + 10U;
+      if (!result.overflow) {
+        if (result.value > (std::numeric_limits<std::uint64_t>::max() - number) / 16U)
+          result.overflow = true;
+        else
+          result.value = result.value * 16U + number;
+      }
+    }
+
+    for (;;) {
+      const auto bws_begin = position;
+      while (position < value.size() && (value[position] == ' ' || value[position] == '\t'))
+        ++position;
+      if (position == value.size()) {
+        if (position != bws_begin) return std::nullopt;
+        return result;
+      }
+      if (value[position] != ';') return std::nullopt;
+      ++position;
+      while (position < value.size() && (value[position] == ' ' || value[position] == '\t'))
+        ++position;
+      const auto name_begin = position;
+      while (position < value.size() && IsTchar(value[position])) ++position;
+      if (name_begin == position) return std::nullopt;
+
+      const auto after_name = position;
+      while (position < value.size() && (value[position] == ' ' || value[position] == '\t'))
+        ++position;
+      const bool had_bws_after_name = position != after_name;
+      if (position < value.size() && value[position] == '=') {
+        ++position;
+        while (position < value.size() && (value[position] == ' ' || value[position] == '\t'))
+          ++position;
+        if (position == value.size()) return std::nullopt;
+        if (value[position] == '"') {
+          ++position;
+          bool closed = false;
+          while (position < value.size()) {
+            if (value[position] == '\\') {
+              ++position;
+              if (position == value.size() || !IsQuotedPair(value[position])) return std::nullopt;
+              ++position;
+            } else if (value[position] == '"') {
+              ++position;
+              closed = true;
+              break;
+            } else {
+              if (!IsQdText(value[position])) return std::nullopt;
+              ++position;
+            }
+          }
+          if (!closed) return std::nullopt;
+        } else {
+          const auto token_begin = position;
+          while (position < value.size() && IsTchar(value[position])) ++position;
+          if (token_begin == position) return std::nullopt;
+        }
+      } else {
+        if (position == value.size()) {
+          if (had_bws_after_name) return std::nullopt;
+        } else if (value[position] != ';') {
+          return std::nullopt;
+        }
+      }
+    }
+  }
 
   void Feed(std::string_view input) {
-    for (std::size_t index = 0; index < input.size() && !overflow; ++index) {
+    for (std::size_t index = 0; index < input.size(); ++index) {
+      if (overflow || stopped) return;
       const char byte = input[index];
       if (state == State::kSize) {
-        line.push_back(byte);
-        if (line.size() > 8192) return;
-        if (line.size() >= 2 && line[line.size() - 2] == '\r' && byte == '\n') {
-          auto value = std::string_view(line).substr(0, line.size() - 2);
-          const auto semicolon = value.find(';');
-          if (semicolon != std::string_view::npos) value = value.substr(0, semicolon);
-          while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
-            value.remove_prefix(1);
-          while (!value.empty() && (value.back() == ' ' || value.back() == '\t'))
-            value.remove_suffix(1);
-          if (value.empty()) return;
-          std::uint64_t parsed = 0;
-          for (const char digit : value) {
-            std::uint64_t number = 0;
-            if (digit >= '0' && digit <= '9')
-              number = static_cast<std::uint64_t>(digit - '0');
-            else if (digit >= 'a' && digit <= 'f')
-              number = static_cast<std::uint64_t>(digit - 'a') + 10U;
-            else if (digit >= 'A' && digit <= 'F')
-              number = static_cast<std::uint64_t>(digit - 'A') + 10U;
-            else
-              return;
-            if (parsed > (std::numeric_limits<std::uint64_t>::max() - number) / 16U) {
-              overflow = true;
-              return;
-            }
-            parsed = parsed * 16U + number;
+        if (size_cr_seen) {
+          if (byte != '\n') {
+            stopped = true;
+            return;
+          }
+          line.push_back(byte);
+          size_cr_seen = false;
+          if (line.size() > 8192) {
+            stopped = true;
+            return;
+          }
+          const auto value = std::string_view(line).substr(0, line.size() - 2);
+          const auto parsed = ParseSizeLine(value);
+          if (!parsed) {
+            stopped = true;
+            return;
           }
           line.clear();
-          remaining = parsed;
-          state = parsed == 0 ? State::kTrailer : State::kData;
+          if (parsed->overflow) {
+            overflow = true;
+            return;
+          }
+          remaining = parsed->value;
+          state = parsed->value == 0 ? State::kTrailer : State::kData;
+        } else if (byte == '\r') {
+          line.push_back(byte);
+          size_cr_seen = true;
+        } else if (byte == '\n') {
+          stopped = true;
+          return;
+        } else {
+          line.push_back(byte);
+        }
+        if (line.size() > 8192) {
+          stopped = true;
+          return;
         }
       } else if (state == State::kData) {
-        if (remaining != 0) --remaining;
-        if (remaining == 0) state = State::kDataCrlf;
+        --remaining;
+        if (remaining == 0) {
+          state = State::kDataCrlf;
+          data_cr_seen = false;
+        }
       } else if (state == State::kDataCrlf) {
-        if (byte == '\n') state = State::kSize;
+        if (data_cr_seen) {
+          if (byte != '\n') {
+            stopped = true;
+            return;
+          }
+          data_cr_seen = false;
+          state = State::kSize;
+        } else if (byte == '\r') {
+          data_cr_seen = true;
+        } else {
+          stopped = true;
+          return;
+        }
       } else {
         // Trailer syntax is owned by Beast. No chunk-size overflow can occur here.
       }
     }
   }
 };
-
-bool IsTchar(char value) {
-  return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
-         (value >= '0' && value <= '9') ||
-         std::string_view("!#$%&'*+-.^_`|~").find(value) != std::string_view::npos;
-}
 
 bool IsToken(std::string_view value) {
   if (value.empty()) return false;
@@ -174,11 +296,6 @@ std::string_view TrimOws(std::string_view value) {
 
 bool HasInvalidTargetOctet(std::string_view target) {
   return std::ranges::any_of(target, [](unsigned char c) { return c <= 0x20U || c == 0x7fU; });
-}
-
-bool IsHex(char value) {
-  return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
-         (value >= 'A' && value <= 'F');
 }
 
 bool IsUnreserved(char value) {
@@ -423,13 +540,14 @@ bool ParseTransferCoding(std::string_view value, std::vector<std::string>& codin
         while (position < value.size()) {
           if (value[position] == '\\') {
             ++position;
-            if (position == value.size()) return false;
+            if (position == value.size() || !IsQuotedPair(value[position])) return false;
             ++position;
           } else if (value[position] == '"') {
             ++position;
             closed = true;
             break;
           } else {
+            if (!IsQdText(value[position])) return false;
             ++position;
           }
         }

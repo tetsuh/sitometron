@@ -131,8 +131,8 @@ jobs:
 
           development = names(sys.argv[1])
           sanitized = names(sys.argv[2])
-          if len(development) != 102 or len(development) != len(set(development)):
-              raise SystemExit(f"expected 102 unique dev-linux CTests; found {len(development)}")
+          if len(development) != 103 or len(development) != len(set(development)):
+              raise SystemExit(f"expected 103 unique dev-linux CTests; found {len(development)}")
           if len(sanitized) != len(set(sanitized)) or set(development) != set(sanitized):
               raise SystemExit("ASan/UBSan CTest name set differs from dev-linux")
           print(f"ASan/UBSan CTest parity: {len(sanitized)} tests")
