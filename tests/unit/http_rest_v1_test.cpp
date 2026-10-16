@@ -197,18 +197,8 @@ class ScopedTempDirectory final {
   bool owned_ = false;
 };
 
-std::string ReadUntilHeaders(boost::asio::ip::tcp::socket& socket, boost::system::error_code& ec) {
-  std::string bytes;
-  std::array<char, 4096> buffer{};
-  while (!ec && bytes.find("\r\n\r\n") == std::string::npos) {
-    const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
-    if (count != 0) bytes.append(buffer.data(), count);
-  }
-  return bytes;
-}
-
 Response SendChunkedParts(Backend& backend, Options options, std::string header,
-                          const std::vector<std::string>& parts) {
+                          const std::vector<std::string>& parts, bool* saw_continue = nullptr) {
   options.listen_port = 0;
   Server server(std::move(options), backend);
   std::string error;
@@ -221,12 +211,6 @@ Response SendChunkedParts(Backend& backend, Options options, std::string header,
   boost::system::error_code ec;
   ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
   if (!ec) boost::asio::write(socket, boost::asio::buffer(header.data(), header.size()), ec);
-  const auto interim = ReadUntilHeaders(socket, ec);
-  if (ec || !interim.starts_with("HTTP/1.1 100 Continue")) {
-    ec = socket.close(ec);
-    server.Stop();
-    return ParseResponse(interim);
-  }
   for (const auto& part : parts) {
     boost::asio::write(socket, boost::asio::buffer(part.data(), part.size()), ec);
     if (ec) break;
@@ -239,6 +223,11 @@ Response SendChunkedParts(Backend& backend, Options options, std::string header,
   }
   ec = socket.close(ec);
   server.Stop();
+
+  constexpr std::string_view k_continue = "HTTP/1.1 100 Continue\r\n\r\n";
+  const bool got_continue = bytes.starts_with(k_continue);
+  if (saw_continue != nullptr) *saw_continue = got_continue;
+  if (got_continue) bytes.erase(0, k_continue.size());
   return ParseResponse(bytes);
 }
 
@@ -342,6 +331,16 @@ int JobRoutesNotReady() {
           "Transfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n",
           {"1", "\r\nx\r\n0\r\n\r\n"}),
       "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+  bool folded_expect_continue = false;
+  const auto folded_expect_response = SendChunkedParts(
+      backend, Options{},
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\nExpect:\r\n 100-continue\r\n\r\n",
+      {"2\r\n{}\r\n0\r\n\r\n"}, &folded_expect_continue);
+  result |= Check(folded_expect_continue, "rest_v1_job_routes_not_ready",
+                  "folded Expect did not produce 100 Continue");
+  result |= ExpectError(folded_expect_response, "rest_v1_job_routes_not_ready", 503, "service",
+                        "not_ready");
   return result;
 }
 
@@ -399,6 +398,14 @@ int MalformedRequest() {
   result |= ExpectError(
       Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nBrokenField\r\n\r\n"),
       "rest_v1_malformed_request_refused", 400, "request", "malformed_request");
+  result |= ExpectError(Send(backend, Options{},
+                             "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nContent-Length: 5\r\n"
+                             "Content-Length: 6\r\n\r\n"),
+                        "rest_v1_malformed_request_refused", 400, "request", "malformed_request");
+  result |=
+      ExpectError(Send(backend, Options{},
+                       "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nContent-Length: 5, 6\r\n\r\n"),
+                  "rest_v1_malformed_request_refused", 400, "request", "malformed_request");
   result |=
       ExpectError(Send(backend, Options{},
                        "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nHost Name: loopback\r\n\r\n"),
@@ -488,6 +495,11 @@ int UnknownTransferCoding() {
                              "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
                              "Transfer-Encoding: gzip, chunked\r\n\r\n"),
                         "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
+  result |= ExpectError(
+      Send(backend, Options{},
+           "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+           "Transfer-Encoding: gzip,\r\n chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n"),
+      "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
   return result;
 }
 
@@ -642,6 +654,9 @@ int InvalidHost() {
   result |=
       ExpectError(Send(backend, Options{}, "GET /v1/health HTTP/1.0\r\nHost: bad host\r\n\r\n"),
                   "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: loop\r\n back\r\n\r\n"),
+      "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
   return result;
 }
 
@@ -682,6 +697,16 @@ int InvalidTransferCoding() {
                        "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n"
                        "Transfer-Encoding:\r\nTransfer-Encoding: chunked\r\n\r\n"),
                   "rest_v1_invalid_transfer_coding_refused", 400, "request", "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{},
+           "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+           "Transfer-Encoding: chunked\r\n , gzip\r\n\r\n2\r\n{}\r\n0\r\n\r\n"),
+      "rest_v1_invalid_transfer_coding_refused", 400, "request", "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{},
+           "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+           "Transfer-Encoding:\r\n chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n"),
+      "rest_v1_invalid_transfer_coding_refused", 503, "service", "not_ready");
 
   const auto transfer_prefix =
       "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: gzip;foo=\"";
