@@ -331,6 +331,16 @@ int JobRoutesNotReady() {
           "Transfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n",
           {"1", "\r\nx\r\n0\r\n\r\n"}),
       "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+  bool http10_expect_continue = false;
+  const auto http10_expect_response = SendChunkedParts(
+      backend, Options{},
+      "POST /v1/jobs HTTP/1.0\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 2\r\nExpect: 100-continue\r\n\r\n",
+      {"{}"}, &http10_expect_continue);
+  result |= Check(!http10_expect_continue, "rest_v1_job_routes_not_ready",
+                  "HTTP/1.0 Expect produced 100 Continue");
+  result |= ExpectError(http10_expect_response, "rest_v1_job_routes_not_ready", 503, "service",
+                        "not_ready");
   bool folded_expect_continue = false;
   const auto folded_expect_response = SendChunkedParts(
       backend, Options{},
@@ -426,6 +436,7 @@ int Http10Answered() {
     return check;
   };
   result |= expect_http11(Send(backend, Options{}, HealthRequest("GET", "/v1/health", "HTTP/1.0")));
+  result |= expect_http11(Send(backend, Options{}, "GET /v1/health HTTP/1.0\r\n\r\n"));
   result |= expect_http11(
       SendParts(backend, Options{}, {"GET /v1/health HTTP/1.2", "\r\nHost: loopback\r\n\r\n"}));
   result |= expect_http11(
