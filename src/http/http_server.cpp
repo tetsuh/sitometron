@@ -786,16 +786,15 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
   for (const auto& field : request.fields) {
     if (field.name == "transfer-encoding") transfer_values.push_back(field.value);
     if (field.name == "content-length") content_lengths.push_back(field.value);
-    if (field.name == "expect" && Lower(field.value) == "100-continue")
+    if (field.name == "expect" && version_for_rules == "HTTP/1.1" &&
+        Lower(field.value) == "100-continue")
       request.expect_continue = true;
   }
   request.normalized_header = std::move(normalized);
   request.header_bytes = header_end + 4;
 
   const auto host_count = HeaderCount(request, "host");
-  const bool http11_or_later =
-      version_for_rules == "HTTP/1.1" ||
-      (version_for_rules.size() == 8 && version_for_rules.starts_with("HTTP/1."));
+  const bool http11_or_later = version_for_rules == "HTTP/1.1";
   if (host_count > 1 || (http11_or_later && host_count != 1)) {
     error = EarlyError::kMalformed;
     return request;
@@ -1266,11 +1265,11 @@ bool Server::Start(std::string& error) {
 void Server::Stop() noexcept {
   if (!impl_ || !impl_->thread.joinable()) return;
   impl_->stopping.store(true);
+  impl_->io.stop();
+  impl_->thread.join();
   boost::system::error_code error;
   error = impl_->acceptor.cancel(error);
   error = impl_->acceptor.close(error);
-  impl_->io.stop();
-  impl_->thread.join();
 }
 
 std::uint16_t Server::port() const noexcept { return impl_ ? impl_->port : 0; }
