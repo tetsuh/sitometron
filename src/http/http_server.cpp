@@ -748,8 +748,6 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
       .append(rewritten_version)
       .append("\r\n");
   bool have_field = false;
-  std::vector<std::string> transfer_values;
-  std::vector<std::string> content_lengths;
   std::size_t position = first_end + 2;
   while (position < header_end) {
     const auto line_end = bytes.find("\r\n", position);
@@ -766,10 +764,7 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
         continue;
       }
       normalized.append(field_line).append("\r\n");
-      if (!request.fields.empty()) {
-        auto continuation = TrimOws(field_line);
-        request.fields.back().value.append(" ").append(continuation);
-      }
+      if (!request.fields.empty()) request.fields.back().value.append(" ").append(field_line);
       continue;
     }
     const auto colon = field_line.find(':');
@@ -778,15 +773,22 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
       continue;
     }
     const auto name = Lower(field_line.substr(0, colon));
-    const auto value = std::string(TrimOws(field_line.substr(colon + 1)));
+    const auto value = std::string(field_line.substr(colon + 1));
     request.fields.push_back({name, value});
     have_field = true;
-    if (name == "transfer-encoding") transfer_values.push_back(value);
-    if (name == "content-length") content_lengths.push_back(value);
-    if (name == "expect" && Lower(value) == "100-continue") request.expect_continue = true;
     normalized.append(field_line).append("\r\n");
   }
   normalized.append("\r\n");
+
+  for (auto& field : request.fields) field.value = std::string(TrimOws(field.value));
+  std::vector<std::string> transfer_values;
+  std::vector<std::string> content_lengths;
+  for (const auto& field : request.fields) {
+    if (field.name == "transfer-encoding") transfer_values.push_back(field.value);
+    if (field.name == "content-length") content_lengths.push_back(field.value);
+    if (field.name == "expect" && Lower(field.value) == "100-continue")
+      request.expect_continue = true;
+  }
   request.normalized_header = std::move(normalized);
   request.header_bytes = header_end + 4;
 
