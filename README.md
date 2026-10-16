@@ -116,7 +116,8 @@ and bounds decided by Issue #105 are:
 - `--body-limit BYTES`: 65536, range 4096–1048576;
 - `--header-timeout-ms N` and `--body-timeout-ms N`: 5000 each, range 1–60000.
 
-The combined raw request cap is `header-limit + body-limit + 4096` bytes, including chunk framing.
+The combined raw request cap is `header-limit + body-limit + 4096` bytes, including chunk framing
+but excluding skipped leading empty lines.
 It is checked only after route, method, and media type so it cannot change their refusal order.
 
 ## License

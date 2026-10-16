@@ -774,8 +774,8 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
     }
     const auto colon = field_line.find(':');
     if (colon == std::string_view::npos || colon == 0 || !IsToken(field_line.substr(0, colon))) {
-      error = EarlyError::kMalformed;
-      return request;
+      normalized.append(field_line).append("\r\n");
+      continue;
     }
     const auto name = Lower(field_line.substr(0, colon));
     const auto value = std::string(TrimOws(field_line.substr(colon + 1)));
@@ -805,9 +805,11 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
   }
 
   bool length_overflow = false;
+  bool content_length_invalid = false;
   std::optional<std::uint64_t> length;
   std::optional<std::string> overflow_value;
   for (const auto& value : content_lengths) {
+    if (content_length_invalid) break;
     std::size_t item_start = 0;
     while (item_start <= value.size()) {
       const auto comma = value.find(',', item_start);
@@ -817,26 +819,30 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
       bool overflow = false;
       const auto parsed = ParseUint64(item, overflow);
       if (!parsed && !overflow) {
-        error = EarlyError::kMalformed;
-        return request;
+        content_length_invalid = true;
+        break;
       }
       if (overflow) {
         if (length || (overflow_value && *overflow_value != original_item)) {
-          error = EarlyError::kMalformed;
-          return request;
+          content_length_invalid = true;
+          break;
         }
         length_overflow = true;
         overflow_value = original_item;
       } else {
         if (length_overflow || overflow_value || (length && *length != *parsed)) {
-          error = EarlyError::kMalformed;
-          return request;
+          content_length_invalid = true;
+          break;
         }
         length = parsed;
       }
       if (comma == std::string::npos) break;
       item_start = comma + 1;
     }
+  }
+  if (content_length_invalid) {
+    length.reset();
+    length_overflow = false;
   }
   request.content_length = length;
   request.content_length_overflow = length_overflow;
@@ -978,9 +984,11 @@ asio::awaitable<HeaderRead> ReadHeader(tcp::socket& socket, const Options& optio
         break;
       }
     }
-    const auto end = bytes.find("\r\n\r\n", leading);
+    if (leading != 0) bytes.erase(0, leading);
+
+    const auto end = bytes.find("\r\n\r\n");
     if (end != std::string::npos) {
-      const auto header_size = end + 4 - leading;
+      const auto header_size = end + 4;
       if (header_size > options.header_limit_bytes) {
         result.result = HeaderRead::Result::kTooLarge;
         co_return result;
@@ -990,7 +998,7 @@ asio::awaitable<HeaderRead> ReadHeader(tcp::socket& socket, const Options& optio
       result.end = end;
       co_return result;
     }
-    if (bytes.size() - leading > options.header_limit_bytes) {
+    if (bytes.size() > options.header_limit_bytes) {
       result.result = HeaderRead::Result::kTooLarge;
       co_return result;
     }
@@ -1093,7 +1101,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
   }
 
   std::string body_bytes;
-  std::size_t raw_total = header.end + 4;
+  std::size_t raw_total = request.header_bytes;
   ChunkScanner scanner;
   std::string pending;
   const auto feed = [&](std::string_view bytes) -> ErrorCode {
