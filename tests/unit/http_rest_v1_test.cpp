@@ -349,6 +349,21 @@ int HealthAndReadiness() {
   FakeBackend backend;
   int result =
       ExpectStatus(Send(backend, Options{}, HealthRequest()), "rest_v1_health_and_readiness", 200);
+
+  Options large_prefix_options;
+  const auto leading_empty_lines =
+      std::string(large_prefix_options.combined_request_limit_bytes + 1, '\n');
+  result |= ExpectStatus(Send(backend, large_prefix_options, leading_empty_lines + HealthRequest()),
+                         "rest_v1_health_and_readiness", 200);
+
+  std::string split_leading_empty_lines;
+  while (split_leading_empty_lines.size() < large_prefix_options.combined_request_limit_bytes)
+    split_leading_empty_lines.append("\r\n");
+  split_leading_empty_lines.push_back('\r');
+  result |= ExpectStatus(
+      SendParts(backend, large_prefix_options, {split_leading_empty_lines, "\n" + HealthRequest()}),
+      "rest_v1_health_and_readiness", 200);
+
   if (result == 0) {
     try {
       const auto body = nlohmann::json::parse(Send(backend, Options{}, HealthRequest()).body);
@@ -377,9 +392,21 @@ int HealthAndReadiness() {
 
 int MalformedRequest() {
   FakeBackend backend;
+  int result = 0;
   const auto request = "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nContent-Length: nope\r\n\r\n";
-  return ExpectError(Send(backend, Options{}, request), "rest_v1_malformed_request_refused", 400,
-                     "request", "malformed_request");
+  result |= ExpectError(Send(backend, Options{}, request), "rest_v1_malformed_request_refused", 400,
+                        "request", "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nBrokenField\r\n\r\n"),
+      "rest_v1_malformed_request_refused", 400, "request", "malformed_request");
+  result |=
+      ExpectError(Send(backend, Options{},
+                       "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nHost Name: loopback\r\n\r\n"),
+                  "rest_v1_malformed_request_refused", 400, "request", "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{}, "GET /v1/health HTTP/1.1 extra\r\nHost: loopback\r\n\r\n"),
+      "rest_v1_malformed_request_refused", 400, "request", "malformed_request");
+  return result;
 }
 
 int Http10Answered() {
@@ -442,10 +469,13 @@ int HeadersTooLarge() {
   FakeBackend backend;
   Options options;
   options.header_limit_bytes = 16384;
-  return ExpectError(Send(backend, options,
-                          "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nX-Fill: " +
-                              std::string(17000, 'a') + "\r\n\r\n"),
-                     "rest_v1_headers_too_large", 431, "request", "headers_too_large");
+  const auto leading_empty_lines = std::string(options.combined_request_limit_bytes + 1, '\n');
+  const auto request =
+      leading_empty_lines +
+      "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nX-Fill: " + std::string(17000, 'a') +
+      "\r\n\r\n";
+  return ExpectError(Send(backend, options, request), "rest_v1_headers_too_large", 431, "request",
+                     "headers_too_large");
 }
 
 int UnknownTransferCoding() {
