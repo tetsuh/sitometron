@@ -219,10 +219,6 @@ struct ChunkScanner {
           }
           line.push_back(byte);
           size_cr_seen = false;
-          if (line.size() > 8192) {
-            stopped = true;
-            return;
-          }
           const auto value = std::string_view(line).substr(0, line.size() - 2);
           const auto parsed = ParseSizeLine(value);
           if (!parsed) {
@@ -244,10 +240,6 @@ struct ChunkScanner {
           return;
         } else {
           line.push_back(byte);
-        }
-        if (line.size() > 8192) {
-          stopped = true;
-          return;
         }
       } else if (state == State::kData) {
         --remaining;
@@ -1106,11 +1098,15 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
   ChunkScanner scanner;
   std::string pending;
   const auto feed = [&](std::string_view bytes) -> ErrorCode {
+    bool incomplete_chunk_size = false;
     if (request.chunked) {
       scanner.Feed(bytes);
       if (scanner.overflow) return http::error::body_limit;
+      incomplete_chunk_size = scanner.state == ChunkScanner::State::kSize && !scanner.stopped &&
+                              (!scanner.line.empty() || scanner.size_cr_seen);
     }
     pending.append(bytes.data(), bytes.size());
+    if (incomplete_chunk_size) return {};
     while (!pending.empty() && !parser.is_done()) {
       ErrorCode error;
       const auto consumed = parser.put(asio::buffer(pending.data(), pending.size()), error);

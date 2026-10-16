@@ -577,6 +577,12 @@ int BodyBoundAfterRouting() {
       "Transfer-Encoding: chunked\r\n\r\nFFFFFFFFFFFFFFFFF\r\n";
   result |= ExpectError(Send(backend, Options{}, valid_chunk_overflow),
                         "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
+  const auto overflow_with_long_extension =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\n\r\nFFFFFFFFFFFFFFFFF;ext=\"" +
+      std::string(8200, 'a') + "\"\r\n";
+  result |= ExpectError(Send(backend, Options{}, overflow_with_long_extension),
+                        "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
   return result;
 }
 
