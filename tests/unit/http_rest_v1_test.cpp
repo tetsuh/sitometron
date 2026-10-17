@@ -500,23 +500,35 @@ int TargetTooLong() {
   FakeBackend backend;
   Options options;
   options.target_limit_bytes = 8192;
-  return ExpectError(
-      Send(backend, options,
-           "GET /v1/" + std::string(9000, 'a') + " HTTP/1.1\r\nHost: loopback\r\n\r\n"),
-      "rest_v1_target_too_long", 414, "request", "target_too_long");
+  const std::string target_prefix = "http://";
+  const std::string target_suffix = "/v1/health";
+  const auto authority_size = static_cast<std::size_t>(options.target_limit_bytes) -
+                              target_prefix.size() - target_suffix.size();
+  const auto exact_target = target_prefix + std::string(authority_size, 'a') + target_suffix;
+  int result = ExpectStatus(Send(backend, options, HealthRequest("GET", exact_target)),
+                            "rest_v1_target_too_long", 200);
+  const auto over_target = target_prefix + std::string(authority_size + 1, 'a') + target_suffix;
+  result |= ExpectError(Send(backend, options, HealthRequest("GET", over_target)),
+                        "rest_v1_target_too_long", 414, "request", "target_too_long");
+  return result;
 }
 
 int HeadersTooLarge() {
   FakeBackend backend;
   Options options;
   options.header_limit_bytes = 16384;
-  const auto leading_empty_lines = std::string(options.combined_request_limit_bytes + 1, '\n');
-  const auto request =
-      leading_empty_lines +
-      "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nX-Fill: " + std::string(17000, 'a') +
-      "\r\n\r\n";
-  return ExpectError(Send(backend, options, request), "rest_v1_headers_too_large", 431, "request",
-                     "headers_too_large");
+  const std::string header_prefix = "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nX-Fill: ";
+  const std::string header_suffix = "\r\n\r\n";
+  const auto fill_size = static_cast<std::size_t>(options.header_limit_bytes) -
+                         header_prefix.size() - header_suffix.size();
+  const auto exact_header = header_prefix + std::string(fill_size, 'a') + header_suffix;
+  const auto over_header = header_prefix + std::string(fill_size + 1, 'a') + header_suffix;
+  const std::string leading_empty_lines = "\r\n\n";
+  int result = ExpectStatus(Send(backend, options, leading_empty_lines + exact_header),
+                            "rest_v1_headers_too_large", 200);
+  result |= ExpectError(Send(backend, options, leading_empty_lines + over_header),
+                        "rest_v1_headers_too_large", 431, "request", "headers_too_large");
+  return result;
 }
 
 int UnknownTransferCoding() {
@@ -591,30 +603,67 @@ int BodyBoundAfterRouting() {
   result |= ExpectError(Send(backend, chunked_options, chunked_over_body),
                         "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
 
-  Options raw_chunked_options;
-  raw_chunked_options.body_limit_bytes = 4096;
-  raw_chunked_options.combined_request_limit_bytes = 24576;
-  const auto chunked_over_combined =
+  Options raw_options;
+  raw_options.header_limit_bytes = 8192;
+  raw_options.body_limit_bytes = 4096;
+  raw_options.combined_request_limit_bytes = 16384;
+
+  const auto content_length_prefix =
+      std::string(
+          "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+          "Content-Length: ") +
+      std::to_string(raw_options.body_limit_bytes) + "\r\nX-Fill: ";
+  const auto content_length_suffix = std::string("\r\n\r\n");
+  const auto content_length_header =
+      content_length_prefix +
+      std::string(static_cast<std::size_t>(raw_options.header_limit_bytes) -
+                      content_length_prefix.size() - content_length_suffix.size(),
+                  'a') +
+      content_length_suffix;
+  const auto content_length_body = std::string(raw_options.body_limit_bytes, 'x');
+  const auto content_length_wire = content_length_header + content_length_body;
+  const auto content_length_padding =
+      static_cast<std::size_t>(raw_options.combined_request_limit_bytes) -
+      content_length_wire.size();
+  const auto exact_content_length = content_length_wire + std::string(content_length_padding, 'p');
+  result |=
+      Check(exact_content_length.size() == raw_options.combined_request_limit_bytes,
+            "rest_v1_body_bound_after_routing", "Content-Length boundary request size mismatch");
+  result |= ExpectError(Send(backend, raw_options, exact_content_length),
+                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+
+  const auto chunked_prefix = std::string(
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
-      "Transfer-Encoding: chunked\r\n\r\n2;extension=\"" +
-      std::string(24500, 'a') + "\"\r\n{}\r\n0\r\n\r\n";
-  result |= ExpectError(Send(backend, raw_chunked_options, chunked_over_combined),
+      "Transfer-Encoding: chunked\r\n\r\n2;extension=\"");
+  const auto chunked_suffix = std::string("\"\r\n{}\r\n0\r\n\r\n");
+  const auto chunked_fixed_size = chunked_prefix.size() + chunked_suffix.size();
+  const auto exact_extension_size =
+      static_cast<std::size_t>(raw_options.combined_request_limit_bytes) - chunked_fixed_size;
+  const auto make_chunked_request = [&](std::size_t extension_size) {
+    return chunked_prefix + std::string(extension_size, 'a') + chunked_suffix;
+  };
+  const auto exact_chunked_body = make_chunked_request(exact_extension_size);
+  const auto chunked_over_combined = make_chunked_request(exact_extension_size + 1);
+  result |= Check(exact_chunked_body.size() == raw_options.combined_request_limit_bytes,
+                  "rest_v1_body_bound_after_routing", "chunked boundary request size mismatch");
+  result |= ExpectError(Send(backend, raw_options, exact_chunked_body),
+                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+  result |= ExpectError(Send(backend, raw_options, chunked_over_combined),
                         "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
+
   const auto unknown_chunked_over_combined =
-      "POST /v1/nope HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
-      "Transfer-Encoding: chunked\r\n\r\n2;extension=\"" +
-      std::string(24500, 'a') + "\"\r\n{}\r\n0\r\n\r\n";
-  result |= ExpectError(Send(backend, raw_chunked_options, unknown_chunked_over_combined),
+      std::string(
+          "POST /v1/nope HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+          "Transfer-Encoding: chunked\r\n\r\n2;extension=\"") +
+      std::string(exact_extension_size + 1, 'a') + "\"\r\n{}\r\n0\r\n\r\n";
+  result |= ExpectError(Send(backend, raw_options, unknown_chunked_over_combined),
                         "rest_v1_body_bound_after_routing", 404, "request", "route_not_found");
 
-  Options exact_chunked_options;
-  exact_chunked_options.body_limit_bytes = 4096;
-  exact_chunked_options.combined_request_limit_bytes = 24576;
-  const auto exact_chunked_body =
+  const auto exact_chunked_body_limit =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
       "Transfer-Encoding: chunked\r\n\r\n1000\r\n{" +
-      std::string(4094, ' ') + "}\r\n0\r\n\r\n";
-  result |= ExpectError(Send(backend, exact_chunked_options, exact_chunked_body),
+      std::string(raw_options.body_limit_bytes - 2, ' ') + "}\r\n0\r\n\r\n";
+  result |= ExpectError(Send(backend, raw_options, exact_chunked_body_limit),
                         "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
 
   const auto overflow =
