@@ -45,7 +45,7 @@ LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the 103-test `dev-linux` baseline. It runs without suppressions using
+CTest-name parity with the 105-test `dev-linux` baseline. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -201,6 +201,7 @@ Issue #105 additionally gives each adapter-owned `400 malformed_request` refusal
 | Transfer-coding or transfer-parameter syntax is invalid (for example an empty coding or a parameter without `=`) | RFC 9112 Section 6.1; RFC 9110 Sections 5.6.2 and 10.1.4 | `rest_v1_invalid_transfer_coding_refused` |
 | Transfer-Encoding combined with Content-Length | RFC 9112 Sections 6.1 and 6.3 | `rest_v1_transfer_encoding_with_content_length_refused` |
 | Transfer-Encoding appears in an HTTP/1.0 request | RFC 9112 Section 6.1 | `rest_v1_http10_transfer_encoding_refused` |
+| Obsolete line folding (obs-fold) in a field line | RFC 9112 Section 5.2 | `rest_v1_obs_fold_refused` |
 
 Beast 1.91.0 owns the remaining parser refusals in `rest_v1_malformed_request_refused`, including
 invalid request-line syntax, invalid field syntax, and invalid Content-Length syntax or value. The
@@ -208,9 +209,13 @@ adapter must not duplicate those cases. The adapter-owned list above was establi
 probe against the pinned Beast source and header parser behavior; a final report records the exact
 probe command and representative output.
 
-The startup configuration and composed-daemon smoke are covered by `rest_v1_sitometrond_options`,
-which also exercises representative unknown, repeated, missing, malformed, and out-of-range command
-line values.
+The startup configuration and in-process composed-daemon smoke are covered by
+`rest_v1_sitometrond_options`, which also exercises representative unknown, repeated, missing,
+malformed, and out-of-range command-line values. The executable entrypoint smoke is
+`rest_v1_sitometrond_entrypoint`: malformed options and their documented status `2` run on every
+platform; the valid subprocess starts on loopback port `0`, answers health and readiness, and is
+stopped with `SIGTERM` on POSIX. Windows runs only the malformed-option portion because the test
+has no portable clean console-signal path that also verifies exit status `0`.
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even

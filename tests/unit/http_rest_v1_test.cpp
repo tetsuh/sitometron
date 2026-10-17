@@ -1,6 +1,18 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <poll.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <csignal>
+#endif
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/io_context.hpp>
@@ -341,16 +353,6 @@ int JobRoutesNotReady() {
                   "HTTP/1.0 Expect produced 100 Continue");
   result |= ExpectError(http10_expect_response, "rest_v1_job_routes_not_ready", 503, "service",
                         "not_ready");
-  bool folded_expect_continue = false;
-  const auto folded_expect_response = SendChunkedParts(
-      backend, Options{},
-      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
-      "Transfer-Encoding: chunked\r\nExpect:\r\n 100-continue\r\n\r\n",
-      {"2\r\n{}\r\n0\r\n\r\n"}, &folded_expect_continue);
-  result |= Check(folded_expect_continue, "rest_v1_job_routes_not_ready",
-                  "folded Expect did not produce 100 Continue");
-  result |= ExpectError(folded_expect_response, "rest_v1_job_routes_not_ready", 503, "service",
-                        "not_ready");
   return result;
 }
 
@@ -506,11 +508,6 @@ int UnknownTransferCoding() {
                              "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
                              "Transfer-Encoding: gzip, chunked\r\n\r\n"),
                         "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
-  result |= ExpectError(
-      Send(backend, Options{},
-           "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
-           "Transfer-Encoding: gzip,\r\n chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n"),
-      "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
   return result;
 }
 
@@ -671,9 +668,6 @@ int InvalidHost() {
   result |=
       ExpectError(Send(backend, Options{}, "GET /v1/health HTTP/1.0\r\nHost: bad host\r\n\r\n"),
                   "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
-  result |= ExpectError(
-      Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: loop\r\n back\r\n\r\n"),
-      "rest_v1_invalid_host_refused", 400, "request", "malformed_request");
   return result;
 }
 
@@ -723,7 +717,7 @@ int InvalidTransferCoding() {
       Send(backend, Options{},
            "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
            "Transfer-Encoding:\r\n chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n"),
-      "rest_v1_invalid_transfer_coding_refused", 503, "service", "not_ready");
+      "rest_v1_invalid_transfer_coding_refused", 400, "request", "malformed_request");
 
   const auto transfer_prefix =
       "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: gzip;foo=\"";
@@ -775,6 +769,44 @@ int Http10TransferEncoding() {
                      "malformed_request");
 }
 
+int ObsFoldRefused() {
+  FakeBackend backend;
+  int result = 0;
+  result |= ExpectError(
+      Send(backend, Options{},
+           "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+           "Transfer-Encoding: gzip,\r\n chunked\r\n\r\n"),
+      "rest_v1_obs_fold_refused", 400, "request", "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{},
+           "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+           "Content-Length: 0\r\nExpect:\r\n 100-continue\r\n\r\n"),
+      "rest_v1_obs_fold_refused", 400, "request", "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: loop\r\n back\r\n\r\n"),
+      "rest_v1_obs_fold_refused", 400, "request", "malformed_request");
+
+  const auto folded_length =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 18446744073709551616,\r\n 18446744073709551616\r\n\r\n";
+  result |= ExpectError(Send(backend, Options{}, folded_length), "rest_v1_obs_fold_refused", 400,
+                        "request", "malformed_request");
+  result |= ExpectError(Send(backend, Options{},
+                             "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\nContent-Length: "
+                             "18446744073709551616,\r\n 18446744073709551616\r\n\r\n"),
+                        "rest_v1_obs_fold_refused", 400, "request", "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{},
+           "PUT /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+           "Content-Length: 18446744073709551616,\r\n 18446744073709551616\r\n\r\n"),
+      "rest_v1_obs_fold_refused", 400, "request", "malformed_request");
+
+  result |= ExpectStatus(
+      Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\n \r\nHost: loopback\r\n\r\n"),
+      "rest_v1_obs_fold_refused", 200);
+  return result;
+}
+
 int Phase1PortsNotCalled() {
   const ScopedTempDirectory directory("phase1-composition-journal");
   {
@@ -814,6 +846,172 @@ int Phase1PortsNotCalled() {
                     "Phase 1 identity source was read during replay/serve/shutdown");
   }
   return result;
+}
+
+struct ProcessResult {
+  bool started = false;
+  int exit_code = -1;
+};
+
+ProcessResult RunAndWait(const std::string& executable, const std::vector<std::string>& arguments) {
+  std::vector<std::string> values;
+  values.reserve(arguments.size() + 1);
+  values.push_back(executable);
+  values.insert(values.end(), arguments.begin(), arguments.end());
+#ifdef _WIN32
+  std::vector<const char*> argv;
+  argv.reserve(values.size() + 1);
+  for (const auto& value : values) argv.push_back(value.c_str());
+  argv.push_back(nullptr);
+  const auto exit_code = _spawnv(_P_WAIT, executable.c_str(), argv.data());
+  if (exit_code < 0) return {};
+  return {true, static_cast<int>(exit_code)};
+#else
+  const auto child = ::fork();
+  if (child < 0) return {};
+  if (child == 0) {
+    std::vector<char*> argv;
+    argv.reserve(values.size() + 1);
+    for (auto& value : values) argv.push_back(value.data());
+    argv.push_back(nullptr);
+    ::execv(executable.c_str(), argv.data());
+    _exit(127);
+  }
+  int status = 0;
+  pid_t waited = 0;
+  do {
+    waited = ::waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  if (waited != child || !WIFEXITED(status)) return {true, -1};
+  return {true, WEXITSTATUS(status)};
+#endif
+}
+
+#ifndef _WIN32
+struct RunningProcess {
+  pid_t pid = -1;
+  int output_fd = -1;
+};
+
+bool StartRunningProcess(const std::string& executable, const std::vector<std::string>& arguments,
+                         RunningProcess& process) {
+  int descriptors[2] = {-1, -1};
+  if (::pipe(descriptors) != 0) return false;
+  std::vector<std::string> values;
+  values.reserve(arguments.size() + 1);
+  values.push_back(executable);
+  values.insert(values.end(), arguments.begin(), arguments.end());
+  const auto child = ::fork();
+  if (child < 0) {
+    (void)::close(descriptors[0]);
+    (void)::close(descriptors[1]);
+    return false;
+  }
+  if (child == 0) {
+    (void)::close(descriptors[0]);
+    if (::dup2(descriptors[1], STDOUT_FILENO) < 0 || ::dup2(descriptors[1], STDERR_FILENO) < 0) {
+      _exit(126);
+    }
+    (void)::close(descriptors[1]);
+    std::vector<char*> argv;
+    argv.reserve(values.size() + 1);
+    for (auto& value : values) argv.push_back(value.data());
+    argv.push_back(nullptr);
+    ::execv(executable.c_str(), argv.data());
+    _exit(127);
+  }
+  (void)::close(descriptors[1]);
+  process = {child, descriptors[0]};
+  return true;
+}
+
+bool ReadStartupLine(int descriptor, std::string& line) {
+  std::array<char, 512> buffer{};
+  for (;;) {
+    const auto newline = line.find('\n');
+    if (newline != std::string::npos) {
+      line.resize(newline);
+      return true;
+    }
+    if (line.size() > 4096) return false;
+    pollfd event{descriptor, POLLIN, 0};
+    int ready = 0;
+    do {
+      ready = ::poll(&event, 1, 5000);
+    } while (ready < 0 && errno == EINTR);
+    if (ready <= 0) return false;
+    const auto count = ::read(descriptor, buffer.data(), buffer.size());
+    if (count <= 0) return false;
+    line.append(buffer.data(), static_cast<std::size_t>(count));
+  }
+}
+
+int StopRunningProcess(RunningProcess& process) {
+  if (process.pid < 0) return -1;
+  (void)::kill(process.pid, SIGTERM);
+  int status = 0;
+  pid_t waited = 0;
+  do {
+    waited = ::waitpid(process.pid, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  (void)::close(process.output_fd);
+  process = {};
+  if (waited <= 0 || !WIFEXITED(status)) return -1;
+  return WEXITSTATUS(status);
+}
+
+std::uint16_t ListeningPort(std::string_view line) {
+  constexpr std::string_view marker = "listening on 127.0.0.1:";
+  const auto begin = line.find(marker);
+  if (begin == std::string_view::npos) return 0;
+  const auto port_begin = begin + marker.size();
+  std::uint64_t value = 0;
+  const auto parsed = std::from_chars(line.data() + port_begin, line.data() + line.size(), value);
+  if (parsed.ec != std::errc{} || parsed.ptr != line.data() + line.size() || value == 0 ||
+      value > 65535) {
+    return 0;
+  }
+  return static_cast<std::uint16_t>(value);
+}
+#endif
+
+int SitometrondEntrypoint(const std::string& executable) {
+  constexpr std::string_view name = "rest_v1_sitometrond_entrypoint";
+  if (executable.empty()) return Check(false, name, "sitometrond executable path is missing");
+
+  const ScopedTempDirectory directory("sitometrond-entrypoint-journal");
+  int result = 0;
+  const auto unknown = RunAndWait(executable, {"--unknown"});
+  result |= Check(unknown.started && unknown.exit_code == 2, name,
+                  "unknown option did not exit with status 2");
+  const auto malformed =
+      RunAndWait(executable, {"--journal", directory.Path().string(), "--body-limit", "nope"});
+  result |= Check(malformed.started && malformed.exit_code == 2, name,
+                  "malformed numeric option did not exit with status 2");
+
+#ifdef _WIN32
+  // Windows has no portable console-signal path for this subprocess smoke.
+  return result;
+#else
+  RunningProcess process;
+  if (!StartRunningProcess(
+          executable,
+          {"--journal", directory.Path().string(), "--listen", "127.0.0.1:0", "--max-jobs", "2"},
+          process)) {
+    return result | Check(false, name, "could not start a valid sitometrond configuration");
+  }
+  std::string startup_line;
+  const bool got_startup_line = ReadStartupLine(process.output_fd, startup_line);
+  const auto port = got_startup_line ? ListeningPort(startup_line) : 0;
+  result |= Check(port != 0, name, "startup output did not contain the bound ephemeral port");
+  if (port != 0) {
+    result |= ExpectStatus(SendToPort(port, HealthRequest()), name, 200);
+    result |= ExpectStatus(SendToPort(port, HealthRequest("GET", "/v1/ready")), name, 200);
+  }
+  const auto exit_code = StopRunningProcess(process);
+  result |= Check(exit_code == 0, name, "SIGTERM did not produce exit status 0");
+  return result;
+#endif
 }
 
 int SitometrondOptions() {
@@ -868,7 +1066,7 @@ int SitometrondOptions() {
   return result;
 }
 
-int Run(std::string_view name) {
+int Run(std::string_view name, const std::string& sitometrond_path) {
   if (name == "rest_v1_loopback_only") return LoopbackOnly();
   if (name == "rest_v1_unknown_route_and_method") return UnknownRouteAndMethod();
   if (name == "rest_v1_job_routes_not_ready") return JobRoutesNotReady();
@@ -897,8 +1095,10 @@ int Run(std::string_view name) {
   if (name == "rest_v1_transfer_encoding_with_content_length_refused")
     return TransferEncodingWithContentLengthRefused();
   if (name == "rest_v1_http10_transfer_encoding_refused") return Http10TransferEncoding();
+  if (name == "rest_v1_obs_fold_refused") return ObsFoldRefused();
   if (name == "rest_v1_phase1_ports_not_called") return Phase1PortsNotCalled();
   if (name == "rest_v1_sitometrond_options") return SitometrondOptions();
+  if (name == "rest_v1_sitometrond_entrypoint") return SitometrondEntrypoint(sitometrond_path);
   std::cerr << "unknown check " << name << '\n';
   return 2;
 }
@@ -907,11 +1107,11 @@ int Run(std::string_view name) {
 
 int main(int argc, char** argv) {
   try {
-    if (argc != 2) {
-      std::cerr << "usage: sitometron_http_tests <check>\n";
+    if (argc < 2 || argc > 3) {
+      std::cerr << "usage: sitometron_http_tests <check> [sitometrond]\n";
       return 2;
     }
-    return Run(argv[1]);
+    return Run(argv[1], argc == 3 ? argv[2] : "");
   } catch (...) {
     std::cerr << "uncaught test exception\n";
     return 1;

@@ -755,9 +755,8 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
         // RFC 9112 permits a recipient to consume whitespace-preceded lines before the first field.
         continue;
       }
-      normalized.append(field_line).append("\r\n");
-      if (!request.fields.empty()) request.fields.back().value.append(" ").append(field_line);
-      continue;
+      error = EarlyError::kMalformed;
+      return request;
     }
     const auto colon = field_line.find(':');
     if (colon == std::string_view::npos || colon == 0 || !IsToken(field_line.substr(0, colon))) {

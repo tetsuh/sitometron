@@ -472,6 +472,7 @@ if(SITOMETRON_BUILD_TESTS)
         rest_v1_job_routes_not_ready
         rest_v1_health_and_readiness
         rest_v1_malformed_request_refused
+        rest_v1_obs_fold_refused
         rest_v1_http10_request_answered
         rest_v1_absolute_form_target
         rest_v1_targets_without_a_path
@@ -500,6 +501,9 @@ if(SITOMETRON_BUILD_TESTS)
         NAME ${_rest_v1_check}
         COMMAND sitometron_http_tests ${_rest_v1_check})
     endforeach()
+    add_test(
+      NAME rest_v1_sitometrond_entrypoint
+      COMMAND sitometron_http_tests rest_v1_sitometrond_entrypoint $<TARGET_FILE:sitometrond>)
   endif()
 
   add_test(
