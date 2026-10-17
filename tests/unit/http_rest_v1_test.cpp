@@ -544,6 +544,35 @@ int BodyBoundAfterRouting() {
   result |= ExpectError(Send(backend, exact_options, exact_body),
                         "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
 
+  Options chunked_options;
+  chunked_options.body_limit_bytes = 4096;
+  const auto chunked_over_body =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\n\r\n1001\r\n{" +
+      std::string(4095, ' ') + "}\r\n0\r\n\r\n";
+  result |= ExpectError(Send(backend, chunked_options, chunked_over_body),
+                        "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
+
+  Options raw_chunked_options;
+  raw_chunked_options.body_limit_bytes = 4096;
+  raw_chunked_options.combined_request_limit_bytes = 24576;
+  const auto chunked_over_combined =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\n\r\n2;extension=\"" +
+      std::string(24500, 'a') + "\"\r\n{}\r\n0\r\n\r\n";
+  result |= ExpectError(Send(backend, raw_chunked_options, chunked_over_combined),
+                        "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
+
+  Options exact_chunked_options;
+  exact_chunked_options.body_limit_bytes = 4096;
+  exact_chunked_options.combined_request_limit_bytes = 24576;
+  const auto exact_chunked_body =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\n\r\n1000\r\n{" +
+      std::string(4094, ' ') + "}\r\n0\r\n\r\n";
+  result |= ExpectError(Send(backend, exact_chunked_options, exact_chunked_body),
+                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+
   const auto overflow =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
       "Content-Length: 18446744073709551616\r\n\r\n";
