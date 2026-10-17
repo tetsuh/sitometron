@@ -83,7 +83,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_link_target_allowlist.cmake
 if(SITOMETRON_ENABLE_HTTP)
   find_package(Boost CONFIG REQUIRED COMPONENTS beast asio)
 
-  add_library(sitometron_http STATIC src/http/placeholder.cpp)
+  add_library(sitometron_http STATIC src/http/http_server.cpp)
   add_library(sitometron::http ALIAS sitometron_http)
   target_include_directories(
     sitometron_http
@@ -143,7 +143,23 @@ sitometron_enable_project_warnings(sitometron_journal)
 sitometron_enable_sanitizers(sitometron_journal)
 
 add_executable(sitometrond apps/sitometrond/main.cpp)
-target_link_libraries(sitometrond PRIVATE sitometron::core)
+target_include_directories(sitometrond PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+if(SITOMETRON_ENABLE_HTTP)
+  add_library(sitometrond_composition STATIC apps/sitometrond/composition.cpp)
+  target_include_directories(sitometrond_composition PRIVATE src/core)
+  target_link_libraries(
+    sitometrond_composition
+    PRIVATE
+      sitometron::core
+      sitometron::journal
+      sitometron::http)
+  sitometron_enable_project_warnings(sitometrond_composition)
+  sitometron_enable_sanitizers(sitometrond_composition)
+  target_compile_definitions(sitometrond PRIVATE SITOMETRON_ENABLE_HTTP=1)
+  target_link_libraries(sitometrond PRIVATE sitometrond_composition)
+else()
+  target_link_libraries(sitometrond PRIVATE sitometron::core)
+endif()
 sitometron_enable_project_warnings(sitometrond)
 sitometron_enable_sanitizers(sitometrond)
 
@@ -438,6 +454,56 @@ if(SITOMETRON_BUILD_TESTS)
         -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
         -DHTTP_NEGATIVE_MODE=public
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_negative_isolation.cmake)
+
+    add_executable(sitometron_http_tests tests/unit/http_rest_v1_test.cpp)
+    target_include_directories(sitometron_http_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(
+      sitometron_http_tests
+      PRIVATE
+        sitometron::http
+        sitometrond_composition
+        Boost::asio
+        nlohmann_json::nlohmann_json)
+    sitometron_enable_project_warnings(sitometron_http_tests)
+    sitometron_enable_sanitizers(sitometron_http_tests)
+    foreach(_rest_v1_check IN ITEMS
+        rest_v1_loopback_only
+        rest_v1_unknown_route_and_method
+        rest_v1_job_routes_not_ready
+        rest_v1_health_and_readiness
+        rest_v1_malformed_request_refused
+        rest_v1_obs_fold_refused
+        rest_v1_http10_request_answered
+        rest_v1_absolute_form_target
+        rest_v1_targets_without_a_path
+        rest_v1_header_receive_timeout
+        rest_v1_target_too_long
+        rest_v1_headers_too_large
+        rest_v1_unknown_transfer_coding
+        rest_v1_body_bound_after_routing
+        rest_v1_body_receive_timeout
+        rest_v1_query_refused
+        rest_v1_unlisted_methods_refused
+        rest_v1_error_details_empty
+        rest_v1_invalid_request_target_refused
+        rest_v1_missing_host_refused
+        rest_v1_repeated_host_refused
+        rest_v1_invalid_host_refused
+        rest_v1_nonfinal_transfer_coding_refused
+        rest_v1_repeated_chunked_refused
+        rest_v1_chunked_parameters_refused
+        rest_v1_invalid_transfer_coding_refused
+        rest_v1_transfer_encoding_with_content_length_refused
+        rest_v1_http10_transfer_encoding_refused
+        rest_v1_phase1_ports_not_called
+        rest_v1_sitometrond_options)
+      add_test(
+        NAME ${_rest_v1_check}
+        COMMAND sitometron_http_tests ${_rest_v1_check})
+    endforeach()
+    add_test(
+      NAME rest_v1_sitometrond_entrypoint
+      COMMAND sitometron_http_tests rest_v1_sitometrond_entrypoint $<TARGET_FILE:sitometrond>)
   endif()
 
   add_test(
