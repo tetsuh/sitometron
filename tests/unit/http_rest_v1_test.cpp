@@ -210,7 +210,8 @@ class ScopedTempDirectory final {
 };
 
 Response SendChunkedParts(Backend& backend, Options options, std::string header,
-                          const std::vector<std::string>& parts, bool* saw_continue = nullptr) {
+                          const std::vector<std::string>& parts, bool* saw_continue = nullptr,
+                          bool wait_for_continue = false) {
   options.listen_port = 0;
   Server server(std::move(options), backend);
   std::string error;
@@ -223,23 +224,40 @@ Response SendChunkedParts(Backend& backend, Options options, std::string header,
   boost::system::error_code ec;
   ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
   if (!ec) boost::asio::write(socket, boost::asio::buffer(header.data(), header.size()), ec);
-  for (const auto& part : parts) {
-    boost::asio::write(socket, boost::asio::buffer(part.data(), part.size()), ec);
-    if (ec) break;
-  }
+
+  constexpr std::string_view k_continue = "HTTP/1.1 100 Continue\r\n\r\n";
   std::string bytes;
   std::array<char, 4096> buffer{};
-  while (!ec) {
-    const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
-    if (count != 0) bytes.append(buffer.data(), count);
+  bool got_continue = false;
+  if (wait_for_continue && !ec) {
+    std::string interim;
+    while (interim.size() < k_continue.size() && !ec) {
+      const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
+      if (count != 0) interim.append(buffer.data(), count);
+    }
+    got_continue = interim.starts_with(k_continue);
+    if (!got_continue) bytes = std::move(interim);
+  }
+  if (!wait_for_continue || got_continue) {
+    for (const auto& part : parts) {
+      boost::asio::write(socket, boost::asio::buffer(part.data(), part.size()), ec);
+      if (ec) break;
+    }
+  }
+  if (!wait_for_continue || got_continue) {
+    while (!ec) {
+      const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
+      if (count != 0) bytes.append(buffer.data(), count);
+    }
   }
   ec = socket.close(ec);
   server.Stop();
 
-  constexpr std::string_view k_continue = "HTTP/1.1 100 Continue\r\n\r\n";
-  const bool got_continue = bytes.starts_with(k_continue);
+  if (!wait_for_continue) {
+    got_continue = bytes.starts_with(k_continue);
+    if (got_continue) bytes.erase(0, k_continue.size());
+  }
   if (saw_continue != nullptr) *saw_continue = got_continue;
-  if (got_continue) bytes.erase(0, k_continue.size());
   return ParseResponse(bytes);
 }
 
@@ -336,13 +354,16 @@ int JobRoutesNotReady() {
       ExpectError(Send(backend, Options{},
                        HealthRequest("POST", "/v1/jobs/" + std::string(k_job_id) + "/cancel")),
                   "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
-  result |= ExpectError(
-      SendChunkedParts(
-          backend, Options{},
-          "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
-          "Transfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n",
-          {"1", "\r\nx\r\n0\r\n\r\n"}),
-      "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+  bool http11_expect_continue = false;
+  const auto http11_expect_response = SendChunkedParts(
+      backend, Options{},
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n",
+      {"1", "\r\nx\r\n0\r\n\r\n"}, &http11_expect_continue, true);
+  result |= Check(http11_expect_continue, "rest_v1_job_routes_not_ready",
+                  "HTTP/1.1 Expect did not produce 100 Continue");
+  result |= ExpectError(http11_expect_response, "rest_v1_job_routes_not_ready", 503, "service",
+                        "not_ready");
   bool http10_expect_continue = false;
   const auto http10_expect_response = SendChunkedParts(
       backend, Options{},
@@ -523,6 +544,23 @@ int BodyBoundAfterRouting() {
       "Content-Length: 1048577\r\n\r\n";
   result |= ExpectError(Send(backend, Options{}, large_wrong_method),
                         "rest_v1_body_bound_after_routing", 405, "request", "method_not_allowed");
+
+  Options chunked_body_options;
+  chunked_body_options.body_limit_bytes = 4096;
+  const auto over_body_chunk = std::string("1001\r\n{") + std::string(4095, ' ') + "}\r\n0\r\n\r\n";
+  const auto chunked_unknown_route =
+      "POST /v1/nope HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\n\r\n" +
+      over_body_chunk;
+  result |= ExpectError(Send(backend, chunked_body_options, chunked_unknown_route),
+                        "rest_v1_body_bound_after_routing", 404, "request", "route_not_found");
+  const auto chunked_wrong_method =
+      "PUT /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\n\r\n" +
+      over_body_chunk;
+  result |= ExpectError(Send(backend, chunked_body_options, chunked_wrong_method),
+                        "rest_v1_body_bound_after_routing", 405, "request", "method_not_allowed");
+
   const auto large_wrong_media_type =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: text/plain\r\n"
       "Content-Length: 1048577\r\n\r\n";
@@ -562,6 +600,12 @@ int BodyBoundAfterRouting() {
       std::string(24500, 'a') + "\"\r\n{}\r\n0\r\n\r\n";
   result |= ExpectError(Send(backend, raw_chunked_options, chunked_over_combined),
                         "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
+  const auto unknown_chunked_over_combined =
+      "POST /v1/nope HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\n\r\n2;extension=\"" +
+      std::string(24500, 'a') + "\"\r\n{}\r\n0\r\n\r\n";
+  result |= ExpectError(Send(backend, raw_chunked_options, unknown_chunked_over_combined),
+                        "rest_v1_body_bound_after_routing", 404, "request", "route_not_found");
 
   Options exact_chunked_options;
   exact_chunked_options.body_limit_bytes = 4096;
