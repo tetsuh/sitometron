@@ -530,6 +530,16 @@ int MalformedRequest() {
       ExpectError(Send(backend, Options{},
                        "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nContent-Length: 5, 6\r\n\r\n"),
                   "rest_v1_malformed_request_refused", 400, "request", "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{},
+           "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+           "Content-Length: 18446744073709551616x\r\n\r\n"),
+      "rest_v1_malformed_request_refused", 400, "request", "malformed_request");
+  result |= ExpectError(
+      Send(backend, Options{},
+           "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+           "Content-Length: 18446744073709551616, 18446744073709551616x\r\n\r\n"),
+      "rest_v1_malformed_request_refused", 400, "request", "malformed_request");
   result |=
       ExpectError(Send(backend, Options{},
                        "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nHost Name: loopback\r\n\r\n"),
@@ -559,6 +569,19 @@ int Http10Answered() {
       SendParts(backend, Options{}, {"\r\n", "GET /v1/health HTTP/1.2\r\nHost: loopback\r\n\r\n"}));
   result |= expect_http11(SendParts(
       backend, Options{}, {"\r\n\n\r\n", "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n\r\n"}));
+
+  Options unsupported_version_options;
+  unsupported_version_options.header_timeout_ms = 5000;
+  const auto unsupported_version_started = std::chrono::steady_clock::now();
+  const auto unsupported_version =
+      SendPartial(backend, unsupported_version_options, "GET /v1/health HTTP/2.0\r\n");
+  const auto unsupported_version_elapsed =
+      std::chrono::steady_clock::now() - unsupported_version_started;
+  result |= ExpectError(unsupported_version, "rest_v1_http10_request_answered", 400, "request",
+                        "malformed_request");
+  result |=
+      Check(unsupported_version_elapsed < std::chrono::seconds(1),
+            "rest_v1_http10_request_answered", "unsupported version waited for the header timeout");
   return result;
 }
 
@@ -762,6 +785,11 @@ int BodyBoundAfterRouting() {
       "Content-Length: 18446744073709551616\r\n\r\n";
   result |= ExpectError(Send(backend, Options{}, overflow), "rest_v1_body_bound_after_routing", 413,
                         "request", "payload_too_large");
+  const auto repeated_overflow =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 18446744073709551616, 18446744073709551616\r\n\r\n";
+  result |= ExpectError(Send(backend, Options{}, repeated_overflow),
+                        "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
   const auto conflicting_overflow =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
       "Content-Length: 18446744073709551616, 18446744073709551617\r\n\r\n";
@@ -816,11 +844,35 @@ int QueryRefused() {
 int UnlistedMethods() {
   FakeBackend backend;
   const auto response = Send(backend, Options{}, HealthRequest("HEAD"));
-  int result = ExpectError(response, "rest_v1_unlisted_methods_refused", 405, "request",
-                           "method_not_allowed");
-  if (response.status == 405)
-    result |= Check(response.headers.at("allow") == "GET", "rest_v1_unlisted_methods_refused",
-                    "Allow header mismatch");
+  int result = ExpectStatus(response, "rest_v1_unlisted_methods_refused", 405);
+  if (response.status == 405) {
+    const auto allow = response.headers.find("allow");
+    result |= Check(allow != response.headers.end() && allow->second == "GET",
+                    "rest_v1_unlisted_methods_refused", "Allow header mismatch");
+    const auto content_type = response.headers.find("content-type");
+    result |=
+        Check(content_type != response.headers.end() && content_type->second == "application/json",
+              "rest_v1_unlisted_methods_refused", "HEAD response Content-Type mismatch");
+    const auto get_equivalent_error = Send(backend, Options{}, HealthRequest("PUT"));
+    const auto content_length = response.headers.find("content-length");
+    result |= Check(content_length != response.headers.end() &&
+                        content_length->second == std::to_string(get_equivalent_error.body.size()),
+                    "rest_v1_unlisted_methods_refused",
+                    "HEAD response Content-Length does not match the error body");
+    result |= Check(response.body.empty(), "rest_v1_unlisted_methods_refused",
+                    "HEAD response carried content");
+  }
+
+  const auto missing = Send(backend, Options{}, HealthRequest("HEAD", "/v1/missing"));
+  result |= ExpectStatus(missing, "rest_v1_unlisted_methods_refused", 404);
+  const auto get_missing = Send(backend, Options{}, HealthRequest("GET", "/v1/missing"));
+  const auto missing_length = missing.headers.find("content-length");
+  result |=
+      Check(missing_length != missing.headers.end() &&
+                missing_length->second == std::to_string(get_missing.body.size()),
+            "rest_v1_unlisted_methods_refused", "HEAD 404 Content-Length does not match GET body");
+  result |= Check(missing.body.empty(), "rest_v1_unlisted_methods_refused",
+                  "HEAD 404 response carried content");
   return result;
 }
 
