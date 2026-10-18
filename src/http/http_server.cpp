@@ -1091,24 +1091,25 @@ asio::awaitable<HeaderRead> ReadHeader(tcp::socket& socket, const Options& optio
 
 asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
   const auto header = co_await ReadHeader(socket, impl.options);
+  const bool head = header.head_request;
   if (header.result == HeaderRead::Result::kTimeout) {
     (void)co_await WriteResponse(
         socket,
         ErrorResponse(408, "request", "request_timeout", "the request was not received in time"),
-        header.head_request);
+        head);
     co_return;
   }
   if (header.result == HeaderRead::Result::kTooLarge) {
     (void)co_await WriteResponse(
         socket,
         ErrorResponse(431, "request", "headers_too_large", "the request headers are too large"),
-        header.head_request);
+        head);
     co_return;
   }
   if (header.result == HeaderRead::Result::kBadVersion) {
     (void)co_await WriteResponse(
         socket, ErrorResponse(400, "request", "malformed_request", "the request is not valid HTTP"),
-        header.head_request);
+        head);
     co_return;
   }
   if (header.result != HeaderRead::Result::kComplete) co_return;
@@ -1116,7 +1117,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
   EarlyError early = EarlyError::kNone;
   auto request = ParseHeader(header.bytes, header.end, impl.options, early);
   if (early != EarlyError::kNone) {
-    (void)co_await WriteResponse(socket, DispatchError(early), request.method == "HEAD");
+    (void)co_await WriteResponse(socket, DispatchError(early), head);
     co_return;
   }
 
@@ -1134,7 +1135,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
                                  ErrorResponse(status, "request", code,
                                                status == 431 ? "the request headers are too large"
                                                              : "the request is not valid HTTP"),
-                                 request.method == "HEAD");
+                                 head);
     co_return;
   }
 
@@ -1144,14 +1145,14 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
       route_kind == Route::kNone) {
     (void)co_await WriteResponse(
         socket, ErrorResponse(404, "request", "route_not_found", "there is no such resource"),
-        request.method == "HEAD");
+        head);
     co_return;
   }
   if (!MethodAllowed(route_kind, request.method)) {
     auto response = ErrorResponse(405, "request", "method_not_allowed",
                                   "the method is not allowed for this resource");
     response.allow = MethodAllow(route_kind);
-    (void)co_await WriteResponse(socket, response, request.method == "HEAD");
+    (void)co_await WriteResponse(socket, response, head);
     co_return;
   }
   const bool body_present = request.body_present;
@@ -1159,7 +1160,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
     (void)co_await WriteResponse(socket,
                                  ErrorResponse(415, "request", "unsupported_media_type",
                                                "the body must be application/json"),
-                                 request.method == "HEAD");
+                                 head);
     co_return;
   }
   const auto known_length = request.content_length.value_or(0);
@@ -1169,7 +1170,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
   if (body_too_large) {
     (void)co_await WriteResponse(
         socket, ErrorResponse(413, "request", "payload_too_large", "the request body is too large"),
-        request.method == "HEAD");
+        head);
     co_return;
   }
   parser.body_limit(impl.options.body_limit_bytes);
@@ -1207,7 +1208,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
       (void)co_await WriteResponse(
           socket,
           ErrorResponse(413, "request", "payload_too_large", "the request body is too large"),
-          request.method == "HEAD");
+          head);
       co_return;
     }
     const auto error = feed(prebody);
@@ -1218,7 +1219,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
                                    ErrorResponse(status, "request", code,
                                                  status == 413 ? "the request body is too large"
                                                                : "the request body is not valid"),
-                                   request.method == "HEAD");
+                                   head);
       co_return;
     }
   }
@@ -1231,7 +1232,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
       (void)co_await WriteResponse(socket,
                                    ErrorResponse(408, "request", "request_timeout",
                                                  "the request body was not received in time"),
-                                   request.method == "HEAD");
+                                   head);
       co_return;
     }
     const auto remaining = static_cast<std::uint64_t>(
@@ -1242,14 +1243,14 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
       (void)co_await WriteResponse(socket,
                                    ErrorResponse(408, "request", "request_timeout",
                                                  "the request body was not received in time"),
-                                   request.method == "HEAD");
+                                   head);
       co_return;
     }
     if (error == asio::error::eof || error || count == 0) {
       (void)co_await WriteResponse(
           socket,
           ErrorResponse(400, "request", "malformed_request", "the request body is incomplete"),
-          request.method == "HEAD");
+          head);
       co_return;
     }
     raw_total += count;
@@ -1257,7 +1258,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
       (void)co_await WriteResponse(
           socket,
           ErrorResponse(413, "request", "payload_too_large", "the request body is too large"),
-          request.method == "HEAD");
+          head);
       co_return;
     }
     const auto parse_error = feed(std::string_view(buffer.data(), count));
@@ -1268,13 +1269,13 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
                                    ErrorResponse(status, "request", code,
                                                  status == 413 ? "the request body is too large"
                                                                : "the request body is not valid"),
-                                   request.method == "HEAD");
+                                   head);
       co_return;
     }
   }
   body_bytes = parser.is_done() ? parser.get().body() : std::string{};
   const auto response = Dispatch(request, body_bytes, impl.backend);
-  (void)co_await WriteResponse(socket, response, request.method == "HEAD");
+  (void)co_await WriteResponse(socket, response, head);
 }
 
 asio::awaitable<void> AcceptLoop(Server::Impl& impl) {

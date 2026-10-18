@@ -1044,6 +1044,43 @@ int UnlistedMethods() {
                                       "request",
                                       "malformed_request"});
 
+  const auto empty_target_get = "GET  HTTP/1.1\r\nHost: x\r\n\r\n";
+  const auto empty_target_head = "HEAD  HTTP/1.1\r\nHost: x\r\n\r\n";
+  vectors.push_back(HeadRefusalVector{std::string(name),
+                                      Options{},
+                                      empty_target_get,
+                                      empty_target_head,
+                                      {},
+                                      false,
+                                      400,
+                                      400,
+                                      "request",
+                                      "malformed_request"});
+  const auto missing_version_get = "GET /v1/health\r\nHost: x\r\n\r\n";
+  const auto missing_version_head = "HEAD /v1/health\r\nHost: x\r\n\r\n";
+  vectors.push_back(HeadRefusalVector{std::string(name),
+                                      Options{},
+                                      missing_version_get,
+                                      missing_version_head,
+                                      {},
+                                      false,
+                                      400,
+                                      400,
+                                      "request",
+                                      "malformed_request"});
+  const auto incomplete_request_line_get = "GET \r\n\r\n";
+  const auto incomplete_request_line_head = "HEAD \r\n\r\n";
+  vectors.push_back(HeadRefusalVector{std::string(name),
+                                      Options{},
+                                      incomplete_request_line_get,
+                                      incomplete_request_line_head,
+                                      {},
+                                      false,
+                                      400,
+                                      400,
+                                      "request",
+                                      "malformed_request"});
+
   int result = 0;
   for (const auto& vector : vectors) result |= CheckHeadRefusalVector(backend, vector);
   return result;
