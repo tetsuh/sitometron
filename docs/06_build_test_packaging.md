@@ -15,10 +15,10 @@ asan-ubsan
 tsan
 ```
 
-Production adapter behavior remains disabled until its owning Phase enables and qualifies it. The
-Issue #96 dependency-only `sitometron_http` target is enabled by default; the other adapter options
-remain disabled because their dependencies are not in the manifest. See [the dependency
-policy](09_dependency_policy.md).
+Issue #105 enables and qualifies the production External REST v1 adapter: the `sitometron_http`
+target, on by default, builds `src/http/http_server.cpp` and serves the Phase 1 routes that this
+document's `API` rows name. The other adapter options remain disabled because their dependencies
+are not in the manifest. See [the dependency policy](09_dependency_policy.md).
 
 ## 2. C++ style and analysis
 
