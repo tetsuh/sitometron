@@ -3,7 +3,10 @@
 #include <atomic>
 #include <charconv>
 #ifdef _WIN32
-#include <process.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #else
 #include <poll.h>
 #include <sys/types.h>
@@ -17,8 +20,10 @@
 #include <boost/asio/error.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/write.hpp>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -91,7 +96,132 @@ Response ParseResponse(const std::string& bytes) {
   return response;
 }
 
-Response Send(Backend& backend, Options options, std::string request) {
+constexpr auto k_network_timeout = std::chrono::seconds(15);
+constexpr auto k_process_timeout = std::chrono::milliseconds(15000);
+
+class TimedSocket final {
+ public:
+  explicit TimedSocket(boost::asio::io_context& context) : context_(context), socket_(context) {}
+
+  bool Connect(std::uint16_t port) {
+    bool completed = false;
+    bool timed_out = false;
+    boost::system::error_code operation_error;
+    boost::asio::steady_timer timer(context_);
+    timer.expires_after(k_network_timeout);
+    timer.async_wait([&](const boost::system::error_code& error) {
+      if (!error && !completed) {
+        timed_out = true;
+        timed_out_ = true;
+        boost::system::error_code ignored;
+        [[maybe_unused]] const auto cancelled = socket_.cancel(ignored);
+      }
+    });
+    socket_.async_connect({boost::asio::ip::make_address("127.0.0.1"), port},
+                          [&](const boost::system::error_code& error) {
+                            operation_error = error;
+                            completed = true;
+                            (void)timer.cancel();
+                          });
+    context_.restart();
+    context_.run();
+    return completed && !timed_out && !operation_error;
+  }
+
+  bool Write(std::string_view bytes) {
+    if (bytes.empty()) return true;
+    bool completed = false;
+    bool timed_out = false;
+    boost::system::error_code operation_error;
+    boost::asio::steady_timer timer(context_);
+    timer.expires_after(k_network_timeout);
+    timer.async_wait([&](const boost::system::error_code& error) {
+      if (!error && !completed) {
+        timed_out = true;
+        timed_out_ = true;
+        boost::system::error_code ignored;
+        [[maybe_unused]] const auto cancelled = socket_.cancel(ignored);
+      }
+    });
+    boost::asio::async_write(socket_, boost::asio::buffer(bytes.data(), bytes.size()),
+                             [&](const boost::system::error_code& error, std::size_t) {
+                               operation_error = error;
+                               completed = true;
+                               (void)timer.cancel();
+                             });
+    context_.restart();
+    context_.run();
+    return completed && !timed_out && !operation_error;
+  }
+
+  bool ReadSome(std::array<char, 4096>& buffer, std::size_t& count,
+                boost::system::error_code& operation_error) {
+    count = 0;
+    operation_error.clear();
+    bool completed = false;
+    bool timed_out = false;
+    boost::asio::steady_timer timer(context_);
+    timer.expires_after(k_network_timeout);
+    timer.async_wait([&](const boost::system::error_code& error) {
+      if (!error && !completed) {
+        timed_out = true;
+        timed_out_ = true;
+        boost::system::error_code ignored;
+        [[maybe_unused]] const auto cancelled = socket_.cancel(ignored);
+      }
+    });
+    socket_.async_read_some(boost::asio::buffer(buffer),
+                            [&](const boost::system::error_code& error, std::size_t bytes_read) {
+                              operation_error = error;
+                              count = bytes_read;
+                              completed = true;
+                              (void)timer.cancel();
+                            });
+    context_.restart();
+    context_.run();
+    return completed && !timed_out;
+  }
+
+  [[nodiscard]] bool TimedOut() const noexcept { return timed_out_; }
+
+  void Close() {
+    boost::system::error_code ignored;
+    [[maybe_unused]] const auto cancelled = socket_.cancel(ignored);
+    [[maybe_unused]] const auto closed = socket_.close(ignored);
+  }
+
+ private:
+  boost::asio::io_context& context_;
+  boost::asio::ip::tcp::socket socket_;
+  bool timed_out_ = false;
+};
+
+void ReadUntilClose(TimedSocket& socket, std::string& bytes) {
+  std::array<char, 4096> buffer{};
+  for (;;) {
+    std::size_t count = 0;
+    boost::system::error_code ec;
+    const bool completed = socket.ReadSome(buffer, count, ec);
+    if (count != 0) bytes.append(buffer.data(), count);
+    if (!completed || ec) break;
+  }
+  if (socket.TimedOut()) bytes.clear();
+}
+
+bool ReadUntilPrefix(TimedSocket& socket, std::string& bytes, std::string_view prefix) {
+  std::array<char, 4096> buffer{};
+  while (bytes.size() < prefix.size()) {
+    std::size_t count = 0;
+    boost::system::error_code ec;
+    const bool completed = socket.ReadSome(buffer, count, ec);
+    if (count != 0) bytes.append(buffer.data(), count);
+    if (!completed || ec) break;
+  }
+  if (socket.TimedOut()) bytes.clear();
+  return bytes.starts_with(prefix);
+}
+
+Response Send(Backend& backend, Options options, const std::string& request) {
   options.listen_port = 0;
   Server server(std::move(options), backend);
   std::string error;
@@ -100,29 +230,15 @@ Response Send(Backend& backend, Options options, std::string request) {
     return {};
   }
   boost::asio::io_context context;
-  boost::asio::ip::tcp::socket socket(context);
-  boost::system::error_code ec;
-  ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
-  if (ec) {
-    server.Stop();
-    return {};
-  }
-  boost::asio::write(socket, boost::asio::buffer(request.data(), request.size()), ec);
+  TimedSocket socket(context);
   std::string bytes;
-  std::array<char, 4096> buffer{};
-  while (!ec) {
-    const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
-    if (count != 0) bytes.append(buffer.data(), count);
-  }
-  if (ec != boost::asio::error::eof) {
-    // A complete response may still have been received before the peer closes it.
-  }
-  ec = socket.close(ec);
+  if (socket.Connect(server.port()) && socket.Write(request)) ReadUntilClose(socket, bytes);
+  socket.Close();
   server.Stop();
   return ParseResponse(bytes);
 }
 
-Response SendPartial(Backend& backend, Options options, std::string prefix) {
+Response SendPartial(Backend& backend, Options options, const std::string& prefix) {
   options.listen_port = 0;
   Server server(std::move(options), backend);
   std::string error;
@@ -131,17 +247,10 @@ Response SendPartial(Backend& backend, Options options, std::string prefix) {
     return {};
   }
   boost::asio::io_context context;
-  boost::asio::ip::tcp::socket socket(context);
-  boost::system::error_code ec;
-  ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
-  if (!ec) boost::asio::write(socket, boost::asio::buffer(prefix.data(), prefix.size()), ec);
+  TimedSocket socket(context);
   std::string bytes;
-  std::array<char, 4096> buffer{};
-  while (!ec) {
-    const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
-    if (count != 0) bytes.append(buffer.data(), count);
-  }
-  ec = socket.close(ec);
+  if (socket.Connect(server.port()) && socket.Write(prefix)) ReadUntilClose(socket, bytes);
+  socket.Close();
   server.Stop();
   return ParseResponse(bytes);
 }
@@ -155,20 +264,15 @@ Response SendParts(Backend& backend, Options options, const std::vector<std::str
     return {};
   }
   boost::asio::io_context context;
-  boost::asio::ip::tcp::socket socket(context);
-  boost::system::error_code ec;
-  ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
+  TimedSocket socket(context);
+  bool wrote = socket.Connect(server.port());
   for (const auto& part : parts) {
-    if (ec) break;
-    boost::asio::write(socket, boost::asio::buffer(part.data(), part.size()), ec);
+    if (!wrote) break;
+    wrote = socket.Write(part);
   }
   std::string bytes;
-  std::array<char, 4096> buffer{};
-  while (!ec) {
-    const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
-    if (count != 0) bytes.append(buffer.data(), count);
-  }
-  ec = socket.close(ec);
+  if (wrote) ReadUntilClose(socket, bytes);
+  socket.Close();
   server.Stop();
   return ParseResponse(bytes);
 }
@@ -209,7 +313,7 @@ class ScopedTempDirectory final {
   bool owned_ = false;
 };
 
-Response SendChunkedParts(Backend& backend, Options options, std::string header,
+Response SendChunkedParts(Backend& backend, Options options, const std::string& header,
                           const std::vector<std::string>& parts, bool* saw_continue = nullptr,
                           bool wait_for_continue = false) {
   options.listen_port = 0;
@@ -220,37 +324,29 @@ Response SendChunkedParts(Backend& backend, Options options, std::string header,
     return {};
   }
   boost::asio::io_context context;
-  boost::asio::ip::tcp::socket socket(context);
-  boost::system::error_code ec;
-  ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), server.port()}, ec);
-  if (!ec) boost::asio::write(socket, boost::asio::buffer(header.data(), header.size()), ec);
+  TimedSocket socket(context);
+  bool wrote = socket.Connect(server.port()) && socket.Write(header);
 
   constexpr std::string_view k_continue = "HTTP/1.1 100 Continue\r\n\r\n";
   std::string bytes;
-  std::array<char, 4096> buffer{};
   bool got_continue = false;
-  if (wait_for_continue && !ec) {
+  if (wait_for_continue && wrote) {
     std::string interim;
-    while (interim.size() < k_continue.size() && !ec) {
-      const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
-      if (count != 0) interim.append(buffer.data(), count);
+    got_continue = ReadUntilPrefix(socket, interim, k_continue);
+    if (got_continue) {
+      bytes = interim.substr(k_continue.size());
+    } else {
+      bytes = std::move(interim);
     }
-    got_continue = interim.starts_with(k_continue);
-    if (!got_continue) bytes = std::move(interim);
   }
-  if (!wait_for_continue || got_continue) {
+  if ((!wait_for_continue || got_continue) && wrote) {
     for (const auto& part : parts) {
-      boost::asio::write(socket, boost::asio::buffer(part.data(), part.size()), ec);
-      if (ec) break;
+      wrote = socket.Write(part);
+      if (!wrote) break;
     }
+    if (wrote) ReadUntilClose(socket, bytes);
   }
-  if (!wait_for_continue || got_continue) {
-    while (!ec) {
-      const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
-      if (count != 0) bytes.append(buffer.data(), count);
-    }
-  }
-  ec = socket.close(ec);
+  socket.Close();
   server.Stop();
 
   if (!wait_for_continue) {
@@ -261,20 +357,12 @@ Response SendChunkedParts(Backend& backend, Options options, std::string header,
   return ParseResponse(bytes);
 }
 
-Response SendToPort(std::uint16_t port, std::string request) {
+Response SendToPort(std::uint16_t port, const std::string& request) {
   boost::asio::io_context context;
-  boost::asio::ip::tcp::socket socket(context);
-  boost::system::error_code ec;
-  ec = socket.connect({boost::asio::ip::make_address("127.0.0.1"), port}, ec);
-  if (ec) return {};
-  boost::asio::write(socket, boost::asio::buffer(request.data(), request.size()), ec);
+  TimedSocket socket(context);
   std::string bytes;
-  std::array<char, 4096> buffer{};
-  while (!ec) {
-    const auto count = socket.read_some(boost::asio::buffer(buffer), ec);
-    if (count != 0) bytes.append(buffer.data(), count);
-  }
-  ec = socket.close(ec);
+  if (socket.Connect(port) && socket.Write(request)) ReadUntilClose(socket, bytes);
+  socket.Close();
   return ParseResponse(bytes);
 }
 
@@ -975,18 +1063,94 @@ struct ProcessResult {
   int exit_code = -1;
 };
 
+#ifdef _WIN32
+std::string QuoteWindowsArgument(std::string_view value) {
+  std::string quoted;
+  quoted.reserve(value.size() + 2);
+  quoted.push_back('"');
+  std::size_t backslashes = 0;
+  for (const char character : value) {
+    if (character == '\\') {
+      ++backslashes;
+      continue;
+    }
+    if (character == '"') {
+      quoted.append(backslashes * 2 + 1, '\\');
+      quoted.push_back('"');
+      backslashes = 0;
+      continue;
+    }
+    quoted.append(backslashes, '\\');
+    backslashes = 0;
+    quoted.push_back(character);
+  }
+  quoted.append(backslashes * 2, '\\');
+  quoted.push_back('"');
+  return quoted;
+}
+
+bool WaitForProcess(HANDLE process, std::chrono::milliseconds timeout) {
+  return ::WaitForSingleObject(process, static_cast<DWORD>(timeout.count())) == WAIT_OBJECT_0;
+}
+
+bool TerminateAndReap(HANDLE process) {
+  (void)::TerminateProcess(process, 1);
+  return WaitForProcess(process, k_process_timeout);
+}
+#else
+bool WaitForChild(pid_t child, int& status, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  for (;;) {
+    const auto waited = ::waitpid(child, &status, WNOHANG);
+    if (waited == child) return true;
+    if (waited < 0 && errno != EINTR) return false;
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+    if (remaining.count() <= 0) return false;
+    const auto wait_ms = static_cast<int>(std::min<std::int64_t>(remaining.count(), 25));
+    (void)::poll(nullptr, 0, std::max(wait_ms, 1));
+  }
+}
+
+bool TerminateAndReap(pid_t child, int& status) {
+  (void)::kill(child, SIGTERM);
+  if (WaitForChild(child, status, k_process_timeout)) return true;
+  (void)::kill(child, SIGKILL);
+  return WaitForChild(child, status, k_process_timeout);
+}
+#endif
+
 ProcessResult RunAndWait(const std::string& executable, const std::vector<std::string>& arguments) {
   std::vector<std::string> values;
   values.reserve(arguments.size() + 1);
   values.push_back(executable);
   values.insert(values.end(), arguments.begin(), arguments.end());
 #ifdef _WIN32
-  std::vector<const char*> argv;
-  argv.reserve(values.size() + 1);
-  for (const auto& value : values) argv.push_back(value.c_str());
-  argv.push_back(nullptr);
-  const auto exit_code = _spawnv(_P_WAIT, executable.c_str(), argv.data());
-  if (exit_code < 0) return {};
+  std::string command_line;
+  for (const auto& value : values) {
+    if (!command_line.empty()) command_line.push_back(' ');
+    command_line += QuoteWindowsArgument(value);
+  }
+  std::vector<char> mutable_command_line(command_line.begin(), command_line.end());
+  mutable_command_line.push_back('\0');
+  STARTUPINFOA startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  if (!::CreateProcessA(executable.c_str(), mutable_command_line.data(), nullptr, nullptr, FALSE, 0,
+                        nullptr, nullptr, &startup, &process)) {
+    return {};
+  }
+  (void)::CloseHandle(process.hThread);
+  bool reaped = WaitForProcess(process.hProcess, k_process_timeout);
+  if (!reaped) reaped = TerminateAndReap(process.hProcess);
+  if (!reaped) {
+    (void)::CloseHandle(process.hProcess);
+    return {true, -1};
+  }
+  DWORD exit_code = 1;
+  const bool got_exit_code = ::GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
+  (void)::CloseHandle(process.hProcess);
+  if (!got_exit_code) return {true, -1};
   return {true, static_cast<int>(exit_code)};
 #else
   const auto child = ::fork();
@@ -1000,11 +1164,9 @@ ProcessResult RunAndWait(const std::string& executable, const std::vector<std::s
     _exit(127);
   }
   int status = 0;
-  pid_t waited = 0;
-  do {
-    waited = ::waitpid(child, &status, 0);
-  } while (waited < 0 && errno == EINTR);
-  if (waited != child || !WIFEXITED(status)) return {true, -1};
+  bool reaped = WaitForChild(child, status, k_process_timeout);
+  if (!reaped) reaped = TerminateAndReap(child, status);
+  if (!reaped || !WIFEXITED(status)) return {true, -1};
   return {true, WEXITSTATUS(status)};
 #endif
 }
@@ -1048,6 +1210,7 @@ bool StartRunningProcess(const std::string& executable, const std::vector<std::s
 }
 
 bool ReadStartupLine(int descriptor, std::string& line) {
+  const auto deadline = std::chrono::steady_clock::now() + k_process_timeout;
   std::array<char, 512> buffer{};
   for (;;) {
     const auto newline = line.find('\n');
@@ -1056,10 +1219,14 @@ bool ReadStartupLine(int descriptor, std::string& line) {
       return true;
     }
     if (line.size() > 4096) return false;
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+    if (remaining.count() <= 0) return false;
+    const auto wait_ms = static_cast<int>(std::min<std::int64_t>(remaining.count(), 100));
     pollfd event{descriptor, POLLIN, 0};
     int ready = 0;
     do {
-      ready = ::poll(&event, 1, 5000);
+      ready = ::poll(&event, 1, std::max(wait_ms, 1));
     } while (ready < 0 && errno == EINTR);
     if (ready <= 0) return false;
     const auto count = ::read(descriptor, buffer.data(), buffer.size());
@@ -1070,15 +1237,16 @@ bool ReadStartupLine(int descriptor, std::string& line) {
 
 int StopRunningProcess(RunningProcess& process) {
   if (process.pid < 0) return -1;
-  (void)::kill(process.pid, SIGTERM);
   int status = 0;
-  pid_t waited = 0;
-  do {
-    waited = ::waitpid(process.pid, &status, 0);
-  } while (waited < 0 && errno == EINTR);
+  (void)::kill(process.pid, SIGTERM);
+  bool reaped = WaitForChild(process.pid, status, k_process_timeout);
+  if (!reaped) {
+    (void)::kill(process.pid, SIGKILL);
+    reaped = WaitForChild(process.pid, status, k_process_timeout);
+  }
   (void)::close(process.output_fd);
   process = {};
-  if (waited <= 0 || !WIFEXITED(status)) return -1;
+  if (!reaped || !WIFEXITED(status)) return -1;
   return WEXITSTATUS(status);
 }
 
@@ -1110,6 +1278,10 @@ int SitometrondEntrypoint(const std::string& executable) {
       RunAndWait(executable, {"--journal", directory.Path().string(), "--body-limit", "nope"});
   result |= Check(malformed.started && malformed.exit_code == 2, name,
                   "malformed numeric option did not exit with status 2");
+  const auto missing_journal =
+      RunAndWait(executable, {"--listen", "127.0.0.1:0", "--max-jobs", "2"});
+  result |= Check(missing_journal.started && missing_journal.exit_code == 2, name,
+                  "missing required --journal did not exit with status 2");
 
 #ifdef _WIN32
   // Windows has no portable console-signal path for this subprocess smoke.
@@ -1162,11 +1334,83 @@ int SitometrondOptions() {
     return Check(!parsed.ok, "rest_v1_sitometrond_options",
                  std::string(case_name) + " command line was accepted");
   };
+  const auto expect_accepted = [&](const std::vector<std::string>& args,
+                                   std::string_view case_name) {
+    const auto parsed = sitometron::daemon::ParseStartupOptions(args);
+    return Check(parsed.ok, "rest_v1_sitometrond_options",
+                 std::string(case_name) + " command line was refused: " + parsed.error);
+  };
+  result |= expect_rejected({}, "missing required --journal");
+  result |= expect_rejected({"--journal", ""}, "empty --journal");
   result |= expect_rejected({"--journal", journal_path, "--unknown", "x"}, "unknown");
   result |= expect_rejected({"--journal", journal_path, "--journal", "other"}, "repeated");
-  result |= expect_rejected({"--journal", journal_path, "--max-jobs"}, "missing");
+  result |= expect_rejected({"--journal", journal_path, "--max-jobs"}, "missing value");
   result |= expect_rejected({"--journal", journal_path, "--body-limit", "nope"}, "malformed");
-  result |= expect_rejected({"--journal", journal_path, "--body-limit", "1048577"}, "out-of-range");
+  result |=
+      expect_rejected({"--journal", journal_path, "--listen", "127.0.0.1"}, "malformed listen");
+  result |= expect_rejected({"--journal", journal_path, "--listen", "127.0.0.1:65536"},
+                            "listen port out-of-range");
+  result |= expect_rejected({"--journal", journal_path, "--cancel-principal", ""},
+                            "cancel-principal below minimum");
+  result |=
+      expect_rejected({"--journal", journal_path, "--cancel-principal", std::string(257, 'x')},
+                      "cancel-principal above maximum");
+  result |= expect_rejected({"--journal", journal_path, "--cancel-principal", "operator\n"},
+                            "cancel-principal non-visible");
+  result |=
+      expect_rejected({"--journal", journal_path, "--max-jobs", "0"}, "max-jobs below minimum");
+  result |=
+      expect_rejected({"--journal", journal_path, "--max-jobs", "1025"}, "max-jobs above maximum");
+  result |= expect_rejected({"--journal", journal_path, "--target-limit", "2047"},
+                            "target-limit below minimum");
+  result |= expect_rejected({"--journal", journal_path, "--target-limit", "65537"},
+                            "target-limit above maximum");
+  result |= expect_rejected({"--journal", journal_path, "--header-limit", "8191"},
+                            "header-limit below minimum");
+  result |= expect_rejected({"--journal", journal_path, "--header-limit", "262145"},
+                            "header-limit above maximum");
+  result |= expect_rejected({"--journal", journal_path, "--body-limit", "4095"},
+                            "body-limit below minimum");
+  result |= expect_rejected({"--journal", journal_path, "--body-limit", "1048577"},
+                            "body-limit above maximum");
+  result |= expect_rejected({"--journal", journal_path, "--header-timeout-ms", "0"},
+                            "header-timeout below minimum");
+  result |= expect_rejected({"--journal", journal_path, "--header-timeout-ms", "60001"},
+                            "header-timeout above maximum");
+  result |= expect_rejected({"--journal", journal_path, "--body-timeout-ms", "0"},
+                            "body-timeout below minimum");
+  result |= expect_rejected({"--journal", journal_path, "--body-timeout-ms", "60001"},
+                            "body-timeout above maximum");
+
+  result |= expect_accepted({"--journal", journal_path, "--listen", "127.0.0.1:65535"},
+                            "listen port maximum");
+  result |= expect_accepted({"--journal", journal_path, "--cancel-principal", "x"},
+                            "cancel-principal minimum");
+  result |=
+      expect_accepted({"--journal", journal_path, "--cancel-principal", std::string(256, 'x')},
+                      "cancel-principal maximum");
+  result |= expect_accepted({"--journal", journal_path, "--max-jobs", "1"}, "max-jobs minimum");
+  result |= expect_accepted({"--journal", journal_path, "--max-jobs", "1024"}, "max-jobs maximum");
+  result |= expect_accepted({"--journal", journal_path, "--target-limit", "2048"},
+                            "target-limit minimum");
+  result |= expect_accepted({"--journal", journal_path, "--target-limit", "65536"},
+                            "target-limit maximum");
+  result |= expect_accepted({"--journal", journal_path, "--header-limit", "8192"},
+                            "header-limit minimum");
+  result |= expect_accepted({"--journal", journal_path, "--header-limit", "262144"},
+                            "header-limit maximum");
+  result |=
+      expect_accepted({"--journal", journal_path, "--body-limit", "4096"}, "body-limit minimum");
+  result |=
+      expect_accepted({"--journal", journal_path, "--body-limit", "1048576"}, "body-limit maximum");
+  result |= expect_accepted({"--journal", journal_path, "--header-timeout-ms", "1"},
+                            "header-timeout minimum");
+  result |= expect_accepted({"--journal", journal_path, "--header-timeout-ms", "60000"},
+                            "header-timeout maximum");
+  result |= expect_accepted({"--journal", journal_path, "--body-timeout-ms", "1"},
+                            "body-timeout minimum");
+  result |= expect_accepted({"--journal", journal_path, "--body-timeout-ms", "60000"},
+                            "body-timeout maximum");
 
   sitometron::daemon::StartupConfig config;
   config.journal_path = journal_path;

@@ -500,10 +500,12 @@ if(SITOMETRON_BUILD_TESTS)
       add_test(
         NAME ${_rest_v1_check}
         COMMAND sitometron_http_tests ${_rest_v1_check})
+      set_tests_properties(${_rest_v1_check} PROPERTIES TIMEOUT 300)
     endforeach()
     add_test(
       NAME rest_v1_sitometrond_entrypoint
       COMMAND sitometron_http_tests rest_v1_sitometrond_entrypoint $<TARGET_FILE:sitometrond>)
+    set_tests_properties(rest_v1_sitometrond_entrypoint PROPERTIES TIMEOUT 300)
   endif()
 
   add_test(
