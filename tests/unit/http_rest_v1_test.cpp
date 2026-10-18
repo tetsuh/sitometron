@@ -456,13 +456,13 @@ int JobRoutesNotReady() {
   result |= ExpectError(http11_expect_response, "rest_v1_job_routes_not_ready", 503, "service",
                         "not_ready");
 
-  const std::array<std::string_view, 4> empty_transfer_elements = {
-      ",chunked", "chunked,", "chunked,,", ", chunked ,"};
+  const std::array<std::string_view, 4> empty_transfer_elements = {",chunked", "chunked,",
+                                                                   "chunked,,", ", chunked ,"};
   for (const auto transfer_encoding : empty_transfer_elements) {
     const auto request =
         std::string("POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\n") +
-        "Content-Type: application/json\r\nTransfer-Encoding: " +
-        std::string(transfer_encoding) + "\r\n\r\n0\r\n\r\n";
+        "Content-Type: application/json\r\nTransfer-Encoding: " + std::string(transfer_encoding) +
+        "\r\n\r\n0\r\n\r\n";
     result |= ExpectError(Send(backend, Options{}, request), "rest_v1_job_routes_not_ready", 503,
                           "service", "not_ready");
   }
@@ -746,11 +746,10 @@ int UnknownTransferCoding() {
                              "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
                              "Transfer-Encoding: gzip,,chunked\r\n\r\n"),
                         "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
-  result |= ExpectError(
-      Send(backend, Options{},
-           "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
-           "Transfer-Encoding: , gzip , , chunked,\r\n\r\n"),
-      "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
+  result |= ExpectError(Send(backend, Options{},
+                             "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
+                             "Transfer-Encoding: , gzip , , chunked,\r\n\r\n"),
+                        "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
   return result;
 }
 
@@ -1300,16 +1299,16 @@ int TransferEncodingWithContentLengthRefused() {
 
 int Http10TransferEncoding() {
   FakeBackend backend;
-  int result = ExpectError(Send(backend, Options{},
-                                "GET /v1/health HTTP/1.0\r\nHost: loopback\r\n"
-                                "Transfer-Encoding: chunked\r\n\r\n"),
-                           "rest_v1_http10_transfer_encoding_refused", 400, "request",
-                           "malformed_request");
-  result |= ExpectError(Send(backend, Options{},
-                             "GET /v1/health HTTP/1.0\r\nHost: loopback\r\n"
-                             "Transfer-Encoding:\r\n\r\n"),
-                        "rest_v1_http10_transfer_encoding_refused", 400, "request",
-                        "malformed_request");
+  int result =
+      ExpectError(Send(backend, Options{},
+                       "GET /v1/health HTTP/1.0\r\nHost: loopback\r\n"
+                       "Transfer-Encoding: chunked\r\n\r\n"),
+                  "rest_v1_http10_transfer_encoding_refused", 400, "request", "malformed_request");
+  result |=
+      ExpectError(Send(backend, Options{},
+                       "GET /v1/health HTTP/1.0\r\nHost: loopback\r\n"
+                       "Transfer-Encoding:\r\n\r\n"),
+                  "rest_v1_http10_transfer_encoding_refused", 400, "request", "malformed_request");
   return result;
 }
 

@@ -199,16 +199,17 @@ Issue #105 additionally gives each adapter-owned `400 malformed_request` refusal
 | Transfer-Encoding has a final coding other than `chunked` | RFC 9112 Sections 6.1 and 6.3 | `rest_v1_nonfinal_transfer_coding_refused` |
 | `chunked` is repeated inside one Transfer-Encoding field | RFC 9112 Sections 6.1, 6.3, and 7.1 | `rest_v1_repeated_chunked_refused` |
 | `chunked` has a transfer parameter | RFC 9112 Section 7.1; RFC 9110 Section 10.1.4 | `rest_v1_chunked_parameters_refused` |
-| Transfer-coding or transfer-parameter syntax is invalid (for example an empty coding or a parameter without `=`) | RFC 9112 Section 6.1; RFC 9110 Sections 5.6.2 and 10.1.4 | `rest_v1_invalid_transfer_coding_refused` |
+| Transfer-coding or transfer-parameter syntax is invalid (for example a parameter without `=` or a non-tchar byte in a coding); empty list elements are ignored as RFC 9110 Section 5.6.1.2 requires, bounded only by the header limit | RFC 9112 Section 6.1; RFC 9110 Sections 5.6.1.2, 5.6.2, and 10.1.4 | `rest_v1_invalid_transfer_coding_refused` |
 | Transfer-Encoding combined with Content-Length | RFC 9112 Sections 6.1 and 6.3 | `rest_v1_transfer_encoding_with_content_length_refused` |
 | Transfer-Encoding appears in an HTTP/1.0 request | RFC 9112 Section 6.1 | `rest_v1_http10_transfer_encoding_refused` |
 | Obsolete line folding (obs-fold) in a field line | RFC 9112 Section 5.2 | `rest_v1_obs_fold_refused` |
 
 Beast 1.91.0 owns the remaining parser refusals in `rest_v1_malformed_request_refused`, including
 invalid request-line syntax, invalid field syntax, and invalid Content-Length syntax or value. The
-adapter must not duplicate those cases. The adapter-owned list above was established by the RED
-probe against the pinned Beast source and header parser behavior; a final report records the exact
-probe command and representative output.
+adapter must not duplicate those cases. After the adapter's checks, it hands Beast a single canonical
+`Transfer-Encoding: chunked` line. The adapter-owned list above was established by the RED probe
+against the pinned Beast source and header parser behavior; a final report records the exact probe
+command and representative output.
 
 A `HEAD` response carries the status and headers of the `GET`-equivalent response and no content
 (RFC 9110 Section 9.3.2).

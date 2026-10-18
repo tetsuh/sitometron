@@ -295,6 +295,21 @@ std::string_view TrimOws(std::string_view value) {
   return value;
 }
 
+std::vector<std::string_view> SplitList(std::string_view value) {
+  std::vector<std::string_view> elements;
+  std::size_t element_start = 0;
+  for (;;) {
+    const auto comma = value.find(',', element_start);
+    const auto element = TrimOws(value.substr(element_start, comma == std::string_view::npos
+                                                                 ? std::string_view::npos
+                                                                 : comma - element_start));
+    if (!element.empty()) elements.push_back(element);
+    if (comma == std::string_view::npos) break;
+    element_start = comma + 1;
+  }
+  return elements;
+}
+
 bool HasInvalidTargetOctet(std::string_view target) {
   return std::ranges::any_of(target, [](unsigned char c) { return c <= 0x20U || c == 0x7fU; });
 }
@@ -508,7 +523,6 @@ std::optional<TargetInfo> ParseTarget(TargetInput input) {
 
 std::optional<std::uint64_t> ParseUint64(std::string_view value, bool& overflow) {
   overflow = false;
-  value = TrimOws(value);
   if (value.empty()) return std::nullopt;
   std::uint64_t result = 0;
   bool overflowed = false;
@@ -531,66 +545,58 @@ std::optional<std::uint64_t> ParseUint64(std::string_view value, bool& overflow)
 
 bool ParseTransferCoding(std::string_view value, std::vector<std::string>& codings,
                          bool& chunked_parameter) {
-  std::size_t position = 0;
-  while (position < value.size()) {
-    while (position < value.size() && (value[position] == ' ' || value[position] == '\t'))
-      ++position;
-    if (position == value.size()) return false;
+  for (const auto element : SplitList(value)) {
+    std::size_t position = 0;
     const auto coding_begin = position;
-    while (position < value.size() && IsTchar(value[position])) ++position;
+    while (position < element.size() && IsTchar(element[position])) ++position;
     if (coding_begin == position) return false;
-    codings.push_back(Lower(value.substr(coding_begin, position - coding_begin)));
+    const auto coding = Lower(element.substr(coding_begin, position - coding_begin));
+    codings.push_back(coding);
     for (;;) {
-      while (position < value.size() && (value[position] == ' ' || value[position] == '\t'))
+      while (position < element.size() && (element[position] == ' ' || element[position] == '\t'))
         ++position;
-      if (position == value.size() || value[position] == ',') break;
-      if (value[position] != ';') return false;
+      if (position == element.size()) break;
+      if (element[position] != ';') return false;
       ++position;
-      while (position < value.size() && (value[position] == ' ' || value[position] == '\t'))
+      while (position < element.size() && (element[position] == ' ' || element[position] == '\t'))
         ++position;
       const auto parameter_begin = position;
-      while (position < value.size() && IsTchar(value[position])) ++position;
+      while (position < element.size() && IsTchar(element[position])) ++position;
       if (parameter_begin == position) return false;
-      while (position < value.size() && (value[position] == ' ' || value[position] == '\t'))
+      while (position < element.size() && (element[position] == ' ' || element[position] == '\t'))
         ++position;
-      if (position == value.size() || value[position] != '=') return false;
+      if (position == element.size() || element[position] != '=') return false;
       ++position;
-      while (position < value.size() && (value[position] == ' ' || value[position] == '\t'))
+      while (position < element.size() && (element[position] == ' ' || element[position] == '\t'))
         ++position;
-      if (position == value.size()) return false;
-      if (value[position] == '"') {
+      if (position == element.size()) return false;
+      if (element[position] == '"') {
         ++position;
         bool closed = false;
-        while (position < value.size()) {
-          if (value[position] == '\\') {
+        while (position < element.size()) {
+          if (element[position] == '\\') {
             ++position;
-            if (position == value.size() || !IsQuotedPair(value[position])) return false;
+            if (position == element.size() || !IsQuotedPair(element[position])) return false;
             ++position;
-          } else if (value[position] == '"') {
+          } else if (element[position] == '"') {
             ++position;
             closed = true;
             break;
           } else {
-            if (!IsQdText(value[position])) return false;
+            if (!IsQdText(element[position])) return false;
             ++position;
           }
         }
         if (!closed) return false;
       } else {
         const auto parameter_value_begin = position;
-        while (position < value.size() && IsTchar(value[position])) ++position;
+        while (position < element.size() && IsTchar(element[position])) ++position;
         if (parameter_value_begin == position) return false;
       }
-      if (codings.back() == "chunked") chunked_parameter = true;
+      if (coding == "chunked") chunked_parameter = true;
     }
-    while (position < value.size() && (value[position] == ' ' || value[position] == '\t'))
-      ++position;
-    if (position == value.size()) break;
-    if (value[position] != ',') return false;
-    ++position;
-    if (position == value.size()) return false;
   }
-  return !codings.empty();
+  return true;
 }
 
 std::string HeaderValue(const RequestInfo& request, std::string_view name) {
@@ -801,14 +807,16 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
   normalized.append("\r\n");
 
   for (auto& field : request.fields) field.value = std::string(TrimOws(field.value));
-  std::vector<std::string> transfer_values;
-  std::vector<std::string> content_lengths;
+  std::vector<std::string_view> transfer_values;
+  std::vector<std::string_view> content_lengths;
   for (const auto& field : request.fields) {
     if (field.name == "transfer-encoding") transfer_values.push_back(field.value);
     if (field.name == "content-length") content_lengths.push_back(field.value);
-    if (field.name == "expect" && version_for_rules == "HTTP/1.1" &&
-        Lower(field.value) == "100-continue")
-      request.expect_continue = true;
+    if (field.name == "expect" && version_for_rules == "HTTP/1.1") {
+      for (const auto element : SplitList(field.value)) {
+        if (Lower(element) == "100-continue") request.expect_continue = true;
+      }
+    }
   }
   request.normalized_header = std::move(normalized);
   request.header_bytes = header_end + 4;
@@ -829,14 +837,10 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
   bool content_length_invalid = false;
   std::optional<std::uint64_t> length;
   std::optional<std::string> overflow_value;
-  for (const auto& value : content_lengths) {
+  for (const auto value : content_lengths) {
     if (content_length_invalid) break;
-    std::size_t item_start = 0;
-    while (item_start <= value.size()) {
-      const auto comma = value.find(',', item_start);
-      const auto item = std::string_view(value).substr(
-          item_start, comma == std::string::npos ? std::string::npos : comma - item_start);
-      const auto original_item = std::string(TrimOws(item));
+    for (const auto item : SplitList(value)) {
+      const auto original_item = std::string(item);
       bool overflow = false;
       const auto parsed = ParseUint64(item, overflow);
       if (!parsed && !overflow) {
@@ -857,8 +861,6 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
         }
         length = parsed;
       }
-      if (comma == std::string::npos) break;
-      item_start = comma + 1;
     }
   }
   if (content_length_invalid) {
@@ -886,7 +888,7 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
     const auto chunked_count = static_cast<std::size_t>(
         std::count(codings.begin(), codings.end(), std::string("chunked")));
     if (version_for_rules == "HTTP/1.0" || chunked_parameter || chunked_count > 1 ||
-        codings.back() != "chunked") {
+        (!codings.empty() && codings.back() != "chunked")) {
       error = EarlyError::kMalformed;
       return request;
     }
@@ -895,35 +897,47 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
       error = EarlyError::kNotImplemented;
       return request;
     }
-    request.chunked = true;
+    request.chunked = !codings.empty();
   }
   request.body_present = request.chunked || request.content_length_overflow ||
                          (request.content_length && *request.content_length != 0);
-  if (request.content_length_overflow) {
-    auto sentinel = options.body_limit_bytes == std::numeric_limits<std::uint64_t>::max()
-                        ? options.body_limit_bytes
-                        : options.body_limit_bytes + 1;
-    std::string rebuilt;
-    std::size_t line_start = 0;
-    while (line_start < request.normalized_header.size()) {
-      const auto line_end = request.normalized_header.find("\r\n", line_start);
-      if (line_end == std::string::npos) break;
-      const auto normalized_line =
-          std::string_view(request.normalized_header).substr(line_start, line_end - line_start);
-      const auto colon = normalized_line.find(':');
-      if (colon != std::string_view::npos &&
-          Lower(normalized_line.substr(0, colon)) == "content-length") {
-        rebuilt.append(normalized_line.substr(0, colon))
-            .append(": ")
-            .append(std::to_string(sentinel));
-      } else {
-        rebuilt.append(normalized_line);
-      }
-      rebuilt.append("\r\n");
-      line_start = line_end + 2;
+  std::optional<std::string> canonical_content_length;
+  if (!content_length_invalid) {
+    if (request.content_length_overflow) {
+      const auto sentinel = options.body_limit_bytes == std::numeric_limits<std::uint64_t>::max()
+                                ? options.body_limit_bytes
+                                : options.body_limit_bytes + 1;
+      canonical_content_length = std::to_string(sentinel);
+    } else if (request.content_length) {
+      canonical_content_length = std::to_string(*request.content_length);
     }
-    request.normalized_header = std::move(rebuilt);
   }
+
+  std::string rebuilt;
+  std::size_t line_start = 0;
+  while (line_start < request.normalized_header.size()) {
+    const auto line_end = request.normalized_header.find("\r\n", line_start);
+    if (line_end == std::string::npos) break;
+    const auto normalized_line =
+        std::string_view(request.normalized_header).substr(line_start, line_end - line_start);
+    if (normalized_line.empty()) {
+      if (canonical_content_length) {
+        rebuilt.append("Content-Length: ").append(*canonical_content_length).append("\r\n");
+      }
+      if (request.chunked) rebuilt.append("Transfer-Encoding: chunked\r\n");
+      rebuilt.append("\r\n");
+    } else {
+      const auto colon = normalized_line.find(':');
+      std::string field_name;
+      if (colon != std::string_view::npos) field_name = Lower(normalized_line.substr(0, colon));
+      if (field_name != "transfer-encoding" &&
+          !(canonical_content_length && field_name == "content-length")) {
+        rebuilt.append(normalized_line).append("\r\n");
+      }
+    }
+    line_start = line_end + 2;
+  }
+  request.normalized_header = std::move(rebuilt);
   return request;
 }
 
