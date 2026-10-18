@@ -885,83 +885,167 @@ int QueryRefused() {
                      "rest_v1_query_refused", 404, "request", "route_not_found");
 }
 
+struct HeadRefusalVector {
+  std::string name;
+  Options options;
+  std::string get_request;
+  std::string head_request;
+  std::string head_header_reference;
+  bool partial = false;
+  int get_status = 0;
+  int head_status = 0;
+  std::string_view get_domain;
+  const char* get_code = "";
+};
+
+int CheckHeadRefusalVector(FakeBackend& backend, const HeadRefusalVector& vector) {
+  const auto send = [&](const std::string& request) {
+    return vector.partial ? SendPartial(backend, vector.options, request)
+                          : Send(backend, vector.options, request);
+  };
+  const auto get_response = send(vector.get_request);
+  const auto head_response = send(vector.head_request);
+  int result =
+      ExpectError(get_response, vector.name, vector.get_status, vector.get_domain, vector.get_code);
+  result |= ExpectStatus(head_response, vector.name, vector.head_status);
+  result |= Check(head_response.body.empty(), vector.name, "HEAD response carried content");
+
+  const auto header_reference = vector.head_header_reference.empty()
+                                    ? get_response
+                                    : Send(backend, vector.options, vector.head_header_reference);
+  for (const auto header : {"allow", "content-type", "content-length"}) {
+    const auto expected = header_reference.headers.find(header);
+    const auto actual = head_response.headers.find(header);
+    result |= Check(
+        (expected == header_reference.headers.end()) == (actual == head_response.headers.end()),
+        vector.name, std::string("HEAD ") + header + " presence mismatch");
+    if (expected != header_reference.headers.end() && actual != head_response.headers.end()) {
+      result |= Check(actual->second == expected->second, vector.name,
+                      std::string("HEAD ") + header + " value mismatch");
+    }
+  }
+  return result;
+}
+
 int UnlistedMethods() {
   FakeBackend backend;
-  const auto response = Send(backend, Options{}, HealthRequest("HEAD"));
-  int result = ExpectStatus(response, "rest_v1_unlisted_methods_refused", 405);
-  if (response.status == 405) {
-    const auto allow = response.headers.find("allow");
-    result |= Check(allow != response.headers.end() && allow->second == "GET",
-                    "rest_v1_unlisted_methods_refused", "Allow header mismatch");
-    const auto content_type = response.headers.find("content-type");
-    result |=
-        Check(content_type != response.headers.end() && content_type->second == "application/json",
-              "rest_v1_unlisted_methods_refused", "HEAD response Content-Type mismatch");
-    const auto get_equivalent_error = Send(backend, Options{}, HealthRequest("PUT"));
-    const auto content_length = response.headers.find("content-length");
-    result |= Check(content_length != response.headers.end() &&
-                        content_length->second == std::to_string(get_equivalent_error.body.size()),
-                    "rest_v1_unlisted_methods_refused",
-                    "HEAD response Content-Length does not match the error body");
-    result |= Check(response.body.empty(), "rest_v1_unlisted_methods_refused",
-                    "HEAD response carried content");
-  }
-
-  const auto missing = Send(backend, Options{}, HealthRequest("HEAD", "/v1/missing"));
-  result |= ExpectStatus(missing, "rest_v1_unlisted_methods_refused", 404);
-  const auto get_missing = Send(backend, Options{}, HealthRequest("GET", "/v1/missing"));
-  const auto missing_length = missing.headers.find("content-length");
-  result |=
-      Check(missing_length != missing.headers.end() &&
-                missing_length->second == std::to_string(get_missing.body.size()),
-            "rest_v1_unlisted_methods_refused", "HEAD 404 Content-Length does not match GET body");
-  result |= Check(missing.body.empty(), "rest_v1_unlisted_methods_refused",
-                  "HEAD 404 response carried content");
+  constexpr std::string_view name = "rest_v1_unlisted_methods_refused";
+  std::vector<HeadRefusalVector> vectors;
+  vectors.push_back(
+      HeadRefusalVector{std::string(name),
+                        Options{},
+                        HealthRequest("GET", "/v1/jobs/" + std::string(k_job_id) + "/cancel"),
+                        HealthRequest("HEAD", "/v1/jobs/" + std::string(k_job_id) + "/cancel"),
+                        {},
+                        false,
+                        405,
+                        405,
+                        "request",
+                        "method_not_allowed"});
+  vectors.push_back(HeadRefusalVector{std::string(name),
+                                      Options{},
+                                      HealthRequest("GET", "/v1/missing"),
+                                      HealthRequest("HEAD", "/v1/missing"),
+                                      {},
+                                      false,
+                                      404,
+                                      404,
+                                      "request",
+                                      "route_not_found"});
 
   Options oversized_options;
   oversized_options.header_limit_bytes = 8192;
   const auto oversized_target = "/" + std::string(9000, 'a');
-  const auto get_oversized =
-      Send(backend, oversized_options, HealthRequest("GET", oversized_target));
-  const auto head_oversized =
-      Send(backend, oversized_options, HealthRequest("HEAD", oversized_target));
-  result |= Check(head_oversized.status == get_oversized.status, "rest_v1_unlisted_methods_refused",
-                  "HEAD early 431 status mismatch");
-  result |= Check(head_oversized.body.empty(), "rest_v1_unlisted_methods_refused",
-                  "HEAD early 431 response carried content");
-  const auto oversized_type = head_oversized.headers.find("content-type");
-  const auto get_oversized_type = get_oversized.headers.find("content-type");
-  result |= Check(oversized_type != head_oversized.headers.end() &&
-                      get_oversized_type != get_oversized.headers.end() &&
-                      oversized_type->second == get_oversized_type->second,
-                  "rest_v1_unlisted_methods_refused", "HEAD early 431 Content-Type mismatch");
-  const auto oversized_length = head_oversized.headers.find("content-length");
-  const auto get_oversized_length = get_oversized.headers.find("content-length");
-  result |= Check(oversized_length != head_oversized.headers.end() &&
-                      get_oversized_length != get_oversized.headers.end() &&
-                      oversized_length->second == get_oversized_length->second,
-                  "rest_v1_unlisted_methods_refused", "HEAD early 431 Content-Length mismatch");
-
+  vectors.push_back(HeadRefusalVector{std::string(name),
+                                      oversized_options,
+                                      HealthRequest("GET", oversized_target),
+                                      HealthRequest("HEAD", oversized_target),
+                                      {},
+                                      false,
+                                      431,
+                                      431,
+                                      "request",
+                                      "headers_too_large"});
   Options timeout_options;
   timeout_options.header_timeout_ms = 25;
-  const auto get_timeout = SendPartial(backend, timeout_options, "GET /v1/health HTTP/1.1");
-  const auto head_timeout = SendPartial(backend, timeout_options, "HEAD /v1/health HTTP/1.1");
-  result |= Check(head_timeout.status == get_timeout.status, "rest_v1_unlisted_methods_refused",
-                  "HEAD early 408 status mismatch");
-  result |= Check(head_timeout.body.empty(), "rest_v1_unlisted_methods_refused",
-                  "HEAD early 408 response carried content");
-  const auto timeout_type = head_timeout.headers.find("content-type");
-  const auto get_timeout_type = get_timeout.headers.find("content-type");
-  result |= Check(timeout_type != head_timeout.headers.end() &&
-                      get_timeout_type != get_timeout.headers.end() &&
-                      timeout_type->second == get_timeout_type->second,
-                  "rest_v1_unlisted_methods_refused", "HEAD early 408 Content-Type mismatch");
-  const auto timeout_length = head_timeout.headers.find("content-length");
-  const auto get_timeout_length = get_timeout.headers.find("content-length");
-  result |= Check(timeout_length != head_timeout.headers.end() &&
-                      get_timeout_length != get_timeout.headers.end() &&
-                      timeout_length->second == get_timeout_length->second,
-                  "rest_v1_unlisted_methods_refused", "HEAD early 408 Content-Length mismatch");
+  vectors.push_back(HeadRefusalVector{std::string(name),
+                                      timeout_options,
+                                      "GET /v1/health HTTP/1.1",
+                                      "HEAD /v1/health HTTP/1.1",
+                                      {},
+                                      true,
+                                      408,
+                                      408,
+                                      "request",
+                                      "request_timeout"});
+  vectors.push_back(HeadRefusalVector{std::string(name),
+                                      Options{},
+                                      HealthRequest("GET", "/v1/health", "HTTP/2.0"),
+                                      HealthRequest("HEAD", "/v1/health", "HTTP/2.0"),
+                                      {},
+                                      false,
+                                      400,
+                                      400,
+                                      "request",
+                                      "malformed_request"});
+  Options target_options;
+  target_options.target_limit_bytes = 2048;
+  const auto long_target = "/" + std::string(3000, 'a');
+  vectors.push_back(HeadRefusalVector{std::string(name),
+                                      target_options,
+                                      HealthRequest("GET", long_target),
+                                      HealthRequest("HEAD", long_target),
+                                      {},
+                                      false,
+                                      414,
+                                      414,
+                                      "request",
+                                      "target_too_long"});
+  const auto bodied = [](std::string_view method, std::string_view target,
+                         std::string_view content_type, std::string_view framing,
+                         std::string_view body) {
+    return std::string(method) + " " + std::string(target) +
+           " HTTP/1.1\r\nHost: loopback\r\nContent-Type: " + std::string(content_type) + "\r\n" +
+           std::string(framing) + "\r\n\r\n" + std::string(body);
+  };
+  // HEAD remains unlisted per ADR-0009, so body-gated HEAD forms stop at 405 before media/size.
+  const auto wrong_media_get = bodied("GET", "/v1/jobs", "text/plain", "Content-Length: 1", "x");
+  const auto wrong_media_head = bodied("HEAD", "/v1/jobs", "text/plain", "Content-Length: 1", "x");
+  vectors.push_back(HeadRefusalVector{std::string(name), Options{}, wrong_media_get,
+                                      wrong_media_head, HealthRequest("PUT", "/v1/jobs"), false,
+                                      415, 405, "request", "unsupported_media_type"});
+  const auto oversized_length_get =
+      bodied("GET", "/v1/jobs", "application/json", "Content-Length: 1048577", "");
+  const auto oversized_length_head =
+      bodied("HEAD", "/v1/jobs", "application/json", "Content-Length: 1048577", "");
+  vectors.push_back(HeadRefusalVector{std::string(name), Options{}, oversized_length_get,
+                                      oversized_length_head, HealthRequest("PUT", "/v1/jobs"),
+                                      false, 413, 405, "request", "payload_too_large"});
+  Options chunk_options;
+  chunk_options.body_limit_bytes = 4096;
+  const auto oversized_chunk = "1001\r\n" + std::string(4097, 'x') + "\r\n0\r\n\r\n";
+  const auto oversized_chunk_get =
+      bodied("GET", "/v1/jobs", "application/json", "Transfer-Encoding: chunked", oversized_chunk);
+  const auto oversized_chunk_head =
+      bodied("HEAD", "/v1/jobs", "application/json", "Transfer-Encoding: chunked", oversized_chunk);
+  vectors.push_back(HeadRefusalVector{std::string(name), chunk_options, oversized_chunk_get,
+                                      oversized_chunk_head, HealthRequest("PUT", "/v1/jobs"), false,
+                                      413, 405, "request", "payload_too_large"});
+  const auto malformed_get = "GET /v1/health HTTP/1.1\r\nHost: loopback\r\nBrokenField\r\n\r\n";
+  const auto malformed_head = "HEAD /v1/health HTTP/1.1\r\nHost: loopback\r\nBrokenField\r\n\r\n";
+  vectors.push_back(HeadRefusalVector{std::string(name),
+                                      Options{},
+                                      malformed_get,
+                                      malformed_head,
+                                      {},
+                                      false,
+                                      400,
+                                      400,
+                                      "request",
+                                      "malformed_request"});
+
+  int result = 0;
+  for (const auto& vector : vectors) result |= CheckHeadRefusalVector(backend, vector);
   return result;
 }
 
