@@ -209,6 +209,9 @@ adapter must not duplicate those cases. The adapter-owned list above was establi
 probe against the pinned Beast source and header parser behavior; a final report records the exact
 probe command and representative output.
 
+A `HEAD` response carries the status and headers of the `GET`-equivalent response and no content
+(RFC 9110 Section 9.3.2).
+
 The startup configuration and in-process composed-daemon smoke are covered by
 `rest_v1_sitometrond_options`, which also exercises representative unknown, repeated, missing,
 malformed, and out-of-range command-line values. The executable entrypoint smoke is
