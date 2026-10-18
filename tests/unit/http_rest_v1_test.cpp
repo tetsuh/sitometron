@@ -645,6 +645,50 @@ int HeadersTooLarge() {
   return result;
 }
 
+int FragmentedNearLimitHeaders() {
+  FakeBackend backend;
+  Options options;
+  options.header_limit_bytes = 16384;
+
+  struct Case {
+    std::string method;
+    std::string target;
+    std::string content_type;
+    int status;
+    std::string_view domain;
+    const char* code;
+  };
+  const std::array cases = {
+      Case{"POST", "/v1/jobs", "application/json", 503, "service", "not_ready"},
+      Case{"POST", "/v1/nope", "application/json", 404, "request", "route_not_found"},
+      Case{"PUT", "/v1/jobs", "application/json", 405, "request", "method_not_allowed"},
+      Case{"POST", "/v1/jobs", "text/plain", 415, "request", "unsupported_media_type"},
+  };
+
+  int result = 0;
+  for (const bool chunked : {false, true}) {
+    for (const auto& test_case : cases) {
+      const auto framing = chunked ? "Transfer-Encoding: chunked\r\n" : "Content-Length: 1000\r\n";
+      const auto body =
+          chunked ? "3e8\r\n" + std::string(1000, 'x') + "\r\n0\r\n\r\n" : std::string(1000, 'x');
+      std::string header =
+          test_case.method + " " + test_case.target +
+          " HTTP/1.1\r\nHost: loopback\r\nContent-Type: " + test_case.content_type + "\r\n" +
+          framing + "X-Fill: ";
+      constexpr std::size_t k_header_size = 16300;
+      const auto fill_size = k_header_size - header.size() - 4;
+      header.append(fill_size, 'a');
+      header.append("\r\n\r\n");
+      const auto request = header + body;
+      const auto response =
+          SendParts(backend, options, {request.substr(0, 100), request.substr(100)});
+      result |= ExpectError(response, "rest_v1_body_bound_after_routing", test_case.status,
+                            test_case.domain, test_case.code);
+    }
+  }
+  return result;
+}
+
 int UnknownTransferCoding() {
   FakeBackend backend;
   int result = ExpectError(
@@ -660,7 +704,7 @@ int UnknownTransferCoding() {
 
 int BodyBoundAfterRouting() {
   FakeBackend backend;
-  int result = 0;
+  int result = FragmentedNearLimitHeaders();
   const auto large_unknown_route =
       "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\nContent-Length: 1048577\r\n\r\n";
   result |= ExpectError(Send(backend, Options{}, large_unknown_route),
@@ -873,6 +917,51 @@ int UnlistedMethods() {
             "rest_v1_unlisted_methods_refused", "HEAD 404 Content-Length does not match GET body");
   result |= Check(missing.body.empty(), "rest_v1_unlisted_methods_refused",
                   "HEAD 404 response carried content");
+
+  Options oversized_options;
+  oversized_options.header_limit_bytes = 8192;
+  const auto oversized_target = "/" + std::string(9000, 'a');
+  const auto get_oversized =
+      Send(backend, oversized_options, HealthRequest("GET", oversized_target));
+  const auto head_oversized =
+      Send(backend, oversized_options, HealthRequest("HEAD", oversized_target));
+  result |= Check(head_oversized.status == get_oversized.status, "rest_v1_unlisted_methods_refused",
+                  "HEAD early 431 status mismatch");
+  result |= Check(head_oversized.body.empty(), "rest_v1_unlisted_methods_refused",
+                  "HEAD early 431 response carried content");
+  const auto oversized_type = head_oversized.headers.find("content-type");
+  const auto get_oversized_type = get_oversized.headers.find("content-type");
+  result |= Check(oversized_type != head_oversized.headers.end() &&
+                      get_oversized_type != get_oversized.headers.end() &&
+                      oversized_type->second == get_oversized_type->second,
+                  "rest_v1_unlisted_methods_refused", "HEAD early 431 Content-Type mismatch");
+  const auto oversized_length = head_oversized.headers.find("content-length");
+  const auto get_oversized_length = get_oversized.headers.find("content-length");
+  result |= Check(oversized_length != head_oversized.headers.end() &&
+                      get_oversized_length != get_oversized.headers.end() &&
+                      oversized_length->second == get_oversized_length->second,
+                  "rest_v1_unlisted_methods_refused", "HEAD early 431 Content-Length mismatch");
+
+  Options timeout_options;
+  timeout_options.header_timeout_ms = 25;
+  const auto get_timeout = SendPartial(backend, timeout_options, "GET /v1/health HTTP/1.1");
+  const auto head_timeout = SendPartial(backend, timeout_options, "HEAD /v1/health HTTP/1.1");
+  result |= Check(head_timeout.status == get_timeout.status, "rest_v1_unlisted_methods_refused",
+                  "HEAD early 408 status mismatch");
+  result |= Check(head_timeout.body.empty(), "rest_v1_unlisted_methods_refused",
+                  "HEAD early 408 response carried content");
+  const auto timeout_type = head_timeout.headers.find("content-type");
+  const auto get_timeout_type = get_timeout.headers.find("content-type");
+  result |= Check(timeout_type != head_timeout.headers.end() &&
+                      get_timeout_type != get_timeout.headers.end() &&
+                      timeout_type->second == get_timeout_type->second,
+                  "rest_v1_unlisted_methods_refused", "HEAD early 408 Content-Type mismatch");
+  const auto timeout_length = head_timeout.headers.find("content-length");
+  const auto get_timeout_length = get_timeout.headers.find("content-length");
+  result |= Check(timeout_length != head_timeout.headers.end() &&
+                      get_timeout_length != get_timeout.headers.end() &&
+                      timeout_length->second == get_timeout_length->second,
+                  "rest_v1_unlisted_methods_refused", "HEAD early 408 Content-Length mismatch");
   return result;
 }
 
@@ -896,6 +985,17 @@ int InvalidTarget() {
   result |=
       ExpectError(Send(backend, Options{}, HealthRequest("CONNECT", "[:::]:443")),
                   "rest_v1_invalid_request_target_refused", 400, "request", "malformed_request");
+  for (const auto& target :
+       {"example.test:", "[::1]:", "example.test:65536", "[::1]:9999999999999999999999999"}) {
+    result |=
+        ExpectError(Send(backend, Options{}, HealthRequest("CONNECT", target)),
+                    "rest_v1_invalid_request_target_refused", 400, "request", "malformed_request");
+  }
+  for (const auto& target : {"example.test:65535", "[::1]:443", "example.test:0", "[::1]:000443"}) {
+    result |=
+        ExpectError(Send(backend, Options{}, HealthRequest("CONNECT", target)),
+                    "rest_v1_invalid_request_target_refused", 404, "request", "route_not_found");
+  }
   return result;
 }
 

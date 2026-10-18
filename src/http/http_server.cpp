@@ -454,6 +454,23 @@ std::optional<TargetInfo> ParseTarget(TargetInput input) {
   }
   if (method == "CONNECT") {
     if (!IsValidAuthority(target, true, false)) return std::nullopt;
+    std::size_t port_separator = std::string_view::npos;
+    if (target.front() == '[') {
+      const auto close = target.find(']');
+      if (close == std::string_view::npos || close + 1 >= target.size() || target[close + 1] != ':')
+        return std::nullopt;
+      port_separator = close + 1;
+    } else {
+      port_separator = target.find(':');
+      if (port_separator == std::string_view::npos) return std::nullopt;
+    }
+    const auto port_begin = port_separator + 1;
+    if (port_begin >= target.size()) return std::nullopt;
+    std::uint64_t port = 0;
+    const auto parsed =
+        std::from_chars(target.data() + port_begin, target.data() + target.size(), port);
+    if (parsed.ec != std::errc{} || parsed.ptr != target.data() + target.size() || port > 65535)
+      return std::nullopt;
     return TargetInfo{TargetKind::kNoPath, {}, false, true};
   }
 
@@ -976,11 +993,6 @@ asio::awaitable<bool> WriteResponse(tcp::socket& socket, const ResponseSpec& spe
   co_return !error;
 }
 
-bool IsHeadRequestLine(std::string_view line) {
-  const auto first_space = line.find(' ');
-  return first_space != std::string_view::npos && line.substr(0, first_space) == "HEAD";
-}
-
 bool RequestLineHasBadVersion(std::string_view bytes, std::size_t line_end) {
   std::string line(bytes.substr(0, line_end + 1));
   const auto first_space = line.find(' ');
@@ -1005,6 +1017,7 @@ asio::awaitable<HeaderRead> ReadHeader(tcp::socket& socket, const Options& optio
   std::string bytes;
   std::array<char, 4096> buffer{};
   bool request_line_checked = false;
+  bool head_request_checked = false;
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(options.header_timeout_ms);
   for (;;) {
@@ -1020,7 +1033,18 @@ asio::awaitable<HeaderRead> ReadHeader(tcp::socket& socket, const Options& optio
     }
     if (leading != 0) bytes.erase(0, leading);
 
-    if (bytes.size() > options.header_limit_bytes) {
+    if (!head_request_checked && bytes.size() >= 5) {
+      result.head_request = bytes.starts_with("HEAD ");
+      head_request_checked = true;
+    }
+
+    const auto end = bytes.find("\r\n\r\n");
+    if (end != std::string::npos) {
+      if (end + 4 > options.header_limit_bytes) {
+        result.result = HeaderRead::Result::kTooLarge;
+        co_return result;
+      }
+    } else if (bytes.size() > options.header_limit_bytes) {
       result.result = HeaderRead::Result::kTooLarge;
       co_return result;
     }
@@ -1028,21 +1052,13 @@ asio::awaitable<HeaderRead> ReadHeader(tcp::socket& socket, const Options& optio
       const auto line_end = bytes.find('\n');
       if (line_end != std::string::npos) {
         request_line_checked = true;
-        result.head_request = IsHeadRequestLine(bytes.substr(0, line_end + 1));
         if (RequestLineHasBadVersion(bytes, line_end)) {
           result.result = HeaderRead::Result::kBadVersion;
           co_return result;
         }
       }
     }
-
-    const auto end = bytes.find("\r\n\r\n");
     if (end != std::string::npos) {
-      const auto header_size = end + 4;
-      if (header_size > options.header_limit_bytes) {
-        result.result = HeaderRead::Result::kTooLarge;
-        co_return result;
-      }
       result.result = HeaderRead::Result::kComplete;
       result.bytes = std::move(bytes);
       result.end = end;

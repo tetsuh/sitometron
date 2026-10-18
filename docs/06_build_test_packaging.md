@@ -192,6 +192,7 @@ Issue #105 additionally gives each adapter-owned `400 malformed_request` refusal
 | Adapter-owned refusal | RFC authority | CTest |
 |---|---|---|
 | Invalid request-target form (not origin-form, absolute-form, asterisk-form, or authority-form) | RFC 9112 Sections 3.1-3.2; RFC 9110 Section 7.1 | `rest_v1_invalid_request_target_refused` |
+| CONNECT authority-form with an empty or out-of-range port (port `0` and leading-zero forms are accepted when their numeric value is at most `65535`) | RFC 9110 Section 9.3.6 | `rest_v1_invalid_request_target_refused` |
 | Missing Host field in HTTP/1.1 | RFC 9112 Section 3.2 | `rest_v1_missing_host_refused` |
 | More than one Host field line | RFC 9112 Section 3.2 | `rest_v1_repeated_host_refused` |
 | Host value is not a valid `uri-host [ ":" port ]` value | RFC 9112 Section 3.2; RFC 9110 Section 7.2 | `rest_v1_invalid_host_refused` |
