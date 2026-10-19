@@ -298,15 +298,25 @@ std::string_view TrimOws(std::string_view value) {
 std::vector<std::string_view> SplitList(std::string_view value) {
   std::vector<std::string_view> elements;
   std::size_t element_start = 0;
-  for (;;) {
-    const auto comma = value.find(',', element_start);
-    const auto element = TrimOws(value.substr(element_start, comma == std::string_view::npos
-                                                                 ? std::string_view::npos
-                                                                 : comma - element_start));
-    if (!element.empty()) elements.push_back(element);
-    if (comma == std::string_view::npos) break;
-    element_start = comma + 1;
+  bool in_quotes = false;
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    const char byte = value[index];
+    if (in_quotes) {
+      if (byte == '\\') {
+        if (index + 1 < value.size()) ++index;
+      } else if (byte == '"') {
+        in_quotes = false;
+      }
+    } else if (byte == '"') {
+      in_quotes = true;
+    } else if (byte == ',') {
+      const auto element = TrimOws(value.substr(element_start, index - element_start));
+      if (!element.empty()) elements.push_back(element);
+      element_start = index + 1;
+    }
   }
+  const auto element = TrimOws(value.substr(element_start));
+  if (!element.empty()) elements.push_back(element);
   return elements;
 }
 
@@ -1197,18 +1207,22 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
   ChunkScanner scanner;
   std::string pending;
   const auto feed = [&](std::string_view bytes) -> ErrorCode {
-    bool incomplete_chunk_size = false;
+    std::size_t held_back = 0;
     if (request.chunked) {
       scanner.Feed(bytes);
       if (scanner.overflow) return http::error::body_limit;
-      incomplete_chunk_size = scanner.state == ChunkScanner::State::kSize && !scanner.stopped &&
-                              (!scanner.line.empty() || scanner.size_cr_seen);
+      if (scanner.state == ChunkScanner::State::kSize && !scanner.stopped &&
+          (!scanner.line.empty() || scanner.size_cr_seen)) {
+        // ChunkScanner buffers only this unfinished size line, which is the pending tail.
+        held_back = scanner.line.size();
+      }
     }
     pending.append(bytes.data(), bytes.size());
-    if (incomplete_chunk_size) return {};
     while (!pending.empty() && !parser.is_done()) {
+      if (pending.size() <= held_back) break;
+      const auto forward_size = pending.size() - held_back;
       ErrorCode error;
-      const auto consumed = parser.put(asio::buffer(pending.data(), pending.size()), error);
+      const auto consumed = parser.put(asio::buffer(pending.data(), forward_size), error);
       pending.erase(0, consumed);
       if (error && error != http::error::need_more) return error;
       if (error == http::error::need_more || consumed == 0) break;
