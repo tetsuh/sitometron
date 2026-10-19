@@ -1227,10 +1227,24 @@ int RepeatedChunked() {
 
 int ChunkedParameters() {
   FakeBackend backend;
-  return ExpectError(Send(backend, Options{},
-                          "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n"
-                          "Transfer-Encoding: chunked;foo\r\n\r\n"),
-                     "rest_v1_chunked_parameters_refused", 400, "request", "malformed_request");
+  int result =
+      ExpectError(Send(backend, Options{},
+                       "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n"
+                       "Transfer-Encoding: chunked;foo\r\n\r\n"),
+                  "rest_v1_chunked_parameters_refused", 400, "request", "malformed_request");
+  result |= ExpectError(Send(backend, Options{},
+                             "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n"
+                             "Transfer-Encoding: chunked;foo=bar\r\n\r\n"),
+                        "rest_v1_chunked_parameters_refused", 400, "request", "malformed_request");
+  result |= ExpectError(Send(backend, Options{},
+                             "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n"
+                             "Transfer-Encoding: chunked;foo=\"bar\"\r\n\r\n"),
+                        "rest_v1_chunked_parameters_refused", 400, "request", "malformed_request");
+  result |= ExpectError(Send(backend, Options{},
+                             "GET /v1/health HTTP/1.1\r\nHost: loopback\r\n"
+                             "Transfer-Encoding: gzip, chunked;foo=bar\r\n\r\n"),
+                        "rest_v1_chunked_parameters_refused", 400, "request", "malformed_request");
+  return result;
 }
 
 int InvalidTransferCoding() {
