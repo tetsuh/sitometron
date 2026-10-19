@@ -187,6 +187,12 @@ class TimedSocket final {
 
   [[nodiscard]] bool TimedOut() const noexcept { return timed_out_; }
 
+  void ShutdownSend() {
+    boost::system::error_code ignored;
+    [[maybe_unused]] const auto shutdown =
+        socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_send, ignored);
+  }
+
   void Close() {
     boost::system::error_code ignored;
     [[maybe_unused]] const auto cancelled = socket_.cancel(ignored);
@@ -318,7 +324,7 @@ class ScopedTempDirectory final {
 
 Response SendChunkedParts(Backend& backend, Options options, const std::string& header,
                           const std::vector<std::string>& parts, bool* saw_continue = nullptr,
-                          bool wait_for_continue = false) {
+                          bool wait_for_continue = false, bool shutdown_send = false) {
   options.listen_port = 0;
   Server server(std::move(options), backend);
   std::string error;
@@ -347,6 +353,7 @@ Response SendChunkedParts(Backend& backend, Options options, const std::string& 
       wrote = socket.Write(part);
       if (!wrote) break;
     }
+    if (wrote && shutdown_send) socket.ShutdownSend();
     if (wrote) ReadUntilClose(socket, bytes);
   }
   socket.Close();
@@ -496,6 +503,17 @@ int JobRoutesNotReady() {
   result |= Check(http11_expect_continue, "rest_v1_job_routes_not_ready",
                   "Expect list did not produce 100 Continue");
   result |= ExpectError(expect_with_empty_element, "rest_v1_job_routes_not_ready", 503, "service",
+                        "not_ready");
+
+  bool quoted_expect_continue = false;
+  const auto quoted_expect_response = SendChunkedParts(
+      backend, Options{},
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 2\r\nExpect: foo=\"a,100-continue,b\"\r\n\r\n",
+      {"{}"}, &quoted_expect_continue);
+  result |= Check(!quoted_expect_continue, "rest_v1_job_routes_not_ready",
+                  "quoted Expect extension produced 100 Continue");
+  result |= ExpectError(quoted_expect_response, "rest_v1_job_routes_not_ready", 503, "service",
                         "not_ready");
 
   bool http10_expect_continue = false;
@@ -750,6 +768,32 @@ int UnknownTransferCoding() {
                              "GET /v1/nope HTTP/1.1\r\nHost: loopback\r\n"
                              "Transfer-Encoding: , gzip , , chunked,\r\n\r\n"),
                         "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
+
+  const auto transfer_prefix =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n";
+  const std::array<std::string, 6> quoted_transfer_values = {
+      "gzip;foo=\"a,b\", chunked",     "gzip;foo=\"a\\,b\", chunked",
+      "gzip;foo=\"a\\\",b\", chunked", "gzip;foo=\"a,b\";bar=token, chunked",
+      "gzip;foo=bar;baz=qux, chunked", "gzip;foo=\"a,b\";bar=\"c,d\", chunked",
+  };
+  for (const auto& transfer_value : quoted_transfer_values) {
+    result |= ExpectError(
+        Send(backend, Options{},
+             std::string(transfer_prefix) + "Transfer-Encoding: " + transfer_value + "\r\n\r\n"),
+        "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
+  }
+  auto obs_text_transfer = std::string("gzip;foo=\"a");
+  obs_text_transfer.push_back(static_cast<char>(0x80));
+  obs_text_transfer.append(",b\", chunked");
+  result |= ExpectError(
+      Send(backend, Options{},
+           std::string(transfer_prefix) + "Transfer-Encoding: " + obs_text_transfer + "\r\n\r\n"),
+      "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
+  result |=
+      ExpectError(Send(backend, Options{},
+                       std::string(transfer_prefix) + "Transfer-Encoding: gzip;foo=\"a,b\"\r\n"
+                                                      "Transfer-Encoding: chunked\r\n\r\n"),
+                  "rest_v1_unknown_transfer_coding", 501, "request", "not_implemented");
   return result;
 }
 
@@ -890,6 +934,11 @@ int BodyBoundAfterRouting() {
       "Content-Length: 18446744073709551616, 18446744073709551617\r\n\r\n";
   result |= ExpectError(Send(backend, Options{}, conflicting_overflow),
                         "rest_v1_body_bound_after_routing", 400, "request", "malformed_request");
+  const auto quoted_content_length =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 5,\"5\"\r\n\r\n12345";
+  result |= ExpectError(Send(backend, Options{}, quoted_content_length),
+                        "rest_v1_body_bound_after_routing", 400, "request", "malformed_request");
   const auto bare_lf_after_chunk_data =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
       "Transfer-Encoding: chunked\r\n\r\n1\r\nx\nFFFFFFFFFFFFFFFFF\r\n";
@@ -916,6 +965,43 @@ int BodyBoundAfterRouting() {
       std::string(8200, 'a') + "\"\r\n";
   result |= ExpectError(Send(backend, Options{}, overflow_with_long_extension),
                         "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
+
+  Options partial_size_options;
+  partial_size_options.body_limit_bytes = 4096;
+  partial_size_options.body_timeout_ms = 50;
+  const auto partial_size_header =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Transfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n";
+  const auto over_limit_prefix = "1000\r\n" + std::string(4096, 'x') + "\r\n1\r\nx\r\n";
+  const std::array<std::string_view, 4> partial_size_lines = {"F", "F\r", "F;ext=\"", "1;abc="};
+  for (const auto partial_size_line : partial_size_lines) {
+    bool saw_continue = false;
+    const auto response =
+        SendChunkedParts(backend, partial_size_options, partial_size_header,
+                         {over_limit_prefix + std::string(partial_size_line)}, &saw_continue, true);
+    result |= Check(saw_continue, "rest_v1_body_bound_after_routing",
+                    "body-bound probe did not receive 100 Continue");
+    result |= ExpectError(response, "rest_v1_body_bound_after_routing", 413, "request",
+                          "payload_too_large");
+  }
+
+  bool saw_continue = false;
+  const auto exact_partial_response =
+      SendChunkedParts(backend, partial_size_options, partial_size_header,
+                       {"1000\r\n" + std::string(4096, 'x') + "\r\nF"}, &saw_continue, true);
+  result |= Check(saw_continue, "rest_v1_body_bound_after_routing",
+                  "exact-bound probe did not receive 100 Continue");
+  result |= ExpectError(exact_partial_response, "rest_v1_body_bound_after_routing", 408, "request",
+                        "request_timeout");
+
+  saw_continue = false;
+  const auto eof_partial_response =
+      SendChunkedParts(backend, partial_size_options, partial_size_header,
+                       {over_limit_prefix + "F"}, &saw_continue, true, true);
+  result |= Check(saw_continue, "rest_v1_body_bound_after_routing",
+                  "EOF body-bound probe did not receive 100 Continue");
+  result |= ExpectError(eof_partial_response, "rest_v1_body_bound_after_routing", 413, "request",
+                        "payload_too_large");
   return result;
 }
 
