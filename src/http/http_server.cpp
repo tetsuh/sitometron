@@ -1203,6 +1203,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
   }
 
   std::string body_bytes;
+  std::size_t bytes_fed = 0;
   std::size_t raw_total = request.header_bytes;
   ChunkScanner scanner;
   std::string pending;
@@ -1229,17 +1230,22 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
     }
     return {};
   };
+  const auto charge_raw_total = [&](std::size_t count) {
+    bytes_fed += count;
+    raw_total = request.header_bytes + bytes_fed;
+    if (parser.is_done()) raw_total -= pending.size();
+    return raw_total > impl.options.combined_request_limit_bytes;
+  };
   const auto prebody = std::string_view(header.bytes).substr(header.end + 4);
   if (!prebody.empty()) {
-    raw_total += prebody.size();
-    if (raw_total > impl.options.combined_request_limit_bytes) {
+    const auto error = feed(prebody);
+    if (charge_raw_total(prebody.size())) {
       (void)co_await WriteResponse(
           socket,
           ErrorResponse(413, "request", "payload_too_large", "the request body is too large"),
           head);
       co_return;
     }
-    const auto error = feed(prebody);
     if (error) {
       const auto status = error == http::error::body_limit ? 413 : 400;
       const auto code = status == 413 ? "payload_too_large" : "malformed_request";
@@ -1281,15 +1287,14 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
           head);
       co_return;
     }
-    raw_total += count;
-    if (raw_total > impl.options.combined_request_limit_bytes) {
+    const auto parse_error = feed(std::string_view(buffer.data(), count));
+    if (charge_raw_total(count)) {
       (void)co_await WriteResponse(
           socket,
           ErrorResponse(413, "request", "payload_too_large", "the request body is too large"),
           head);
       co_return;
     }
-    const auto parse_error = feed(std::string_view(buffer.data(), count));
     if (parse_error) {
       const auto status = parse_error == http::error::body_limit ? 413 : 400;
       const auto code = status == 413 ? "payload_too_large" : "malformed_request";
