@@ -950,6 +950,26 @@ int BodyBoundAfterRouting() {
       "Content-Length: 18446744073709551616, 18446744073709551616\r\n\r\n";
   result |= ExpectError(Send(backend, Options{}, repeated_overflow),
                         "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
+  const auto padded_overflow_pair =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 18446744073709551616, 018446744073709551616\r\n\r\n";
+  result |= ExpectError(Send(backend, Options{}, padded_overflow_pair),
+                        "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
+  const auto padded_overflow_unknown_route =
+      "POST /v1/nope HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 18446744073709551616, 018446744073709551616\r\n\r\n";
+  result |= ExpectError(Send(backend, Options{}, padded_overflow_unknown_route),
+                        "rest_v1_body_bound_after_routing", 404, "request", "route_not_found");
+  const auto padded_overflow_wrong_method =
+      "PUT /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 18446744073709551616, 018446744073709551616\r\n\r\n";
+  result |= ExpectError(Send(backend, Options{}, padded_overflow_wrong_method),
+                        "rest_v1_body_bound_after_routing", 405, "request", "method_not_allowed");
+  const auto padded_overflow_single =
+      "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+      "Content-Length: 018446744073709551616\r\n\r\n";
+  result |= ExpectError(Send(backend, Options{}, padded_overflow_single),
+                        "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
   const auto conflicting_overflow =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
       "Content-Length: 18446744073709551616, 18446744073709551617\r\n\r\n";
