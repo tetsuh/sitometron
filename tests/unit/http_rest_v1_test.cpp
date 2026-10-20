@@ -904,6 +904,27 @@ int BodyBoundAfterRouting() {
   result |= ExpectError(Send(backend, raw_options, chunked_over_combined),
                         "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
 
+  Options pipelined_chunked_options = raw_options;
+  ++pipelined_chunked_options.combined_request_limit_bytes;
+  const auto pipelined_chunked_size =
+      static_cast<std::size_t>(pipelined_chunked_options.combined_request_limit_bytes) -
+      chunked_fixed_size;
+  const auto pipelined_chunked_request =
+      make_chunked_request(pipelined_chunked_size) + HealthRequest();
+  result |= Check(
+      pipelined_chunked_request.size() > pipelined_chunked_options.combined_request_limit_bytes,
+      "rest_v1_body_bound_after_routing",
+      "pipelined chunked request did not cross the combined cap");
+  result |= ExpectError(Send(backend, pipelined_chunked_options, pipelined_chunked_request),
+                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+
+  const auto pipelined_content_length = exact_content_length + HealthRequest();
+  result |= Check(pipelined_content_length.size() > raw_options.combined_request_limit_bytes,
+                  "rest_v1_body_bound_after_routing",
+                  "pipelined Content-Length request did not cross the combined cap");
+  result |= ExpectError(Send(backend, raw_options, pipelined_content_length),
+                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+
   const auto unknown_chunked_over_combined =
       std::string(
           "POST /v1/nope HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
@@ -1759,6 +1780,32 @@ int SitometrondOptions() {
     result |= Check(valid.config.max_jobs == 7, "rest_v1_sitometrond_options", "max-jobs mismatch");
     result |= Check(valid.config.http.combined_request_limit_bytes == 16384,
                     "rest_v1_sitometrond_options", "combined request bound mismatch");
+  }
+
+  const auto defaults = sitometron::daemon::ParseStartupOptions({"--journal", journal_path});
+  result |= Check(defaults.ok, "rest_v1_sitometrond_options",
+                  "documented defaults were refused: " + defaults.error);
+  if (defaults.ok) {
+    result |= Check(defaults.config.http.listen_address == "127.0.0.1",
+                    "rest_v1_sitometrond_options", "default listen address mismatch");
+    result |= Check(defaults.config.http.listen_port == 8080, "rest_v1_sitometrond_options",
+                    "default listen port mismatch");
+    result |= Check(defaults.config.http.cancel_principal == "local-operator",
+                    "rest_v1_sitometrond_options", "default cancel principal mismatch");
+    result |= Check(defaults.config.max_jobs == 32, "rest_v1_sitometrond_options",
+                    "default max-jobs mismatch");
+    result |= Check(defaults.config.http.target_limit_bytes == 8192, "rest_v1_sitometrond_options",
+                    "default target limit mismatch");
+    result |= Check(defaults.config.http.header_limit_bytes == 16384, "rest_v1_sitometrond_options",
+                    "default header limit mismatch");
+    result |= Check(defaults.config.http.body_limit_bytes == 65536, "rest_v1_sitometrond_options",
+                    "default body limit mismatch");
+    result |= Check(defaults.config.http.header_timeout_ms == 5000, "rest_v1_sitometrond_options",
+                    "default header timeout mismatch");
+    result |= Check(defaults.config.http.body_timeout_ms == 5000, "rest_v1_sitometrond_options",
+                    "default body timeout mismatch");
+    result |= Check(defaults.config.http.combined_request_limit_bytes == 86016,
+                    "rest_v1_sitometrond_options", "default combined request bound mismatch");
   }
 
   const auto expect_rejected = [&](const std::vector<std::string>& args,
