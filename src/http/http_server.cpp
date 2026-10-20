@@ -442,9 +442,9 @@ bool IsValidAuthority(std::string_view value, bool require_port, bool allow_user
                              [](char character) { return character >= '0' && character <= '9'; });
 }
 
-bool IsValidHost(std::string_view value, bool absolute_target) {
+bool IsValidHost(std::string_view value, bool target_has_authority) {
   value = TrimOws(value);
-  if (value.empty()) return !absolute_target;
+  if (value.empty()) return !target_has_authority;
   return IsValidAuthority(value, false, false);
 }
 
@@ -530,8 +530,15 @@ std::optional<TargetInfo> ParseTarget(TargetInput input) {
       colon != std::string_view::npos &&
       (first_path_delimiter == std::string_view::npos || colon < first_path_delimiter);
   if (is_absolute) {
-    if (!IsValidScheme(target.substr(0, colon)) || target.substr(colon + 1, 2) != "//")
-      return std::nullopt;
+    if (!IsValidScheme(target.substr(0, colon))) return std::nullopt;
+    const auto hier_part = target.substr(colon + 1);
+    if (!hier_part.starts_with("//")) {
+      if (!IsValidPathAndQuery(hier_part)) return std::nullopt;
+      const auto query = hier_part.find('?');
+      const auto path = hier_part.substr(0, query);
+      return TargetInfo{TargetKind::kAbsolute, path.empty() ? "/" : std::string(path),
+                        query != std::string_view::npos, false};
+    }
     const auto authority_begin = colon + 3;
     const auto path_begin = target.find_first_of("/?", authority_begin);
     const auto authority = target.substr(authority_begin, path_begin == std::string_view::npos

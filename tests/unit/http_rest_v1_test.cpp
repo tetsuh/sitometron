@@ -571,6 +571,9 @@ int HealthAndReadiness() {
                       "readiness body is ready");
       result |= Check(body.at("reasons").at(0).at("code") == "unresolved_jobs",
                       "rest_v1_health_and_readiness", "readiness reason mismatch");
+      result |= Check(
+          body.at("reasons").at(0).at("job_ids") == nlohmann::json::array({std::string(k_job_id)}),
+          "rest_v1_health_and_readiness", "readiness Job IDs mismatch");
     } catch (...) {
       result |= Check(false, "rest_v1_health_and_readiness", "readiness body is not JSON");
     }
@@ -681,9 +684,48 @@ int Http10Answered() {
 
 int AbsoluteForm() {
   FakeBackend backend;
-  const auto response =
-      Send(backend, Options{}, HealthRequest("GET", "http://example.test/v1/health"));
-  return ExpectStatus(response, "rest_v1_absolute_form_target", 200);
+  struct Case {
+    std::string_view target;
+    std::string_view host;
+    int status;
+  };
+  constexpr std::array cases = {
+      Case{"http://example.test/v1/health", "loopback", 200},
+      Case{"http://example.test", "loopback", 404},
+      Case{"http://example.test?q", "loopback", 404},
+      Case{"foo:/v1/health", "loopback", 200},
+      Case{"foo:/v1/missing", "loopback", 404},
+      Case{"foo:v1/health", "loopback", 404},
+      Case{"foo:", "loopback", 404},
+      Case{"foo:?q", "loopback", 404},
+      Case{"foo:/v1/health?q", "loopback", 404},
+      Case{"foo:v1/health?q", "loopback", 404},
+      Case{"example.test:443", "loopback", 404},
+      Case{"foo:/v1/health", "", 200},
+      Case{"foo:v1/health", "", 404},
+      Case{"foo:", "", 404},
+      Case{"foo:?q", "", 404},
+      Case{"http://example.test/v1/health", "", 400},
+      Case{"1foo:/v1/health", "loopback", 400},
+      Case{"foo:/v1/health%GG", "loopback", 400},
+      Case{"foo:v1/health%GG", "loopback", 400},
+      Case{"foo:?q=%GG", "loopback", 400},
+  };
+  int result = 0;
+  for (const auto& test_case : cases) {
+    const auto name = std::string("rest_v1_absolute_form_target [") +
+                      std::string(test_case.target) + ", Host: " + std::string(test_case.host) +
+                      "]";
+    const auto request = std::string("GET ") + std::string(test_case.target) +
+                         " HTTP/1.1\r\nHost: " + std::string(test_case.host) + "\r\n\r\n";
+    const auto response = Send(backend, Options{}, request);
+    if (test_case.status == 200)
+      result |= ExpectStatus(response, name, 200);
+    else
+      result |= ExpectError(response, name, test_case.status, "request",
+                            test_case.status == 404 ? "route_not_found" : "malformed_request");
+  }
+  return result;
 }
 
 int TargetsWithoutPath() {
@@ -1556,6 +1598,22 @@ int Phase1PortsNotCalled() {
     const auto readiness = composition.backend().GetReadiness();
     result |= Check(!readiness.ready, "rest_v1_phase1_ports_not_called",
                     "replayed unresolved Job did not close readiness");
+    const auto response = SendToPort(composition.listen_port(), HealthRequest("GET", "/v1/ready"));
+    result |= ExpectStatus(response, "rest_v1_phase1_ports_not_called", 503);
+    if (response.status == 503) {
+      try {
+        const auto body = nlohmann::json::parse(response.body);
+        result |= Check(body.at("ready") == false, "rest_v1_phase1_ports_not_called",
+                        "replayed readiness body is ready");
+        result |= Check(body.at("reasons").at(0).at("code") == "unresolved_jobs",
+                        "rest_v1_phase1_ports_not_called", "replayed readiness reason mismatch");
+        result |= Check(body.at("reasons").at(0).at("job_ids") ==
+                            nlohmann::json::array({std::string(k_job_id)}),
+                        "rest_v1_phase1_ports_not_called", "replayed readiness Job IDs mismatch");
+      } catch (...) {
+        result |= Check(false, "rest_v1_phase1_ports_not_called", "readiness body is not JSON");
+      }
+    }
     composition.Stop();
     result |= Check(composition.clock_reads() == 0, "rest_v1_phase1_ports_not_called",
                     "Phase 1 clock was read during replay/serve/shutdown");

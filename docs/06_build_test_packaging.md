@@ -184,8 +184,12 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `API-003` | CTests `rest_v1_job_resource_from_committed_state`, `rest_v1_list_resident_in_creation_order` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
 | `API-004` | CTests `rest_v1_cancel_status_mapping`, `rest_v1_cancel_records_configured_principal` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
 | `API-005` | CTests `rest_v1_validation_before_submission`, `rest_v1_error_envelope_and_codes`, `rest_v1_errors_leak_nothing` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
-| `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_job_routes_not_ready` | Normative under Accepted ADR-0008 under Issue #76; #105 activates health/readiness and transport-gated Job routes, while #106 supplies Job handling |
+| `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_not_ready_refuses_writes` | Normative under Accepted ADR-0008 under Issue #76; #105 activates health/readiness; `rest_v1_not_ready_refuses_writes` remains Planned for Issue #106 |
 | `API-007` | CTests `rest_v1_malformed_request_refused`, `rest_v1_bare_lf_refused`, `rest_v1_http10_request_answered`, `rest_v1_absolute_form_target`, `rest_v1_targets_without_a_path`, `rest_v1_header_receive_timeout`, `rest_v1_target_too_long`, `rest_v1_headers_too_large`, `rest_v1_unknown_transfer_coding`, `rest_v1_transfer_encoding_with_content_length_refused` (Section 1); `rest_v1_body_bound_after_routing`, `rest_v1_body_receive_timeout` (Section 2); `rest_v1_create_serialized`, `rest_v1_already_pending_is_busy` (Section 3); `rest_v1_query_refused` (Section 4); `rest_v1_create_without_body` (Section 5); `rest_v1_unlisted_methods_refused` (Section 6); `rest_v1_error_details_empty` (Section 7); `rest_v1_json_rejects_raw_nul`, `rest_v1_json_rejects_invalid_utf8`, `rest_v1_json_rejects_trailing_data`, `rest_v1_json_rejects_duplicate_keys_at_any_depth` (Section 8); `rest_v1_registered_application_id_form` (Section 9); `rest_v1_cancel_body` (Section 10) of ADR-0009 | Normative under Accepted ADR-0009 under Issue #86; Issue #105 activates its Section 1, 2, 4, 6, and 7 names; #106 activates the remaining names |
+
+Issue #105 separately activates `rest_v1_job_routes_not_ready` as an interim transport check. Its
+Phase 1 Job-route `503 service/not_ready` response is not part of the REST v1 contract. The Planned
+`rest_v1_not_ready_refuses_writes` check is not registered as a CTest until Issue #106 implements it.
 
 Issue #105 additionally gives each adapter-owned `400 malformed_request` refusal its own CTest entry:
 
