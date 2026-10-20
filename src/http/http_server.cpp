@@ -553,6 +553,12 @@ std::optional<std::uint64_t> ParseUint64(std::string_view value, bool& overflow)
   return overflowed ? std::nullopt : std::optional<std::uint64_t>(result);
 }
 
+std::string NormalizeDecimal(std::string_view value) {
+  const auto first_nonzero = value.find_first_not_of('0');
+  if (first_nonzero == std::string_view::npos) return "0";
+  return std::string(value.substr(first_nonzero));
+}
+
 bool ParseTransferCoding(std::string_view value, std::vector<std::string>& codings,
                          bool& chunked_parameter) {
   for (const auto element : SplitList(value)) {
@@ -850,7 +856,6 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
   for (const auto value : content_lengths) {
     if (content_length_invalid) break;
     for (const auto item : SplitList(value)) {
-      const auto original_item = std::string(item);
       bool overflow = false;
       const auto parsed = ParseUint64(item, overflow);
       if (!parsed && !overflow) {
@@ -858,12 +863,13 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
         break;
       }
       if (overflow) {
-        if (length || (overflow_value && *overflow_value != original_item)) {
+        const auto normalized_item = NormalizeDecimal(item);
+        if (length || (overflow_value && *overflow_value != normalized_item)) {
           content_length_invalid = true;
           break;
         }
         length_overflow = true;
-        overflow_value = original_item;
+        overflow_value = normalized_item;
       } else {
         if (length_overflow || overflow_value || (length && *length != *parsed)) {
           content_length_invalid = true;
