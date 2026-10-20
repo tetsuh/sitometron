@@ -86,7 +86,7 @@ struct RequestInfo {
 struct HeaderRead {
   enum class Result : std::uint8_t {
     kComplete,
-    kBadVersion,
+    kMalformed,
     kTimeout,
     kClosed,
     kTooLarge
@@ -95,6 +95,31 @@ struct HeaderRead {
   std::size_t end = 0;
   bool head_request = false;
 };
+
+struct HeaderTerminator {
+  std::size_t position = 0;
+  std::size_t size = 0;
+};
+
+std::optional<HeaderTerminator> FindHeaderTerminator(std::string_view bytes) {
+  constexpr std::array<std::string_view, 4> k_terminators = {"\r\n\r\n", "\n\n", "\n\r\n",
+                                                             "\r\n\n"};
+  std::optional<HeaderTerminator> result;
+  for (const auto terminator : k_terminators) {
+    const auto position = bytes.find(terminator);
+    if (position != std::string_view::npos && (!result || position < result->position)) {
+      result = HeaderTerminator{position, terminator.size()};
+    }
+  }
+  return result;
+}
+
+bool HasBareLineEnding(std::string_view bytes, std::size_t end) {
+  for (std::size_t index = 0; index < end; ++index) {
+    if (bytes[index] == '\n' && (index == 0 || bytes[index - 1] != '\r')) return true;
+  }
+  return false;
+}
 
 std::string RewriteHttpVersion(std::string_view version) {
   if (version.size() == 8 && version.starts_with("HTTP/1.") && version.back() >= '2' &&
@@ -972,6 +997,13 @@ ResponseSpec DispatchError(EarlyError error) {
   return ErrorResponse(500, "service", "internal", "the request could not be handled");
 }
 
+ResponseSpec ParserErrorResponse(const ErrorCode& error) {
+  const auto status = error == http::error::header_limit ? 431 : 400;
+  return ErrorResponse(
+      status, "request", status == 431 ? "headers_too_large" : "malformed_request",
+      status == 431 ? "the request headers are too large" : "the request is not valid HTTP");
+}
+
 }  // namespace
 
 struct Server::Impl {
@@ -1023,7 +1055,7 @@ asio::awaitable<bool> WriteResponse(tcp::socket& socket, const ResponseSpec& spe
   co_return !error;
 }
 
-bool RequestLineHasBadVersion(std::string_view bytes, std::size_t line_end) {
+bool RequestLineHasParserError(std::string_view bytes, std::size_t line_end) {
   std::string line(bytes.substr(0, line_end + 1));
   const auto first_space = line.find(' ');
   const auto second_space =
@@ -1068,9 +1100,9 @@ asio::awaitable<HeaderRead> ReadHeader(tcp::socket& socket, const Options& optio
       head_request_checked = true;
     }
 
-    const auto end = bytes.find("\r\n\r\n");
-    if (end != std::string::npos) {
-      if (end + 4 > options.header_limit_bytes) {
+    const auto terminator = FindHeaderTerminator(bytes);
+    if (terminator) {
+      if (terminator->position + terminator->size > options.header_limit_bytes) {
         result.result = HeaderRead::Result::kTooLarge;
         co_return result;
       }
@@ -1082,16 +1114,21 @@ asio::awaitable<HeaderRead> ReadHeader(tcp::socket& socket, const Options& optio
       const auto line_end = bytes.find('\n');
       if (line_end != std::string::npos) {
         request_line_checked = true;
-        if (RequestLineHasBadVersion(bytes, line_end)) {
-          result.result = HeaderRead::Result::kBadVersion;
+        if (line_end == 0 || bytes[line_end - 1] != '\r' ||
+            RequestLineHasParserError(bytes, line_end)) {
+          result.result = HeaderRead::Result::kMalformed;
           co_return result;
         }
       }
     }
-    if (end != std::string::npos) {
+    if (terminator) {
+      if (HasBareLineEnding(bytes, terminator->position + terminator->size)) {
+        result.result = HeaderRead::Result::kMalformed;
+        co_return result;
+      }
       result.result = HeaderRead::Result::kComplete;
       result.bytes = std::move(bytes);
-      result.end = end;
+      result.end = terminator->position;
       co_return result;
     }
     const auto now = std::chrono::steady_clock::now();
@@ -1136,10 +1173,8 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
         head);
     co_return;
   }
-  if (header.result == HeaderRead::Result::kBadVersion) {
-    (void)co_await WriteResponse(
-        socket, ErrorResponse(400, "request", "malformed_request", "the request is not valid HTTP"),
-        head);
+  if (header.result == HeaderRead::Result::kMalformed) {
+    (void)co_await WriteResponse(socket, DispatchError(EarlyError::kMalformed), head);
     co_return;
   }
   if (header.result != HeaderRead::Result::kComplete) co_return;
@@ -1159,13 +1194,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
   parser.put(asio::buffer(request.normalized_header.data(), request.normalized_header.size()),
              parser_error);
   if (parser_error && parser_error != http::error::need_more) {
-    const auto status = parser_error == http::error::header_limit ? 431 : 400;
-    const auto code = status == 431 ? "headers_too_large" : "malformed_request";
-    (void)co_await WriteResponse(socket,
-                                 ErrorResponse(status, "request", code,
-                                               status == 431 ? "the request headers are too large"
-                                                             : "the request is not valid HTTP"),
-                                 head);
+    (void)co_await WriteResponse(socket, ParserErrorResponse(parser_error), head);
     co_return;
   }
 

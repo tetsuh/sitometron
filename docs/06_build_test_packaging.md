@@ -45,7 +45,7 @@ LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the 105-test `dev-linux` baseline. It runs without suppressions using
+CTest-name parity with the 106-test `dev-linux` baseline. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -185,12 +185,13 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `API-004` | CTests `rest_v1_cancel_status_mapping`, `rest_v1_cancel_records_configured_principal` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
 | `API-005` | CTests `rest_v1_validation_before_submission`, `rest_v1_error_envelope_and_codes`, `rest_v1_errors_leak_nothing` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
 | `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_job_routes_not_ready` | Normative under Accepted ADR-0008 under Issue #76; #105 activates health/readiness and transport-gated Job routes, while #106 supplies Job handling |
-| `API-007` | CTests `rest_v1_malformed_request_refused`, `rest_v1_http10_request_answered`, `rest_v1_absolute_form_target`, `rest_v1_targets_without_a_path`, `rest_v1_header_receive_timeout`, `rest_v1_target_too_long`, `rest_v1_headers_too_large`, `rest_v1_unknown_transfer_coding`, `rest_v1_transfer_encoding_with_content_length_refused` (Section 1); `rest_v1_body_bound_after_routing`, `rest_v1_body_receive_timeout` (Section 2); `rest_v1_create_serialized`, `rest_v1_already_pending_is_busy` (Section 3); `rest_v1_query_refused` (Section 4); `rest_v1_create_without_body` (Section 5); `rest_v1_unlisted_methods_refused` (Section 6); `rest_v1_error_details_empty` (Section 7); `rest_v1_json_rejects_raw_nul`, `rest_v1_json_rejects_invalid_utf8`, `rest_v1_json_rejects_trailing_data`, `rest_v1_json_rejects_duplicate_keys_at_any_depth` (Section 8); `rest_v1_registered_application_id_form` (Section 9); `rest_v1_cancel_body` (Section 10) of ADR-0009 | Normative under Accepted ADR-0009 under Issue #86; Issue #105 activates its Section 1, 2, 4, 6, and 7 names; #106 activates the remaining names |
+| `API-007` | CTests `rest_v1_malformed_request_refused`, `rest_v1_bare_lf_refused`, `rest_v1_http10_request_answered`, `rest_v1_absolute_form_target`, `rest_v1_targets_without_a_path`, `rest_v1_header_receive_timeout`, `rest_v1_target_too_long`, `rest_v1_headers_too_large`, `rest_v1_unknown_transfer_coding`, `rest_v1_transfer_encoding_with_content_length_refused` (Section 1); `rest_v1_body_bound_after_routing`, `rest_v1_body_receive_timeout` (Section 2); `rest_v1_create_serialized`, `rest_v1_already_pending_is_busy` (Section 3); `rest_v1_query_refused` (Section 4); `rest_v1_create_without_body` (Section 5); `rest_v1_unlisted_methods_refused` (Section 6); `rest_v1_error_details_empty` (Section 7); `rest_v1_json_rejects_raw_nul`, `rest_v1_json_rejects_invalid_utf8`, `rest_v1_json_rejects_trailing_data`, `rest_v1_json_rejects_duplicate_keys_at_any_depth` (Section 8); `rest_v1_registered_application_id_form` (Section 9); `rest_v1_cancel_body` (Section 10) of ADR-0009 | Normative under Accepted ADR-0009 under Issue #86; Issue #105 activates its Section 1, 2, 4, 6, and 7 names; #106 activates the remaining names |
 
 Issue #105 additionally gives each adapter-owned `400 malformed_request` refusal its own CTest entry:
 
 | Adapter-owned refusal | RFC authority | CTest |
 |---|---|---|
+| A bare LF line ending in the request line, a field line, or the terminating empty line (the adapter does not exercise the RFC 9112 Section 2.2 option to recognize LF alone) | RFC 9112 Section 2.2 | `rest_v1_bare_lf_refused` |
 | Invalid request-target form (not origin-form, absolute-form, asterisk-form, or authority-form) | RFC 9112 Sections 3.1-3.2; RFC 9110 Section 7.1 | `rest_v1_invalid_request_target_refused` |
 | CONNECT authority-form with an empty or out-of-range port (port `0` and leading-zero forms are accepted when their numeric value is at most `65535`) | RFC 9110 Section 9.3.6 | `rest_v1_invalid_request_target_refused` |
 | Missing Host field in HTTP/1.1 | RFC 9112 Section 3.2 | `rest_v1_missing_host_refused` |

@@ -472,6 +472,7 @@ if(SITOMETRON_BUILD_TESTS)
         rest_v1_job_routes_not_ready
         rest_v1_health_and_readiness
         rest_v1_malformed_request_refused
+        rest_v1_bare_lf_refused
         rest_v1_obs_fold_refused
         rest_v1_http10_request_answered
         rest_v1_absolute_form_target

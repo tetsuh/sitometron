@@ -104,14 +104,16 @@ constexpr auto k_process_timeout = std::chrono::milliseconds(15000);
 
 class TimedSocket final {
  public:
-  explicit TimedSocket(boost::asio::io_context& context) : context_(context), socket_(context) {}
+  explicit TimedSocket(boost::asio::io_context& context,
+                       std::chrono::steady_clock::duration timeout = k_network_timeout)
+      : context_(context), socket_(context), timeout_(timeout) {}
 
   bool Connect(std::uint16_t port) {
     bool completed = false;
     bool timed_out = false;
     boost::system::error_code operation_error;
     boost::asio::steady_timer timer(context_);
-    timer.expires_after(k_network_timeout);
+    timer.expires_after(timeout_);
     timer.async_wait([&](const boost::system::error_code& error) {
       if (!error && !completed) {
         timed_out = true;
@@ -137,7 +139,7 @@ class TimedSocket final {
     bool timed_out = false;
     boost::system::error_code operation_error;
     boost::asio::steady_timer timer(context_);
-    timer.expires_after(k_network_timeout);
+    timer.expires_after(timeout_);
     timer.async_wait([&](const boost::system::error_code& error) {
       if (!error && !completed) {
         timed_out = true;
@@ -164,7 +166,7 @@ class TimedSocket final {
     bool completed = false;
     bool timed_out = false;
     boost::asio::steady_timer timer(context_);
-    timer.expires_after(k_network_timeout);
+    timer.expires_after(timeout_);
     timer.async_wait([&](const boost::system::error_code& error) {
       if (!error && !completed) {
         timed_out = true;
@@ -202,6 +204,7 @@ class TimedSocket final {
  private:
   boost::asio::io_context& context_;
   boost::asio::ip::tcp::socket socket_;
+  std::chrono::steady_clock::duration timeout_;
   bool timed_out_ = false;
 };
 
@@ -230,7 +233,8 @@ bool ReadUntilPrefix(TimedSocket& socket, std::string& bytes, std::string_view p
   return bytes.starts_with(prefix);
 }
 
-Response Send(Backend& backend, Options options, const std::string& request) {
+Response Send(Backend& backend, Options options, const std::string& request,
+              std::chrono::steady_clock::duration timeout = k_network_timeout) {
   options.listen_port = 0;
   Server server(std::move(options), backend);
   std::string error;
@@ -239,7 +243,7 @@ Response Send(Backend& backend, Options options, const std::string& request) {
     return {};
   }
   boost::asio::io_context context;
-  TimedSocket socket(context);
+  TimedSocket socket(context, timeout);
   std::string bytes;
   if (socket.Connect(server.port()) && socket.Write(request)) ReadUntilClose(socket, bytes);
   socket.Close();
@@ -608,6 +612,35 @@ int MalformedRequest() {
   result |= ExpectError(
       Send(backend, Options{}, "GET /v1/health HTTP/1.1 extra\r\nHost: loopback\r\n\r\n"),
       "rest_v1_malformed_request_refused", 400, "request", "malformed_request");
+  return result;
+}
+
+int BareLfRefused() {
+  FakeBackend backend;
+  Options options;
+  options.header_timeout_ms = 5000;
+  const auto expect_malformed = [&](const std::string& request, std::string_view case_name) {
+    const auto started = std::chrono::steady_clock::now();
+    const auto response = Send(backend, options, request, std::chrono::milliseconds(500));
+    int check =
+        ExpectError(response, "rest_v1_bare_lf_refused", 400, "request", "malformed_request");
+    check |=
+        Check(std::chrono::steady_clock::now() - started < std::chrono::seconds(1),
+              "rest_v1_bare_lf_refused", std::string(case_name) + " waited for the header timeout");
+    return check;
+  };
+  int result =
+      expect_malformed("GET /v1/health HTTP/1.1\nHost: loopback\n\n", "LF-terminated request");
+  result |=
+      expect_malformed("GET /v1/health HTTP/1.1\r\nHost: loopback\n\n", "LF-terminated field");
+  result |= expect_malformed("GET /v1/health HTTP/1.1\r\nHost: loopback\r\n\n",
+                             "LF-terminated empty line");
+
+  const auto head_lf = Send(backend, options, "HEAD /v1/health HTTP/1.1\nHost: loopback\n\n",
+                            std::chrono::milliseconds(500));
+  result |= ExpectStatus(head_lf, "rest_v1_bare_lf_refused", 400);
+  result |=
+      Check(head_lf.body.empty(), "rest_v1_bare_lf_refused", "HEAD malformed response has content");
   return result;
 }
 
@@ -1938,6 +1971,7 @@ int Run(std::string_view name, const std::string& sitometrond_path) {
   if (name == "rest_v1_job_routes_not_ready") return JobRoutesNotReady();
   if (name == "rest_v1_health_and_readiness") return HealthAndReadiness();
   if (name == "rest_v1_malformed_request_refused") return MalformedRequest();
+  if (name == "rest_v1_bare_lf_refused") return BareLfRefused();
   if (name == "rest_v1_http10_request_answered") return Http10Answered();
   if (name == "rest_v1_absolute_form_target") return AbsoluteForm();
   if (name == "rest_v1_targets_without_a_path") return TargetsWithoutPath();
