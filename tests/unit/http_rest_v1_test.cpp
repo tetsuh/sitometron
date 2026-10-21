@@ -538,6 +538,9 @@ int HealthAndReadiness() {
   int result =
       ExpectStatus(Send(backend, Options{}, HealthRequest()), "rest_v1_health_and_readiness", 200);
 
+  result |= ExpectStatus(Send(backend, Options{}, "GET /v1/health HTTP/1.1\r\nHost: :80\r\n\r\n"),
+                         "rest_v1_health_and_readiness [Host: :80]", 200);
+
   Options large_prefix_options;
   const auto leading_empty_lines =
       std::string(large_prefix_options.combined_request_limit_bytes + 1, '\n');
@@ -693,6 +696,18 @@ int AbsoluteForm() {
       Case{"http://example.test/v1/health", "loopback", 200},
       Case{"http://example.test", "loopback", 404},
       Case{"http://example.test?q", "loopback", 404},
+      Case{"Http://example.test/v1/health", "loopback", 200},
+      Case{"Http://example.test/v1/health", "", 400},
+      Case{"foo:///v1/health", "loopback", 200},
+      Case{"foo:///v1/health", "", 200},
+      Case{"foo://:80/v1/health", "loopback", 200},
+      Case{"foo://:80/v1/health", "", 200},
+      Case{"foo://user@/v1/health", "loopback", 200},
+      Case{"foo://user@/v1/health", "", 200},
+      Case{"foo://", "loopback", 404},
+      Case{"foo://", "", 404},
+      Case{"foo://?q", "loopback", 404},
+      Case{"foo://?q", "", 404},
       Case{"foo:/v1/health", "loopback", 200},
       Case{"foo:/v1/missing", "loopback", 404},
       Case{"foo:v1/health", "loopback", 404},
@@ -778,6 +793,35 @@ int HeadersTooLarge() {
                             "rest_v1_headers_too_large", 200);
   result |= ExpectError(Send(backend, options, leading_empty_lines + over_header),
                         "rest_v1_headers_too_large", 431, "request", "headers_too_large");
+  struct Case {
+    std::string_view framing;
+    std::string_view body;
+  };
+  constexpr std::array cases = {
+      Case{"Content-Length:0", ""},
+      Case{"Content-Length:1", "x"},
+      Case{"Transfer-Encoding:chunked", "0\r\n\r\n"},
+      Case{"Content-Length: 0", ""},
+      Case{"Content-Length: 1", "x"},
+      Case{"Transfer-Encoding: chunked", "0\r\n\r\n"},
+  };
+  for (const auto& test_case : cases) {
+    const auto name =
+        std::string("rest_v1_headers_too_large [") + std::string(test_case.framing) + "]";
+    const auto prefix = std::string("POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\n") +
+                        "Content-Type: application/json\r\n" + std::string(test_case.framing) +
+                        "\r\nX-Fill: ";
+    const auto padding =
+        static_cast<std::size_t>(options.header_limit_bytes) - prefix.size() - header_suffix.size();
+    auto header = prefix;
+    header.append(padding, 'a').append(header_suffix);
+    result |= ExpectError(Send(backend, options, header + std::string(test_case.body)), name, 503,
+                          "service", "not_ready");
+    auto too_large = prefix;
+    too_large.append(padding + 1, 'a').append(header_suffix);
+    result |= ExpectError(Send(backend, options, too_large + std::string(test_case.body)),
+                          name + " over limit", 431, "request", "headers_too_large");
+  }
   return result;
 }
 
@@ -1359,8 +1403,8 @@ int InvalidTarget() {
   result |=
       ExpectError(Send(backend, Options{}, HealthRequest("CONNECT", "[:::]:443")),
                   "rest_v1_invalid_request_target_refused", 400, "request", "malformed_request");
-  for (const auto& target :
-       {"example.test:", "[::1]:", "example.test:65536", "[::1]:9999999999999999999999999"}) {
+  for (const auto& target : {":443", "example.test:", "[::1]:", "example.test:65536",
+                             "[::1]:9999999999999999999999999"}) {
     result |=
         ExpectError(Send(backend, Options{}, HealthRequest("CONNECT", target)),
                     "rest_v1_invalid_request_target_refused", 400, "request", "malformed_request");
@@ -1369,6 +1413,18 @@ int InvalidTarget() {
     result |=
         ExpectError(Send(backend, Options{}, HealthRequest("CONNECT", target)),
                     "rest_v1_invalid_request_target_refused", 404, "request", "route_not_found");
+  }
+  for (const auto target :
+       {"http:/v1/health", "http:v1/health", "http:", "https:?q", "http:///v1/health",
+        "http://user@/v1/health", "http://:80/v1/health", "HTTP:/v1/health", "1foo:/v1/health",
+        "foo:/v1/health%GG", "foo:v1/health%GG", "foo:?q=%GG"}) {
+    for (const auto host : {"loopback", ""}) {
+      const auto name = std::string("rest_v1_invalid_request_target_refused [") + target +
+                        ", Host: " + host + "]";
+      const auto request = std::string("GET ") + target + " HTTP/1.1\r\nHost: " + host + "\r\n\r\n";
+      result |=
+          ExpectError(Send(backend, Options{}, request), name, 400, "request", "malformed_request");
+    }
   }
   return result;
 }

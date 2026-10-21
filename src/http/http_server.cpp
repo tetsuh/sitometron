@@ -63,7 +63,7 @@ struct TargetInfo {
   TargetKind kind = TargetKind::kOrigin;
   std::string path;
   bool has_query = false;
-  bool has_authority = false;
+  bool has_authority_host = false;
 };
 
 struct RequestInfo {
@@ -393,8 +393,9 @@ bool IsValidIpLiteral(std::string_view value) {
 
 bool IsValidUriHost(std::string_view value) { return IsValidRegName(value); }
 
-bool IsValidAuthority(std::string_view value, bool require_port, bool allow_userinfo) {
-  if (value.empty()) return false;
+bool IsValidAuthority(std::string_view value, bool require_port, bool allow_userinfo,
+                      bool allow_empty_host) {
+  if (value.empty()) return allow_empty_host && !require_port;
   const auto at = value.rfind('@');
   if (at != std::string_view::npos) {
     if (!allow_userinfo) return false;
@@ -407,7 +408,7 @@ bool IsValidAuthority(std::string_view value, bool require_port, bool allow_user
     }
     value.remove_prefix(at + 1);
   }
-  if (value.empty()) return false;
+  if (value.empty()) return allow_empty_host && !require_port;
 
   std::string_view host;
   std::string_view port;
@@ -433,7 +434,7 @@ bool IsValidAuthority(std::string_view value, bool require_port, bool allow_user
     } else {
       host = value;
     }
-    if (!IsValidUriHost(host)) return false;
+    if (!(allow_empty_host && host.empty()) && !IsValidUriHost(host)) return false;
   }
   if (value.front() == '[' && host.empty()) return false;
   if (require_port && !has_port) return false;
@@ -442,10 +443,10 @@ bool IsValidAuthority(std::string_view value, bool require_port, bool allow_user
                              [](char character) { return character >= '0' && character <= '9'; });
 }
 
-bool IsValidHost(std::string_view value, bool target_has_authority) {
+bool IsValidHost(std::string_view value, bool target_has_host) {
   value = TrimOws(value);
-  if (value.empty()) return !target_has_authority;
-  return IsValidAuthority(value, false, false);
+  if (value.empty()) return !target_has_host;
+  return IsValidAuthority(value, false, false, true);
 }
 
 bool IsValidScheme(std::string_view value) {
@@ -503,7 +504,7 @@ std::optional<TargetInfo> ParseTarget(TargetInput input) {
     return TargetInfo{TargetKind::kNoPath, {}, false, false};
   }
   if (method == "CONNECT") {
-    if (!IsValidAuthority(target, true, false)) return std::nullopt;
+    if (!IsValidAuthority(target, true, false, false)) return std::nullopt;
     std::size_t port_separator = std::string_view::npos;
     if (target.front() == '[') {
       const auto close = target.find(']');
@@ -530,10 +531,12 @@ std::optional<TargetInfo> ParseTarget(TargetInput input) {
       colon != std::string_view::npos &&
       (first_path_delimiter == std::string_view::npos || colon < first_path_delimiter);
   if (is_absolute) {
-    if (!IsValidScheme(target.substr(0, colon))) return std::nullopt;
+    const auto scheme = Lower(target.substr(0, colon));
+    if (!IsValidScheme(scheme)) return std::nullopt;
+    const bool requires_host = scheme == "http" || scheme == "https";
     const auto hier_part = target.substr(colon + 1);
     if (!hier_part.starts_with("//")) {
-      if (!IsValidPathAndQuery(hier_part)) return std::nullopt;
+      if (requires_host || !IsValidPathAndQuery(hier_part)) return std::nullopt;
       const auto query = hier_part.find('?');
       const auto path = hier_part.substr(0, query);
       return TargetInfo{TargetKind::kAbsolute, path.empty() ? "/" : std::string(path),
@@ -544,18 +547,22 @@ std::optional<TargetInfo> ParseTarget(TargetInput input) {
     const auto authority = target.substr(authority_begin, path_begin == std::string_view::npos
                                                               ? std::string_view::npos
                                                               : path_begin - authority_begin);
-    if (!IsValidAuthority(authority, false, true)) return std::nullopt;
+    if (!IsValidAuthority(authority, false, true, !requires_host)) return std::nullopt;
+    auto host_port = authority;
+    if (const auto at = host_port.rfind('@'); at != std::string_view::npos)
+      host_port.remove_prefix(at + 1);
+    const bool has_host = !host_port.empty() && !host_port.starts_with(':');
     if (path_begin == std::string_view::npos)
-      return TargetInfo{TargetKind::kAbsolute, "/", false, true};
+      return TargetInfo{TargetKind::kAbsolute, "/", false, has_host};
     if (target[path_begin] == '?') {
       if (!IsValidPathAndQuery(target.substr(path_begin))) return std::nullopt;
-      return TargetInfo{TargetKind::kAbsolute, "/", true, true};
+      return TargetInfo{TargetKind::kAbsolute, "/", true, has_host};
     }
     const auto path = target.substr(path_begin);
     if (!IsValidPathAndQuery(path)) return std::nullopt;
     const auto query = path.find('?');
     return TargetInfo{TargetKind::kAbsolute, std::string(path.substr(0, query)),
-                      query != std::string_view::npos, true};
+                      query != std::string_view::npos, has_host};
   }
   if (target.empty() || target.front() != '/' || !IsValidPathAndQuery(target)) return std::nullopt;
   const auto query = target.find('?');
@@ -876,7 +883,7 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
     return request;
   }
   if (host_count == 1 &&
-      !IsValidHost(HeaderValue(request, "host"), request.target_info.has_authority)) {
+      !IsValidHost(HeaderValue(request, "host"), request.target_info.has_authority_host)) {
     error = EarlyError::kMalformed;
     return request;
   }
@@ -970,9 +977,9 @@ RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Op
         std::string_view(request.normalized_header).substr(line_start, line_end - line_start);
     if (normalized_line.empty()) {
       if (canonical_content_length) {
-        rebuilt.append("Content-Length: ").append(*canonical_content_length).append("\r\n");
+        rebuilt.append("Content-Length:").append(*canonical_content_length).append("\r\n");
       }
-      if (request.chunked) rebuilt.append("Transfer-Encoding: chunked\r\n");
+      if (request.chunked) rebuilt.append("Transfer-Encoding:chunked\r\n");
       rebuilt.append("\r\n");
     } else {
       const auto colon = normalized_line.find(':');
