@@ -45,7 +45,7 @@ LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the 106-test `dev-linux` baseline. It runs without suppressions using
+CTest-name parity with the 130-test `dev-linux` suite. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -187,9 +187,18 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_not_ready_refuses_writes` | Normative under Accepted ADR-0008 under Issue #76; #105 activates health/readiness; `rest_v1_not_ready_refuses_writes` remains Planned for Issue #106 |
 | `API-007` | CTests `rest_v1_malformed_request_refused`, `rest_v1_bare_lf_refused`, `rest_v1_http10_request_answered`, `rest_v1_absolute_form_target`, `rest_v1_targets_without_a_path`, `rest_v1_header_receive_timeout`, `rest_v1_target_too_long`, `rest_v1_headers_too_large`, `rest_v1_unknown_transfer_coding`, `rest_v1_transfer_encoding_with_content_length_refused` (Section 1); `rest_v1_body_bound_after_routing`, `rest_v1_body_receive_timeout` (Section 2); `rest_v1_create_serialized`, `rest_v1_already_pending_is_busy` (Section 3); `rest_v1_query_refused` (Section 4); `rest_v1_create_without_body` (Section 5); `rest_v1_unlisted_methods_refused` (Section 6); `rest_v1_error_details_empty` (Section 7); `rest_v1_json_rejects_raw_nul`, `rest_v1_json_rejects_invalid_utf8`, `rest_v1_json_rejects_trailing_data`, `rest_v1_json_rejects_duplicate_keys_at_any_depth` (Section 8); `rest_v1_registered_application_id_form` (Section 9); `rest_v1_cancel_body` (Section 10) of ADR-0009 | Normative under Accepted ADR-0009 under Issue #86; Issue #105 activates its Section 1, 2, 4, 6, and 7 names; #106 activates the remaining names |
 
+Issue #106 registers the remaining 21 frozen API check names and additionally registers
+`rest_v1_json_rejects_leading_bom`, `rest_v1_json_rejects_lone_surrogate`, and
+`rest_v1_sitometrond_empty_registry`. The HTTP-enabled suite therefore has 130 names; HTTP-off
+retains 69. Registration during intentional RED does not claim that the Job routes are implemented
+or that the new checks pass. The implementation and Active-status updates follow the recorded RED
+run. The historical `rest_v1_job_routes_not_ready` name is retained, not replaced by the distinct
+readiness-write check.
+
 Issue #105 separately activates `rest_v1_job_routes_not_ready` as an interim transport check. Its
-Phase 1 Job-route `503 service/not_ready` response is not part of the REST v1 contract. The Planned
-`rest_v1_not_ready_refuses_writes` check is not registered as a CTest until Issue #106 implements it.
+Phase 1 Job-route `503 service/not_ready` response is not part of the REST v1 contract. The distinct
+`rest_v1_not_ready_refuses_writes` check is registered during Issue #106 RED; passing activation
+requires the Job-route implementation.
 
 Issue #105 additionally gives each adapter-owned `400 malformed_request` refusal its own CTest entry:
 
@@ -215,6 +224,30 @@ adapter must not duplicate those cases. After the adapter's checks, it hands Bea
 `Transfer-Encoding: chunked` line. The adapter-owned list above was established by the RED probe
 against the pinned Beast source and header parser behavior; a final report records the exact probe
 command and representative output.
+
+Issue #106's JSON tests establish these additional adapter-owned `400 request/malformed_json`
+refusals. ADR-0011 Section 2 requires the adapter to close only the pinned library's leniencies:
+
+| Adapter-owned JSON refusal | Authority | CTest |
+|---|---|---|
+| A raw NUL anywhere in the complete decoded body, including after a valid value | ADR-0009 Section 8; ADR-0011 Section 2 | `rest_v1_json_rejects_raw_nul` |
+| Duplicate decoded keys in the same object at any depth, including objects in arrays | ADR-0009 Section 8; ADR-0011 Section 2 | `rest_v1_json_rejects_duplicate_keys_at_any_depth` |
+| An initial UTF-8 byte-order mark | ADR-0011 Sections 2 and 4 | `rest_v1_json_rejects_leading_bom` |
+
+The pinned nlohmann-json 3.12.0#2 library owns syntax, invalid UTF-8
+(`rest_v1_json_rejects_invalid_utf8`), trailing non-whitespace
+(`rest_v1_json_rejects_trailing_data`), and the escaped lone-surrogate narrowing
+(`rest_v1_json_rejects_lone_surrogate`, ADR-0011 Section 3). The named
+`library-number-overflow-406` vector in `rest_v1_validation_before_submission` maps parse-time
+exception 406 for `1e1000` to `400 malformed_json`, like every library parse error; it adds no
+adapter number checker. Escaped U+0000 and a BOM inside a string remain valid JSON and reach
+validation. The explicit-byte-range probe observed exactly three library-accepted malformed
+classes: raw-NUL termination, duplicate keys, and a leading BOM. No custom UTF-8, trailing-data,
+or surrogate scanner is authorized by these tests.
+
+Validation, including `422 job/unknown_application`, precedes writer submission even while
+admission is closed. Only a registered test-only create reaches the writer's `not_ready` or
+`service_failed` result. `rest_v1_not_ready_refuses_writes` records both arms of that ordering.
 
 A `HEAD` response carries the status and headers of the `GET`-equivalent response and no content
 (RFC 9110 Section 9.3.2).

@@ -27,20 +27,34 @@
 #include <boost/asio/write.hpp>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <functional>
 #include <iostream>
+#include <iterator>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
+#include <regex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "apps/sitometrond/composition.hpp"
+#include "core_fakes.hpp"
+#include "job_orchestrator.hpp"
+#include "reducer_snapshot_json.hpp"
 #include "sitometron/http/server.hpp"
 #include "sitometron/journal/segment_journal.hpp"
 
@@ -1195,7 +1209,7 @@ struct HeadRefusalVector {
   const char* get_code = "";
 };
 
-int CheckHeadRefusalVector(FakeBackend& backend, const HeadRefusalVector& vector) {
+int CheckHeadRefusalVector(Backend& backend, const HeadRefusalVector& vector) {
   const auto send = [&](const std::string& request) {
     return vector.partial ? SendPartial(backend, vector.options, request)
                           : Send(backend, vector.options, request);
@@ -2079,7 +2093,1724 @@ int SitometrondOptions() {
   return result;
 }
 
+namespace job_routes {
+
+namespace core = sitometron::core;
+namespace internal = core::internal;
+using Json = nlohmann::json;
+
+constexpr std::string_view k_application = "app";
+constexpr std::string_view k_principal = "configured-operator";
+constexpr std::string_view k_unknown_id = "00000000-0000-7000-8000-000000000000";
+
+Json ReadJsonFile(std::string_view relative) {
+  std::ifstream input(std::filesystem::path(SITOMETRON_TEST_SOURCE_DIR) / relative);
+  if (!input) throw std::runtime_error("test contract file could not be opened");
+  return Json::parse(input);
+}
+
+core::Snapshot StateFixture(std::string_view state) {
+  static const auto vectors = ReadJsonFile("schemas/core/v1/job-reducer-vectors.json");
+  for (const auto& vector : vectors.at("case_vectors")) {
+    const auto& snapshot = vector.at("initial_snapshot");
+    if (snapshot.is_object() && snapshot.at("state") == state)
+      return sitometron::test::SnapshotFrom(snapshot);
+  }
+  throw std::runtime_error("state fixture is missing");
+}
+
+std::string GeneratedId(std::size_t index) {
+  constexpr std::array suffixes = {"f0", "01", "b0", "02", "a0", "03", "90", "04"};
+  auto id = std::string(k_job_id);
+  id.replace(id.size() - 2, 2, suffixes.at(index));
+  return id;
+}
+
+std::string JobPath(std::string_view id = k_unknown_id, bool cancel = false) {
+  auto path = std::string("/v1/jobs/");
+  path.append(id);
+  if (cancel) path.append("/cancel");
+  return path;
+}
+
+std::string CreateBody(std::string_view id = k_application) {
+  return Json{{"application_id", id}}.dump();
+}
+
+std::string Request(std::string_view method, std::string_view target,
+                    std::optional<std::string> body = std::nullopt,
+                    std::optional<std::string> media = "application/json",
+                    std::string_view extra_headers = {}) {
+  std::string request;
+  request.append(method).append(" ").append(target).append(" HTTP/1.1\r\nHost: loopback\r\n");
+  if (body) {
+    if (media) request.append("Content-Type: ").append(*media).append("\r\n");
+    request.append("Content-Length: ").append(std::to_string(body->size())).append("\r\n");
+  }
+  request.append(extra_headers).append("\r\n");
+  if (body) request.append(*body);
+  return request;
+}
+
+int RestError(const Response& response, std::string_view name, int status, std::string_view domain,
+              const char* code) {
+  int result = ExpectError(response, name, status, domain, code);
+  const auto media = response.headers.find("content-type");
+  result |= Check(media != response.headers.end() && media->second == "application/json", name,
+                  "error Content-Type is not application/json");
+  result |= Check(response.headers.find("location") == response.headers.end(), name,
+                  "error response has Location");
+  result |= Check(response.version == "HTTP/1.1", name, "error response version mismatch");
+  try {
+    const auto parsed = Json::parse(response.body);
+    const auto& error = parsed.at("error");
+    result |= Check(error.at("domain").is_string() && error.at("code").is_string() &&
+                        error.at("message").is_string() && error.at("details") == Json::object(),
+                    name, "error envelope field types or empty details mismatch");
+  } catch (...) {
+    result |= Check(false, name, "response is not a complete JSON error envelope");
+  }
+  return result;
+}
+
+int JobResponse(const Response& response, std::string_view name, int status,
+                const core::Snapshot& snapshot) {
+  int result = ExpectStatus(response, name, status);
+  if (response.status != status) return result;
+  const auto state = std::string(core::ToString(snapshot.state));
+  const bool terminal = core::IsTerminalState(snapshot.state);
+  try {
+    const auto body = Json::parse(response.body);
+    result |= Check(body.at("job_id") == snapshot.job_id.value && body.at("state") == state &&
+                        body.at("terminal") == terminal &&
+                        body.at("outcome") == (terminal ? Json(state) : Json(nullptr)),
+                    name, "Job differs from the committed snapshot");
+    result |= Check(response.headers.at("content-type") == "application/json", name,
+                    "Job Content-Type mismatch");
+  } catch (...) {
+    result |= Check(false, name, "Job resource is missing or has wrong types");
+  }
+  return result;
+}
+
+// Metadata for the test-only registry, not an application runner or a daemon registration option.
+struct TestRegistry {
+  explicit TestRegistry(std::vector<std::string> values) : identifiers(std::move(values)) {
+    for (const auto& id : identifiers) {
+      const auto alnum = [](unsigned char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+      };
+      if (id.empty() || id.size() > 128 || !alnum(static_cast<unsigned char>(id.front())) ||
+          !std::ranges::all_of(id, [&](unsigned char c) {
+            return alnum(c) || c == '.' || c == '_' || c == ':' || c == '-';
+          }))
+        throw std::invalid_argument("invalid test Application identifier");
+    }
+  }
+  std::vector<std::string> identifiers;
+};
+
+class Signal final {
+ public:
+  enum class Port : std::uint8_t { kNone, kIdentity, kCommit };
+  void Hold(Port port) {
+    std::lock_guard lock(mutex_);
+    port_ = port;
+    entered_ = false;
+    released_ = false;
+    responses_ = 0;
+  }
+  bool Enter(Port port) {
+    std::unique_lock lock(mutex_);
+    if (port != port_) return true;
+    entered_ = true;
+    cv_.notify_all();
+    return cv_.wait_for(lock, k_network_timeout, [&] { return released_; });
+  }
+  void ResponseFinished() {
+    std::lock_guard lock(mutex_);
+    ++responses_;
+    cv_.notify_all();
+  }
+  bool WaitForEntryOrResponse() {
+    std::unique_lock lock(mutex_);
+    const bool woke =
+        cv_.wait_for(lock, k_network_timeout, [&] { return entered_ || responses_ != 0; });
+    return woke && entered_ && responses_ == 0;
+  }
+  void Release() {
+    std::lock_guard lock(mutex_);
+    released_ = true;
+    port_ = Port::kNone;
+    cv_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  Port port_ = Port::kNone;
+  bool entered_ = false;
+  bool released_ = false;
+  std::size_t responses_ = 0;
+};
+
+class Identity final : public core::IdentitySourcePort {
+ public:
+  explicit Identity(Signal& signal) : signal_(signal), fake_(Jobs(), Workers(), Launches()) {}
+  core::JobSessionIdentityResult GenerateJobSessionIdentity() override {
+    ++calls;
+    const auto active = ++active_;
+    auto maximum = max_active.load();
+    while (maximum < active && !max_active.compare_exchange_weak(maximum, active)) {
+    }
+    if (!signal_.Enter(Signal::Port::kIdentity)) return core::IdentitySourceExhausted{};
+    std::lock_guard lock(mutex_);
+    return fake_.GenerateJobSessionIdentity();
+  }
+  core::WorkerIdentityResult GenerateWorkerIdentity() override {
+    ++calls;
+    std::lock_guard lock(mutex_);
+    return fake_.GenerateWorkerIdentity();
+  }
+  core::LaunchOperationIdentityResult GenerateLaunchOperationIdentity() override {
+    ++calls;
+    --active_;
+    std::lock_guard lock(mutex_);
+    return fake_.GenerateLaunchOperationIdentity();
+  }
+  std::atomic_size_t calls{0};
+  std::atomic_size_t max_active{0};
+
+ private:
+  static std::vector<core::JobSessionIdentityResult> Jobs() {
+    std::vector<core::JobSessionIdentityResult> result;
+    for (std::size_t index = 0; index < 8; ++index)
+      result.emplace_back(core::GeneratedJobSessionIdentity{core::Uuid{GeneratedId(index)}});
+    return result;
+  }
+  static std::vector<core::WorkerIdentityResult> Workers() {
+    std::vector<core::WorkerIdentityResult> result;
+    for (std::size_t index = 0; index < 8; ++index) {
+      auto id = std::string("550e8400-e29b-41d4-a716-446655440000");
+      id.back() = static_cast<char>('0' + index);
+      result.emplace_back(core::GeneratedWorkerIdentity{core::Uuid{std::move(id)}});
+    }
+    return result;
+  }
+  static std::vector<core::LaunchOperationIdentityResult> Launches() {
+    std::vector<core::LaunchOperationIdentityResult> result;
+    for (std::size_t index = 0; index < 8; ++index)
+      result.emplace_back(core::GeneratedLaunchOperationIdentity{
+          core::StableId{std::string("launch-op-").append(std::to_string(index))}});
+    return result;
+  }
+  Signal& signal_;
+  std::mutex mutex_;
+  sitometron::test::FakeIdentitySource fake_;
+  std::atomic_size_t active_{0};
+};
+
+// A passive, gated port: records attempts, supplies a result, and never re-enters ingress.
+class Journal final : public core::JobJournalPort {
+ public:
+  explicit Journal(Signal& signal) : signal_(signal) { attempts_.reserve(128); }
+  core::LogicalCommitResult Commit(const core::LogicalJobEvent& event) noexcept override {
+    try {
+      if (!signal_.Enter(Signal::Port::kCommit)) return core::LogicalCommitResult::kDefiniteFailure;
+      std::lock_guard lock(mutex_);
+      attempts_.push_back(event);
+      return result_;
+    } catch (...) {
+      return core::LogicalCommitResult::kDefiniteFailure;
+    }
+  }
+  void Result(core::LogicalCommitResult result) {
+    std::lock_guard lock(mutex_);
+    result_ = result;
+  }
+  std::vector<core::LogicalJobEvent> Attempts() const {
+    std::lock_guard lock(mutex_);
+    return attempts_;
+  }
+
+ private:
+  Signal& signal_;
+  mutable std::mutex mutex_;
+  std::vector<core::LogicalJobEvent> attempts_;
+  core::LogicalCommitResult result_ = core::LogicalCommitResult::kCommitted;
+};
+
+class Effects final : public core::ApplicationRunnerPort, public core::SessionRetainerPort {
+ public:
+  void HandoffLaunch(core::ApplicationLaunchRequest&&) noexcept override { ++launches; }
+  void HandoffCooperativeStop(core::ApplicationStopRequest&&) noexcept override { ++stops; }
+  void HandoffForcedStop(core::ApplicationStopRequest&&) noexcept override { ++stops; }
+  void HandoffRetainSameIdentity(core::SessionRetainRequest&&) noexcept override { ++retains; }
+  std::atomic_size_t launches{0};
+  std::atomic_size_t stops{0};
+  std::atomic_size_t retains{0};
+};
+
+class ReadinessOnlyBackend final : public Backend {
+ public:
+  explicit ReadinessOnlyBackend(internal::JobOrchestrator& writer) : writer_(writer) {}
+  Readiness GetReadiness() override {
+    Readiness result;
+    result.ready = writer_.ready();
+    if (writer_.failed()) result.reasons.push_back({"service_failed", {}});
+    std::vector<std::string> unresolved;
+    for (const auto& id : writer_.unresolved()) unresolved.push_back(id.value);
+    if (!unresolved.empty()) result.reasons.push_back({"unresolved_jobs", std::move(unresolved)});
+    if (!result.ready && result.reasons.empty()) result.reasons.push_back({"shutting_down", {}});
+    return result;
+  }
+
+ private:
+  internal::JobOrchestrator& writer_;
+};
+
+struct ScenarioOptions {
+  std::vector<core::Snapshot> seeds;
+  std::vector<std::string> applications{std::string(k_application)};
+  std::size_t max_jobs = 4;
+  bool unresolved = false;
+};
+
+class Scenario final {
+ public:
+  explicit Scenario(const ScenarioOptions& options = {})
+      : identity(signal), journal(signal), registry(options.applications) {
+    internal::Config config;
+    config.max_jobs = options.max_jobs;
+    config.normal_capacity = 2;
+    config.trace_capacity = 1024;
+    config.completion_capacity = 128;
+    config.handoff_capacity = 64;
+    config.ack_capacity = 128;
+    config.callback_registration_capacity = 16;
+    config.replayed_jobs = options.seeds;
+    if (options.unresolved)
+      for (const auto& snapshot : options.seeds) config.unresolved_jobs.push_back(snapshot.job_id);
+    config.ports = {&clock, &journal, &effects, &effects, &identity};
+    writer = std::make_unique<internal::JobOrchestrator>(config);
+    // RED uses the current readiness-only interface. GREEN changes only this construction to the
+    // shared production Backend factory with registry.identifiers and the seeded creation order.
+    backend = std::make_unique<ReadinessOnlyBackend>(*writer);
+    http.listen_port = 0;
+    http.cancel_principal = k_principal;
+  }
+  ~Scenario() { signal.Release(); }
+  Scenario(const Scenario&) = delete;
+  Scenario& operator=(const Scenario&) = delete;
+  Response Exchange(const std::string& request) { return Send(*backend, http, request); }
+  int NoSubmission(std::string_view name, std::size_t count = 0) const {
+    return Check(writer->CopyIngressSequences().size() == count && journal.Attempts().empty() &&
+                     identity.calls.load() == 0,
+                 name, "validation or registry refusal reached identity/ingress/Journal");
+  }
+  Signal signal;
+  sitometron::test::FakeClock clock{core::ClockReading{{"2026-10-23T00:00:00Z"}, {0}}};
+  Identity identity;
+  Journal journal;
+  Effects effects;
+  TestRegistry registry;
+  std::unique_ptr<internal::JobOrchestrator> writer;
+  std::unique_ptr<Backend> backend;
+  Options http;
+};
+
+class PendingResponse final {
+ public:
+  PendingResponse(Signal& signal, std::function<Response()> operation)
+      : signal_(signal), thread_([this, operation = std::move(operation)] {
+          try {
+            response_ = operation();
+          } catch (...) {
+            response_ = {};
+          }
+          signal_.ResponseFinished();
+        }) {}
+  ~PendingResponse() {
+    signal_.Release();
+    if (thread_.joinable()) thread_.join();
+  }
+  PendingResponse(const PendingResponse&) = delete;
+  PendingResponse& operator=(const PendingResponse&) = delete;
+  const Response& Finish() {
+    if (thread_.joinable()) thread_.join();
+    return response_;
+  }
+
+ private:
+  Signal& signal_;
+  Response response_;
+  std::thread thread_;
+};
+
+class WriterQueueHold final {
+ public:
+  explicit WriterQueueHold(internal::JobOrchestrator& writer) : writer_(writer) {
+    writer_.ArmBarrier(internal::WriterPhase::kBeforeDequeue);
+    first_ = writer_.SubmitCommand(core::Command{1, core::CommandType::kCancel,
+                                                 core::Uuid{std::string(k_unknown_id)}, "test"});
+    if (first_.code != internal::IngressCode::kAdmitted ||
+        !writer_.WaitUntil(first_.ingress_sequence, internal::WriterPhase::kBeforeDequeue))
+      throw std::runtime_error("could not hold the direct core queue control");
+    second_ = writer_.SubmitCommand(core::Command{1, core::CommandType::kCancel,
+                                                  core::Uuid{std::string(k_unknown_id)}, "test"});
+    if (second_.code != internal::IngressCode::kAdmitted)
+      throw std::runtime_error("could not fill the direct core queue control");
+  }
+  ~WriterQueueHold() {
+    (void)writer_.Release(first_.ingress_sequence, internal::WriterPhase::kBeforeDequeue);
+    (void)writer_.AwaitCompletion(first_.ingress_sequence);
+    (void)writer_.AwaitCompletion(second_.ingress_sequence);
+  }
+  WriterQueueHold(const WriterQueueHold&) = delete;
+  WriterQueueHold& operator=(const WriterQueueHold&) = delete;
+
+ private:
+  internal::JobOrchestrator& writer_;
+  internal::IngressResult first_;
+  internal::IngressResult second_;
+};
+
+class LaterInputHold final {
+ public:
+  LaterInputHold(internal::JobOrchestrator& writer, Signal& signal)
+      : writer_(writer), signal_(signal) {
+    writer_.ArmBarrier(internal::WriterPhase::kBeforeDequeue);
+    input_ = writer_.SubmitCommand(core::Command{1, core::CommandType::kCancel,
+                                                 core::Uuid{std::string(k_unknown_id)}, "later"});
+    if (input_.code != internal::IngressCode::kAdmitted)
+      throw std::runtime_error("later direct input was not admitted");
+  }
+  ~LaterInputHold() {
+    signal_.Release();
+    (void)writer_.WaitUntil(input_.ingress_sequence, internal::WriterPhase::kBeforeDequeue);
+    (void)writer_.Release(input_.ingress_sequence, internal::WriterPhase::kBeforeDequeue);
+    (void)writer_.AwaitCompletion(input_.ingress_sequence);
+  }
+  LaterInputHold(const LaterInputHold&) = delete;
+  LaterInputHold& operator=(const LaterInputHold&) = delete;
+
+ private:
+  internal::JobOrchestrator& writer_;
+  Signal& signal_;
+  internal::IngressResult input_;
+};
+
+int Created(Scenario& fixture, const Response& response, std::string_view name,
+            std::size_t index = 0) {
+  auto expected =
+      core::InitialSnapshot(core::Uuid{GeneratedId(index)}, core::Uuid{GeneratedId(index)});
+  expected.entity_exists = true;
+  expected.state = core::JobState::kAdmitted;
+  int result = JobResponse(response, name, 202, expected);
+  const auto location = response.headers.find("location");
+  result |=
+      Check(location != response.headers.end() && location->second == JobPath(GeneratedId(index)),
+            name, "create Location does not identify the returned committed Job");
+  if (response.status == 202)
+    result |= JobResponse(fixture.Exchange(Request("GET", JobPath(GeneratedId(index)))), name, 200,
+                          expected);
+  return result;
+}
+
+int CreateCommitsBefore202() {
+  constexpr std::string_view name = "rest_v1_create_commits_before_202";
+  Scenario fixture;
+  fixture.signal.Hold(Signal::Port::kCommit);
+  Server server(fixture.http, *fixture.backend);
+  std::string error;
+  if (!server.Start(error)) return Check(false, name, "listener did not start");
+  PendingResponse pending(fixture.signal, [&] {
+    return SendToPort(server.port(), Request("POST", "/v1/jobs", CreateBody()));
+  });
+  int result = Check(fixture.signal.WaitForEntryOrResponse(), name,
+                     "expected writer commit gate before the final response");
+  const auto before = fixture.writer->SnapshotFor(core::Uuid{GeneratedId(0)});
+  result |= Check(!before || !before->entity_exists, name, "creation was visible before commit");
+  fixture.signal.Release();
+  result |= Created(fixture, pending.Finish(), name);
+  result |= Check(fixture.journal.Attempts().size() == 1 && fixture.effects.launches.load() == 0,
+                  name, "create did not commit exactly once without execution");
+  for (const auto outcome :
+       {core::LogicalCommitResult::kDefiniteFailure, core::LogicalCommitResult::kOutcomeUnknown}) {
+    Scenario failed;
+    failed.journal.Result(outcome);
+    result |= RestError(failed.Exchange(Request("POST", "/v1/jobs", CreateBody())), name, 503,
+                        "service", "service_failed");
+    const auto snapshot = failed.writer->SnapshotFor(core::Uuid{GeneratedId(0)});
+    result |= Check(!snapshot || !snapshot->entity_exists, name,
+                    "failed commit published a speculative Job");
+  }
+  return result;
+}
+
+int CreateRejectsUnknownApplication() {
+  constexpr std::string_view name = "rest_v1_create_rejects_unknown_application";
+  Scenario fixture;
+  const std::vector<std::string> unknown = {"unknown",
+                                            "APP",
+                                            ".app",
+                                            "a/b",
+                                            "a b",
+                                            "\xc3\xa9",
+                                            std::string(1, '\0'),
+                                            std::string("app\0hidden", 10),
+                                            "app ",
+                                            std::string(128, 'z')};
+  int result = 0;
+  for (std::size_t index = 0; index < unknown.size(); ++index) {
+    const auto label =
+        std::string(name).append(" [unregistered-").append(std::to_string(index)).append("]");
+    result |= RestError(fixture.Exchange(Request("POST", "/v1/jobs", CreateBody(unknown[index]))),
+                        label, 422, "job", "unknown_application");
+  }
+  result |= fixture.NoSubmission(name);
+  return result;
+}
+
+int CreateNeverWaits() {
+  constexpr std::string_view name = "rest_v1_create_never_waits";
+  int result = 0;
+  for (const bool resident_full : {false, true}) {
+    ScenarioOptions options;
+    if (resident_full) {
+      options.seeds = {StateFixture("admitted")};
+      options.max_jobs = 1;
+    }
+    Scenario fixture(options);
+    WriterQueueHold hold(*fixture.writer);
+    const auto before = fixture.writer->CopyIngressSequences().size();
+    const auto response = fixture.Exchange(Request("POST", "/v1/jobs", CreateBody()));
+    result |=
+        RestError(response, name, 503, "service", resident_full ? "capacity_exhausted" : "busy");
+    result |= Check(fixture.writer->CopyIngressSequences().size() == before &&
+                        fixture.journal.Attempts().empty(),
+                    name, "capacity refusal admitted work or waited for the held queue to drain");
+  }
+  Scenario fixture;
+  fixture.signal.Hold(Signal::Port::kCommit);
+  Server server(fixture.http, *fixture.backend);
+  std::string error;
+  if (!server.Start(error)) return result | Check(false, name, "listener did not start");
+  PendingResponse pending(fixture.signal, [&] {
+    return SendToPort(server.port(), Request("POST", "/v1/jobs", CreateBody()));
+  });
+  const bool reached_commit = fixture.signal.WaitForEntryOrResponse();
+  result |= Check(reached_commit, name, "create did not reach its own controlled commit");
+  if (reached_commit) {
+    LaterInputHold later(*fixture.writer, fixture.signal);
+    fixture.signal.Release();
+    // The later writer turn remains held until after this response and read are checked. This
+    // tests per-sequence completion, not the listener's pending I/O-thread design disposition.
+    result |= Created(fixture, pending.Finish(), name);
+  } else {
+    fixture.signal.Release();
+    result |= Created(fixture, pending.Finish(), name);
+  }
+  return result;
+}
+
+int JobResourceFromCommittedState() {
+  constexpr std::string_view name = "rest_v1_job_resource_from_committed_state";
+  int result = 0;
+  for (const auto state : {"admitted", "preparing", "running", "stopping", "finalizing",
+                           "succeeded", "failed", "cancelled", "terminated", "timed_out"}) {
+    const auto snapshot = StateFixture(state);
+    ScenarioOptions options;
+    options.seeds = {snapshot};
+    Scenario fixture(options);
+    result |= JobResponse(fixture.Exchange(Request("GET", JobPath(snapshot.job_id.value))),
+                          std::string(name).append(" [").append(state).append("]"), 200, snapshot);
+    result |= Check(fixture.journal.Attempts().empty(), name, "read appended a Journal record");
+  }
+  Scenario fixture;
+  fixture.signal.Hold(Signal::Port::kCommit);
+  const auto created = fixture.writer->CreateJob();
+  int control = Check(created.ingress.code == internal::IngressCode::kAdmitted &&
+                          fixture.signal.WaitForEntryOrResponse(),
+                      name, "direct creation control failed");
+  result |= control;
+  if (control == 0) {
+    result |= RestError(fixture.Exchange(Request("GET", JobPath(GeneratedId(0)))), name, 404, "job",
+                        "job_not_found");
+    const auto list = fixture.Exchange(Request("GET", "/v1/jobs"));
+    result |= ExpectStatus(list, name, 200);
+    if (list.status == 200)
+      result |= Check(Json::parse(list.body).at("jobs").empty(), name,
+                      "provisional Job appeared in list");
+  }
+  fixture.signal.Release();
+  if (created.ingress.code != internal::IngressCode::kAdmitted) return result;
+  const auto done = fixture.writer->AwaitCompletion(created.ingress.ingress_sequence);
+  result |= Check(done && done->code == internal::Completion::Code::kSuccess, name,
+                  "direct creation did not commit");
+  const auto committed = fixture.writer->SnapshotFor(core::Uuid{GeneratedId(0)});
+  if (committed)
+    result |= JobResponse(fixture.Exchange(Request("GET", JobPath(GeneratedId(0)))), name, 200,
+                          *committed);
+  fixture.signal.Hold(Signal::Port::kCommit);
+  const auto cancel = fixture.writer->SubmitCommand(
+      core::Command{1, core::CommandType::kCancel, core::Uuid{GeneratedId(0)}, "direct-control"});
+  if (cancel.code == internal::IngressCode::kAdmitted && fixture.signal.WaitForEntryOrResponse()) {
+    if (committed)
+      result |= JobResponse(fixture.Exchange(Request("GET", JobPath(GeneratedId(0)))), name, 200,
+                            *committed);
+  } else {
+    result |= Check(false, name, "direct cancel control did not reach commit");
+  }
+  fixture.signal.Release();
+  if (cancel.code == internal::IngressCode::kAdmitted)
+    (void)fixture.writer->AwaitCompletion(cancel.ingress_sequence);
+  const auto after = fixture.writer->SnapshotFor(core::Uuid{GeneratedId(0)});
+  if (after)
+    result |=
+        JobResponse(fixture.Exchange(Request("GET", JobPath(GeneratedId(0)))), name, 200, *after);
+  return result;
+}
+
+int ListResidentInCreationOrder() {
+  constexpr std::string_view name = "rest_v1_list_resident_in_creation_order";
+  ScenarioOptions options;
+  auto first = StateFixture("cancelled");
+  auto second = StateFixture("admitted");
+  first.job_id.value = GeneratedId(6);
+  first.session_id = first.job_id;
+  second.job_id.value = GeneratedId(7);
+  second.session_id = second.job_id;
+  options.seeds = {first, second};
+  Scenario fixture(options);
+  Scenario empty;
+  auto response = empty.Exchange(Request("GET", "/v1/jobs"));
+  int result = ExpectStatus(response, name, 200);
+  if (response.status == 200)
+    result |= Check(Json::parse(response.body).at("jobs").empty(), name, "fresh list is not empty");
+  for (std::size_t index = 0; index < 2; ++index)
+    result |=
+        Created(fixture, fixture.Exchange(Request("POST", "/v1/jobs", CreateBody())), name, index);
+  const auto cancelled = fixture.Exchange(Request("POST", JobPath(GeneratedId(0), true)));
+  result |= ExpectStatus(cancelled, name, 202);
+  response = fixture.Exchange(Request("GET", "/v1/jobs"));
+  result |= ExpectStatus(response, name, 200);
+  if (response.status == 200) {
+    const auto jobs = Json::parse(response.body).at("jobs");
+    const std::vector<std::string> order = {first.job_id.value, second.job_id.value, GeneratedId(0),
+                                            GeneratedId(1)};
+    result |= Check(jobs.size() == order.size(), name, "resident list omitted or added a Job");
+    for (std::size_t index = 0; index < std::min(jobs.size(), order.size()); ++index) {
+      result |=
+          Check(jobs.at(index).at("job_id") == order[index], name, "list is not in creation order");
+      const auto current = fixture.writer->SnapshotFor(core::Uuid{order[index]});
+      result |= Check(current && jobs.at(index).at("state") == core::ToString(current->state), name,
+                      "list used a stale or speculative state");
+    }
+  }
+  return result;
+}
+
+int CancelStatusMapping() {
+  constexpr std::string_view name = "rest_v1_cancel_status_mapping";
+  int result = 0;
+  Scenario absent;
+  const auto before = absent.writer->writer_turn_count();
+  const auto started = std::chrono::steady_clock::now();
+  const auto unknown = absent.Exchange(Request("POST", JobPath(k_unknown_id, true)));
+  const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                           std::chrono::steady_clock::now() - started)
+                           .count();
+  result |= RestError(unknown, name, 404, "job", "job_not_found");
+  result |=
+      Check(absent.writer->writer_turn_count() == before + 1 && absent.journal.Attempts().empty(),
+            name, "unknown cancel did not use exactly one writer rejection turn");
+  std::cout << name << ": adapter-fixture unknown cancel elapsed_us=" << elapsed
+            << " writer_turns=" << absent.writer->writer_turn_count() - before << '\n';
+  {
+    // Informational Q2 control: measure the existing production core API directly as well as the
+    // HTTP path. No duration is asserted; RED's interim HTTP response is not a writer-turn sample.
+    Scenario control;
+    const auto submit_started = std::chrono::steady_clock::now();
+    const auto input = control.writer->SubmitCommand(
+        core::Command{1, core::CommandType::kCancel, core::Uuid{std::string(k_unknown_id)},
+                      std::string(k_principal)});
+    const auto await_started = std::chrono::steady_clock::now();
+    const auto completion = control.writer->AwaitCompletion(input.ingress_sequence);
+    const auto finished = std::chrono::steady_clock::now();
+    result |=
+        Check(input.code == internal::IngressCode::kAdmitted && completion &&
+                  completion->code == internal::Completion::Code::kReducerRejection &&
+                  completion->rejection &&
+                  completion->rejection->reason == core::RejectionReason::kJobNotFound &&
+                  control.writer->writer_turn_count() == 1 && control.journal.Attempts().empty(),
+              name, "direct unknown-cancel control did not reject in one writer turn");
+    std::cout
+        << name << ": direct-core unknown cancel elapsed_us="
+        << std::chrono::duration_cast<std::chrono::microseconds>(finished - submit_started).count()
+        << " await_only_us="
+        << std::chrono::duration_cast<std::chrono::microseconds>(finished - await_started).count()
+        << " writer_turns=" << control.writer->writer_turn_count() << '\n';
+  }
+  for (const auto state : {"admitted", "preparing", "running", "stopping", "finalizing",
+                           "succeeded", "failed", "cancelled", "terminated", "timed_out"}) {
+    const auto snapshot = StateFixture(state);
+    ScenarioOptions options;
+    options.seeds = {snapshot};
+    Scenario fixture(options);
+    const auto path = JobPath(snapshot.job_id.value, true);
+    const auto label = std::string(name).append(" [").append(state).append("]");
+    const bool accepted = snapshot.state == core::JobState::kAdmitted ||
+                          snapshot.state == core::JobState::kPreparing ||
+                          snapshot.state == core::JobState::kRunning;
+    const auto response = fixture.Exchange(Request("POST", path));
+    if (accepted) {
+      const auto decision = core::DecideCommand(
+          snapshot,
+          core::Command{1, core::CommandType::kCancel, snapshot.job_id, std::string(k_principal)});
+      const auto& proposal = std::get<core::PreEnvelopeProposal>(decision.value);
+      const auto expected = core::Apply(snapshot, proposal).snapshot;
+      result |= JobResponse(response, label, 202, expected);
+      result |= Check(response.headers.find("location") == response.headers.end(), label,
+                      "cancel response has create Location");
+      const auto repeat = fixture.Exchange(Request("POST", path));
+      result |=
+          RestError(repeat, label, 409, "job",
+                    expected.state == core::JobState::kStopping ? "stop_cause_already_latched"
+                                                                : "command_not_allowed_in_state");
+      result |= Check(fixture.journal.Attempts().size() == 1, label,
+                      "repeat cancel did not retain exactly one accepted-cancel record");
+    } else {
+      result |=
+          RestError(response, label, 409, "job",
+                    snapshot.state == core::JobState::kStopping ? "stop_cause_already_latched"
+                                                                : "command_not_allowed_in_state");
+      result |=
+          Check(fixture.journal.Attempts().empty(), label, "rejected cancel appended a record");
+    }
+  }
+  Scenario full;
+  WriterQueueHold hold(*full.writer);
+  result |= RestError(full.Exchange(Request("POST", JobPath(k_unknown_id, true))), name, 503,
+                      "service", "busy");
+  return result;
+}
+
+int CancelRecordsConfiguredPrincipal() {
+  constexpr std::string_view name = "rest_v1_cancel_records_configured_principal";
+  ScenarioOptions options;
+  options.seeds = {StateFixture("admitted")};
+  Scenario fixture(options);
+  fixture.signal.Hold(Signal::Port::kCommit);
+  Server server(fixture.http, *fixture.backend);
+  std::string error;
+  if (!server.Start(error)) return Check(false, name, "listener did not start");
+  PendingResponse pending(fixture.signal, [&] {
+    return SendToPort(
+        server.port(),
+        Request(
+            "POST", JobPath(options.seeds.front().job_id.value, true), "{}", "application/json",
+            "X-Principal: forged\r\nX-Authenticated-User: forged\r\nAuthorization: forged\r\n"));
+  });
+  int result = Check(fixture.signal.WaitForEntryOrResponse(), name,
+                     "cancel answered before its controlled commit");
+  const auto before = fixture.writer->SnapshotFor(options.seeds.front().job_id);
+  result |= Check(before && before->state == options.seeds.front().state, name,
+                  "cancel changed the published state before commit");
+  fixture.signal.Release();
+  const auto& response = pending.Finish();
+  result |= ExpectStatus(response, name, 202);
+  const auto attempts = fixture.journal.Attempts();
+  result |= Check(attempts.size() == 1, name, "configured cancel did not append exactly once");
+  if (!attempts.empty()) {
+    const auto* principal = std::get_if<core::PrincipalPayload>(&attempts.front().payload);
+    result |= Check(attempts.front().event_type == core::EventType::kCancelAccepted && principal &&
+                        principal->principal_subject == k_principal,
+                    name, "recorded principal was not the startup-configured principal");
+  }
+  return result;
+}
+
+struct BodyVector {
+  std::string name;
+  std::string body;
+  int status = 400;
+  const char* code = "malformed_json";
+};
+
+int BodyVectors(std::string_view name, const std::vector<BodyVector>& vectors) {
+  Scenario fixture;
+  const std::array endpoints = {
+      std::pair{"POST", std::string("/v1/jobs")},  std::pair{"POST", JobPath(k_unknown_id, true)},
+      std::pair{"GET", std::string("/v1/jobs")},   std::pair{"GET", JobPath()},
+      std::pair{"GET", std::string("/v1/health")}, std::pair{"GET", std::string("/v1/ready")}};
+  int result = 0;
+  std::size_t passed = 0;
+  for (const auto& vector : vectors) {
+    for (const auto& [method, target] : endpoints) {
+      const auto label = std::string(name)
+                             .append(" [")
+                             .append(vector.name)
+                             .append(" ")
+                             .append(method)
+                             .append(" ")
+                             .append(target)
+                             .append("]");
+      const bool create = std::string_view(method) == "POST" && target == "/v1/jobs";
+      const bool unknown_application =
+          create && std::string_view(vector.code) == "unknown_application";
+      const int status = unknown_application ? 422 : vector.status;
+      const char* code = !create && std::string_view(vector.code) == "unknown_application"
+                             ? "validation_failed"
+                             : vector.code;
+      const auto check = RestError(fixture.Exchange(Request(method, target, vector.body)), label,
+                                   status, unknown_application ? "job" : "request", code);
+      if (check == 0) ++passed;
+      result |= check;
+    }
+  }
+  result |= fixture.NoSubmission(name);
+  std::cout << name << ": vector outcomes passed=" << passed << '/'
+            << vectors.size() * endpoints.size() << '\n';
+  return result;
+}
+
+int JsonRejectsRawNul() {
+  const auto nul = std::string(1, '\0');
+  return BodyVectors(
+      "rest_v1_json_rejects_raw_nul",
+      {{"prefix", nul + "{}"},
+       {"string", std::string("{\"application_id\":\"") + nul + "\"}"},
+       {"key", std::string("{\"") + nul + "\":1}"},
+       {"token", std::string("{\"x\":") + nul + "1}"},
+       {"suffix", "{}" + nul},
+       {"suffix-garbage", "{}" + nul + "garbage"},
+       {"suffix-second-value", "{}" + nul + "{}"},
+       {"after-whitespace", "{} \n" + nul + "x"},
+       {"escaped-control", R"({"application_id":"\u0000"})", 422, "unknown_application"}});
+}
+
+int JsonRejectsInvalidUtf8() {
+  std::vector<BodyVector> vectors;
+  const std::vector<std::string> invalid = {"\xff",     "\xc0\xaf", "\xed\xa0\x80",
+                                            "\xe2\x82", "\x80",     "\xf4\x90\x80\x80"};
+  for (std::size_t index = 0; index < invalid.size(); ++index)
+    vectors.push_back({std::string("invalid-").append(std::to_string(index)),
+                       std::string("{\"application_id\":\"") + invalid[index] + "\"}"});
+  vectors.push_back({"non-json-unicode-whitespace", "{}\xc2\xa0"});
+  for (const auto valid : {"\xc3\xa9", "\xe3\x81\x82", "\xf0\x9f\x98\x80"})
+    vectors.push_back({"valid-utf8", CreateBody(valid), 422, "unknown_application"});
+  return BodyVectors("rest_v1_json_rejects_invalid_utf8", vectors);
+}
+
+int JsonRejectsTrailingData() {
+  std::vector<BodyVector> vectors;
+  for (const auto suffix : {"{}", "1", "x", "/*comment*/", "\v", "\f", "\xc2\xa0"})
+    vectors.push_back({"non-whitespace-suffix", std::string("{}") + suffix});
+  for (const auto whitespace : {" ", "\t", "\r", "\n", " \t\r\n"})
+    vectors.push_back({"json-whitespace-control",
+                       std::string(whitespace) + "{\"x\":1}" + whitespace, 422,
+                       "validation_failed"});
+  return BodyVectors("rest_v1_json_rejects_trailing_data", vectors);
+}
+
+int JsonRejectsDuplicateKeysAtAnyDepth() {
+  return BodyVectors(
+      "rest_v1_json_rejects_duplicate_keys_at_any_depth",
+      {{"root-unequal", R"({"application_id":"app","application_id":"unknown"})"},
+       {"root-equal", R"({"application_id":"app","application_id":"app"})"},
+       {"nested", R"({"outer":{"a":1,"a":2}})"},
+       {"array", R"([{"a":1,"a":2}])"},
+       {"decoded-key", R"({"a":1,"\u0061":2})"},
+       {"empty-key", R"({"":1,"":2})"},
+       {"unicode-key", std::string("{\"\\u00e9\":1,\"") + "\xc3\xa9" + "\":2}"},
+       {"distinct-normalization-control", R"({"\u00e9":1,"e\u0301":2})", 422, "validation_failed"},
+       {"siblings-control", R"({"x":{"a":1},"y":{"a":2}})", 422, "validation_failed"},
+       {"depth-control", R"({"a":{"a":1}})", 422, "validation_failed"},
+       {"array-siblings-control", R"([{"a":1},{"a":2}])", 422, "validation_failed"}});
+}
+
+int JsonRejectsLeadingBom() {
+  const std::string bom = "\xef\xbb\xbf";
+  return BodyVectors("rest_v1_json_rejects_leading_bom",
+                     {{"leading", bom + "{}"},
+                      {"only", bom},
+                      {"after-space", " " + bom + "{}"},
+                      {"repeated", bom + bom + "{}"},
+                      {"inside-string-control", CreateBody(bom), 422, "unknown_application"}});
+}
+
+int JsonRejectsLoneSurrogate() {
+  return BodyVectors(
+      "rest_v1_json_rejects_lone_surrogate",
+      {{"high", R"({"application_id":"\ud800"})"},
+       {"low", R"({"application_id":"\udc00"})"},
+       {"high-text", R"({"application_id":"\ud800x"})"},
+       {"reversed", R"({"application_id":"\udc00\ud800"})"},
+       {"pair-control", R"({"application_id":"\ud83d\ude00"})", 422, "unknown_application"},
+       {"literal-control", R"({"application_id":"\\ud800"})", 422, "unknown_application"}});
+}
+
+int ValidationBeforeSubmission() {
+  constexpr std::string_view name = "rest_v1_validation_before_submission";
+  int result = BodyVectors(
+      name,
+      {{"truncated", "{"},
+       {"trailing-comma", "{\"x\":1,}"},
+       {"comment", "/*comment*/{}"},
+       {"leading-zero", "01"},
+       {"nan", "NaN"},
+       {"library-number-overflow-406", "1e1000"},
+       {"array", "[]", 422, "validation_failed"},
+       {"null", "null", 422, "validation_failed"},
+       {"boolean", "true", 422, "validation_failed"},
+       {"number", "1", 422, "validation_failed"},
+       {"string", "\"x\"", 422, "validation_failed"},
+       {"wrong-type", R"({"application_id":1})", 422, "validation_failed"},
+       {"extra-job", R"({"application_id":"app","job_id":"client"})", 422, "validation_failed"},
+       {"extra-path", R"({"application_id":"app","executable":"client"})", 422,
+        "validation_failed"},
+       {"extra-args", R"({"application_id":"app","args":[]})", 422, "validation_failed"},
+       {"extra-principal", R"({"application_id":"app","principal":"forged"})", 422,
+        "validation_failed"},
+       {"unknown-with-extra", R"({"application_id":"unknown","extra":1})", 422,
+        "validation_failed"},
+       {"empty-id", CreateBody(""), 422, "validation_failed"},
+       {"long-id", CreateBody(std::string(129, 'a')), 422, "validation_failed"}});
+  Scenario fixture;
+  result |= RestError(fixture.Exchange(Request("POST", "/v1/jobs", "{}")), name, 422, "request",
+                      "validation_failed");
+  std::vector<std::string> invalid = {"short",
+                                      std::string(k_job_id) + "0",
+                                      "%7B" + std::string(k_job_id) + "%7D",
+                                      "urn:uuid:" + std::string(k_job_id),
+                                      "01890F30-7b54-7cc3-98c4-dc0c0c07398f",
+                                      "01890f30_7b54-7cc3-98c4-dc0c0c07398f",
+                                      "01890f30-7b54-4cc3-98c4-dc0c0c07398f",
+                                      "01890f30-7b54-7cc3-78c4-dc0c0c07398f",
+                                      "01890f30-7b54-7cc3-c8c4-dc0c0c07398f",
+                                      "01890f30-7b54-7cc3-g8c4-dc0c0c07398f",
+                                      "01890f30%2d7b54-7cc3-98c4-dc0c0c07398f"};
+  for (const auto& id : invalid) {
+    for (const bool cancel : {false, true})
+      result |= RestError(fixture.Exchange(Request(cancel ? "POST" : "GET", JobPath(id, cancel))),
+                          name, 400, "request", "invalid_job_id");
+  }
+  for (const char variant : {'8', '9', 'a', 'b'}) {
+    auto id = std::string(k_unknown_id);
+    id[19] = variant;
+    result |=
+        RestError(fixture.Exchange(Request("GET", JobPath(id))), name, 404, "job", "job_not_found");
+  }
+  result |= RestError(fixture.Exchange(Request("POST", JobPath("invalid", true), "{")), name, 400,
+                      "request", "malformed_json");
+  result |=
+      RestError(fixture.Exchange(Request("POST", JobPath("invalid", true), "{", "text/plain")),
+                name, 415, "request", "unsupported_media_type");
+  result |= RestError(fixture.Exchange(Request("POST", "/v1/jobs?x=1", "{", "text/plain")), name,
+                      404, "request", "route_not_found");
+  result |= RestError(fixture.Exchange(Request("PUT", "/v1/jobs", "{", "text/plain")), name, 405,
+                      "request", "method_not_allowed");
+  result |= RestError(fixture.Exchange(Request("GET", "/v1/jobs/")), name, 404, "request",
+                      "route_not_found");
+  result |= RestError(fixture.Exchange(Request("POST", JobPath(k_unknown_id, true) + "/extra")),
+                      name, 404, "request", "route_not_found");
+  result |= fixture.NoSubmission(name);
+  return result;
+}
+
+int CreateWithoutBody() {
+  constexpr std::string_view name = "rest_v1_create_without_body";
+  Scenario fixture;
+  int result = 0;
+  for (const auto& media :
+       {std::optional<std::string>{}, std::optional<std::string>{"application/json"},
+        std::optional<std::string>{"text/plain"}}) {
+    result |= RestError(fixture.Exchange(Request("POST", "/v1/jobs", "", media)), name, 400,
+                        "request", "malformed_json");
+    const auto header = media ? std::string("Content-Type: ").append(*media).append("\r\n") : "";
+    result |=
+        RestError(fixture.Exchange(Request("POST", "/v1/jobs", std::nullopt, std::nullopt, header)),
+                  name, 400, "request", "malformed_json");
+  }
+  result |= RestError(fixture.Exchange(Request("POST", "/v1/jobs", " \t\r\n")), name, 400,
+                      "request", "malformed_json");
+  result |= RestError(
+      fixture.Exchange(
+          "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\n"
+          "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"),
+      name, 400, "request", "malformed_json");
+  result |= fixture.NoSubmission(name);
+  std::string spaced_body(" \t\r\n");
+  spaced_body.append(CreateBody()).append(" \t\r\n");
+  const std::array<std::string, 3> valid_bodies = {std::move(spaced_body),
+                                                   R"({"\u0061pplication_id":"app"})",
+                                                   R"({"application_id":"\u0061pp"})"};
+  for (std::size_t index = 0; index < valid_bodies.size(); ++index)
+    result |= Created(fixture,
+                      fixture.Exchange(Request("POST", "/v1/jobs", valid_bodies[index],
+                                               "Application/JSON; charset=utf-8")),
+                      name, index);
+  return result;
+}
+
+int RegisteredApplicationIdForm() {
+  constexpr std::string_view name = "rest_v1_registered_application_id_form";
+  const std::vector<std::string> valid = {"a", "0", "a0z9", "a._:-", std::string(128, 'a')};
+  int result = 0;
+  std::size_t setup_passed = 0;
+  for (const auto& id : valid) {
+    ScenarioOptions options;
+    options.applications = {id};
+    Scenario fixture(options);
+    ++setup_passed;
+    result |= Created(fixture, fixture.Exchange(Request("POST", "/v1/jobs", CreateBody(id))), name);
+  }
+  const std::vector<std::string> invalid = {
+      "",    std::string(129, 'a'), ".a",      "_a", ":a", "-a", "A", "a/b", "a b",
+      "a\n", std::string(1, '\0'),  "\xc3\xa9"};
+  for (const auto& id : invalid) {
+    bool rejected = false;
+    try {
+      const TestRegistry registry({id});
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    if (rejected) ++setup_passed;
+    result |= Check(rejected, name, "test registry accepted an invalid identifier");
+  }
+  Scenario fixture;
+  for (const auto character : {"\xc3\xa9", "\xf0\x9f\x98\x80"}) {
+    for (const std::size_t count : {std::size_t{1}, std::size_t{128}, std::size_t{129}}) {
+      std::string unicode;
+      for (std::size_t index = 0; index < count; ++index) unicode.append(character);
+      result |= RestError(fixture.Exchange(Request("POST", "/v1/jobs", CreateBody(unicode))), name,
+                          422, count <= 128 ? "job" : "request",
+                          count <= 128 ? "unknown_application" : "validation_failed");
+    }
+  }
+  result |= fixture.NoSubmission(name);
+  std::cout << name << ": test-only registry setup controls passed=" << setup_passed << '/'
+            << valid.size() + invalid.size() << '\n';
+  return result;
+}
+
+int CancelBody() {
+  constexpr std::string_view name = "rest_v1_cancel_body";
+  int result = 0;
+  for (const auto& body :
+       {std::optional<std::string>{}, std::optional<std::string>{""},
+        std::optional<std::string>{"{}"}, std::optional<std::string>{" \t{ }\r\n"}}) {
+    ScenarioOptions options;
+    options.seeds = {StateFixture("admitted")};
+    Scenario fixture(options);
+    result |= ExpectStatus(
+        fixture.Exchange(Request("POST", JobPath(options.seeds[0].job_id.value, true), body)), name,
+        202);
+  }
+  Scenario fixture;
+  for (const auto& body :
+       {"{}", "{", "[]", "null", " ", "{\"reason\":\"x\"}", "{\"principal\":\"forged\"}"}) {
+    for (const auto& media :
+         {std::optional<std::string>{}, std::optional<std::string>{"text/plain"},
+          std::optional<std::string>{"application/json"}}) {
+      const bool malformed = std::string_view(body) == "{" || std::string_view(body) == " ";
+      const bool accepted = std::string_view(body) == "{}";
+      const int status = !media || *media != "application/json" ? 415
+                         : malformed                            ? 400
+                         : accepted                             ? 404
+                                                                : 422;
+      const char* code = status == 415   ? "unsupported_media_type"
+                         : status == 400 ? "malformed_json"
+                         : status == 404 ? "job_not_found"
+                                         : "validation_failed";
+      result |=
+          RestError(fixture.Exchange(Request("POST", JobPath(k_unknown_id, true), body, media)),
+                    name, status, status == 404 ? "job" : "request", code);
+    }
+  }
+  for (const auto media : {"text/plain", "application/json"})
+    result |= RestError(fixture.Exchange(Request("POST", JobPath(k_unknown_id, true), "", media)),
+                        name, 404, "job", "job_not_found");
+  const auto header = std::string("POST ")
+                          .append(JobPath(k_unknown_id, true))
+                          .append(
+                              " HTTP/1.1\r\nHost: loopback\r\nContent-Type: "
+                              "application/json\r\nTransfer-Encoding: chunked\r\n\r\n");
+  result |= RestError(SendChunkedParts(*fixture.backend, fixture.http, header,
+                                       {"1\r\n{\r\n", "1\r\n}\r\n0\r\n\r\n"}),
+                      name, 404, "job", "job_not_found");
+  result |= RestError(fixture.Exchange(header + "0\r\n\r\n"), name, 404, "job", "job_not_found");
+  return result;
+}
+
+int NotReadyRefusesWrites() {
+  constexpr std::string_view name = "rest_v1_not_ready_refuses_writes";
+  int result = 0;
+  std::size_t controls = 0;
+  for (const auto mode : {"unresolved", "shutdown", "failed"}) {
+    ScenarioOptions options;
+    options.seeds = {StateFixture("admitted")};
+    options.unresolved = std::string_view(mode) == "unresolved";
+    Scenario fixture(options);
+    if (std::string_view(mode) == "shutdown") {
+      const auto marker = fixture.writer->SubmitShutdown();
+      (void)fixture.writer->AwaitCompletion(marker.ingress_sequence);
+    } else if (std::string_view(mode) == "failed") {
+      fixture.writer->LatchReadinessFailure();
+    }
+    const auto before = fixture.writer->CopyIngressSequences().size();
+    const auto label = std::string(name).append(" [").append(mode).append("]");
+    result |= RestError(fixture.Exchange(Request("POST", "/v1/jobs", CreateBody("not-registered"))),
+                        label + " unregistered-before-ingress", 422, "job", "unknown_application");
+    const char* code = std::string_view(mode) == "failed" ? "service_failed" : "not_ready";
+    const auto registered = RestError(fixture.Exchange(Request("POST", "/v1/jobs", CreateBody())),
+                                      label + " registered-to-ingress", 503, "service", code);
+    if (registered == 0) ++controls;
+    result |= registered;
+    for (const auto& id : {options.seeds[0].job_id.value, std::string(k_unknown_id)})
+      result |= RestError(fixture.Exchange(Request("POST", JobPath(id, true))), label, 503,
+                          "service", code);
+    result |= RestError(fixture.Exchange(Request("POST", "/v1/jobs", "{")), label, 400, "request",
+                        "malformed_json");
+    result |= RestError(fixture.Exchange(Request("POST", "/v1/jobs", "{}")), label, 422, "request",
+                        "validation_failed");
+    result |= JobResponse(fixture.Exchange(Request("GET", JobPath(options.seeds[0].job_id.value))),
+                          label, 200, options.seeds[0]);
+    result |= ExpectStatus(fixture.Exchange(Request("GET", "/v1/jobs")), label, 200);
+    result |= ExpectStatus(fixture.Exchange(Request("GET", "/v1/ready")), label, 503);
+    result |= fixture.NoSubmission(label, before);
+  }
+  // The sticky failure result must win even when unresolved replay also closes admission.
+  ScenarioOptions options;
+  options.seeds = {StateFixture("admitted")};
+  options.unresolved = true;
+  Scenario failed_closed(options);
+  failed_closed.writer->LatchReadinessFailure();
+  result |= RestError(failed_closed.Exchange(Request("POST", "/v1/jobs", CreateBody())), name, 503,
+                      "service", "service_failed");
+  std::cout << name << ": registered closed-admission controls passed=" << controls << "/3\n";
+  return result;
+}
+
+int CreateSerialized() {
+  constexpr std::string_view name = "rest_v1_create_serialized";
+  Scenario fixture;
+  fixture.signal.Hold(Signal::Port::kIdentity);
+  Server server(fixture.http, *fixture.backend);
+  std::string error;
+  if (!server.Start(error)) return Check(false, name, "listener did not start");
+  PendingResponse first(fixture.signal, [&] {
+    return SendToPort(server.port(), Request("POST", "/v1/jobs", CreateBody()));
+  });
+  int result = Check(fixture.signal.WaitForEntryOrResponse(), name,
+                     "first create did not reach the controlled identity source");
+  PendingResponse second(fixture.signal, [&] {
+    return SendToPort(server.port(), Request("POST", "/v1/jobs", CreateBody()));
+  });
+  fixture.signal.Release();
+  const auto& one = first.Finish();
+  const auto& two = second.Finish();
+  result |= Created(fixture, one, name, 0);
+  result |= Created(fixture, two, name, 1);
+  result |= Check(fixture.identity.max_active.load() == 1 && fixture.journal.Attempts().size() == 2,
+                  name, "creates overlapped identity generation or lost their ordered commits");
+  return result;
+}
+
+int AlreadyPendingIsBusy() {
+  constexpr std::string_view name = "rest_v1_already_pending_is_busy";
+  Scenario fixture;
+  fixture.signal.Hold(Signal::Port::kIdentity);
+  PendingResponse outside(fixture.signal, [&] {
+    const auto created = fixture.writer->CreateJob();
+    if (created.ingress.code == internal::IngressCode::kAdmitted)
+      (void)fixture.writer->AwaitCompletion(created.ingress.ingress_sequence);
+    return Response{};
+  });
+  int result = Check(fixture.signal.WaitForEntryOrResponse(), name,
+                     "external creation did not hold identity generation");
+  result |= RestError(fixture.Exchange(Request("POST", "/v1/jobs", CreateBody())), name, 503,
+                      "service", "busy");
+  result |=
+      Check(fixture.writer->CopyIngressSequences().empty() && fixture.journal.Attempts().empty(),
+            name, "already_pending acquired a sequence or Journal record");
+  fixture.signal.Release();
+  (void)outside.Finish();
+  result |= Created(fixture, fixture.Exchange(Request("POST", "/v1/jobs", CreateBody())), name, 1);
+  return result;
+}
+
+struct ErrorVector {
+  std::string name;
+  std::string target;
+  std::string request;
+  Options options;
+  int status;
+  std::string domain;
+  const char* code;
+  bool before_method = false;
+};
+
+std::vector<ErrorVector> ErrorVectors() {
+  Options timeout;
+  timeout.body_timeout_ms = 25;
+  std::vector<ErrorVector> vectors = {
+      {"http-syntax",
+       "/v1/jobs",
+       "GET /v1/jobs HTTP/1.1\r\nHost: loopback\r\nBrokenField\r\n\r\n",
+       {},
+       400,
+       "request",
+       "malformed_request",
+       true},
+      {"json-syntax",
+       "/v1/jobs",
+       Request("GET", "/v1/jobs", "{"),
+       {},
+       400,
+       "request",
+       "malformed_json"},
+      {"invalid-id",
+       JobPath("invalid"),
+       Request("GET", JobPath("invalid")),
+       {},
+       400,
+       "request",
+       "invalid_job_id"},
+      {"query",
+       "/v1/jobs?q",
+       Request("GET", "/v1/jobs?q"),
+       {},
+       404,
+       "request",
+       "route_not_found",
+       true},
+      {"unknown-job", JobPath(), Request("GET", JobPath()), {}, 404, "job", "job_not_found"},
+      {"method", "/v1/jobs", Request("PUT", "/v1/jobs"), {}, 405, "request", "method_not_allowed"},
+      {"body-timeout", "/v1/jobs",
+       "GET /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: "
+       "application/json\r\nContent-Length: 10\r\n\r\n{",
+       timeout, 408, "request", "request_timeout"},
+      {"body-bound",
+       "/v1/jobs",
+       "GET /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: "
+       "application/json\r\nContent-Length: 1048577\r\n\r\n",
+       {},
+       413,
+       "request",
+       "payload_too_large"},
+      {"media",
+       "/v1/jobs",
+       Request("GET", "/v1/jobs", "{}", "text/plain"),
+       {},
+       415,
+       "request",
+       "unsupported_media_type"},
+      {"validation",
+       "/v1/jobs",
+       Request("GET", "/v1/jobs", "{}"),
+       {},
+       422,
+       "request",
+       "validation_failed"},
+      {"unknown-application",
+       "/v1/jobs",
+       Request("POST", "/v1/jobs", CreateBody("unknown")),
+       {},
+       422,
+       "job",
+       "unknown_application"},
+      {"transfer",
+       "/v1/jobs",
+       "GET /v1/jobs HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
+       {},
+       501,
+       "request",
+       "not_implemented",
+       true}};
+  Options target_bound;
+  target_bound.target_limit_bytes = 2048;
+  const auto target = std::string("/").append(3000, 'a');
+  vectors.push_back({"target-bound", target, Request("GET", target), target_bound, 414, "request",
+                     "target_too_long", true});
+  const auto header = std::string("GET /v1/jobs HTTP/1.1\r\nHost: loopback\r\nX-Fill: ")
+                          .append(20000, 'a')
+                          .append("\r\n\r\n");
+  vectors.push_back(
+      {"header-bound", "/v1/jobs", header, {}, 431, "request", "headers_too_large", true});
+  return vectors;
+}
+
+class ThrowingBackend final : public Backend {
+ public:
+  Readiness GetReadiness() override {
+    throw std::runtime_error(
+        "/tmp/issue106-private-path OS-error-marker library-error-marker journal-record-marker "
+        "synthetic-secret-marker");
+  }
+};
+
+int ErrorEnvelopeAndCodes() {
+  constexpr std::string_view name = "rest_v1_error_envelope_and_codes";
+  Scenario fixture;
+  int result = 0;
+  for (const auto& vector : ErrorVectors()) {
+    const auto label = std::string(name).append(" [").append(vector.name).append("]");
+    result |= RestError(Send(*fixture.backend, vector.options, vector.request), label,
+                        vector.status, vector.domain, vector.code);
+    auto head = vector.request;
+    head.replace(0, head.find(' '), "HEAD");
+    const auto head_status = vector.before_method ? vector.status : 405;
+    const auto reference = vector.before_method ? std::string{} : Request("PUT", vector.target);
+    result |= CheckHeadRefusalVector(
+        *fixture.backend,
+        HeadRefusalVector{label, vector.options, vector.request, head, reference, false,
+                          vector.status, head_status, vector.domain, vector.code});
+  }
+  ThrowingBackend throwing;
+  result |= RestError(Send(throwing, Options{}, Request("GET", "/v1/ready")), name, 500, "service",
+                      "internal");
+  result |= CancelStatusMapping();
+  result |= NotReadyRefusesWrites();
+  result |= CreateNeverWaits();
+  return result;
+}
+
+int ErrorsLeakNothing() {
+  constexpr std::string_view name = "rest_v1_errors_leak_nothing";
+  Scenario fixture;
+  std::vector<Response> responses;
+  responses.push_back(fixture.Exchange(Request(
+      "POST", "/v1/jobs",
+      R"({"application_id":"/tmp/issue106-private-path synthetic-secret-marker journal-record-marker"})")));
+  responses.push_back(fixture.Exchange(Request("POST", "/v1/jobs", "{\"library-error-marker\":")));
+  responses.push_back(fixture.Exchange(
+      Request("POST", JobPath(k_unknown_id, true),
+              R"({"principal":"synthetic-secret-marker","path":"/tmp/issue106-private-path"})")));
+  ThrowingBackend throwing;
+  responses.push_back(Send(throwing, Options{}, Request("GET", "/v1/ready")));
+  int result = 0;
+  for (std::size_t index = 0; index < responses.size(); ++index) {
+    const auto& response = responses[index];
+    result |= RestError(response, name,
+                        index == 0 || index == 2 ? 422
+                        : index == 1             ? 400
+                                                 : 500,
+                        index == 0   ? "job"
+                        : index == 3 ? "service"
+                                     : "request",
+                        index == 0   ? "unknown_application"
+                        : index == 2 ? "validation_failed"
+                        : index == 1 ? "malformed_json"
+                                     : "internal");
+    for (const auto marker :
+         {"/tmp/issue106-private-path", "OS-error-marker", "library-error-marker",
+          "journal-record-marker", "synthetic-secret-marker"}) {
+      result |= Check(response.body.find(marker) == std::string::npos, name,
+                      "response leaked a private marker");
+      for (const auto& [key, value] : response.headers) {
+        result |=
+            Check(key.find(marker) == std::string::npos && value.find(marker) == std::string::npos,
+                  name, "header leaked a private marker");
+      }
+    }
+  }
+  return result;
+}
+
+std::size_t CharacterCount(std::string_view text) {
+  return static_cast<std::size_t>(
+      std::ranges::count_if(text, [](unsigned char c) { return (c & 0xc0U) != 0x80U; }));
+}
+
+bool SchemaMatches(const Json& document, const Json& schema, const Json& value) {
+  if (schema.is_boolean()) return schema.get<bool>();
+  static const std::set<std::string, std::less<>> supported = {
+      "$ref",    "type",      "enum",      "required",      "properties",           "items",
+      "pattern", "minLength", "maxLength", "maxProperties", "additionalProperties", "description",
+      "examples"};
+  for (const auto& item : schema.items())
+    if (!supported.contains(item.key()))
+      throw std::runtime_error("unsupported OpenAPI schema keyword");
+  if (schema.contains("$ref")) {
+    const auto reference = schema.at("$ref").get<std::string>();
+    if (!reference.starts_with("#/")) throw std::runtime_error("OpenAPI reference is not local");
+    if (!SchemaMatches(document, document.at(Json::json_pointer(reference.substr(1))), value))
+      return false;
+  }
+  const auto type_matches = [&](const Json& type) {
+    return (type == "object" && value.is_object()) || (type == "array" && value.is_array()) ||
+           (type == "string" && value.is_string()) || (type == "boolean" && value.is_boolean()) ||
+           (type == "null" && value.is_null());
+  };
+  if (schema.contains("type")) {
+    const auto& types = schema.at("type");
+    if (types.is_array()) {
+      if (!std::ranges::any_of(types, type_matches)) return false;
+    } else if (!type_matches(types))
+      return false;
+  }
+  if (schema.contains("enum") &&
+      !std::ranges::any_of(schema.at("enum"), [&](const Json& item) { return item == value; }))
+    return false;
+  if (value.is_object()) {
+    if (schema.contains("required"))
+      for (const auto& key : schema.at("required"))
+        if (!value.contains(key.get<std::string>())) return false;
+    if (schema.contains("maxProperties") &&
+        value.size() > schema.at("maxProperties").get<std::size_t>())
+      return false;
+    const auto properties = schema.value("properties", Json::object());
+    for (const auto& item : value.items()) {
+      if (properties.contains(item.key())) {
+        if (!SchemaMatches(document, properties.at(item.key()), item.value())) return false;
+      } else if (schema.contains("additionalProperties") &&
+                 !SchemaMatches(document, schema.at("additionalProperties"), item.value()))
+        return false;
+    }
+  }
+  if (value.is_array() && schema.contains("items"))
+    for (const auto& item : value)
+      if (!SchemaMatches(document, schema.at("items"), item)) return false;
+  if (value.is_string()) {
+    const auto& text = value.get_ref<const std::string&>();
+    const auto length = CharacterCount(text);
+    if (schema.contains("minLength") && length < schema.at("minLength").get<std::size_t>())
+      return false;
+    if (schema.contains("maxLength") && length > schema.at("maxLength").get<std::size_t>())
+      return false;
+    if (schema.contains("pattern") &&
+        !std::regex_search(text, std::regex(schema.at("pattern").get<std::string>())))
+      return false;
+  }
+  return true;
+}
+
+bool CrossFieldsMatch(const Json& value) {
+  if (value.is_object() && value.contains("job_id") && value.contains("state")) {
+    const auto state = value.at("state").get<std::string>();
+    const bool terminal = state == "succeeded" || state == "failed" || state == "cancelled" ||
+                          state == "terminated" || state == "timed_out";
+    if (value.at("terminal") != terminal ||
+        value.at("outcome") != (terminal ? Json(state) : Json(nullptr)))
+      return false;
+  }
+  if (value.is_object() && value.contains("ready") && value.contains("reasons"))
+    if (value.at("ready") != value.at("reasons").empty()) return false;
+  if (value.is_object() && value.contains("error"))
+    if (value.at("error").at("details") != Json::object()) return false;
+  if (value.is_structured())
+    for (const auto& item : value)
+      if (!CrossFieldsMatch(item)) return false;
+  return true;
+}
+
+int ContractResponse(const Json& document, std::string_view path, std::string_view method,
+                     const Response& response, int expected_status) {
+  constexpr std::string_view name = "rest_v1_openapi_contract";
+  int result = ExpectStatus(response, name, expected_status);
+  if (response.status != expected_status) return result;
+  const auto& operation = document.at("paths").at(std::string(path)).at(std::string(method));
+  const auto& declared = operation.at("responses").at(std::to_string(response.status));
+  const auto& content = declared.at("content").at("application/json");
+  result |= Check(response.headers.contains("content-type") &&
+                      response.headers.at("content-type") == "application/json",
+                  name, "wire Content-Type differs from OpenAPI");
+  const auto body = Json::parse(response.body);
+  result |= Check(SchemaMatches(document, content.at("schema"), body) && CrossFieldsMatch(body),
+                  name, "actual response violates the OpenAPI schema or ADR cross-field rules");
+  if (declared.contains("headers")) {
+    for (const auto& header : declared.at("headers").items()) {
+      const auto found = response.headers.find(Lower(header.key()));
+      result |= Check(found != response.headers.end(), name,
+                      "OpenAPI required response header is missing");
+      if (found != response.headers.end())
+        result |= Check(SchemaMatches(document, header.value().at("schema"), found->second), name,
+                        "response header violates the OpenAPI schema");
+    }
+  }
+  if (response.headers.contains("location"))
+    result |=
+        Check(response.status == 202 && path == "/v1/jobs" && method == "post" &&
+                  response.headers.at("location") == JobPath(body.at("job_id").get<std::string>()),
+              name, "Location does not identify the created resource");
+  if (body.contains("error") && content.contains("examples")) {
+    result |=
+        Check(std::ranges::any_of(content.at("examples"),
+                                  [&](const Json& example) {
+                                    const auto& expected = example.at("value").at("error");
+                                    return body.at("error").at("domain") == expected.at("domain") &&
+                                           body.at("error").at("code") == expected.at("code");
+                                  }),
+              name, "status/domain/code pair is not documented by the operation");
+  }
+  return result;
+}
+
+int OpenApiContract() {
+  constexpr std::string_view name = "rest_v1_openapi_contract";
+  const auto document = ReadJsonFile("schemas/openapi/rest-v1.openapi.json");
+  int result = Check(document.at("openapi") == "3.1.0", name, "wrong OpenAPI version");
+  std::size_t operations = 0;
+  for (const auto& item : document.at("paths"))
+    for (const auto& value : item)
+      if (value.is_object() && value.contains("operationId")) ++operations;
+  result |= Check(operations == 6, name, "OpenAPI operation inventory changed");
+  Scenario fresh;
+  result |= ContractResponse(document, "/v1/jobs", "post",
+                             fresh.Exchange(Request("POST", "/v1/jobs", CreateBody())), 202);
+  result |= ContractResponse(document, "/v1/jobs", "get",
+                             fresh.Exchange(Request("GET", "/v1/jobs")), 200);
+  result |= ContractResponse(document, "/v1/health", "get",
+                             fresh.Exchange(Request("GET", "/v1/health")), 200);
+  result |= ContractResponse(document, "/v1/ready", "get",
+                             fresh.Exchange(Request("GET", "/v1/ready")), 200);
+  for (const auto state : {"admitted", "stopping", "finalizing", "succeeded", "failed", "cancelled",
+                           "terminated", "timed_out"}) {
+    ScenarioOptions options;
+    options.seeds = {StateFixture(state)};
+    Scenario fixture(options);
+    const auto id = options.seeds[0].job_id.value;
+    result |= ContractResponse(document, "/v1/jobs/{job_id}", "get",
+                               fixture.Exchange(Request("GET", JobPath(id))), 200);
+    const auto cancel = fixture.Exchange(Request("POST", JobPath(id, true)));
+    result |= ContractResponse(document, "/v1/jobs/{job_id}/cancel", "post", cancel,
+                               std::string_view(state) == "admitted" ? 202 : 409);
+  }
+  for (const auto& vector : ErrorVectors()) {
+    if (vector.status == 405) continue;  // The component response is checked below with Allow.
+    std::string path = "/v1/jobs";
+    std::string method = vector.request.starts_with("POST ") ? "post" : "get";
+    if (vector.name == "invalid-id" || vector.name == "unknown-job") path = "/v1/jobs/{job_id}";
+    result |= ContractResponse(document, path, method,
+                               Send(*fresh.backend, vector.options, vector.request), vector.status);
+  }
+  ScenarioOptions closed_options;
+  closed_options.seeds = {StateFixture("admitted")};
+  closed_options.unresolved = true;
+  Scenario closed(closed_options);
+  result |= ContractResponse(document, "/v1/ready", "get",
+                             closed.Exchange(Request("GET", "/v1/ready")), 503);
+  result |= ContractResponse(document, "/v1/jobs", "post",
+                             closed.Exchange(Request("POST", "/v1/jobs", CreateBody())), 503);
+  result |= ContractResponse(document, "/v1/jobs/{job_id}/cancel", "post",
+                             closed.Exchange(Request("POST", JobPath(k_unknown_id, true))), 503);
+  closed.writer->LatchReadinessFailure();
+  result |= ContractResponse(document, "/v1/jobs", "post",
+                             closed.Exchange(Request("POST", "/v1/jobs", CreateBody())), 503);
+  result |= ContractResponse(document, "/v1/jobs/{job_id}/cancel", "post",
+                             closed.Exchange(Request("POST", JobPath(k_unknown_id, true))), 503);
+  for (const bool resident_full : {false, true}) {
+    ScenarioOptions limits;
+    if (resident_full) {
+      limits.seeds = {StateFixture("admitted")};
+      limits.max_jobs = 1;
+    }
+    Scenario limited(limits);
+    WriterQueueHold hold(*limited.writer);
+    const auto create = limited.Exchange(Request("POST", "/v1/jobs", CreateBody()));
+    result |=
+        RestError(create, name, 503, "service", resident_full ? "capacity_exhausted" : "busy");
+    result |= ContractResponse(document, "/v1/jobs", "post", create, 503);
+    const auto cancel = limited.Exchange(Request("POST", JobPath(k_unknown_id, true)));
+    result |= RestError(cancel, name, 503, "service", "busy");
+    result |= ContractResponse(document, "/v1/jobs/{job_id}/cancel", "post", cancel, 503);
+  }
+  for (const auto& [path, item] : document.at("paths").items()) {
+    auto target = path;
+    const auto parameter = target.find("{job_id}");
+    if (parameter != std::string::npos) target.replace(parameter, 8, k_unknown_id);
+    std::string allow;
+    for (const auto& [method, operation] : item.items()) {
+      if (!operation.is_object() || !operation.contains("operationId")) continue;
+      if (!allow.empty()) allow.append(", ");
+      auto upper = method;
+      std::ranges::transform(upper, upper.begin(),
+                             [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+      allow.append(upper);
+    }
+    const auto refusal = fresh.Exchange(Request("PUT", target));
+    result |= RestError(refusal, name, 405, "request", "method_not_allowed");
+    result |= Check(refusal.headers.contains("allow") && refusal.headers.at("allow") == allow, name,
+                    "Allow differs from OpenAPI operation inventory");
+    if (refusal.status == 405)
+      result |= Check(SchemaMatches(document,
+                                    document.at("components")
+                                        .at("responses")
+                                        .at("MethodNotAllowed")
+                                        .at("content")
+                                        .at("application/json")
+                                        .at("schema"),
+                                    Json::parse(refusal.body)),
+                      name, "405 body violates the OpenAPI component schema");
+  }
+  ThrowingBackend throwing;
+  result |= ContractResponse(document, "/v1/ready", "get",
+                             Send(throwing, Options{}, Request("GET", "/v1/ready")), 500);
+  const auto& schema = document.at("components").at("schemas").at("Job");
+  Json valid{
+      {"job_id", GeneratedId(0)}, {"state", "admitted"}, {"terminal", false}, {"outcome", nullptr}};
+  result |= Check(SchemaMatches(document, schema, valid) && CrossFieldsMatch(valid), name,
+                  "schema evaluator rejected a valid Job control");
+  for (const auto field : {"job_id", "state", "terminal", "outcome"}) {
+    auto missing = valid;
+    missing.erase(field);
+    result |= Check(!SchemaMatches(document, schema, missing), name,
+                    "schema evaluator accepted a missing required field");
+  }
+  auto extra = valid;
+  extra["future_optional_field"] = 1;
+  result |= Check(SchemaMatches(document, schema, extra), name,
+                  "schema evaluator rejected an additive response field");
+  for (const auto invalid_state : {"absent", "INVALID"}) {
+    auto invalid = valid;
+    invalid["state"] = invalid_state;
+    result |= Check(!SchemaMatches(document, schema, invalid), name,
+                    "schema evaluator ignored the closed state enum");
+  }
+  auto invalid = valid;
+  invalid["job_id"] = "01890f30-7b54-4cc3-98c4-dc0c0c07398f";
+  result |= Check(!SchemaMatches(document, schema, invalid), name,
+                  "schema evaluator ignored UUID pattern");
+  invalid = valid;
+  invalid["terminal"] = true;
+  result |= Check(!CrossFieldsMatch(invalid), name,
+                  "cross-field check accepted inconsistent terminal state");
+  auto impossible = schema;
+  impossible["properties"]["job_id"]["pattern"] = "^never-a-job-id$";
+  result |= Check(!SchemaMatches(document, impossible, valid), name,
+                  "schema evaluator did not consult the schema pattern");
+  const auto& create_schema = document.at("components").at("schemas").at("CreateJobRequest");
+  result |= Check(
+      SchemaMatches(document, create_schema, Json::parse(CreateBody())) &&
+          !SchemaMatches(document, create_schema, Json{{"application_id", "app"}, {"extra", 1}}) &&
+          !SchemaMatches(document, create_schema, Json{{"application_id", ""}}),
+      name, "schema evaluator ignored request shape or character bounds");
+  const auto& cancel_schema = document.at("components").at("schemas").at("CancelJobRequest");
+  result |= Check(SchemaMatches(document, cancel_schema, Json::object()) &&
+                      !SchemaMatches(document, cancel_schema, Json{{"x", 1}}),
+                  name, "schema evaluator ignored empty cancel-object bound");
+  const auto& location_schema = document.at("paths")
+                                    .at("/v1/jobs")
+                                    .at("post")
+                                    .at("responses")
+                                    .at("202")
+                                    .at("headers")
+                                    .at("Location")
+                                    .at("schema");
+  result |= Check(!SchemaMatches(document, location_schema, "/v1/jobs/invalid"), name,
+                  "schema evaluator accepted an invalid Location");
+  bool unsupported_refused = false;
+  try {
+    auto unreviewed = schema;
+    unreviewed["unreviewedValidationKeyword"] = true;
+    (void)SchemaMatches(document, unreviewed, valid);
+  } catch (const std::runtime_error&) {
+    unsupported_refused = true;
+  }
+  result |=
+      Check(unsupported_refused, name, "schema evaluator silently ignored an unknown keyword");
+  return result;
+}
+
+std::string ReadText(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+int SitometrondEmptyRegistry() {
+  constexpr std::string_view name = "rest_v1_sitometrond_empty_registry";
+  int result = 0;
+  for (const bool unresolved : {false, true}) {
+    const ScopedTempDirectory directory("issue106-empty-registry");
+    const auto segment = directory.Path() / sitometron::journal::SegmentJournal::SegmentName(1);
+    if (unresolved) {
+      sitometron::journal::SegmentJournal journal(sitometron::journal::SystemFileSystem());
+      if (!journal.Open(directory.Path().string()).ok)
+        return Check(false, name, "seed Journal did not open");
+      const core::Uuid id{std::string(k_job_id)};
+      if (journal.Commit(core::LogicalJobEvent{1,
+                                               1,
+                                               core::EventType::kJobCreated,
+                                               {"2026-10-23T00:00:00Z"},
+                                               id,
+                                               core::JobCreatedPayload{id}}) !=
+          core::LogicalCommitResult::kCommitted)
+        return Check(false, name, "seed Journal did not commit");
+    }
+    const auto original = ReadText(segment);
+    sitometron::daemon::StartupConfig config;
+    config.journal_path = directory.Path().string();
+    config.http.listen_port = 0;
+    config.max_jobs = 2;
+    sitometron::daemon::Phase1Composition daemon(config);
+    std::string error;
+    if (!daemon.Start(error)) return Check(false, name, "production composition did not start");
+    for (const auto& id : {std::string("a"), std::string("unknown"), std::string(128, 'z'),
+                           std::string("UPPER"), std::string("a/b"), std::string("\xc3\xa9")})
+      result |=
+          RestError(SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody(id))),
+                    name, 422, "job", "unknown_application");
+    if (!unresolved) {
+      const auto started = std::chrono::steady_clock::now();
+      const auto response =
+          SendToPort(daemon.listen_port(), Request("POST", JobPath(k_unknown_id, true)));
+      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::steady_clock::now() - started)
+                               .count();
+      std::cout << name << ": production unknown cancel status=" << response.status
+                << " round_trip_us=" << elapsed << '\n';
+      result |= RestError(response, name, 404, "job", "job_not_found");
+    }
+    const auto list = SendToPort(daemon.listen_port(), Request("GET", "/v1/jobs"));
+    result |= ExpectStatus(list, name, 200);
+    if (list.status == 200)
+      result |= Check(Json::parse(list.body).at("jobs").size() == (unresolved ? 1U : 0U), name,
+                      "production empty registry created a resident Job");
+    daemon.Stop();
+    result |= Check(daemon.clock_reads() == 0 && daemon.identity_reads() == 0, name,
+                    "production empty registry accessed the inert clock or identity source");
+    result |= Check(ReadText(segment) == original, name,
+                    "production registry refusal changed Journal bytes");
+  }
+  return result;
+}
+
+}  // namespace job_routes
+
 int Run(std::string_view name, const std::string& sitometrond_path) {
+  if (name == "rest_v1_openapi_contract") return job_routes::OpenApiContract();
+  if (name == "rest_v1_create_commits_before_202") return job_routes::CreateCommitsBefore202();
+  if (name == "rest_v1_create_rejects_unknown_application")
+    return job_routes::CreateRejectsUnknownApplication();
+  if (name == "rest_v1_create_never_waits") return job_routes::CreateNeverWaits();
+  if (name == "rest_v1_job_resource_from_committed_state")
+    return job_routes::JobResourceFromCommittedState();
+  if (name == "rest_v1_list_resident_in_creation_order")
+    return job_routes::ListResidentInCreationOrder();
+  if (name == "rest_v1_cancel_status_mapping") return job_routes::CancelStatusMapping();
+  if (name == "rest_v1_cancel_records_configured_principal")
+    return job_routes::CancelRecordsConfiguredPrincipal();
+  if (name == "rest_v1_validation_before_submission")
+    return job_routes::ValidationBeforeSubmission();
+  if (name == "rest_v1_error_envelope_and_codes") return job_routes::ErrorEnvelopeAndCodes();
+  if (name == "rest_v1_errors_leak_nothing") return job_routes::ErrorsLeakNothing();
+  if (name == "rest_v1_not_ready_refuses_writes") return job_routes::NotReadyRefusesWrites();
+  if (name == "rest_v1_create_serialized") return job_routes::CreateSerialized();
+  if (name == "rest_v1_already_pending_is_busy") return job_routes::AlreadyPendingIsBusy();
+  if (name == "rest_v1_create_without_body") return job_routes::CreateWithoutBody();
+  if (name == "rest_v1_json_rejects_raw_nul") return job_routes::JsonRejectsRawNul();
+  if (name == "rest_v1_json_rejects_invalid_utf8") return job_routes::JsonRejectsInvalidUtf8();
+  if (name == "rest_v1_json_rejects_trailing_data") return job_routes::JsonRejectsTrailingData();
+  if (name == "rest_v1_json_rejects_duplicate_keys_at_any_depth")
+    return job_routes::JsonRejectsDuplicateKeysAtAnyDepth();
+  if (name == "rest_v1_registered_application_id_form")
+    return job_routes::RegisteredApplicationIdForm();
+  if (name == "rest_v1_cancel_body") return job_routes::CancelBody();
+  if (name == "rest_v1_json_rejects_leading_bom") return job_routes::JsonRejectsLeadingBom();
+  if (name == "rest_v1_json_rejects_lone_surrogate") return job_routes::JsonRejectsLoneSurrogate();
+  if (name == "rest_v1_sitometrond_empty_registry") return job_routes::SitometrondEmptyRegistry();
   if (name == "rest_v1_loopback_only") return LoopbackOnly();
   if (name == "rest_v1_unknown_route_and_method") return UnknownRouteAndMethod();
   if (name == "rest_v1_job_routes_not_ready") return JobRoutesNotReady();
