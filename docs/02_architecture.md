@@ -26,7 +26,7 @@ I/O/framework ownership. Only `sitometrond` composes concrete adapters.
 | `sitometron_test_support` and private fake-support targets | Deterministic fakes, barriers, and test helpers | Tests only |
 | `sitometrond` | Composition root and daemon entry point | Core initially; adapters by Phase |
 | `sitometron_journal` | Physical JobJournal adapter: canonical record codec, durable segment writer, startup validation, replay that seeds the writer, and offline maintenance (torn-tail quarantine and prefix pruning through a separate maintenance file system the daemon never takes) | Accepted ADR-0006; owns its own I/O and JSON dependencies; exposes Sitometron-owned types only |
-| `sitometron_http` | External REST v1 adapter dependency target; Issue #96 supplies a placeholder only and no REST behavior | Accepted ADR-0010/0011; private Beast, Asio, and nlohmann-json allowlist; Sitometron-owned public headers only |
+| `sitometron_http` | External REST v1 adapter | Accepted ADR-0010/0011; private Beast, Asio, and nlohmann-json allowlist; Sitometron-owned public headers only |
 
 Later adapter targets are introduced only by their owning Issues:
 

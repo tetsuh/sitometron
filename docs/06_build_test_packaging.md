@@ -15,10 +15,10 @@ asan-ubsan
 tsan
 ```
 
-Production adapter behavior remains disabled until its owning Phase enables and qualifies it. The
-Issue #96 dependency-only `sitometron_http` target is enabled by default; the other adapter options
-remain disabled because their dependencies are not in the manifest. See [the dependency
-policy](09_dependency_policy.md).
+Issue #105 enables and qualifies the production External REST v1 adapter: the `sitometron_http`
+target, on by default, builds `src/http/http_server.cpp` and serves the Phase 1 routes that this
+document's `API` rows name. The other adapter options remain disabled because their dependencies
+are not in the manifest. See [the dependency policy](09_dependency_policy.md).
 
 ## 2. C++ style and analysis
 
@@ -40,12 +40,12 @@ Phase 0A PR CI requires:
 The Linux clang-tidy step resolves the absolute `clang-tidy-18` application and runs the
 standard-library-only `tools/run_clang_tidy.py` helper against
 `build/dev-linux/compile_commands.json`. The helper intersects tracked `apps/**/*.cpp`,
-`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 24-source set and
+`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the frozen 26-source set and
 LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection drift.
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the 74-test `dev-linux` baseline. It runs without suppressions using
+CTest-name parity with the 106-test `dev-linux` baseline. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -179,13 +179,53 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `OPS-003` | CTests `journal_replay_reproduces_vectors`, `journal_replay_dispatches_no_effects`, `journal_replay_sequence_continuation` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #61 |
 | `OPS-004` | CTests `journal_unresolved_jobs_block_admission`, `journal_resolved_jobs_seed_writer` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #64 |
 | `OPS-005` | CTests `journal_prune_prefix_only`, `journal_prune_refuses_open_jobs`, `journal_prune_keeps_last_record`, `journal_quarantine_torn_tail`, `journal_maintenance_requires_lock`, `journal_maintenance_faults`, `journal_maintenance_system_file_system` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #69 |
-| `API-001` | CTests `rest_v1_loopback_only`, `rest_v1_openapi_contract`, `rest_v1_unknown_route_and_method` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
+| `API-001` | CTests `rest_v1_loopback_only`, `rest_v1_openapi_contract`, `rest_v1_unknown_route_and_method` | Normative under Accepted ADR-0008 under Issue #76; #105 activates loopback and unknown-route/method, #106 activates the OpenAPI contract check |
 | `API-002` | CTests `rest_v1_create_commits_before_202`, `rest_v1_create_rejects_unknown_application`, `rest_v1_create_never_waits` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
 | `API-003` | CTests `rest_v1_job_resource_from_committed_state`, `rest_v1_list_resident_in_creation_order` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
 | `API-004` | CTests `rest_v1_cancel_status_mapping`, `rest_v1_cancel_records_configured_principal` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
 | `API-005` | CTests `rest_v1_validation_before_submission`, `rest_v1_error_envelope_and_codes`, `rest_v1_errors_leak_nothing` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
-| `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_not_ready_refuses_writes` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
-| `API-007` | CTests `rest_v1_malformed_request_refused`, `rest_v1_http10_request_answered`, `rest_v1_absolute_form_target`, `rest_v1_targets_without_a_path`, `rest_v1_header_receive_timeout`, `rest_v1_target_too_long`, `rest_v1_headers_too_large`, `rest_v1_unknown_transfer_coding` (Section 1); `rest_v1_body_bound_after_routing`, `rest_v1_body_receive_timeout` (Section 2); `rest_v1_create_serialized`, `rest_v1_already_pending_is_busy` (Section 3); `rest_v1_query_refused` (Section 4); `rest_v1_create_without_body` (Section 5); `rest_v1_unlisted_methods_refused` (Section 6); `rest_v1_error_details_empty` (Section 7); `rest_v1_json_rejects_raw_nul`, `rest_v1_json_rejects_invalid_utf8`, `rest_v1_json_rejects_trailing_data`, `rest_v1_json_rejects_duplicate_keys_at_any_depth` (Section 8); `rest_v1_registered_application_id_form` (Section 9); `rest_v1_cancel_body` (Section 10) of ADR-0009 | Normative under Accepted ADR-0009 under Issue #86; checks Planned, activated by the production adapter Issue |
+| `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_not_ready_refuses_writes` | Normative under Accepted ADR-0008 under Issue #76; #105 activates health/readiness; `rest_v1_not_ready_refuses_writes` remains Planned for Issue #106 |
+| `API-007` | CTests `rest_v1_malformed_request_refused`, `rest_v1_bare_lf_refused`, `rest_v1_http10_request_answered`, `rest_v1_absolute_form_target`, `rest_v1_targets_without_a_path`, `rest_v1_header_receive_timeout`, `rest_v1_target_too_long`, `rest_v1_headers_too_large`, `rest_v1_unknown_transfer_coding`, `rest_v1_transfer_encoding_with_content_length_refused` (Section 1); `rest_v1_body_bound_after_routing`, `rest_v1_body_receive_timeout` (Section 2); `rest_v1_create_serialized`, `rest_v1_already_pending_is_busy` (Section 3); `rest_v1_query_refused` (Section 4); `rest_v1_create_without_body` (Section 5); `rest_v1_unlisted_methods_refused` (Section 6); `rest_v1_error_details_empty` (Section 7); `rest_v1_json_rejects_raw_nul`, `rest_v1_json_rejects_invalid_utf8`, `rest_v1_json_rejects_trailing_data`, `rest_v1_json_rejects_duplicate_keys_at_any_depth` (Section 8); `rest_v1_registered_application_id_form` (Section 9); `rest_v1_cancel_body` (Section 10) of ADR-0009 | Normative under Accepted ADR-0009 under Issue #86; Issue #105 activates its Section 1, 2, 4, 6, and 7 names; #106 activates the remaining names |
+
+Issue #105 separately activates `rest_v1_job_routes_not_ready` as an interim transport check. Its
+Phase 1 Job-route `503 service/not_ready` response is not part of the REST v1 contract. The Planned
+`rest_v1_not_ready_refuses_writes` check is not registered as a CTest until Issue #106 implements it.
+
+Issue #105 additionally gives each adapter-owned `400 malformed_request` refusal its own CTest entry:
+
+| Adapter-owned refusal | RFC authority | CTest |
+|---|---|---|
+| A bare LF line ending in the request line, a field line, or the terminating empty line (the adapter does not exercise the RFC 9112 Section 2.2 option to recognize LF alone) | RFC 9112 Section 2.2 | `rest_v1_bare_lf_refused` |
+| Invalid request-target form (not origin-form, absolute-form, asterisk-form, or authority-form), or an http or https URI without a host | RFC 9112 Sections 3.1-3.2; RFC 9110 Sections 4.2.1-4.2.2 and 7.1 | `rest_v1_invalid_request_target_refused` |
+| CONNECT authority-form with an empty or out-of-range port (port `0` and leading-zero forms are accepted when their numeric value is at most `65535`) | RFC 9110 Section 9.3.6 | `rest_v1_invalid_request_target_refused` |
+| Missing Host field in HTTP/1.1 | RFC 9112 Section 3.2 | `rest_v1_missing_host_refused` |
+| More than one Host field line | RFC 9112 Section 3.2 | `rest_v1_repeated_host_refused` |
+| Host value is not a valid `uri-host [ ":" port ]` value | RFC 9112 Section 3.2; RFC 9110 Section 7.2 | `rest_v1_invalid_host_refused` |
+| Transfer-Encoding has a final coding other than `chunked` | RFC 9112 Sections 6.1 and 6.3 | `rest_v1_nonfinal_transfer_coding_refused` |
+| `chunked` is repeated inside one Transfer-Encoding field | RFC 9112 Sections 6.1, 6.3, and 7.1 | `rest_v1_repeated_chunked_refused` |
+| `chunked` has a transfer parameter | RFC 9112 Section 7.1; RFC 9110 Section 10.1.4 | `rest_v1_chunked_parameters_refused` |
+| Transfer-coding or transfer-parameter syntax is invalid (for example a parameter without `=` or a non-tchar byte in a coding); empty list elements are ignored as RFC 9110 Section 5.6.1.2 requires, bounded only by the header limit | RFC 9112 Section 6.1; RFC 9110 Sections 5.6.1.2, 5.6.2, and 10.1.4 | `rest_v1_invalid_transfer_coding_refused` |
+| Transfer-Encoding combined with Content-Length | RFC 9112 Sections 6.1 and 6.3 | `rest_v1_transfer_encoding_with_content_length_refused` |
+| Transfer-Encoding appears in an HTTP/1.0 request | RFC 9112 Section 6.1 | `rest_v1_http10_transfer_encoding_refused` |
+| Obsolete line folding (obs-fold) in a field line | RFC 9112 Section 5.2 | `rest_v1_obs_fold_refused` |
+
+Beast 1.91.0 owns the remaining parser refusals in `rest_v1_malformed_request_refused`, including
+invalid request-line syntax, invalid field syntax, and invalid Content-Length syntax or value. The
+adapter must not duplicate those cases. After the adapter's checks, it hands Beast a single canonical
+`Transfer-Encoding: chunked` line. The adapter-owned list above was established by the RED probe
+against the pinned Beast source and header parser behavior; a final report records the exact probe
+command and representative output.
+
+A `HEAD` response carries the status and headers of the `GET`-equivalent response and no content
+(RFC 9110 Section 9.3.2).
+
+The startup configuration and in-process composed-daemon smoke are covered by
+`rest_v1_sitometrond_options`, which also exercises representative unknown, repeated, missing,
+malformed, and out-of-range command-line values. The executable entrypoint smoke is
+`rest_v1_sitometrond_entrypoint`: malformed options and their documented status `2` run on every
+platform; the valid subprocess starts on loopback port `0`, answers health and readiness, and is
+stopped with `SIGTERM` on POSIX. Windows runs only the malformed-option portion because the test
+has no portable clean console-signal path that also verifies exit status `0`.
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even

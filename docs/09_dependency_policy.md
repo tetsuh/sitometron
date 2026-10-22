@@ -25,7 +25,7 @@ headers it may include. Accepted
 [ADR-0011](adr/0011-use-nlohmann-json-for-the-external-rest-v1-adapter.md) adds `nlohmann-json`, which
 the manifest already resolves, to the same target. Issue #96 adds the Boost ports to `vcpkg.json`,
 links all three dependencies privately to `sitometron_http`, and records the Linux and Windows
-closure evidence. It implements no REST behavior; that remains with the production adapter Issue.
+closure evidence. Issue #105 implements the REST behavior on that target.
 
 Issue #17 implemented the allowlist and activated all five stable `NFR-005` checks on Linux and
 Windows. Accepted ADR-0003 and Issue #12 later authorized only the private synchronization headers

@@ -92,6 +92,35 @@ See [the build and test specification](docs/06_build_test_packaging.md) and
 and CI-equivalent evidence.
 In-source builds are rejected.
 
+## Phase 1 daemon configuration
+
+When HTTP is enabled, `sitometrond` requires a Journal directory and serves External REST v1 on a
+loopback address. Phase 1 performs the transport checks for Job routes and answers them with the
+interim `503 service/not_ready` response; this Phase 1 response is not part of the REST v1
+contract. JSON and Job handling arrive with Issue #106. Health and readiness are available in this
+issue.
+
+```sh
+build/dev-linux/sitometrond --journal /path/to/journal \
+  --listen 127.0.0.1:8080 --cancel-principal local-operator --max-jobs 32
+```
+
+Options are strict: unknown, repeated, missing, or malformed values refuse startup. The defaults
+and bounds decided by Issue #105 are:
+
+- `--listen ADDRESS:PORT`: `127.0.0.1:8080`; loopback only, port `0` permits an ephemeral port;
+- `--journal DIR`: required and has no default;
+- `--cancel-principal NAME`: `local-operator`, 1–256 visible ASCII characters;
+- `--max-jobs N`: 32, range 1–1024;
+- `--target-limit BYTES`: 8192, range 2048–65536;
+- `--header-limit BYTES`: 16384, range 8192–262144;
+- `--body-limit BYTES`: 65536, range 4096–1048576;
+- `--header-timeout-ms N` and `--body-timeout-ms N`: 5000 each, range 1–60000.
+
+The combined raw request cap is `header-limit + body-limit + 4096` bytes, including chunk framing
+but excluding skipped leading empty lines.
+It is checked only after route, method, and media type so it cannot change their refusal order.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
