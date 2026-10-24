@@ -852,7 +852,7 @@ ResponseSpec DispatchRequest(const RequestInfo& request, std::string_view body, 
 
   const auto create = route == Route::kJobs && request.method == "POST";
   Json value;
-  if (create || !body.empty() || (route == Route::kCancel && body_present)) {
+  if (create || body_present) {
     value = ParseJson(body);
     if (value.is_discarded())
       return ErrorResponse(400, "request", "malformed_json", "the body is not valid JSON");
