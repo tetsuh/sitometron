@@ -852,7 +852,7 @@ ResponseSpec DispatchRequest(const RequestInfo& request, std::string_view body, 
 
   const auto create = route == Route::kJobs && request.method == "POST";
   Json value;
-  if (create || !body.empty()) {
+  if (create || !body.empty() || (route == Route::kCancel && body_present)) {
     value = ParseJson(body);
     if (value.is_discarded())
       return ErrorResponse(400, "request", "malformed_json", "the body is not valid JSON");
@@ -882,7 +882,7 @@ ResponseSpec DispatchRequest(const RequestInfo& request, std::string_view body, 
     return JobResponse(backend.CreateJob(value.at("application_id").get_ref<const std::string&>()),
                        true);
   }
-  if ((!body.empty() && route == Route::kCancel && (!value.is_object() || !value.empty())) ||
+  if ((body_present && route == Route::kCancel && (!value.is_object() || !value.empty())) ||
       (body_present && route != Route::kCancel))
     return ErrorResponse(422, "request", "validation_failed", "the request body is not allowed");
   if (route == Route::kJob || route == Route::kCancel) {

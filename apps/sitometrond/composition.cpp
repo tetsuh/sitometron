@@ -108,8 +108,8 @@ class Phase1Backend final : public http::Backend {
     if (max_jobs == 0 || replayed.size() > max_jobs ||
         !std::ranges::all_of(applications_, RegisteredApplicationForm))
       throw std::invalid_argument("invalid Backend composition");
-    // Reserve every fixed-size UUID string before serving requests. Index publication cannot
-    // allocate after a commit, and provisional entries are filtered through committed snapshots.
+    // Reserve every fixed-size UUID string before serving requests. Index publication reuses
+    // this storage only after successful completion and confirmation of the committed resource.
     for (auto& id : order_) id.reserve(36);
     for (const auto& snapshot : replayed) order_[order_size_++] = snapshot.job_id.value;
   }
@@ -136,11 +136,6 @@ class Phase1Backend final : public http::Backend {
     if (created.ingress.code != IngressCode::kAdmitted)
       return {IngressStatus(created.ingress.code), std::nullopt};
     if (!created.job_id) return {};
-    {
-      const std::lock_guard index(index_mutex_);
-      if (order_size_ == order_.size()) throw std::logic_error("resident index exhausted");
-      order_[order_size_++] = created.job_id->value;
-    }
     // Owner decision A, 2026-10-24: synchronously await this turn on the submitting I/O thread.
     const auto completion = orchestrator_.AwaitCompletion(created.ingress.ingress_sequence);
     if (!completion) return {};
@@ -149,6 +144,13 @@ class Phase1Backend final : public http::Backend {
     if (completion->code != core::internal::Completion::Code::kSuccess) return {};
     auto job = GetJob(created.job_id->value);
     if (!job) return {};
+    {
+      const std::lock_guard index(index_mutex_);
+      if (std::ranges::find(order_, job->job_id) == order_.end()) {
+        if (order_size_ == order_.size()) throw std::logic_error("resident index exhausted");
+        order_[order_size_++] = job->job_id;
+      }
+    }
     return {http::JobResultCode::kSuccess, std::move(job)};
   }
 
