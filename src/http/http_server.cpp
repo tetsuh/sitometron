@@ -868,9 +868,9 @@ ResponseSpec DispatchRequest(const RequestInfo& request, std::string_view body, 
     const auto readiness = backend.GetReadiness();
     Json reasons = Json::array();
     for (const auto& reason : readiness.reasons) {
-      Json value{{"code", reason.code}};
-      if (!reason.job_ids.empty()) value["job_ids"] = reason.job_ids;
-      reasons.push_back(std::move(value));
+      Json reason_value{{"code", reason.code}};
+      if (!reason.job_ids.empty()) reason_value["job_ids"] = reason.job_ids;
+      reasons.push_back(std::move(reason_value));
     }
     return {readiness.ready ? 200 : 503,
             Json{{"ready", readiness.ready}, {"reasons", std::move(reasons)}}.dump(), std::nullopt};
