@@ -3431,6 +3431,45 @@ int ErrorEnvelopeAndCodes() {
         HeadRefusalVector{label, vector.options, vector.request, head, reference, false,
                           vector.status, head_status, vector.domain, vector.code});
   }
+  struct BodylessRoute {
+    std::string target;
+    std::string_view allow;
+    int bodyless_status;
+  };
+  const std::array routes = {
+      BodylessRoute{"/v1/health", "GET", 200}, BodylessRoute{"/v1/ready", "GET", 200},
+      BodylessRoute{"/v1/jobs", "GET, POST", 200}, BodylessRoute{JobPath(), "GET", 404}};
+  for (const auto& route : routes) {
+    for (const auto& media :
+         {std::optional<std::string>{}, std::optional<std::string>{"text/plain"},
+          std::optional<std::string>{"application/json"}}) {
+      const auto label = std::string(name)
+                             .append(" [empty-chunked, ")
+                             .append(route.target)
+                             .append(", ")
+                             .append(media.value_or("no media"))
+                             .append("]");
+      const auto headers =
+          media ? std::string("Content-Type: ").append(*media).append("\r\n") : std::string{};
+      auto get = Request("GET", route.target, std::nullopt, std::nullopt,
+                         headers + "Transfer-Encoding: chunked\r\n") +
+                 "0\r\n\r\n";
+      const bool json = media && *media == "application/json";
+      result |= RestError(fixture.Exchange(get), label, json ? 400 : 415, "request",
+                          json ? "malformed_json" : "unsupported_media_type");
+      auto head = get;
+      head.replace(0, 3, "HEAD");
+      const auto response = fixture.Exchange(head);
+      result |= ExpectStatus(response, label, 405);
+      const auto allow = response.headers.find("allow");
+      result |= Check(allow != response.headers.end() && allow->second == route.allow, label,
+                      "HEAD Allow mismatch");
+      result |= Check(response.body.empty(), label, "HEAD response carried content");
+      result |= ExpectStatus(fixture.Exchange(Request("GET", route.target, "", media)), label,
+                             route.bodyless_status);
+      result |= fixture.NoSubmission(label);
+    }
+  }
   ThrowingBackend throwing;
   result |= RestError(Send(throwing, Options{}, Request("GET", "/v1/ready")), name, 500, "service",
                       "internal");
