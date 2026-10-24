@@ -2125,7 +2125,7 @@ core::Snapshot StateFixture(std::string_view state) {
   static const auto vectors = ReadJsonFile("schemas/core/v1/job-reducer-vectors.json");
   for (const auto& vector : vectors.at("case_vectors")) {
     const auto& snapshot = vector.at("initial_snapshot");
-    if (snapshot.is_object() && snapshot.at("state") == state)
+    if (snapshot.is_object() && snapshot.at("state") == std::string(state))
       return sitometron::test::SnapshotFrom(snapshot);
   }
   throw std::runtime_error("state fixture is missing");
@@ -2697,8 +2697,9 @@ int ListResidentInCreationOrder() {
       result |=
           Check(jobs.at(index).at("job_id") == order[index], name, "list is not in creation order");
       const auto current = fixture.writer->SnapshotFor(core::Uuid{order[index]});
-      result |= Check(current && jobs.at(index).at("state") == core::ToString(current->state), name,
-                      "list used a stale or speculative state");
+      result |= Check(
+          current && jobs.at(index).at("state") == std::string(core::ToString(current->state)),
+          name, "list used a stale or speculative state");
     }
   }
   return result;
