@@ -2702,6 +2702,54 @@ int ListResidentInCreationOrder() {
           name, "list used a stale or speculative state");
     }
   }
+  ScenarioOptions collision_options;
+  collision_options.max_jobs = 2;
+  auto replayed = StateFixture("cancelled");
+  replayed.job_id.value = GeneratedId(0);
+  replayed.session_id = replayed.job_id;
+  collision_options.seeds = {replayed};
+  const auto collision_name = std::string(name).append(" [replayed-id-collision]");
+  {
+    // A new source instance may issue an ID from an earlier instance's replayed history.
+    Scenario control(collision_options);
+    const auto duplicate = control.writer->CreateJob();
+    const auto completion = control.writer->AwaitCompletion(duplicate.ingress.ingress_sequence);
+    result |= Check(duplicate.ingress.code == internal::IngressCode::kAdmitted && completion &&
+                        completion->code == internal::Completion::Code::kReducerRejection &&
+                        completion->rejection &&
+                        completion->rejection->reason == core::RejectionReason::kJobAlreadyExists &&
+                        control.journal.Attempts().empty() && control.writer->resident_count() == 1,
+                    collision_name, "core did not reject the replay collision without a commit");
+  }
+  Scenario collision(collision_options);
+  result |= RestError(collision.Exchange(Request("POST", "/v1/jobs", CreateBody())), collision_name,
+                      500, "service", "internal");
+  result |= Check(collision.writer->CopyIngressSequences().size() == 1 &&
+                      collision.writer->writer_turn_count() == 1 &&
+                      collision.writer->resident_count() == 1 &&
+                      collision.journal.Attempts().empty() && !collision.writer->failed(),
+                  collision_name, "rejected creation changed the resident or Journal population");
+  response = collision.Exchange(Request("GET", "/v1/jobs"));
+  result |= ExpectStatus(response, collision_name, 200);
+  if (response.status == 200) {
+    const auto jobs = Json::parse(response.body).at("jobs");
+    result |= Check(jobs.size() == 1 && jobs.at(0).at("job_id") == replayed.job_id.value,
+                    collision_name, "rejected creation duplicated the replayed resident");
+  }
+  result |= Created(collision, collision.Exchange(Request("POST", "/v1/jobs", CreateBody())),
+                    collision_name, 1);
+  (void)collision.writer->WaitForWriterIdle();
+  response = collision.Exchange(Request("GET", "/v1/jobs"));
+  result |= ExpectStatus(response, collision_name, 200);
+  if (response.status == 200) {
+    const auto jobs = Json::parse(response.body).at("jobs");
+    result |= Check(jobs.size() == 2 && jobs.at(0).at("job_id") == replayed.job_id.value &&
+                        jobs.at(1).at("job_id") == GeneratedId(1),
+                    collision_name, "rejected creation consumed the following valid index slot");
+  }
+  result |=
+      Check(collision.writer->resident_count() == 2 && collision.journal.Attempts().size() == 1,
+            collision_name, "following valid creation did not use the remaining resident slot");
   return result;
 }
 
@@ -3134,7 +3182,28 @@ int CancelBody() {
   result |= RestError(SendChunkedParts(*fixture.backend, fixture.http, header,
                                        {"1\r\n{\r\n", "1\r\n}\r\n0\r\n\r\n"}),
                       name, 404, "job", "job_not_found");
-  result |= RestError(fixture.Exchange(header + "0\r\n\r\n"), name, 404, "job", "job_not_found");
+  // ParseHeader treats an explicit zero Content-Length as no body, unlike chunked framing.
+  for (const auto& media : {std::optional<std::string>{}, std::optional<std::string>{"text/plain"},
+                            std::optional<std::string>{"application/json"}}) {
+    const auto media_header =
+        media ? std::string("Content-Type: ").append(*media).append("\r\n") : std::string{};
+    const auto empty_chunked =
+        Request("POST", JobPath(k_unknown_id, true), std::nullopt, std::nullopt,
+                media_header + "Transfer-Encoding: chunked\r\n") +
+        "0\r\n\r\n";
+    const auto label = std::string(name)
+                           .append(" [empty-chunked, ")
+                           .append(media.value_or("no media"))
+                           .append("]");
+    Scenario empty_body;
+    const bool json = media && *media == "application/json";
+    result |= RestError(empty_body.Exchange(empty_chunked), label, json ? 400 : 415, "request",
+                        json ? "malformed_json" : "unsupported_media_type");
+    result |= empty_body.NoSubmission(label);
+    result |=
+        RestError(empty_body.Exchange(Request("POST", JobPath(k_unknown_id, true), "", media)),
+                  std::string(name).append(" [Content-Length: 0]"), 404, "job", "job_not_found");
+  }
   return result;
 }
 
