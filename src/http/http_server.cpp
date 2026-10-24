@@ -25,10 +25,12 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -685,6 +687,7 @@ struct ResponseSpec {
   int status = 500;
   std::string body;
   std::optional<std::string> allow = std::nullopt;
+  std::optional<std::string> location = std::nullopt;
 };
 
 ResponseSpec ErrorResponse(int status, std::string_view domain, std::string_view code,
@@ -737,7 +740,101 @@ bool MethodAllowed(Route route, std::string_view method) {
   return false;
 }
 
-ResponseSpec Dispatch(const RequestInfo& request, std::string_view body, Backend& backend) {
+Json ParseJson(std::string_view body) {
+  const auto invalid = [] { return Json(Json::value_t::discarded); };
+  if (body.find('\0') != std::string_view::npos || body.starts_with("\xef\xbb\xbf"))
+    return invalid();
+  bool duplicate = false;
+  std::vector<std::set<std::string, std::less<>>> objects;
+  const auto callback = [&](int, Json::parse_event_t event, Json& value) {
+    if (event == Json::parse_event_t::object_start) objects.emplace_back();
+    if (event == Json::parse_event_t::key &&
+        !objects.back().insert(value.get_ref<const std::string&>()).second)
+      duplicate = true;
+    if (event == Json::parse_event_t::object_end) objects.pop_back();
+    return true;
+  };
+  try {
+    auto value = Json::parse(body.begin(), body.end(), callback);
+    return duplicate ? invalid() : value;
+  } catch (const Json::exception&) {
+    // Includes parse-time number overflow (406), not just parse_error. Never expose diagnostics.
+    return invalid();
+  }
+}
+
+bool CanonicalJobId(std::string_view id) {
+  if (id.size() != 36 || id[14] != '7' ||
+      std::string_view("89ab").find(id[19]) == std::string_view::npos)
+    return false;
+  for (std::size_t index = 0; index < id.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) {
+      if (id[index] != '-') return false;
+    } else if (!((id[index] >= '0' && id[index] <= '9') ||
+                 (id[index] >= 'a' && id[index] <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CreateShape(const Json& value) {
+  if (!value.is_object() || value.size() != 1 || !value.contains("application_id") ||
+      !value.at("application_id").is_string())
+    return false;
+  const auto& id = value.at("application_id").get_ref<const std::string&>();
+  // Parsing already validated UTF-8; count code points, not bytes, without a second UTF-8 parser.
+  const auto characters =
+      std::ranges::count_if(id, [](unsigned char c) { return (c & 0xc0U) != 0x80U; });
+  return characters >= 1 && characters <= 128;
+}
+
+Json JobJson(const JobResource& job) {
+  return Json{{"job_id", job.job_id},
+              {"state", job.state},
+              {"terminal", job.terminal},
+              {"outcome", job.outcome ? Json(*job.outcome) : Json(nullptr)}};
+}
+
+ResponseSpec InternalError() {
+  return ErrorResponse(500, "service", "internal", "the service could not process the request");
+}
+
+ResponseSpec JobResponse(const JobResult& result, bool created) {
+  switch (result.code) {
+    case JobResultCode::kSuccess: {
+      if (!result.job) return InternalError();
+      ResponseSpec response{202, JobJson(*result.job).dump(), std::nullopt};
+      if (created) response.location = std::string("/v1/jobs/").append(result.job->job_id);
+      return response;
+    }
+    case JobResultCode::kUnknownApplication:
+      return ErrorResponse(422, "job", "unknown_application", "the application is not registered");
+    case JobResultCode::kJobNotFound:
+      return ErrorResponse(404, "job", "job_not_found", "there is no such Job");
+    case JobResultCode::kStopCauseAlreadyLatched:
+      return ErrorResponse(409, "job", "stop_cause_already_latched",
+                           "the Job already has a stop cause");
+    case JobResultCode::kCommandNotAllowedInState:
+      return ErrorResponse(409, "job", "command_not_allowed_in_state",
+                           "the command is not allowed in this state");
+    case JobResultCode::kNotReady:
+      return ErrorResponse(503, "service", "not_ready", "the service is not ready");
+    case JobResultCode::kServiceFailed:
+      return ErrorResponse(503, "service", "service_failed", "the service has failed");
+    case JobResultCode::kCapacityExhausted:
+      return ErrorResponse(503, "service", "capacity_exhausted",
+                           "resident Job capacity is exhausted");
+    case JobResultCode::kBusy:
+      return ErrorResponse(503, "service", "busy", "the service is busy");
+    case JobResultCode::kInternal:
+      return InternalError();
+  }
+  return InternalError();
+}
+
+ResponseSpec DispatchRequest(const RequestInfo& request, std::string_view body, Backend& backend,
+                             const std::string& principal) {
   std::string ignored_job_id;
   const auto route = ClassifyRoute(request.target_info.path, ignored_job_id);
   if (route == Route::kNone)
@@ -753,6 +850,13 @@ ResponseSpec Dispatch(const RequestInfo& request, std::string_view body, Backend
     return ErrorResponse(415, "request", "unsupported_media_type",
                          "the body must be application/json");
 
+  const auto create = route == Route::kJobs && request.method == "POST";
+  Json value;
+  if (create || !body.empty()) {
+    value = ParseJson(body);
+    if (value.is_discarded())
+      return ErrorResponse(400, "request", "malformed_json", "the body is not valid JSON");
+  }
   if (route == Route::kHealth) {
     if (body_present)
       return ErrorResponse(422, "request", "validation_failed", "the request has no body");
@@ -772,8 +876,36 @@ ResponseSpec Dispatch(const RequestInfo& request, std::string_view body, Backend
             Json{{"ready", readiness.ready}, {"reasons", std::move(reasons)}}.dump(), std::nullopt};
   }
 
-  // Job resource semantics, including JSON parsing and business validation, belong to Issue #106.
-  return ErrorResponse(503, "service", "not_ready", "Job routes are not available in Phase 1");
+  if (create) {
+    if (!CreateShape(value))
+      return ErrorResponse(422, "request", "validation_failed", "the create request is not valid");
+    return JobResponse(backend.CreateJob(value.at("application_id").get_ref<const std::string&>()),
+                       true);
+  }
+  if ((!body.empty() && route == Route::kCancel && (!value.is_object() || !value.empty())) ||
+      (body_present && route != Route::kCancel))
+    return ErrorResponse(422, "request", "validation_failed", "the request body is not allowed");
+  if (route == Route::kJob || route == Route::kCancel) {
+    if (!CanonicalJobId(ignored_job_id))
+      return ErrorResponse(400, "request", "invalid_job_id", "the Job identifier is not valid");
+    if (route == Route::kCancel)
+      return JobResponse(backend.CancelJob(ignored_job_id, principal), false);
+    const auto job = backend.GetJob(ignored_job_id);
+    if (!job) return JobResponse({JobResultCode::kJobNotFound, std::nullopt}, false);
+    return {200, JobJson(*job).dump(), std::nullopt};
+  }
+  Json jobs = Json::array();
+  for (const auto& job : backend.ListJobs()) jobs.push_back(JobJson(job));
+  return {200, Json{{"jobs", std::move(jobs)}}.dump(), std::nullopt};
+}
+
+ResponseSpec Dispatch(const RequestInfo& request, std::string_view body, Backend& backend,
+                      const std::string& principal) {
+  try {
+    return DispatchRequest(request, body, backend, principal);
+  } catch (...) {
+    return InternalError();
+  }
 }
 
 RequestInfo ParseHeader(std::string_view bytes, std::size_t header_end, const Options& options,
@@ -1056,6 +1188,7 @@ asio::awaitable<bool> WriteResponse(tcp::socket& socket, const ResponseSpec& spe
   http::response<http::string_body> response{static_cast<http::status>(spec.status), 11};
   response.set(http::field::content_type, "application/json");
   if (spec.allow) response.set(http::field::allow, *spec.allow);
+  if (spec.location) response.set(http::field::location, *spec.location);
   if (suppress_body) {
     response.content_length(static_cast<std::uint64_t>(spec.body.size()));
   } else {
@@ -1356,7 +1489,7 @@ asio::awaitable<void> HandleConnection(tcp::socket socket, Server::Impl& impl) {
     }
   }
   body_bytes = parser.is_done() ? parser.get().body() : std::string{};
-  const auto response = Dispatch(request, body_bytes, impl.backend);
+  const auto response = Dispatch(request, body_bytes, impl.backend, impl.options.cancel_principal);
   (void)co_await WriteResponse(socket, response, head);
 }
 

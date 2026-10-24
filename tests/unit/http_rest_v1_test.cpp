@@ -421,11 +421,23 @@ int ExpectStatus(const Response& response, std::string_view name, int status) {
                    std::to_string(response.status));
 }
 
-class FakeBackend final : public Backend {
+class FakeBackend : public Backend {
  public:
   Readiness readiness{};
 
   Readiness GetReadiness() override { return readiness; }
+  sitometron::http::JobResult CreateJob(const std::string&) override {
+    return {sitometron::http::JobResultCode::kUnknownApplication, std::nullopt};
+  }
+  std::optional<sitometron::http::JobResource> GetJob(const std::string&) override {
+    return std::nullopt;
+  }
+  std::vector<sitometron::http::JobResource> ListJobs() override { return {}; }
+  sitometron::http::JobResult CancelJob(const std::string&, const std::string&) override {
+    return {readiness.ready ? sitometron::http::JobResultCode::kJobNotFound
+                            : sitometron::http::JobResultCode::kNotReady,
+            std::nullopt};
+  }
 };
 
 std::string HealthRequest(std::string_view method = "GET", std::string_view target = "/v1/health",
@@ -459,17 +471,17 @@ int UnknownRouteAndMethod() {
 
 int JobRoutesNotReady() {
   FakeBackend backend;
-  int result = ExpectError(Send(backend, Options{}, HealthRequest("GET", "/v1/jobs")),
-                           "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+  int result = ExpectStatus(Send(backend, Options{}, HealthRequest("GET", "/v1/jobs")),
+                            "rest_v1_job_routes_not_ready", 200);
   result |= ExpectError(Send(backend, Options{}, HealthRequest("POST", "/v1/jobs")),
-                        "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+                        "rest_v1_job_routes_not_ready", 400, "request", "malformed_json");
   result |= ExpectError(
       Send(backend, Options{}, HealthRequest("GET", "/v1/jobs/" + std::string(k_job_id))),
-      "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+      "rest_v1_job_routes_not_ready", 404, "job", "job_not_found");
   result |=
       ExpectError(Send(backend, Options{},
                        HealthRequest("POST", "/v1/jobs/" + std::string(k_job_id) + "/cancel")),
-                  "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+                  "rest_v1_job_routes_not_ready", 404, "job", "job_not_found");
   bool http11_expect_continue = false;
   const auto http11_expect_response = SendChunkedParts(
       backend, Options{},
@@ -478,8 +490,8 @@ int JobRoutesNotReady() {
       {"1", "\r\nx\r\n0\r\n\r\n"}, &http11_expect_continue, true);
   result |= Check(http11_expect_continue, "rest_v1_job_routes_not_ready",
                   "HTTP/1.1 Expect did not produce 100 Continue");
-  result |= ExpectError(http11_expect_response, "rest_v1_job_routes_not_ready", 503, "service",
-                        "not_ready");
+  result |= ExpectError(http11_expect_response, "rest_v1_job_routes_not_ready", 400, "request",
+                        "malformed_json");
 
   const std::array<std::string_view, 4> empty_transfer_elements = {",chunked", "chunked,",
                                                                    "chunked,,", ", chunked ,"};
@@ -488,25 +500,25 @@ int JobRoutesNotReady() {
         std::string("POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\n") +
         "Content-Type: application/json\r\nTransfer-Encoding: " + std::string(transfer_encoding) +
         "\r\n\r\n0\r\n\r\n";
-    result |= ExpectError(Send(backend, Options{}, request), "rest_v1_job_routes_not_ready", 503,
-                          "service", "not_ready");
+    result |= ExpectError(Send(backend, Options{}, request), "rest_v1_job_routes_not_ready", 400,
+                          "request", "malformed_json");
   }
   result |= ExpectError(
       Send(backend, Options{},
            "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
            "Transfer-Encoding:\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"),
-      "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+      "rest_v1_job_routes_not_ready", 400, "request", "malformed_json");
 
   result |= ExpectError(
       Send(backend, Options{},
            "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
            "Content-Length: 5,,5\r\n\r\n12345"),
-      "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+      "rest_v1_job_routes_not_ready", 422, "request", "validation_failed");
   result |= ExpectError(
       Send(backend, Options{},
            "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
            "Content-Length: 5, 5\r\n\r\n12345"),
-      "rest_v1_job_routes_not_ready", 503, "service", "not_ready");
+      "rest_v1_job_routes_not_ready", 422, "request", "validation_failed");
   result |= ExpectError(
       Send(backend, Options{},
            "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
@@ -520,8 +532,8 @@ int JobRoutesNotReady() {
       {"1", "\r\nx\r\n0\r\n\r\n"}, &http11_expect_continue, true);
   result |= Check(http11_expect_continue, "rest_v1_job_routes_not_ready",
                   "Expect list did not produce 100 Continue");
-  result |= ExpectError(expect_with_empty_element, "rest_v1_job_routes_not_ready", 503, "service",
-                        "not_ready");
+  result |= ExpectError(expect_with_empty_element, "rest_v1_job_routes_not_ready", 400, "request",
+                        "malformed_json");
 
   bool quoted_expect_continue = false;
   const auto quoted_expect_response = SendChunkedParts(
@@ -531,8 +543,8 @@ int JobRoutesNotReady() {
       {"{}"}, &quoted_expect_continue);
   result |= Check(!quoted_expect_continue, "rest_v1_job_routes_not_ready",
                   "quoted Expect extension produced 100 Continue");
-  result |= ExpectError(quoted_expect_response, "rest_v1_job_routes_not_ready", 503, "service",
-                        "not_ready");
+  result |= ExpectError(quoted_expect_response, "rest_v1_job_routes_not_ready", 422, "request",
+                        "validation_failed");
 
   bool http10_expect_continue = false;
   const auto http10_expect_response = SendChunkedParts(
@@ -542,8 +554,8 @@ int JobRoutesNotReady() {
       {"{}"}, &http10_expect_continue);
   result |= Check(!http10_expect_continue, "rest_v1_job_routes_not_ready",
                   "HTTP/1.0 Expect produced 100 Continue");
-  result |= ExpectError(http10_expect_response, "rest_v1_job_routes_not_ready", 503, "service",
-                        "not_ready");
+  result |= ExpectError(http10_expect_response, "rest_v1_job_routes_not_ready", 422, "request",
+                        "validation_failed");
   return result;
 }
 
@@ -829,8 +841,8 @@ int HeadersTooLarge() {
         static_cast<std::size_t>(options.header_limit_bytes) - prefix.size() - header_suffix.size();
     auto header = prefix;
     header.append(padding, 'a').append(header_suffix);
-    result |= ExpectError(Send(backend, options, header + std::string(test_case.body)), name, 503,
-                          "service", "not_ready");
+    result |= ExpectError(Send(backend, options, header + std::string(test_case.body)), name, 400,
+                          "request", "malformed_json");
     auto too_large = prefix;
     too_large.append(padding + 1, 'a').append(header_suffix);
     result |= ExpectError(Send(backend, options, too_large + std::string(test_case.body)),
@@ -853,7 +865,7 @@ int FragmentedNearLimitHeaders() {
     const char* code;
   };
   const std::array cases = {
-      Case{"POST", "/v1/jobs", "application/json", 503, "service", "not_ready"},
+      Case{"POST", "/v1/jobs", "application/json", 400, "request", "malformed_json"},
       Case{"POST", "/v1/nope", "application/json", 404, "request", "route_not_found"},
       Case{"PUT", "/v1/jobs", "application/json", 405, "request", "method_not_allowed"},
       Case{"POST", "/v1/jobs", "text/plain", 415, "request", "unsupported_media_type"},
@@ -978,7 +990,7 @@ int BodyBoundAfterRouting() {
       "Content-Length: 4096\r\n\r\n" +
       std::string(4096, 'x');
   result |= ExpectError(Send(backend, exact_options, exact_body),
-                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+                        "rest_v1_body_bound_after_routing", 400, "request", "malformed_json");
 
   Options chunked_options;
   chunked_options.body_limit_bytes = 4096;
@@ -1016,7 +1028,7 @@ int BodyBoundAfterRouting() {
       Check(exact_content_length.size() == raw_options.combined_request_limit_bytes,
             "rest_v1_body_bound_after_routing", "Content-Length boundary request size mismatch");
   result |= ExpectError(Send(backend, raw_options, exact_content_length),
-                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+                        "rest_v1_body_bound_after_routing", 400, "request", "malformed_json");
 
   const auto chunked_prefix = std::string(
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
@@ -1033,7 +1045,7 @@ int BodyBoundAfterRouting() {
   result |= Check(exact_chunked_body.size() == raw_options.combined_request_limit_bytes,
                   "rest_v1_body_bound_after_routing", "chunked boundary request size mismatch");
   result |= ExpectError(Send(backend, raw_options, exact_chunked_body),
-                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+                        "rest_v1_body_bound_after_routing", 422, "request", "validation_failed");
   result |= ExpectError(Send(backend, raw_options, chunked_over_combined),
                         "rest_v1_body_bound_after_routing", 413, "request", "payload_too_large");
 
@@ -1049,14 +1061,14 @@ int BodyBoundAfterRouting() {
       "rest_v1_body_bound_after_routing",
       "pipelined chunked request did not cross the combined cap");
   result |= ExpectError(Send(backend, pipelined_chunked_options, pipelined_chunked_request),
-                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+                        "rest_v1_body_bound_after_routing", 422, "request", "validation_failed");
 
   const auto pipelined_content_length = exact_content_length + HealthRequest();
   result |= Check(pipelined_content_length.size() > raw_options.combined_request_limit_bytes,
                   "rest_v1_body_bound_after_routing",
                   "pipelined Content-Length request did not cross the combined cap");
   result |= ExpectError(Send(backend, raw_options, pipelined_content_length),
-                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+                        "rest_v1_body_bound_after_routing", 400, "request", "malformed_json");
 
   const auto unknown_chunked_over_combined =
       std::string(
@@ -1071,7 +1083,7 @@ int BodyBoundAfterRouting() {
       "Transfer-Encoding: chunked\r\n\r\n1000\r\n{" +
       std::string(raw_options.body_limit_bytes - 2, ' ') + "}\r\n0\r\n\r\n";
   result |= ExpectError(Send(backend, raw_options, exact_chunked_body_limit),
-                        "rest_v1_body_bound_after_routing", 503, "service", "not_ready");
+                        "rest_v1_body_bound_after_routing", 422, "request", "validation_failed");
 
   const auto overflow =
       "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
@@ -2086,8 +2098,8 @@ int SitometrondOptions() {
                            "rest_v1_sitometrond_options", 200);
     result |= ExpectStatus(SendToPort(composition.listen_port(), HealthRequest("GET", "/v1/ready")),
                            "rest_v1_sitometrond_options", 200);
-    result |= ExpectError(SendToPort(composition.listen_port(), HealthRequest("GET", "/v1/jobs")),
-                          "rest_v1_sitometrond_options", 503, "service", "not_ready");
+    result |= ExpectStatus(SendToPort(composition.listen_port(), HealthRequest("GET", "/v1/jobs")),
+                           "rest_v1_sitometrond_options", 200);
   }
   composition.Stop();
   return result;
@@ -2351,24 +2363,6 @@ class Effects final : public core::ApplicationRunnerPort, public core::SessionRe
   std::atomic_size_t retains{0};
 };
 
-class ReadinessOnlyBackend final : public Backend {
- public:
-  explicit ReadinessOnlyBackend(internal::JobOrchestrator& writer) : writer_(writer) {}
-  Readiness GetReadiness() override {
-    Readiness result;
-    result.ready = writer_.ready();
-    if (writer_.failed()) result.reasons.push_back({"service_failed", {}});
-    std::vector<std::string> unresolved;
-    for (const auto& id : writer_.unresolved()) unresolved.push_back(id.value);
-    if (!unresolved.empty()) result.reasons.push_back({"unresolved_jobs", std::move(unresolved)});
-    if (!result.ready && result.reasons.empty()) result.reasons.push_back({"shutting_down", {}});
-    return result;
-  }
-
- private:
-  internal::JobOrchestrator& writer_;
-};
-
 struct ScenarioOptions {
   std::vector<core::Snapshot> seeds;
   std::vector<std::string> applications{std::string(k_application)};
@@ -2393,9 +2387,8 @@ class Scenario final {
       for (const auto& snapshot : options.seeds) config.unresolved_jobs.push_back(snapshot.job_id);
     config.ports = {&clock, &journal, &effects, &effects, &identity};
     writer = std::make_unique<internal::JobOrchestrator>(config);
-    // RED uses the current readiness-only interface. GREEN changes only this construction to the
-    // shared production Backend factory with registry.identifiers and the seeded creation order.
-    backend = std::make_unique<ReadinessOnlyBackend>(*writer);
+    backend = sitometron::daemon::MakeJobBackend(*writer, options.max_jobs, options.seeds,
+                                                 registry.identifiers);
     http.listen_port = 0;
     http.cancel_principal = k_principal;
   }
@@ -3342,7 +3335,7 @@ std::vector<ErrorVector> ErrorVectors() {
   return vectors;
 }
 
-class ThrowingBackend final : public Backend {
+class ThrowingBackend final : public FakeBackend {
  public:
   Readiness GetReadiness() override {
     throw std::runtime_error(
@@ -3753,6 +3746,19 @@ int SitometrondEmptyRegistry() {
           RestError(SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody(id))),
                     name, 422, "job", "unknown_application");
     if (!unresolved) {
+      const auto turns_before = daemon.writer_turn_count();
+      const auto wait_started = std::chrono::steady_clock::now();
+      const auto canceled =
+          daemon.backend().CancelJob(std::string(k_unknown_id), config.http.cancel_principal);
+      const auto blocking = std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - wait_started)
+                                .count();
+      const auto turns = daemon.writer_turn_count() - turns_before;
+      result |= Check(canceled.code == sitometron::http::JobResultCode::kJobNotFound &&
+                          !canceled.job && turns == 1,
+                      name, "production Backend unknown cancel did not reject in one writer turn");
+      std::cout << name << ": production unknown cancel synchronous_call_us=" << blocking
+                << " writer_turns=" << turns << '\n';
       const auto started = std::chrono::steady_clock::now();
       const auto response =
           SendToPort(daemon.listen_port(), Request("POST", JobPath(k_unknown_id, true)));

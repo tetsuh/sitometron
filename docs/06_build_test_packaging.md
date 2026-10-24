@@ -15,10 +15,14 @@ asan-ubsan
 tsan
 ```
 
-Issue #105 enables and qualifies the production External REST v1 adapter: the `sitometron_http`
-target, on by default, builds `src/http/http_server.cpp` and serves the Phase 1 routes that this
-document's `API` rows name. The other adapter options remain disabled because their dependencies
-are not in the manifest. See [the dependency policy](09_dependency_policy.md).
+Issues #105 and #106 enable and qualify the production External REST v1 adapter: the
+`sitometron_http` target, on by default, builds `src/http/http_server.cpp` and serves the Phase 1
+routes that this document's `API` rows name. Production registers no Application; contract tests
+compose the shared production Backend with test-only registered identifiers. Owner decision A of
+2026-10-24 retains one I/O thread and synchronous completion waits, with this residual risk:
+while a handler waits in AwaitCompletion no other connection on the listener progresses; Phase 1 production reaches that wait only on a cancel for an unknown Job (one writer turn, measured in the test); a committing create reaches it only in the contract tests; registration in Phase 2 revisits the I/O model.
+The other adapter options remain disabled because their dependencies are not in the manifest.
+See [the dependency policy](09_dependency_policy.md).
 
 ## 2. C++ style and analysis
 
@@ -180,25 +184,22 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `OPS-004` | CTests `journal_unresolved_jobs_block_admission`, `journal_resolved_jobs_seed_writer` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #64 |
 | `OPS-005` | CTests `journal_prune_prefix_only`, `journal_prune_refuses_open_jobs`, `journal_prune_keeps_last_record`, `journal_quarantine_torn_tail`, `journal_maintenance_requires_lock`, `journal_maintenance_faults`, `journal_maintenance_system_file_system` | Normative under Accepted ADR-0006 under Issue #51; checks active under Issue #69 |
 | `API-001` | CTests `rest_v1_loopback_only`, `rest_v1_openapi_contract`, `rest_v1_unknown_route_and_method` | Normative under Accepted ADR-0008 under Issue #76; #105 activates loopback and unknown-route/method, #106 activates the OpenAPI contract check |
-| `API-002` | CTests `rest_v1_create_commits_before_202`, `rest_v1_create_rejects_unknown_application`, `rest_v1_create_never_waits` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
-| `API-003` | CTests `rest_v1_job_resource_from_committed_state`, `rest_v1_list_resident_in_creation_order` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
-| `API-004` | CTests `rest_v1_cancel_status_mapping`, `rest_v1_cancel_records_configured_principal` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
-| `API-005` | CTests `rest_v1_validation_before_submission`, `rest_v1_error_envelope_and_codes`, `rest_v1_errors_leak_nothing` | Normative under Accepted ADR-0008 under Issue #76; checks Planned, activated by the production adapter Issue |
-| `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_not_ready_refuses_writes` | Normative under Accepted ADR-0008 under Issue #76; #105 activates health/readiness; `rest_v1_not_ready_refuses_writes` remains Planned for Issue #106 |
+| `API-002` | CTests `rest_v1_create_commits_before_202`, `rest_v1_create_rejects_unknown_application`, `rest_v1_create_never_waits` | Normative under Accepted ADR-0008 under Issue #76; checks active under Issue #106 |
+| `API-003` | CTests `rest_v1_job_resource_from_committed_state`, `rest_v1_list_resident_in_creation_order` | Normative under Accepted ADR-0008 under Issue #76; checks active under Issue #106 |
+| `API-004` | CTests `rest_v1_cancel_status_mapping`, `rest_v1_cancel_records_configured_principal` | Normative under Accepted ADR-0008 under Issue #76; checks active under Issue #106 |
+| `API-005` | CTests `rest_v1_validation_before_submission`, `rest_v1_error_envelope_and_codes`, `rest_v1_errors_leak_nothing` | Normative under Accepted ADR-0008 under Issue #76; checks active under Issue #106 |
+| `API-006` | CTests `rest_v1_health_and_readiness`, `rest_v1_not_ready_refuses_writes` | Normative under Accepted ADR-0008 under Issue #76; health/readiness active under #105 and the distinct readiness-write check active under #106 |
 | `API-007` | CTests `rest_v1_malformed_request_refused`, `rest_v1_bare_lf_refused`, `rest_v1_http10_request_answered`, `rest_v1_absolute_form_target`, `rest_v1_targets_without_a_path`, `rest_v1_header_receive_timeout`, `rest_v1_target_too_long`, `rest_v1_headers_too_large`, `rest_v1_unknown_transfer_coding`, `rest_v1_transfer_encoding_with_content_length_refused` (Section 1); `rest_v1_body_bound_after_routing`, `rest_v1_body_receive_timeout` (Section 2); `rest_v1_create_serialized`, `rest_v1_already_pending_is_busy` (Section 3); `rest_v1_query_refused` (Section 4); `rest_v1_create_without_body` (Section 5); `rest_v1_unlisted_methods_refused` (Section 6); `rest_v1_error_details_empty` (Section 7); `rest_v1_json_rejects_raw_nul`, `rest_v1_json_rejects_invalid_utf8`, `rest_v1_json_rejects_trailing_data`, `rest_v1_json_rejects_duplicate_keys_at_any_depth` (Section 8); `rest_v1_registered_application_id_form` (Section 9); `rest_v1_cancel_body` (Section 10) of ADR-0009 | Normative under Accepted ADR-0009 under Issue #86; Issue #105 activates its Section 1, 2, 4, 6, and 7 names; #106 activates the remaining names |
 
-Issue #106 registers the remaining 21 frozen API check names and additionally registers
+Issue #106 activates the remaining 21 frozen API check names and additionally activates
 `rest_v1_json_rejects_leading_bom`, `rest_v1_json_rejects_lone_surrogate`, and
 `rest_v1_sitometrond_empty_registry`. The HTTP-enabled suite therefore has 130 names; HTTP-off
-retains 69. Registration during intentional RED does not claim that the Job routes are implemented
-or that the new checks pass. The implementation and Active-status updates follow the recorded RED
-run. The historical `rest_v1_job_routes_not_ready` name is retained, not replaced by the distinct
-readiness-write check.
+retains 69. All 24 additions have recorded intentional RED before implementation.
 
-Issue #105 separately activates `rest_v1_job_routes_not_ready` as an interim transport check. Its
-Phase 1 Job-route `503 service/not_ready` response is not part of the REST v1 contract. The distinct
-`rest_v1_not_ready_refuses_writes` check is registered during Issue #106 RED; passing activation
-requires the Job-route implementation.
+The historical `rest_v1_job_routes_not_ready` selector retains its transport vectors but now
+asserts normative Job-route outcomes, not Issue #105's interim blanket `503` response. It remains
+distinct from `rest_v1_not_ready_refuses_writes`, which covers registered writes under closed and
+failed admission and validates unregistered applications before ingress.
 
 Issue #105 additionally gives each adapter-owned `400 malformed_request` refusal its own CTest entry:
 

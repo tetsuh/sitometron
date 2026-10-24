@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,10 +31,40 @@ struct Readiness {
   std::vector<ReadinessReason> reasons;
 };
 
+struct JobResource {
+  std::string job_id;
+  std::string state;
+  bool terminal = false;
+  std::optional<std::string> outcome;
+};
+
+enum class JobResultCode : std::uint8_t {
+  kSuccess,
+  kUnknownApplication,
+  kJobNotFound,
+  kStopCauseAlreadyLatched,
+  kCommandNotAllowedInState,
+  kNotReady,
+  kServiceFailed,
+  kCapacityExhausted,
+  kBusy,
+  kInternal
+};
+
+struct JobResult {
+  JobResultCode code = JobResultCode::kInternal;
+  std::optional<JobResource> job;
+};
+
 class Backend {
  public:
   virtual ~Backend() = default;
   [[nodiscard]] virtual Readiness GetReadiness() = 0;
+  [[nodiscard]] virtual JobResult CreateJob(const std::string& application_id) = 0;
+  [[nodiscard]] virtual std::optional<JobResource> GetJob(const std::string& job_id) = 0;
+  [[nodiscard]] virtual std::vector<JobResource> ListJobs() = 0;
+  [[nodiscard]] virtual JobResult CancelJob(const std::string& job_id,
+                                            const std::string& principal) = 0;
 };
 
 class Server final {

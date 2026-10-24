@@ -6,6 +6,8 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -69,22 +71,141 @@ class Phase1SessionRetainer final : public core::SessionRetainerPort {
   void HandoffRetainSameIdentity(core::SessionRetainRequest&&) noexcept override {}
 };
 
+bool RegisteredApplicationForm(std::string_view value) {
+  const auto alphanumeric = [](unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+  };
+  return !value.empty() && value.size() <= 128 && alphanumeric(value.front()) &&
+         std::ranges::all_of(value, [&](unsigned char c) {
+           return alphanumeric(c) || c == '.' || c == '_' || c == ':' || c == '-';
+         });
+}
+
+http::JobResultCode IngressStatus(IngressCode code) {
+  switch (code) {
+    case IngressCode::kServiceFailed:
+      return http::JobResultCode::kServiceFailed;
+    case IngressCode::kAdmissionClosed:
+      return http::JobResultCode::kNotReady;
+    case IngressCode::kResidentLimit:
+      return http::JobResultCode::kCapacityExhausted;
+    case IngressCode::kNormalFull:
+    case IngressCode::kAlreadyPending:
+      return http::JobResultCode::kBusy;
+    case IngressCode::kAdmitted:
+    case IngressCode::kCoalescedPending:
+      return http::JobResultCode::kInternal;
+  }
+  return http::JobResultCode::kInternal;
+}
+
 class Phase1Backend final : public http::Backend {
  public:
-  explicit Phase1Backend(JobOrchestrator& orchestrator) : orchestrator_(orchestrator) {}
+  Phase1Backend(JobOrchestrator& orchestrator, std::size_t max_jobs,
+                const std::vector<core::Snapshot>& replayed,
+                const std::vector<std::string>& applications)
+      : orchestrator_(orchestrator), applications_(applications), order_(max_jobs) {
+    if (max_jobs == 0 || replayed.size() > max_jobs ||
+        !std::ranges::all_of(applications_, RegisteredApplicationForm))
+      throw std::invalid_argument("invalid Backend composition");
+    // Reserve every fixed-size UUID string before serving requests. Index publication cannot
+    // allocate after a commit, and provisional entries are filtered through committed snapshots.
+    for (auto& id : order_) id.reserve(36);
+    for (const auto& snapshot : replayed) order_[order_size_++] = snapshot.job_id.value;
+  }
 
   [[nodiscard]] http::Readiness GetReadiness() override {
     http::Readiness result;
     result.ready = orchestrator_.ready();
-    if (orchestrator_.failed()) result.reasons.push_back({"service_failed", {}});
+    // A later failure must not attach a false-readiness reason to an earlier ready observation.
+    if (!result.ready && orchestrator_.failed()) result.reasons.push_back({"service_failed", {}});
     std::vector<std::string> unresolved;
     for (const auto& id : orchestrator_.unresolved()) unresolved.push_back(id.value);
     if (!unresolved.empty()) result.reasons.push_back({"unresolved_jobs", std::move(unresolved)});
+    if (!result.ready && result.reasons.empty()) result.reasons.push_back({"shutting_down", {}});
     return result;
+  }
+
+  [[nodiscard]] http::JobResult CreateJob(const std::string& application_id) override {
+    if (std::ranges::find(applications_, application_id) == applications_.end())
+      return {http::JobResultCode::kUnknownApplication, std::nullopt};
+    // Serialize generation, admission, the sequence-specific wait, and index publication. Reads
+    // use only the separate short-lived index mutex, never this create mutex.
+    const std::lock_guard creation(create_mutex_);
+    const auto created = orchestrator_.CreateJob();
+    if (created.ingress.code != IngressCode::kAdmitted)
+      return {IngressStatus(created.ingress.code), std::nullopt};
+    if (!created.job_id) return {};
+    {
+      const std::lock_guard index(index_mutex_);
+      if (order_size_ == order_.size()) throw std::logic_error("resident index exhausted");
+      order_[order_size_++] = created.job_id->value;
+    }
+    // Owner decision A, 2026-10-24: synchronously await this turn on the submitting I/O thread.
+    const auto completion = orchestrator_.AwaitCompletion(created.ingress.ingress_sequence);
+    if (!completion) return {};
+    if (completion->code == core::internal::Completion::Code::kServiceFailed)
+      return {http::JobResultCode::kServiceFailed, std::nullopt};
+    if (completion->code != core::internal::Completion::Code::kSuccess) return {};
+    auto job = GetJob(created.job_id->value);
+    if (!job) return {};
+    return {http::JobResultCode::kSuccess, std::move(job)};
+  }
+
+  [[nodiscard]] std::optional<http::JobResource> GetJob(const std::string& job_id) override {
+    const auto snapshot = orchestrator_.SnapshotFor(core::Uuid{job_id});
+    if (!snapshot || !snapshot->entity_exists) return std::nullopt;
+    const auto state = std::string(core::ToString(snapshot->state));
+    const auto terminal = core::IsTerminalState(snapshot->state);
+    return http::JobResource{snapshot->job_id.value, state, terminal,
+                             terminal ? std::optional<std::string>{state} : std::nullopt};
+  }
+
+  [[nodiscard]] std::vector<http::JobResource> ListJobs() override {
+    std::vector<http::JobResource> result;
+    const std::lock_guard index(index_mutex_);
+    result.reserve(order_size_);
+    for (std::size_t position = 0; position < order_size_; ++position) {
+      auto job = GetJob(order_[position]);
+      if (job) result.push_back(std::move(*job));
+    }
+    return result;
+  }
+
+  [[nodiscard]] http::JobResult CancelJob(const std::string& job_id,
+                                          const std::string& principal) override {
+    const auto input = orchestrator_.SubmitCommand(
+        core::Command{1, core::CommandType::kCancel, core::Uuid{job_id}, principal});
+    if (input.code != IngressCode::kAdmitted) return {IngressStatus(input.code), std::nullopt};
+    const auto completion = orchestrator_.AwaitCompletion(input.ingress_sequence);
+    if (!completion) return {};
+    if (completion->code == core::internal::Completion::Code::kServiceFailed)
+      return {http::JobResultCode::kServiceFailed, std::nullopt};
+    if (completion->code == core::internal::Completion::Code::kReducerRejection) {
+      if (!completion->rejection) return {};
+      switch (completion->rejection->reason) {
+        case core::RejectionReason::kJobNotFound:
+          return {http::JobResultCode::kJobNotFound, std::nullopt};
+        case core::RejectionReason::kStopCauseAlreadyLatched:
+          return {http::JobResultCode::kStopCauseAlreadyLatched, std::nullopt};
+        case core::RejectionReason::kCommandNotAllowedInState:
+          return {http::JobResultCode::kCommandNotAllowedInState, std::nullopt};
+        default:
+          return {};
+      }
+    }
+    auto job = GetJob(job_id);
+    if (!job) return {};
+    return {http::JobResultCode::kSuccess, std::move(job)};
   }
 
  private:
   JobOrchestrator& orchestrator_;
+  const std::vector<std::string> applications_;
+  std::mutex create_mutex_;
+  std::mutex index_mutex_;
+  std::vector<std::string> order_;
+  std::size_t order_size_ = 0;
 };
 
 }  // namespace
@@ -123,6 +244,12 @@ bool VisibleAscii(std::string_view text, std::size_t maximum) {
 }
 
 }  // namespace
+
+std::unique_ptr<http::Backend> MakeJobBackend(JobOrchestrator& orchestrator, std::size_t max_jobs,
+                                              const std::vector<core::Snapshot>& replayed,
+                                              const std::vector<std::string>& applications) {
+  return std::make_unique<Phase1Backend>(orchestrator, max_jobs, replayed, applications);
+}
 
 ParseResult ParseStartupOptions(const std::vector<std::string>& args) {
   ParseResult result;
@@ -256,7 +383,7 @@ struct Phase1Composition::Impl {
   Phase1SessionRetainer session;
   std::unique_ptr<journal::SegmentJournal> journal;
   std::unique_ptr<JobOrchestrator> orchestrator;
-  std::unique_ptr<Phase1Backend> backend;
+  std::unique_ptr<http::Backend> backend;
   std::unique_ptr<http::Server> server;
   bool started = false;
 };
@@ -305,7 +432,7 @@ bool Phase1Composition::Start(std::string& error) {
     config.ports = {&impl_->clock, impl_->journal.get(), &impl_->runner, &impl_->session,
                     &impl_->identity};
     impl_->orchestrator = std::make_unique<JobOrchestrator>(config);
-    impl_->backend = std::make_unique<Phase1Backend>(*impl_->orchestrator);
+    impl_->backend = MakeJobBackend(*impl_->orchestrator, config.max_jobs, replayed.jobs, {});
     impl_->server = std::make_unique<http::Server>(impl_->config.http, *impl_->backend);
     if (!impl_->server->Start(error)) {
       impl_->server.reset();
@@ -352,6 +479,10 @@ std::size_t Phase1Composition::clock_reads() const noexcept { return impl_->cloc
 
 std::size_t Phase1Composition::identity_reads() const noexcept {
   return impl_->identity_read_count;
+}
+
+std::size_t Phase1Composition::writer_turn_count() const noexcept {
+  return impl_->orchestrator ? impl_->orchestrator->writer_turn_count() : 0;
 }
 
 std::uint16_t Phase1Composition::listen_port() const noexcept {
