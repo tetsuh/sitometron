@@ -456,12 +456,19 @@ if(SITOMETRON_BUILD_TESTS)
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_negative_isolation.cmake)
 
     add_executable(sitometron_http_tests tests/unit/http_rest_v1_test.cpp)
-    target_include_directories(sitometron_http_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_include_directories(
+      sitometron_http_tests
+      PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
+    target_compile_definitions(
+      sitometron_http_tests PRIVATE SITOMETRON_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(
       sitometron_http_tests
       PRIVATE
         sitometron::http
         sitometrond_composition
+        sitometron::core
+        sitometron_core_fake_support
+        sitometron_reducer_json_support
         Boost::asio
         nlohmann_json::nlohmann_json)
     sitometron_enable_project_warnings(sitometron_http_tests)
@@ -497,7 +504,31 @@ if(SITOMETRON_BUILD_TESTS)
         rest_v1_transfer_encoding_with_content_length_refused
         rest_v1_http10_transfer_encoding_refused
         rest_v1_phase1_ports_not_called
-        rest_v1_sitometrond_options)
+        rest_v1_sitometrond_options
+        rest_v1_openapi_contract
+        rest_v1_create_commits_before_202
+        rest_v1_create_rejects_unknown_application
+        rest_v1_create_never_waits
+        rest_v1_job_resource_from_committed_state
+        rest_v1_list_resident_in_creation_order
+        rest_v1_cancel_status_mapping
+        rest_v1_cancel_records_configured_principal
+        rest_v1_validation_before_submission
+        rest_v1_error_envelope_and_codes
+        rest_v1_errors_leak_nothing
+        rest_v1_not_ready_refuses_writes
+        rest_v1_create_serialized
+        rest_v1_already_pending_is_busy
+        rest_v1_create_without_body
+        rest_v1_json_rejects_raw_nul
+        rest_v1_json_rejects_invalid_utf8
+        rest_v1_json_rejects_trailing_data
+        rest_v1_json_rejects_duplicate_keys_at_any_depth
+        rest_v1_registered_application_id_form
+        rest_v1_cancel_body
+        rest_v1_json_rejects_leading_bom
+        rest_v1_json_rejects_lone_surrogate
+        rest_v1_sitometrond_empty_registry)
       add_test(
         NAME ${_rest_v1_check}
         COMMAND sitometron_http_tests ${_rest_v1_check})

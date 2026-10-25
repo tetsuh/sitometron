@@ -95,9 +95,11 @@ In-source builds are rejected.
 ## Phase 1 daemon configuration
 
 When HTTP is enabled, `sitometrond` requires a Journal directory and serves External REST v1 on a
-loopback address. Phase 1 performs the transport checks for Job routes and answers them with the
-interim `503 service/not_ready` response; this Phase 1 response is not part of the REST v1
-contract. JSON and Job handling arrive with Issue #106. Health and readiness are available in this
+loopback address. The adapter serves the create, read, list, and cancel Job routes with strict JSON
+validation and committed-state responses. Phase 1 production registers no Application, so a
+structurally valid create returns `422 job/unknown_application` before ingress, even while
+admission is closed. Contract tests exercise successful creation through the shared production
+Backend with test-only registered identifiers. Health and readiness are available in this
 issue.
 
 ```sh
