@@ -109,8 +109,8 @@ step the random bits make a repeat as unlikely as a cross-restart collision. The
 
 The source generates the Worker identity with one `boost::uuids::random_generator` instance owned
 for the process lifetime, formatted as canonical text. The value identifies a Worker and nothing
-else; ADR-0004's rule stands that a UUID is never a credential, and Issue #15 keeps the Worker bearer
-token a separate 256-bit secret.
+else; ADR-0004's rule stands that a UUID is never a credential, and Issue #15 keeps the Worker
+bearer token a separate 256-bit secret.
 
 ### 4. `StableId` for launch operations
 
