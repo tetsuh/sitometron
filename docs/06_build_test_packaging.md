@@ -20,7 +20,7 @@ Issues #105 and #106 enable and qualify the production External REST v1 adapter:
 routes that this document's `API` rows name. Production registers no Application; contract tests
 compose the shared production Backend with test-only registered identifiers. Owner decision A of
 2026-10-24 retains one I/O thread and synchronous completion waits, with this residual risk:
-while a handler waits in AwaitCompletion no other connection on the listener progresses; Phase 1 production reaches that wait only on a cancel for an unknown Job (one writer turn, measured in the test); a committing create reaches it only in the contract tests; registration in Phase 2 revisits the I/O model.
+while a handler waits in AwaitCompletion no other connection on the listener progresses; Phase 1 production reaches that wait on every ingress-admitted cancel, including a cancel for an unknown Job and a cancel for a resolved replayed resident, each of which currently takes one reducer-rejection writer turn (the unknown-Job case is measured in the test); a committing create reaches it only in the contract tests; registration in Phase 2 revisits the I/O model.
 The other adapter options remain disabled because their dependencies are not in the manifest.
 See [the dependency policy](09_dependency_policy.md).
 
