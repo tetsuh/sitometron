@@ -17,6 +17,7 @@ requirements remain in history and point to their replacement or removal authori
 | `PAR` | Parameter and Session facade behavior |
 | `ART` | Artifact publication, access, retention, and deletion |
 | `SEC` | Authentication, authorization, trust, and sensitive-data handling |
+| `ID` | Production identity generation (Job, Session, Worker, and launch-operation identities) and clock readings |
 | `OPS` | Startup, shutdown, recovery, readiness, diagnostics, and maintenance |
 | `NFR` | Cross-cutting platform, performance, build, and quality requirements |
 
