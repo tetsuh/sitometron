@@ -138,4 +138,4 @@ ADR-0009 owns the Normative `API-007` requirement in Section 8.
 
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
-| `ID-001` | MUST | Generate every production Job, Session, Worker, and launch-operation identity with the ADR-0013 source and read `recorded_at` and `MonotonicInstant` with its clock, so that each value is canonical, each identifier is unique within the process by construction, and no production path reads another clock or entropy source for identity. | Proposed [ADR-0013](adr/0013-generate-production-identities-and-read-the-clock-with-boost-uuid.md) under [Issue #102](https://github.com/tetsuh/sitometron/issues/102) |
+| `ID-001` | MUST | Generate every production Job, Session, Worker, and launch-operation identity with the ADR-0013 source and read `recorded_at` and `MonotonicInstant` with its clock, so that each value is canonical, no identifier is issued twice by one source instance, and no production path reads another clock or entropy source for identity. | Proposed [ADR-0013](adr/0013-generate-production-identities-and-read-the-clock-with-boost-uuid.md) under [Issue #102](https://github.com/tetsuh/sitometron/issues/102) |

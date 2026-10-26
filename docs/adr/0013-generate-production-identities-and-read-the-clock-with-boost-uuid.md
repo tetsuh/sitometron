@@ -57,7 +57,11 @@ The owner decided on 2026-10-25 under Issue #102:
 
 - the production source and clock live in a dedicated adapter target, not in the composition root
   and not in `sitometron_core`; and
-- the UUID generators are Boost.UUID's, used as they are; Sitometron does not assemble UUIDs itself.
+- the UUID generators are Boost.UUID's, used as they are; Sitometron does not assemble UUIDs itself;
+  and
+- after the first review (2026-10-26), the source keeps the ADR-0005 no-repeat rule literally: it
+  remembers the values it issued and generates again on a repeat, instead of amending ADR-0005 with
+  a probabilistic bound.
 
 ## Decision
 
@@ -83,9 +87,11 @@ instance owned by the source for the process lifetime, and formats it as the can
   or correct this. A value generated after the step can sort before a value generated before it.
   This is acceptable because nothing orders by identifier text, and uniqueness does not depend on
   monotonicity (Section 2).
-- `IdentitySourceExhausted`: never returned by the production source. The generator cannot fail per
-  call. The source constructs its generators when the composition starts; if seeding the entropy
-  provider throws, startup fails with the Issue #105 startup-refusal status and no listener opens.
+- `IdentitySourceExhausted`: returned only by the no-repeat rule of Section 2, when the generator
+  repeats a value on every one of a small fixed number of attempts, which means the generator is
+  broken. The generator cannot fail per call. The source constructs its generators when the
+  composition starts; if seeding the entropy provider throws, startup fails with the Issue #105
+  startup-refusal status and no listener opens.
 
 ### 2. Uniqueness across restarts
 
@@ -100,10 +106,18 @@ the replayed state and does not refuse a value that an earlier run issued. Reaso
   `job_already_exists`, the adapter maps that to `500` `service`/`internal` (Issue #106), and no
   Journal record is written. The next create generates a new value.
 
-Within one process, "a source never issues the same value twice" (ADR-0005) holds by construction:
-the UUIDv7 generator strictly increases while the clock does not go backwards, and after a backwards
-step the random bits make a repeat as unlikely as a cross-restart collision. The UUIDv4 and
-`StableId` values are random.
+Within one process, ADR-0005 requires that a source instance never issues the same value twice. The
+generators alone do not guarantee this: the UUIDv7 generator strictly increases only while the system
+clock does not go backwards, and the UUIDv4 and `StableId` values are random. The source therefore
+keeps the rule itself. It remembers every value it has issued, of all three kinds, for its lifetime,
+and when a generator returns a value already issued it discards that value and generates again. If
+the generator repeats on every one of a small fixed number of consecutive attempts, the source returns
+`IdentitySourceExhausted`, which is the only expected generation failure (ADR-0005) and which the
+core turns into the fail-closed latch. The remembered set costs 16 bytes per identity plus container
+overhead, and it grows for the life of the process; the core generates the three identities of a
+creation before it decides admission, so a refused creation also adds three values. Phase 1 bounds
+residents by `max_jobs`, and the retirement design (H7, Issue #103) decides whether retired
+identities may be forgotten.
 
 ### 3. UUIDv4 for Worker identity
 
@@ -175,8 +189,8 @@ core.
 
 This ADR adds `ID-001` (MUST): generate every production Job, Session, Worker, and launch-operation
 identity with the source of this ADR, and read `recorded_at` and `MonotonicInstant` with its clock,
-so that each value is canonical, each identifier is unique within the process by construction, and
-no production path reads another clock or entropy source for identity.
+so that each value is canonical, no identifier is issued twice by one source instance, and no
+production path reads another clock or entropy source for identity.
 
 Its named checks, Planned until the implementation Issue activates them:
 
@@ -188,8 +202,13 @@ Its named checks, Planned until the implementation Issue activates them:
   version and variant bits, and all distinct;
 - `identity_stable_id_grammar`: every launch-operation identity matches the ADR-0002 `StableId`
   grammar and length;
-- `identity_source_never_exhausted`: the production source returns a generated value for every call
-  and never `IdentitySourceExhausted`;
+- `identity_never_repeats_within_instance`: with an injected generator that returns a value already
+  issued, the source discards it, generates again, and returns a fresh value, for each of the three
+  kinds; with a generator that repeats on every attempt, the source returns
+  `IdentitySourceExhausted` after the fixed number of attempts and the core latches its failure
+  state;
+- `identity_source_never_exhausted`: the production source, with Boost's generators, returns a
+  generated value for every one of ten thousand calls and never `IdentitySourceExhausted`;
 - `clock_recorded_at_rfc3339`: `recorded_at` formatted from an injected `system_clock::time_point`
   is the expected UTC RFC 3339 text with millisecond precision, including the epoch, a leap day, and
   the last millisecond of a year;
@@ -201,16 +220,19 @@ Its named checks, Planned until the implementation Issue activates them:
   and clock, in both the HTTP-enabled and HTTP-off builds, and a create on a registered test
   Application in the contract fixture commits with a canonical UUIDv7 `job_id`.
 
-The formatting and arithmetic checks inject their time points and run no real sleeps. The generator
-checks observe Boost's generators as black boxes; they do not move the system clock, so the
-clock-rollback behavior of Section 1 is stated from the Boost 1.91.0 source and not tested.
+The formatting and arithmetic checks inject their time points and run no real sleeps. The source
+takes its generators as constructor arguments: production injects Boost's, and the no-repeat check
+injects scripted generators, so the collision path is deterministic without seeding Boost's
+generators. The checks that use Boost's generators observe them as black boxes; they do not move the
+system clock, so the clock-rollback behavior of Section 1 is stated from the Boost 1.91.0 source and
+not tested.
 
 Traceability from Issue #102's required decisions:
 
 | Required decision | Section | Checks |
 |---|---|---|
-| 1. UUIDv7: timestamp, randomness, same-millisecond method, rollback, exhaustion | 1 | `identity_uuidv7_canonical`, `identity_uuidv7_monotonic_burst`, `identity_source_never_exhausted` |
-| 2. Uniqueness across restarts | 2 | `identity_uuidv7_canonical` (distinctness); the core's `job_already_exists` refusal, tested by Issue #106 |
+| 1. UUIDv7: timestamp, randomness, same-millisecond method, rollback, exhaustion | 1 | `identity_uuidv7_canonical`, `identity_uuidv7_monotonic_burst`, `identity_source_never_exhausted`, `identity_never_repeats_within_instance` |
+| 2. Uniqueness across restarts and within the process | 2 | `identity_never_repeats_within_instance`; `identity_uuidv7_canonical` (distinctness); the core's `job_already_exists` refusal, tested by Issue #106 |
 | 3. UUIDv4 Worker identity | 3 | `identity_uuidv4_canonical` |
 | 4. `StableId` launch identity | 4 | `identity_stable_id_grammar` |
 | 5. Clock | 5 | `clock_recorded_at_rfc3339`, `clock_monotonic_instant` |
@@ -228,8 +250,11 @@ Traceability from Issue #102's required decisions:
   requires.
 - Bad: the UUIDv7 values are not monotonic across a backwards step of the system clock. Nothing
   depends on that order, and this ADR forbids adding such a dependency without changing it.
-- Bad: the generator checks are property checks, not exact-value checks, because the generators are
-  not seeded from a test seam.
+- Bad: the generator checks are property checks, not exact-value checks, because Boost's generators
+  are not seeded from a test seam; only the no-repeat path is deterministic, through injected
+  generators.
+- Bad: the remembered set of issued identities grows for the life of the process, including three
+  values per refused creation, until the retirement design decides what may be forgotten.
 - Neutral: `sitometron_identity` is a third adapter target with its own allowlist and scanners.
 
 ## Options considered
@@ -237,6 +262,12 @@ Traceability from Issue #102's required decisions:
 - **Implement UUIDv7 in Sitometron with injected time and randomness**: rejected because ADR-0004
   rejected implementing UUID generation in Sitometron, and the only gain is exact-value tests of
   code that would then be Sitometron's to maintain.
+- **Keep ADR-0005's no-repeat rule probabilistic, with a stated bound**: rejected because it
+  amends an Accepted ADR for one clause, and remembering issued values keeps the rule literal at a
+  small, bounded-per-identity cost.
+- **Reuse the last timestamp and increment a counter after a backwards clock step (RFC 9562
+  Section 6.2)**: rejected because Sitometron would then produce UUID values itself, which
+  ADR-0004 rejected, and it does nothing for the random UUIDv4 and `StableId` values.
 - **Make the source refuse identifiers already present in the replayed state**: rejected because it
   inverts the ADR-0005 port direction, couples the source to the Journal, and guards against a
   collision the reducer already refuses.
