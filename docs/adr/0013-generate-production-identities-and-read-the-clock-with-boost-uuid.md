@@ -25,7 +25,7 @@ implementations.
 
 The code fixes three facts the design depends on:
 
-- `JobOrchestrator::CreateJob` is the only caller of the three generation operations. It calls them
+- `JobOrchestrator::CreateWith` is the only caller of the three generation operations. It calls them
   on the creating thread, outside the ingress mutex, after setting `creation_generation_in_progress`
   so that at most one creation generates at a time (`src/core/job_orchestrator.cpp`, around line
   1750). A thrown exception or an `IdentitySourceExhausted` result latches the writer's failure
@@ -43,11 +43,13 @@ Boost.UUID 1.91.0, the pinned baseline, implements the generators as follows (re
   microseconds and keeps a 64-bit state of the millisecond, the microsecond within it, and a 6-bit
   counter. The millisecond fills `unix_ts_ms`; the microsecond and the counter fill `rand_a` and the
   top of `rand_b` (RFC 9562 Section 6.2, method 3 with a counter). When the clock has advanced, the
-  counter resets; when the same microsecond repeats, the counter increments and carries into the
-  microsecond field, so values strictly increase within one instance while the clock does not go
-  backwards. When the millisecond goes backwards, the generator uses the new, earlier timestamp and
-  is not monotonic across that step. The remaining 58 random bits come from a ChaCha20 stream seeded
-  from the operating system's entropy provider.
+  counter resets; when the same microsecond repeats, the counter increments, and above 64 values in
+  one microsecond it carries into the microsecond and then the millisecond field, so values strictly
+  increase within one instance at any generation rate while the clock does not go backwards, and the
+  embedded timestamp runs ahead of the clock during such a burst. When the millisecond goes
+  backwards, the generator uses the new, earlier timestamp and is not monotonic across that step.
+  The remaining 58 random bits come from a ChaCha20 stream seeded from the operating system's
+  entropy provider.
 - `random_generator` is the same ChaCha20 stream seeded from the operating system's entropy
   provider; it produces UUIDv4 values and its call operator does not fail.
 - The only operation that can fail is seeding the entropy provider, which happens when a generator
@@ -61,7 +63,10 @@ The owner decided on 2026-10-25 under Issue #102:
   and
 - after the first review (2026-10-26), the source keeps the ADR-0005 no-repeat rule literally: it
   remembers the values it issued and generates again on a repeat, instead of amending ADR-0005 with
-  a probabilistic bound.
+  a probabilistic bound; and
+- after the second review (2026-10-27), the remembered set has a configurable capacity with the
+  default of Section 2, and a full set is reported as `IdentitySourceExhausted`, instead of an
+  unbounded set or a change to the core's admission order.
 
 ## Decision
 
@@ -87,11 +92,11 @@ instance owned by the source for the process lifetime, and formats it as the can
   or correct this. A value generated after the step can sort before a value generated before it.
   This is acceptable because nothing orders by identifier text, and uniqueness does not depend on
   monotonicity (Section 2).
-- `IdentitySourceExhausted`: returned only by the no-repeat rule of Section 2, when the generator
-  repeats a value on every one of a small fixed number of attempts, which means the generator is
-  broken. The generator cannot fail per call. The source constructs its generators when the
-  composition starts; if seeding the entropy provider throws, startup fails with the Issue #105
-  startup-refusal status and no listener opens.
+- `IdentitySourceExhausted`: returned only by the no-repeat rule of Section 2: when the generator
+  repeats an issued value on all eight attempts, which means the generator is broken, or when the
+  remembered set is full. The generator cannot fail per call. The source constructs its generators
+  when the composition starts; if seeding the entropy provider throws, startup fails with the Issue
+  #105 startup-refusal status and no listener opens.
 
 ### 2. Uniqueness across restarts
 
@@ -100,24 +105,33 @@ the replayed state and does not refuse a value that an earlier run issued. Reaso
 
 - ADR-0005 makes the source a passive capability that the writer calls; a source that consulted
   resident snapshots would invert that direction and couple it to the Journal.
-- A collision needs the same millisecond and the same 74 random bits as a replayed Job, with
-  probability far below any operational concern.
+- A collision needs the same millisecond, the same sub-millisecond and counter fields, and the same
+  58 random bits as a replayed Job, with probability far below any operational concern.
 - The core already refuses the collision: `job_created` for an existing resident is rejected as
   `job_already_exists`, the adapter maps that to `500` `service`/`internal` (Issue #106), and no
   Journal record is written. The next create generates a new value.
 
 Within one process, ADR-0005 requires that a source instance never issues the same value twice. The
-generators alone do not guarantee this: the UUIDv7 generator strictly increases only while the system
-clock does not go backwards, and the UUIDv4 and `StableId` values are random. The source therefore
-keeps the rule itself. It remembers every value it has issued, of all three kinds, for its lifetime,
-and when a generator returns a value already issued it discards that value and generates again. If
-the generator repeats on every one of a small fixed number of consecutive attempts, the source returns
-`IdentitySourceExhausted`, which is the only expected generation failure (ADR-0005) and which the
-core turns into the fail-closed latch. The remembered set costs 16 bytes per identity plus container
-overhead, and it grows for the life of the process; the core generates the three identities of a
-creation before it decides admission, so a refused creation also adds three values. Phase 1 bounds
-residents by `max_jobs`, and the retirement design (H7, Issue #103) decides whether retired
-identities may be forgotten.
+generators alone do not guarantee this: the UUIDv7 generator strictly increases only while the
+system clock does not go backwards, and the UUIDv4 and `StableId` values are random. The source
+therefore keeps the rule itself:
+
+- It remembers every value it has issued, of all three kinds, in one set.
+- When a generator returns a value already in the set, the source discards it and generates again.
+  A generation makes at most eight attempts, the first included; if all eight return issued values,
+  the source returns `IdentitySourceExhausted`, because such a generator is broken.
+- The set has a capacity, configured at composition with the default 1,048,576 identities (16 MiB of
+  values; about 50 MiB with container overhead). When the set is full, the source returns
+  `IdentitySourceExhausted` without generating. The core turns either exhaustion into its
+  fail-closed latch (ADR-0003), readiness becomes false, and the daemon is restarted.
+
+The capacity bounds memory because the core generates the three identities of a creation before it
+decides admission, so a refused creation also adds three values, and `max_jobs` bounds residents,
+not refused requests. The default is one thousand times the largest `max_jobs` (1,024), so a daemon
+reaches it only when a trusted loopback client keeps creating against a full daemon for a very long
+time; the retirement design (H7, Issue #103) may later let retired identities be forgotten. The
+capacity is not a startup option of Issue #105; the implementation Issue decides whether it is a
+constructor argument only or also a command-line option.
 
 ### 3. UUIDv4 for Worker identity
 
@@ -173,7 +187,11 @@ Only these manifest ports, direct CMake targets, and headers are authorized for
 
 The list restricts direct includes; headers of `boost-uuid` that a listed header includes are
 permitted as its implementation. The target adds no manifest port. Its public headers expose only
-Sitometron-owned types, and it links `Boost::uuid` privately. The implementation Issue adds the
+Sitometron-owned types, and it links `Boost::uuid` privately. The source's constructor takes its
+generators through two Sitometron-owned abstract interfaces, one that yields a UUIDv7 and one that
+yields a UUIDv4, plus the set capacity; a factory in the same target constructs the production
+source with Boost's generators behind those interfaces, so no Boost type appears in a public
+header, and tests supply scripted implementations. The implementation Issue adds the
 dependency-allowlist and public-API-isolation scanners for this target in the pattern of the
 `sitometron_http` scanners, and keeps the `NFR-005` checks that reject the generator headers in the
 core.
@@ -205,8 +223,9 @@ Its named checks, Planned until the implementation Issue activates them:
 - `identity_never_repeats_within_instance`: with an injected generator that returns a value already
   issued, the source discards it, generates again, and returns a fresh value, for each of the three
   kinds; with a generator that repeats on every attempt, the source returns
-  `IdentitySourceExhausted` after the fixed number of attempts and the core latches its failure
-  state;
+  `IdentitySourceExhausted` on the eighth attempt; with a set capacity of a few values, the source
+  returns `IdentitySourceExhausted` once the set is full; and in both cases the core latches its
+  failure state;
 - `identity_source_never_exhausted`: the production source, with Boost's generators, returns a
   generated value for every one of ten thousand calls and never `IdentitySourceExhausted`;
 - `clock_recorded_at_rfc3339`: `recorded_at` formatted from an injected `system_clock::time_point`
@@ -231,7 +250,7 @@ Traceability from Issue #102's required decisions:
 
 | Required decision | Section | Checks |
 |---|---|---|
-| 1. UUIDv7: timestamp, randomness, same-millisecond method, rollback, exhaustion | 1 | `identity_uuidv7_canonical`, `identity_uuidv7_monotonic_burst`, `identity_source_never_exhausted`, `identity_never_repeats_within_instance` |
+| 1. UUIDv7: timestamp, randomness, same-millisecond method, rollback, exhaustion | 1 | `identity_uuidv7_canonical`, `identity_uuidv7_monotonic_burst`, `identity_source_never_exhausted`, `identity_never_repeats_within_instance`; rollback is stated from the Boost source and has no check |
 | 2. Uniqueness across restarts and within the process | 2 | `identity_never_repeats_within_instance`; `identity_uuidv7_canonical` (distinctness); the core's `job_already_exists` refusal, tested by Issue #106 |
 | 3. UUIDv4 Worker identity | 3 | `identity_uuidv4_canonical` |
 | 4. `StableId` launch identity | 4 | `identity_stable_id_grammar` |
@@ -254,7 +273,8 @@ Traceability from Issue #102's required decisions:
   are not seeded from a test seam; only the no-repeat path is deterministic, through injected
   generators.
 - Bad: the remembered set of issued identities grows for the life of the process, including three
-  values per refused creation, until the retirement design decides what may be forgotten.
+  values per refused creation, up to its capacity; a daemon that reaches the capacity fails closed
+  and must be restarted.
 - Neutral: `sitometron_identity` is a third adapter target with its own allowlist and scanners.
 
 ## Options considered
@@ -268,6 +288,11 @@ Traceability from Issue #102's required decisions:
 - **Reuse the last timestamp and increment a counter after a backwards clock step (RFC 9562
   Section 6.2)**: rejected because Sitometron would then produce UUID values itself, which
   ADR-0004 rejected, and it does nothing for the random UUIDv4 and `StableId` values.
+- **Remember issued identities without a capacity**: rejected because a trusted client that keeps
+  creating against a full daemon would grow the set without bound.
+- **Decide admission before generating identities, so refused creations consume none**: rejected
+  here because it changes the core's creation order that ADR-0003 and Issue #80 fixed; it is a
+  separate core change if the bound ever proves too tight.
 - **Make the source refuse identifiers already present in the replayed state**: rejected because it
   inverts the ADR-0005 port direction, couples the source to the Journal, and guards against a
   collision the reducer already refuses.
