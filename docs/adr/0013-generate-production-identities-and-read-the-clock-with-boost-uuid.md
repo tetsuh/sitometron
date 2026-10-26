@@ -47,11 +47,13 @@ Boost.UUID 1.91.0, the pinned baseline, implements the generators as follows (re
   counter. The millisecond fills `unix_ts_ms`; the microsecond and the counter fill `rand_a` and the
   top of `rand_b` (RFC 9562 Section 6.2, method 3 with a counter). When the clock has advanced, the
   counter resets; when the same microsecond repeats, the counter increments. Boost documents
-  monotonicity for up to 64 values per microsecond; in the 1.91.0 source the increment carries into
-  the microsecond and then the millisecond field beyond that, so the 64-bit state and therefore the
-  value keep increasing while the clock does not go backwards, and the embedded timestamp runs ahead
-  of the clock during such a burst. This ADR relies on the source behavior, and the burst check
-  observes it against the pinned version. When the millisecond goes
+  monotonicity for up to 64 values per microsecond. Beyond that, the 1.91.0 source carries the
+  increment into the microsecond and then the millisecond field, so the embedded timestamp runs
+  ahead of the clock; when the state's millisecond is ahead of the wall clock, the next call takes
+  the `time_ms < (oldst >> 16)` branch and resets the state to the wall clock, which can produce a
+  value smaller than the previous one without any clock rollback. Within one instance, values
+  therefore strictly increase only while the clock does not go backwards and no more than 64 values
+  are generated in one microsecond. When the millisecond goes
   backwards, the generator uses the new, earlier timestamp and is not monotonic across that step.
   The remaining 58 random bits come from a ChaCha20 stream seeded from the operating system's
   entropy provider.
@@ -90,9 +92,10 @@ instance owned by the source for the process lifetime, and formats it as the can
 - Random source: the generator's ChaCha20 stream, seeded once from the operating system's entropy
   provider when the source is constructed.
 - Ordering within one millisecond: Boost's method, as described in the Context. Within one source
-  instance, successive values strictly increase while the system clock does not go backwards. No
-  Sitometron component relies on this ordering; it is a property, not a contract that other code may
-  depend on.
+  instance, successive values strictly increase while the system clock does not go backwards and
+  no more than 64 values are generated in one microsecond; above that rate the carry-and-reset edge
+  of the Context can yield a smaller value. No Sitometron component relies on this ordering; it is a
+  property, not a contract that other code may depend on, and uniqueness comes from Section 2.
 - Clock moving backwards: the generator takes the new, earlier timestamp. The source does not detect
   or correct this. A value generated after the step can sort before a value generated before it.
   This is acceptable because nothing orders by identifier text, and uniqueness does not depend on
@@ -222,7 +225,9 @@ Its named checks, Planned until the implementation Issue activates them:
 - `identity_uuidv7_canonical`: ten thousand Job and Session identities and launch identities from
   one source are canonical UUIDv7 text with the RFC 9562 version and variant bits, and all distinct;
 - `identity_uuidv7_monotonic_burst`: successive Job identities from one source, generated without
-  sleeping, strictly increase as 128-bit values while the system clock is not moved;
+  sleeping, strictly increase as 128-bit values while the system clock is not moved and the measured
+  rate stays at or below 64 values per microsecond; when a burst exceeds that rate, the check records
+  the rate and asserts only distinctness, which the remembered set guarantees;
 - `identity_uuidv4_canonical`: ten thousand Worker identities are canonical UUIDv4 text with the
   version and variant bits, and all distinct;
 - `identity_stable_id_grammar`: every launch-operation identity matches the ADR-0002 `StableId`
@@ -274,8 +279,9 @@ Traceability from Issue #102's required decisions:
   ADR-0004 chose, and the adapter is a thin wrapper that tests can observe.
 - Good: the generator headers stay confined to one target that a scanner guards, as ADR-0004
   requires.
-- Bad: the UUIDv7 values are not monotonic across a backwards step of the system clock. Nothing
-  depends on that order, and this ADR forbids adding such a dependency without changing it.
+- Bad: the UUIDv7 values are not monotonic across a backwards step of the system clock or above
+  64 values in one microsecond. Nothing depends on that order, and this ADR forbids adding such a
+  dependency without changing it.
 - Bad: the generator checks are property checks, not exact-value checks, because Boost's generators
   are not seeded from a test seam; only the no-repeat path is deterministic, through injected
   generators.
