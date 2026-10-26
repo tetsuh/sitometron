@@ -30,8 +30,11 @@ The code fixes three facts the design depends on:
   so that at most one creation generates at a time (`src/core/job_orchestrator.cpp`, around line
   1750). A thrown exception or an `IdentitySourceExhausted` result latches the writer's failure
   state, as ADR-0005 says of precommit materialization.
-- `ClockPort::Read()` has one caller, on the writer thread, immediately before the Journal append of
-  each accepted turn (around line 1414).
+- `ClockPort::Read()` has one caller, on the writer thread, during the precommit materialization
+  of an accepted turn (around line 1414): after the reducer accepted the input and before the
+  effect, source-capacity, and trace preparation that precede the Journal append. A preparation
+  failure after the read fails the turn without an append, so a reading is not always followed by a
+  record.
 - No Sitometron code orders Jobs, Sessions, or launches by the text of their identifiers. The
   resident list is ordered by Journal sequence (ADR-0008 Section 4) and the Phase 1 index is seeded
   from replay order (Issue #106).
@@ -43,10 +46,12 @@ Boost.UUID 1.91.0, the pinned baseline, implements the generators as follows (re
   microseconds and keeps a 64-bit state of the millisecond, the microsecond within it, and a 6-bit
   counter. The millisecond fills `unix_ts_ms`; the microsecond and the counter fill `rand_a` and the
   top of `rand_b` (RFC 9562 Section 6.2, method 3 with a counter). When the clock has advanced, the
-  counter resets; when the same microsecond repeats, the counter increments, and above 64 values in
-  one microsecond it carries into the microsecond and then the millisecond field, so values strictly
-  increase within one instance at any generation rate while the clock does not go backwards, and the
-  embedded timestamp runs ahead of the clock during such a burst. When the millisecond goes
+  counter resets; when the same microsecond repeats, the counter increments. Boost documents
+  monotonicity for up to 64 values per microsecond; in the 1.91.0 source the increment carries into
+  the microsecond and then the millisecond field beyond that, so the 64-bit state and therefore the
+  value keep increasing while the clock does not go backwards, and the embedded timestamp runs ahead
+  of the clock during such a burst. This ADR relies on the source behavior, and the burst check
+  observes it against the pinned version. When the millisecond goes
   backwards, the generator uses the new, earlier timestamp and is not monotonic across that step.
   The remaining 58 random bits come from a ChaCha20 stream seeded from the operating system's
   entropy provider.
@@ -127,9 +132,11 @@ therefore keeps the rule itself:
 
 The capacity bounds memory because the core generates the three identities of a creation before it
 decides admission, so a refused creation also adds three values, and `max_jobs` bounds residents,
-not refused requests. The default is one thousand times the largest `max_jobs` (1,024), so a daemon
+not refused requests. The default is 1,024 times the largest `max_jobs` (1,024), so a daemon
 reaches it only when a trusted loopback client keeps creating against a full daemon for a very long
-time; the retirement design (H7, Issue #103) may later let retired identities be forgotten. The
+time. The set is kept for the whole lifetime of the source instance: retiring a Job (H7, Issue #103)
+does not remove its identities from the set, because a removed value could be reissued by the same
+instance. Values are forgotten only when the instance ends, that is, at restart. The
 capacity is not a startup option of Issue #105; the implementation Issue decides whether it is a
 constructor argument only or also a command-line option.
 
@@ -145,9 +152,9 @@ bearer token a separate 256-bit secret.
 The launch-operation identity is the canonical text of a UUIDv7 drawn from the same
 `time_generator_v7` instance as Section 1: 36 characters of lowercase hexadecimal digits and
 hyphens, which satisfies the ADR-0002 grammar `^[A-Za-z0-9][A-Za-z0-9._:-]*$` with 1 to 128
-characters. It is unique by the same argument as Section 2 and needs no state, unlike the skeleton's
-`launch-N` counter, which restarts at 1 after every restart and would collide with replayed launch
-operations.
+characters. It needs no separate launch counter, unlike the skeleton's `launch-N`, which restarts at
+1 after every restart and would collide with replayed launch operations; within the process it is
+covered by the shared remembered set and retry rule of Section 2.
 
 ### 5. Clock
 
