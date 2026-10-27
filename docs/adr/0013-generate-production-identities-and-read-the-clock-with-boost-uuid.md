@@ -55,7 +55,7 @@ Boost.UUID 1.91.0, the pinned baseline, implements the generators as follows (re
   therefore strictly increase only while the clock does not go backwards and no more than 64 values
   are generated in one microsecond. When the millisecond goes
   backwards, the generator uses the new, earlier timestamp and is not monotonic across that step.
-  The remaining 58 random bits come from a ChaCha20 stream seeded from the operating system's
+  The remaining 56 random bits (bytes 9 to 15; byte 8 holds the variant and the counter) come from a ChaCha20 stream seeded from the operating system's
   entropy provider.
 - `random_generator` is the same ChaCha20 stream seeded from the operating system's entropy
   provider; it produces UUIDv4 values and its call operator does not fail.
@@ -114,7 +114,7 @@ the replayed state and does not refuse a value that an earlier run issued. Reaso
 - ADR-0005 makes the source a passive capability that the writer calls; a source that consulted
   resident snapshots would invert that direction and couple it to the Journal.
 - A collision needs the same millisecond, the same sub-millisecond and counter fields, and the same
-  58 random bits as a replayed Job, with probability far below any operational concern.
+  56 random bits as a replayed Job, with probability far below any operational concern.
 - The core already refuses the collision: `job_created` for an existing resident is rejected as
   `job_already_exists`, the adapter maps that to `500` `service`/`internal` (Issue #106), and no
   Journal record is written. The next create generates a new value.
@@ -196,7 +196,10 @@ Only these manifest ports, direct CMake targets, and headers are authorized for
 | `boost-uuid` | 1.91.0 | `Boost::uuid` | `<boost/uuid/uuid.hpp>`, `<boost/uuid/uuid_io.hpp>`, `<boost/uuid/time_generator_v7.hpp>`, and `<boost/uuid/random_generator.hpp>` |
 
 The list restricts direct includes; headers of `boost-uuid` that a listed header includes are
-permitted as its implementation. The target adds no manifest port. Its public headers expose only
+permitted as its implementation. The identity-source translation unit may not include `<random>`
+or `<chrono>` and may not name `std::random_device`, `std::chrono::system_clock`, or an operating
+system entropy or time call; only the clock translation unit includes `<chrono>`. The target adds
+no manifest port. Its public headers expose only
 Sitometron-owned types, and it links `Boost::uuid` privately. The source's constructor takes its
 generators through two Sitometron-owned abstract interfaces, one that yields a UUIDv7 and one that
 yields a UUIDv4, plus the set capacity; a factory in the same target constructs the production
@@ -234,7 +237,8 @@ Its named checks, Planned until the implementation Issue activates them:
   grammar and length;
 - `identity_never_repeats_within_instance`: with an injected generator that returns a value already
   issued, the source discards it, generates again, and returns a fresh value, for each of the three
-  kinds; with a generator that repeats on every attempt, the source returns
+  kinds and across kinds: a UUIDv7 issued as a Job identity and then returned by the generator for a
+  launch-operation identity is discarded too, because the three kinds share one set; with a generator that repeats on every attempt, the source returns
   `IdentitySourceExhausted` on the eighth attempt; with a set capacity of a few values, the source
   returns `IdentitySourceExhausted` once the set is full; and in both cases the core latches its
   failure state;
@@ -246,7 +250,14 @@ Its named checks, Planned until the implementation Issue activates them:
 - `clock_monotonic_instant`: `MonotonicInstant` computed from injected `steady_clock` readings is
   nondecreasing, starts at zero at the origin, and uses checked arithmetic;
 - `identity_dependency_allowlist` and `identity_public_api_isolation`: the `sitometron_identity`
-  target includes only the headers of Section 7 and exposes only Sitometron-owned types; and
+  target includes only the headers of Section 7 and exposes only Sitometron-owned types;
+- `identity_source_reads_no_other_clock_or_entropy`: the scanner rejects, in the identity-source
+  translation unit, `<random>`, `<chrono>`, `std::random_device`, `std::chrono::system_clock`, and
+  the operating system entropy and time calls named in the scanner, so the source draws every value
+  from the injected generators and nothing else;
+- `identity_seed_failure_refuses_startup`: with a factory whose generator construction throws, the
+  production composition refuses startup with the Issue #105 startup-refusal status and opens no
+  listener; and
 - `sitometrond_composes_production_identity`: the production composition constructs the real source
   and clock, in both the HTTP-enabled and HTTP-off builds, and a create on a registered test
   Application in the contract fixture commits with a canonical UUIDv7 `job_id`.
@@ -266,9 +277,9 @@ Traceability from Issue #102's required decisions:
 | 2. Uniqueness across restarts and within the process | 2 | `identity_never_repeats_within_instance`; `identity_uuidv7_canonical` (distinctness); the core's `job_already_exists` refusal, tested by Issue #106 |
 | 3. UUIDv4 Worker identity | 3 | `identity_uuidv4_canonical` |
 | 4. `StableId` launch identity | 4 | `identity_stable_id_grammar` |
-| 5. Clock | 5 | `clock_recorded_at_rfc3339`, `clock_monotonic_instant` |
+| 5. Clock | 5 | `clock_recorded_at_rfc3339`, `clock_monotonic_instant`, `identity_source_reads_no_other_clock_or_entropy` |
 | 6. Threading | 6 | stated precondition; no check, because the core already serializes the calls |
-| 7. Placement and dependencies | 7 | `identity_dependency_allowlist`, `identity_public_api_isolation`, `sitometrond_composes_production_identity` |
+| 7. Placement and dependencies | 7 | `identity_dependency_allowlist`, `identity_public_api_isolation`, `identity_source_reads_no_other_clock_or_entropy`, `identity_seed_failure_refuses_startup`, `sitometrond_composes_production_identity` |
 | 8. Tests | this section | all of the above |
 
 ## Consequences
