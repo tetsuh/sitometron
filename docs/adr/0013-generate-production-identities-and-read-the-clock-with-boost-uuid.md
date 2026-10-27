@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-10-25
+Accepted — 2026-10-28
 
 ## Context
 
@@ -53,10 +53,10 @@ Boost.UUID 1.91.0, the pinned baseline, implements the generators as follows (re
   the `time_ms < (oldst >> 16)` branch and resets the state to the wall clock, which can produce a
   value smaller than the previous one without any clock rollback. Within one instance, values
   therefore strictly increase only while the clock does not go backwards and no more than 64 values
-  are generated in one microsecond. When the millisecond goes
-  backwards, the generator uses the new, earlier timestamp and is not monotonic across that step.
-  The remaining 56 random bits (bytes 9 to 15; byte 8 holds the variant and the counter) come from a ChaCha20 stream seeded from the operating system's
-  entropy provider.
+  are generated in one microsecond. When the millisecond goes backwards, the generator uses the new,
+  earlier timestamp and is not monotonic across that step. The remaining 56 random bits (bytes 9 to
+  15; byte 8 holds the variant and the counter) come from a ChaCha20 stream seeded from the
+  operating system's entropy provider.
 - `random_generator` is the same ChaCha20 stream seeded from the operating system's entropy
   provider; it produces UUIDv4 values and its call operator does not fail.
 - The only operation that can fail is seeding the entropy provider, which happens when a generator
@@ -229,8 +229,8 @@ Its named checks, Planned until the implementation Issue activates them:
   one source are canonical UUIDv7 text with the RFC 9562 version and variant bits, and all distinct;
 - `identity_uuidv7_monotonic_burst`: successive Job identities from one source, generated without
   sleeping, strictly increase as 128-bit values while the system clock is not moved and the measured
-  rate stays at or below 64 values per microsecond; when a burst exceeds that rate, the check records
-  the rate and asserts only distinctness, which the remembered set guarantees;
+  rate stays at or below 64 values per microsecond; when a burst exceeds that rate, the check
+  records the rate and asserts only distinctness, which the remembered set guarantees;
 - `identity_uuidv4_canonical`: ten thousand Worker identities are canonical UUIDv4 text with the
   version and variant bits, and all distinct;
 - `identity_stable_id_grammar`: every launch-operation identity matches the ADR-0002 `StableId`
@@ -238,10 +238,10 @@ Its named checks, Planned until the implementation Issue activates them:
 - `identity_never_repeats_within_instance`: with an injected generator that returns a value already
   issued, the source discards it, generates again, and returns a fresh value, for each of the three
   kinds and across kinds: a UUIDv7 issued as a Job identity and then returned by the generator for a
-  launch-operation identity is discarded too, because the three kinds share one set; with a generator that repeats on every attempt, the source returns
-  `IdentitySourceExhausted` on the eighth attempt; with a set capacity of a few values, the source
-  returns `IdentitySourceExhausted` once the set is full; and in both cases the core latches its
-  failure state;
+  launch-operation identity is discarded too, because the three kinds share one set; with a
+  generator that repeats on every attempt, the source returns `IdentitySourceExhausted` on the
+  eighth attempt; with a set capacity of a few values, the source returns `IdentitySourceExhausted`
+  once the set is full; and in both cases the core latches its failure state;
 - `identity_source_never_exhausted`: the production source, with Boost's generators, returns a
   generated value for every one of ten thousand calls and never `IdentitySourceExhausted`;
 - `clock_recorded_at_rfc3339`: `recorded_at` formatted from an injected `system_clock::time_point`
