@@ -335,7 +335,8 @@ Traceability from Issue #102's required decisions:
 
 - Issue #102
 - Gate #101 (P1-10)
-- Requirements: `ID-001` (Planned)
+- Requirements: `ID-001` (Normative; its checks and implementation are Planned until the
+  implementation Issue activates them)
 - Contract Registry: `Production identity source and clock`
 - Related ADR: ADR-0002, ADR-0004, ADR-0005, ADR-0006, ADR-0010
 - RFC 9562, Sections 5.4, 5.7, and 6.2; RFC 3339
