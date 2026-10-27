@@ -17,6 +17,7 @@ requirements remain in history and point to their replacement or removal authori
 | `PAR` | Parameter and Session facade behavior |
 | `ART` | Artifact publication, access, retention, and deletion |
 | `SEC` | Authentication, authorization, trust, and sensitive-data handling |
+| `ID` | Production identity generation (Job, Session, Worker, and launch-operation identities) and clock readings |
 | `OPS` | Startup, shutdown, recovery, readiness, diagnostics, and maintenance |
 | `NFR` | Cross-cutting platform, performance, build, and quality requirements |
 
@@ -132,3 +133,10 @@ ADR-0009 owns the Normative `API-007` requirement in Section 8.
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
 | `JOB-009` | MUST | While ingress admission is open (ADR-0003), drive every Job that the running daemon admits to a terminal outcome and a recorded cleanup status by submitting, after each committed change, exactly the input the supervisor decision contract assigns to the latest committed snapshot, and hold no other sequencing state. | Proposed [ADR-0012](adr/0012-drive-each-job-with-a-supervisor-in-the-core.md) under [Issue #104](https://github.com/tetsuh/sitometron/issues/104) |
+
+Accepted [ADR-0013](adr/0013-generate-production-identities-and-read-the-clock-with-boost-uuid.md) under
+[Issue #102](https://github.com/tetsuh/sitometron/issues/102) adds `ID-001`, binding on implementation in the same way.
+
+| ID | Level | Requirement | Authority |
+|---|---|---|---|
+| `ID-001` | MUST | Generate every production Job, Session, Worker, and launch-operation identity with the ADR-0013 source and read `recorded_at` and `MonotonicInstant` with its clock, so that each value is canonical, no identifier is issued twice by one source instance, and no production path reads another clock or entropy source for identity. | Accepted [ADR-0013](adr/0013-generate-production-identities-and-read-the-clock-with-boost-uuid.md) under [Issue #102](https://github.com/tetsuh/sitometron/issues/102) |
