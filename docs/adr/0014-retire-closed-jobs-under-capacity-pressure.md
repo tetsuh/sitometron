@@ -20,9 +20,9 @@ every turn.
 The code fixes these facts:
 
 - `JobOrchestrator::Impl::residents` is a vector of `max_jobs` slots; a slot is taken by a
-  successful `job_created` and never freed (`src/core/job_orchestrator.cpp`, the `Resident` struct around line
-  117 and the resident bound of ADR-0003). `SnapshotFor` finds a Job only through its resident
-  (around line 2461), so a Job without a resident is absent to every reader.
+  successful `job_created` and never freed (`src/core/job_orchestrator.cpp`, the `Resident` struct
+  around line 117 and the resident bound of ADR-0003). `SnapshotFor` finds a Job only through its
+  resident (around line 2461), so a Job without a resident is absent to every reader.
 - The global trace is one preallocated array of `trace_capacity` records that only grows; when it
   is full, `HasTraceCapacity` fails the next accepted turn (around lines 698 and 1407). A daemon's
   lifetime is therefore bounded by `trace_capacity` turns as well as by `max_jobs` creations.
@@ -51,17 +51,33 @@ writer and replay apply identically, and we will make the trace a ring.
 
 ### 1. When a Job is retired
 
-A resident Job is retirable when it is closed: its state is terminal, its resources are released,
-and its cleanup status is recorded, and every per-Job source gate of ADR-0003 is retired and no
-callback lease for it is in flight. A terminal Job whose cleanup status is `incomplete` while its
-process exit is unconfirmed is closed too, because its cleanup status is recorded; ADR-0012 row 13
-drives it no further, and this ADR retires it like any other closed Job.
+A resident Job is closed when the Journal says so: its state is terminal, its `resources_released`
+is recorded, and its `cleanup_status_recorded` is recorded. Only a closed Job is retirable, and the
+predicate reads committed state alone; the gate and lease state of ADR-0003 never changes which Job
+is retirable, so the writer and replay evaluate the same predicate over the same records. A
+terminal Job whose cleanup status is `incomplete` while its process exit is unconfirmed is closed
+too, because its cleanup status is recorded; ADR-0012 row 13 drives it no further, and this ADR
+retires it like any other closed Job, retiring its process-exit gate with the claim below.
 
-Retirement happens only when a `job_created` is admitted and no resident slot is free. Then the
-writer retires the retirable Job with the smallest `job_created` Journal sequence and gives its slot
-to the new Job, in the same turn, before the new Job's `job_created` is applied. If no resident Job
-is retirable, admission answers `resident_limit` as ADR-0003 says and nothing is retired. A closed
-Job is never retired while a slot is free, and never because of time.
+Retirement is decided where ADR-0003 places the resident bound: in the ingress resident-slot
+allocator, under the ingress mutex, when a `job_created` for a new Job finds no free resident slot.
+The allocator then claims the closed resident with the smallest `job_created` Journal sequence as
+the victim and reserves its slot provisionally for the new Job, exactly as it reserves a free slot
+today. The claim retires every gate of the victim that is still registered, so that no source can
+acquire a lease for the victim afterwards. The allocator refuses rather than skips: if the victim
+has a callback lease in flight at that moment, it does not choose the next closed Job but answers
+`resident_limit`, and the caller retries the creation after the lease has finished. At most one
+retirement claim is outstanding at a time; a creation that would need a second claim answers
+`resident_limit` until the first creation has committed or released its claim. If no resident Job
+is closed, admission answers `resident_limit` as ADR-0003 says and nothing is retired. A closed Job
+is never retired while a slot is free, and never because of time.
+
+The victim stays installed and readable through the writer's materialization and logical commit of
+the new Job's `job_created`. Only after commit success does the no-fail snapshot installation of
+ADR-0003 reset the victim's slot and install the new Job in it, in one step of the same turn. If
+the creation is not committed (a reducer rejection, a precommit failure, or a logical-commit
+failure), the claim is released as a provisional reservation is released today and the victim stays
+resident; a failed commit latches the writer as ADR-0003 says and retires nothing.
 
 ### 2. What retirement removes and what stays
 
@@ -72,8 +88,14 @@ rejected as stale by the existing generation rule. The ADR-0013 identity source 
 identifiers in its remembered set, as ADR-0013 Section 2 decided.
 
 The Journal keeps every record (ADR-0006 Section 8); retirement is not a Journal event and appends
-nothing. A later input for a retired Job reaches the reducer as an input for an absent Job and is
-decided by the existing ADR-0002 rules, as ADR-0006 Section 8 already says of pruned Jobs.
+nothing. A later input for a retired Job never reaches the writer through a critical source: the
+claim retired the victim's gates, and ADR-0003 lets a critical source submit only through a
+registered gate and a held lease, so a Worker fact, a process-exit observation, a release fact, or a
+cleanup fact for a retired Job fails to acquire its lease and is dropped by its source, with no
+ingress result, no reducer turn, no Journal record, and no failure latch. A terminate command for
+the retired identifier uses normal admission, as ADR-0003 says of a terminate for an unknown Job,
+and the reducer decides it by the existing ADR-0002 absent-entity rules, as ADR-0006 Section 8
+already says of pruned Jobs.
 
 ### 3. External effects
 
@@ -81,7 +103,9 @@ Nothing in ADR-0008 changes. `GET /v1/jobs/{job_id}` for a retired Job answers `
 `job_not_found`, as ADR-0008 Section 3 already states for a Job that a retirement decision removes.
 The list holds the resident Jobs and no longer holds a retired one; it stays bounded by `max_jobs`
 and ordered by `job_created` sequence. A cancel for a retired Job is a cancel for an unknown Job.
-The Phase 1 creation-order index drops the retired identifier when the slot is reused.
+When the slot is reused, the Phase 1 creation-order index removes the retired identifier and
+appends the new one, so the list keeps the surviving older Jobs before the new Job in ascending
+`job_created` sequence.
 
 ### 4. Journal and replay
 
@@ -92,7 +116,9 @@ the rule depends only on the records and their order, the resident set after rep
 resident set the previous process held when it appended the last record. Replay refuses to start
 with `journal_capacity_exceeded` only when a `job_created` finds `max_jobs` Jobs of which none is
 closed at that point in the fold. The writer and replay share one implementation of the
-retirability predicate and the oldest-first choice, so they cannot diverge.
+retirability predicate and the oldest-first choice, so they cannot diverge; and because the writer
+refuses a creation rather than skipping the oldest closed Job when runtime state blocks it (Section
+1), every retirement the writer performed is the one replay performs at the same record.
 
 Offline pruning (ADR-0006 Section 8) is unchanged: a pruned prefix removes closed Jobs from replay
 entirely, which only reduces what replay has to retire. Because retirement keeps every record, a
@@ -106,25 +132,40 @@ sentence only; this ADR names the superseding path, and every other rule of ADR-
 
 ### 5. The trace
 
-The global trace becomes a ring of `trace_capacity` records. Ordinals keep increasing without bound;
-when the ring is full, the oldest record is overwritten. A reader can rely on these properties: the
-ordinals of the retained records are consecutive and end at the most recent one; a record is never
-reordered or altered; and the per-turn prepared trace of one resident is still written as a whole,
-in order, so a turn's records are either all retained or all overwritten. `HasTraceCapacity` no
-longer fails a turn; it only sizes the per-turn prepared banks, which stay bounded as today. The
+The global trace becomes a ring of `trace_capacity` records. Ordinals keep increasing without bound.
+A turn's prepared trace is appended to the ring as a whole: when fewer records are free than the
+turn holds, the oldest retained turns are evicted whole, one after another, until the turn fits. A
+turn never holds more than `trace_capacity` records because `HasTraceCapacity` still sizes the
+per-turn prepared banks, which stay bounded as today, so whole-turn eviction always makes room. A
+reader can rely on these properties: the ordinals of the retained records are consecutive and end
+at the most recent one; a record is never reordered or altered; and every retained turn is complete,
+because turns are retained and evicted only whole. `HasTraceCapacity` no longer fails a turn. The
 trace is diagnostic test support and no production reader depends on it.
 
 ### 6. The ADR-0003 change
 
 ADR-0003 reserved this decision: "A future Normative deletion/retention decision is required before
 successful slots can be reused without changing ADR-0002's terminal-state rejection semantics."
-This ADR is that decision. It fills the reserved case and changes no other rule of ADR-0003: the
-fixed population `J`, the resident-slot allocator as the sole authority for the bound, the
-precedence of `resident_limit`, the provisional reservation rules, and the closed input classes are
-unchanged. ADR-0002's terminal-state rejection semantics are unchanged because a retired Job is
-absent, not terminal: its inputs are decided by the absent-entity rules that already exist for
-pruned Jobs. No Journal event is added, so ADR-0002's event set and ADR-0003's input classes stay
-closed.
+This ADR is that decision. It fills the reserved case and changes ADR-0003 in these places, each
+named here as its superseding path:
+
+- "Resident Job bound": "For a new Job ID, it atomically reserves a resident slot and a normal FIFO
+  slot before admitting `job_created`" becomes "it atomically reserves a free resident slot, or
+  claims the slot of the oldest closed Job under ADR-0014 Section 1, and a normal FIFO slot before
+  admitting `job_created`".
+- The result-table row "New Job with no resident slot, including simultaneous normal-capacity
+  exhaustion: `resident_limit`" applies when no slot is free and no closed Job can be claimed: none
+  is closed, the oldest closed Job has a callback lease in flight, or a retirement claim is already
+  outstanding.
+- The "Permit retirement" column of every per-Job source gate gains one cause: the retirement claim
+  of ADR-0014 Section 1 retires the gate.
+
+Every other rule of ADR-0003 stands: the fixed population `J`, the resident-slot allocator as the
+sole authority for the bound, the precedence of `resident_limit` over `normal_full`, the provisional
+reservation rules, and the closed input classes. ADR-0002's terminal-state rejection semantics are
+unchanged because a retired Job is absent, not terminal: its inputs are decided by the absent-entity
+rules that already exist for pruned Jobs. No Journal event is added, so ADR-0002's event set and
+ADR-0003's input classes stay closed.
 
 ### 7. Not decided here
 
@@ -146,10 +187,14 @@ Its named checks, Planned until the implementation Issue activates them:
 
 - `job_retirement_oldest_closed_first`: with `max_jobs` residents of which several are closed, a
   creation retires the one with the smallest `job_created` sequence and succeeds; the retired Job is
-  absent to `SnapshotFor` and the others are untouched;
+  absent to `SnapshotFor` and the others are untouched; the victim is still readable until the new
+  Job's commit, and with a logical-commit failure injected the victim stays resident and the writer
+  latches;
 - `job_retirement_requires_closed`: with `max_jobs` residents of which none is closed (terminal but
-  unreleased, released but no cleanup record, or a gate still pending), a creation answers
-  `resident_limit` and retires nothing;
+  unreleased, or released but no cleanup record), a creation answers `resident_limit` and retires
+  nothing; with one closed Job whose callback lease is in flight, or while a retirement claim is
+  outstanding, a creation answers `resident_limit` and retires nothing, and the creation after the
+  lease or claim has finished retires that same Job;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
   closed Jobs are resident;
 - `job_retirement_resets_slot`: after retirement, the slot's banks, prepared banks, gate
@@ -157,16 +202,19 @@ Its named checks, Planned until the implementation Issue activates them:
   generation is greater than before;
 - `job_retirement_stale_timer_rejected`: a timeout notification armed for the retired Job's
   generation is rejected as stale after the slot is reused;
-- `job_retirement_late_fact_absent`: a Worker or process-exit fact for the retired Job is decided by
-  the absent-entity rules and appends nothing;
+- `job_retirement_late_fact_absent`: a Worker or process-exit source fails to acquire its lease for
+  the retired Job and submits nothing, without a failure latch; a terminate for the retired Job is
+  decided as `job_not_found`; nothing is appended;
 - `journal_replay_retires_like_writer`: a Journal written by a run that retired Jobs replays to the
   same resident set, with the same residents in the same order, as the run held at its last record;
 - `journal_replay_capacity_after_retirement`: replay refuses with `journal_capacity_exceeded` only
   when a `job_created` finds `max_jobs` Jobs with none closed, and succeeds when one is closed;
-- `job_trace_ring_wraps`: more turns than `trace_capacity` succeed, the retained ordinals are
-  consecutive and end at the latest, and every retained turn is complete;
+- `job_trace_ring_wraps`: more turns than `trace_capacity` succeed, with turns of differing record
+  counts; the retained ordinals are consecutive and end at the latest, and every retained turn is
+  complete;
 - `rest_v1_retired_job_absent`: after a retirement through the HTTP layer, `GET` of the retired Job
-  is `404` `job_not_found`, the list omits it and keeps its order, and a cancel of it is `404`; and
+  is `404` `job_not_found`, the list omits it and lists the surviving older Jobs before the new Job
+  in `job_created` order, and a cancel of it is `404`; and
 - `rest_v1_daemon_outlives_max_jobs`: through the HTTP layer, more than `max_jobs` Jobs are created
   and closed in one process without a `capacity_exhausted` answer.
 
@@ -198,6 +246,9 @@ Traceability from Issue #103's required decisions:
   `GET`, as ADR-0009 Section 11 already advises.
 - Bad: replay does more work per `job_created` when the fold is full, selecting the oldest closed
   Job; the cost is bounded by `max_jobs`.
+- Bad: a creation can answer `resident_limit` while the oldest closed Job still has a callback lease
+  in flight or another retirement claim is outstanding, although a closed Job exists; the next
+  creation succeeds. The refusal keeps the writer's choice equal to replay's.
 - Neutral: one sentence of ADR-0006 Section 5 is superseded; the Journal format and the pruning
   rules are untouched.
 
