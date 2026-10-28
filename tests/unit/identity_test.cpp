@@ -338,17 +338,17 @@ void ClockRecordedAtRfc3339() {
   const auto epoch = system_clock::time_point{};
   const auto leap = sys_days{year{2024} / February / 29} + hours{12} + minutes{34} + seconds{56} +
                     milliseconds{789};
-  const auto last = sys_days{year{2023} / December / 31} + hours{23} + minutes{59} + seconds{59} +
-                    milliseconds{999};
+  const auto year_end = sys_days{year{2023} / December / 31} + hours{23} + minutes{59} +
+                        seconds{59} + milliseconds{999};
   const std::vector<std::pair<adapter::TickInstant, std::string_view>> cases{
       {Ticks(epoch), "1970-01-01T00:00:00.000Z"},
       {Ticks(epoch + milliseconds{1}), "1970-01-01T00:00:00.001Z"},
       {Ticks(epoch - milliseconds{1}), "1969-12-31T23:59:59.999Z"},
       {Ticks(sys_time<nanoseconds>{nanoseconds{-1}}), "1969-12-31T23:59:59.999Z"},
       {Ticks(leap), "2024-02-29T12:34:56.789Z"},
-      {Ticks(last), "2023-12-31T23:59:59.999Z"},
-      {Ticks(last + milliseconds{1}), "2024-01-01T00:00:00.000Z"},
-      {Ticks(last + nanoseconds{999'999}), "2023-12-31T23:59:59.999Z"}};
+      {Ticks(year_end), "2023-12-31T23:59:59.999Z"},
+      {Ticks(year_end + milliseconds{1}), "2024-01-01T00:00:00.000Z"},
+      {Ticks(year_end + nanoseconds{999'999}), "2023-12-31T23:59:59.999Z"}};
   auto state = std::make_shared<SampleState>();
   adapter::SystemClock clock(std::make_unique<ScriptedSampler>(state));
   for (const auto& [instant, expected] : cases) {
