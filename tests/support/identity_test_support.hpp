@@ -87,8 +87,11 @@ inline std::optional<std::string> Generate(core::IdentitySourcePort& source, Kin
   const auto text = [](const auto& result) -> std::optional<std::string> {
     return std::visit(
         [](const auto& value) -> std::optional<std::string> {
-          if constexpr (requires { value.value.value; }) return value.value.value;
-          return std::nullopt;
+          if constexpr (requires { value.value.value; }) {
+            return value.value.value;
+          } else {
+            return std::nullopt;
+          }
         },
         result);
   };
