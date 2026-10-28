@@ -390,8 +390,11 @@ struct Phase1Composition::Impl {
   bool started = false;
 };
 
-Phase1Composition::Phase1Composition(StartupConfig config)
-    : impl_(std::make_unique<Impl>(std::move(config))) {}
+Phase1Composition::Phase1Composition(StartupConfig config, IdentityFactory factory)
+    : impl_(std::make_unique<Impl>(std::move(config))) {
+  // Intentional RED scaffold: startup does not bind the supplied factory until GREEN.
+  (void)factory;
+}
 
 Phase1Composition::~Phase1Composition() { Stop(); }
 

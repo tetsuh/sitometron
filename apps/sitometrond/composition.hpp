@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "entrypoint.hpp"
 #include "sitometron/http/server.hpp"
 
 namespace sitometron::core {
@@ -41,7 +42,8 @@ struct ParseResult {
 
 class Phase1Composition final {
  public:
-  explicit Phase1Composition(StartupConfig config);
+  explicit Phase1Composition(StartupConfig config,
+                             IdentityFactory factory = identity::MakeProductionIdentitySource);
   ~Phase1Composition();
   Phase1Composition(const Phase1Composition&) = delete;
   Phase1Composition& operator=(const Phase1Composition&) = delete;

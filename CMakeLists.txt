@@ -80,6 +80,40 @@ set(SITOMETRON_CORE_LINK_TARGETS ${SITOMETRON_CORE_LINK_LIBRARIES})
 set(SITOMETRON_CORE_INTERFACE_LINK_TARGETS ${SITOMETRON_CORE_INTERFACE_LINK_LIBRARIES})
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_link_target_allowlist.cmake)
 
+add_library(sitometron_identity STATIC src/identity/identity_source.cpp src/identity/system_clock.cpp)
+add_library(sitometron::identity ALIAS sitometron_identity)
+target_include_directories(
+  sitometron_identity
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_compile_features(sitometron_identity PUBLIC cxx_std_20)
+target_link_libraries(sitometron_identity PRIVATE sitometron::core Boost::uuid)
+sitometron_enable_project_warnings(sitometron_identity)
+sitometron_enable_sanitizers(sitometron_identity)
+get_target_property(SITOMETRON_IDENTITY_LINK_TARGETS sitometron_identity LINK_LIBRARIES)
+get_target_property(
+  SITOMETRON_IDENTITY_INTERFACE_LINK_TARGETS sitometron_identity INTERFACE_LINK_LIBRARIES)
+file(GLOB_RECURSE SITOMETRON_IDENTITY_SCAN_FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/identity/*.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/identity/*.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/sitometron/identity/*.hpp")
+file(GLOB_RECURSE SITOMETRON_IDENTITY_PUBLIC_SCAN_FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/sitometron/identity/*.hpp")
+set(SITOMETRON_IDENTITY_CLOCK_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/identity/system_clock.cpp")
+set(SITOMETRON_IDENTITY_SOURCE_SCAN_FILES ${SITOMETRON_IDENTITY_SCAN_FILES})
+list(REMOVE_ITEM SITOMETRON_IDENTITY_SOURCE_SCAN_FILES ${SITOMETRON_IDENTITY_CLOCK_FILES})
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_identity_dependency_allowlist.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_identity_public_api_isolation.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_identity_source_reads_no_other_clock_or_entropy.cmake)
+set(SITOMETRON_IDENTITY_SCAN_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/identity-scan-inputs.cmake")
+file(WRITE "${SITOMETRON_IDENTITY_SCAN_CONFIG}" "")
+foreach(_identity_input IN ITEMS LINK_TARGETS INTERFACE_LINK_TARGETS SCAN_FILES PUBLIC_SCAN_FILES
+    CLOCK_FILES SOURCE_SCAN_FILES)
+  file(APPEND "${SITOMETRON_IDENTITY_SCAN_CONFIG}"
+    "set(SITOMETRON_IDENTITY_${_identity_input} [==[${SITOMETRON_IDENTITY_${_identity_input}}]==])\n")
+endforeach()
+
 if(SITOMETRON_ENABLE_HTTP)
   find_package(Boost CONFIG REQUIRED COMPONENTS beast asio)
 
@@ -152,7 +186,8 @@ if(SITOMETRON_ENABLE_HTTP)
     PRIVATE
       sitometron::core
       sitometron::journal
-      sitometron::http)
+      sitometron::http
+      sitometron::identity)
   sitometron_enable_project_warnings(sitometrond_composition)
   sitometron_enable_sanitizers(sitometrond_composition)
   target_compile_definitions(sitometrond PRIVATE SITOMETRON_ENABLE_HTTP=1)
@@ -162,6 +197,16 @@ else()
 endif()
 sitometron_enable_project_warnings(sitometrond)
 sitometron_enable_sanitizers(sitometrond)
+
+add_library(sitometrond_entrypoint STATIC apps/sitometrond/entrypoint.cpp)
+target_include_directories(sitometrond_entrypoint PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(sitometrond_entrypoint PRIVATE sitometron::identity)
+if(SITOMETRON_ENABLE_HTTP)
+  target_compile_definitions(sitometrond_entrypoint PRIVATE SITOMETRON_ENABLE_HTTP=1)
+  target_link_libraries(sitometrond_entrypoint PRIVATE sitometrond_composition)
+endif()
+sitometron_enable_project_warnings(sitometrond_entrypoint)
+sitometron_enable_sanitizers(sitometrond_entrypoint)
 
 if(SITOMETRON_BUILD_TESTS)
   include(CTest)
@@ -181,6 +226,46 @@ if(SITOMETRON_BUILD_TESTS)
       Boost::hash2)
   sitometron_enable_project_warnings(sitometron_core_fake_support)
   sitometron_enable_sanitizers(sitometron_core_fake_support)
+
+  add_executable(sitometron_identity_tests
+    tests/unit/identity_test.cpp tests/unit/identity_composition_test.cpp)
+  target_include_directories(sitometron_identity_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src/core)
+  target_link_libraries(sitometron_identity_tests PRIVATE sitometron::identity
+    sitometrond_entrypoint sitometron::test_support sitometron_core_fake_support
+    nlohmann_json::nlohmann_json)
+  if(SITOMETRON_ENABLE_HTTP)
+    target_compile_definitions(sitometron_identity_tests PRIVATE SITOMETRON_IDENTITY_TEST_HTTP=1)
+  endif()
+  sitometron_enable_project_warnings(sitometron_identity_tests)
+  sitometron_enable_sanitizers(sitometron_identity_tests)
+  foreach(_identity_check IN ITEMS
+      identity_uuidv7_canonical
+      identity_uuidv7_monotonic_burst
+      identity_uuidv4_canonical
+      identity_stable_id_grammar
+      identity_never_repeats_within_instance
+      identity_source_never_exhausted
+      clock_recorded_at_rfc3339
+      clock_monotonic_instant
+      identity_seed_failure_refuses_startup
+      sitometrond_composes_production_identity)
+    add_test(NAME ${_identity_check} COMMAND sitometron_identity_tests ${_identity_check})
+    set_tests_properties(${_identity_check} PROPERTIES TIMEOUT 300)
+  endforeach()
+  foreach(_identity_scan IN ITEMS allowlist public source)
+    if(_identity_scan STREQUAL "allowlist")
+      set(_identity_scan_name identity_dependency_allowlist)
+    elseif(_identity_scan STREQUAL "public")
+      set(_identity_scan_name identity_public_api_isolation)
+    else()
+      set(_identity_scan_name identity_source_reads_no_other_clock_or_entropy)
+    endif()
+    add_test(NAME ${_identity_scan_name} COMMAND ${CMAKE_COMMAND}
+      -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DSITOMETRON_IDENTITY_SCAN_CONFIG=${SITOMETRON_IDENTITY_SCAN_CONFIG}
+      -DIDENTITY_NEGATIVE_MODE=${_identity_scan}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_identity_negative_isolation.cmake)
+  endforeach()
 
   add_executable(sitometron_version_test tests/unit/version_test.cpp)
   target_link_libraries(sitometron_version_test PRIVATE sitometron::core sitometron::test_support)
