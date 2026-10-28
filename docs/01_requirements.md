@@ -140,3 +140,10 @@ Accepted [ADR-0013](adr/0013-generate-production-identities-and-read-the-clock-w
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
 | `ID-001` | MUST | Generate every production Job, Session, Worker, and launch-operation identity with the ADR-0013 source and read `recorded_at` and `MonotonicInstant` with its clock, so that each value is canonical, no identifier is issued twice by one source instance, and no production path reads another clock or entropy source for identity. | Accepted [ADR-0013](adr/0013-generate-production-identities-and-read-the-clock-with-boost-uuid.md) under [Issue #102](https://github.com/tetsuh/sitometron/issues/102) |
+
+> **Planned, not yet normative:** [Issue #103](https://github.com/tetsuh/sitometron/issues/103) owns `OPS-006` through Proposed
+> [ADR-0014](adr/0014-retire-closed-jobs-under-capacity-pressure.md). Implementers must not treat it as a finalized contract.
+
+| ID | Level | Requirement | Authority |
+|---|---|---|---|
+| `OPS-006` | MUST | Reuse the resident slot of a closed Job only when a creation needs it, retiring the closed Job with the smallest `job_created` sequence, with the writer and replay applying one rule so that the resident set after a restart equals the set before it, and keep the trace bounded without failing a turn. | Proposed [ADR-0014](adr/0014-retire-closed-jobs-under-capacity-pressure.md) under [Issue #103](https://github.com/tetsuh/sitometron/issues/103) |

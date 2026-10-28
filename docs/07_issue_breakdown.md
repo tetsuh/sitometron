@@ -98,6 +98,8 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
   [Issue #96](https://github.com/tetsuh/sitometron/issues/96).
   [Issue #102](https://github.com/tetsuh/sitometron/issues/102) designs the production identity
   source and clock through Accepted ADR-0013 (Gate #101, P1-10).
+  [Issue #103](https://github.com/tetsuh/sitometron/issues/103) designs resident Job retirement and
+  the daemon lifetime through Proposed ADR-0014 (Gate #101, P1-7).
 - Phase 2 owns Worker protocol schemas and local process containment.
   [Issue #104](https://github.com/tetsuh/sitometron/issues/104) designs the Job lifecycle supervisor
   through Proposed ADR-0012 as a Phase 2 input, before the Phase 2 Gate exists.
