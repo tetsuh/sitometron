@@ -64,8 +64,8 @@ class OutputCapture final {
   }
   OutputCapture(const OutputCapture&) = delete;
   OutputCapture& operator=(const OutputCapture&) = delete;
-  std::string output() const { return out_.str(); }
-  std::string error() const { return err_.str(); }
+  std::string Output() const { return out_.str(); }
+  std::string Error() const { return err_.str(); }
 
  private:
   std::ostringstream out_;
@@ -93,23 +93,25 @@ void RealPortCommit(std::string_view name) {
 #ifdef SITOMETRON_IDENTITY_TEST_HTTP
   auto backend = daemon::MakeJobBackend(*fixture.writer, 4, {}, {"issue115-test"});
   const auto result = backend->CreateJob("issue115-test");
-  Require(
-      result.code == sitometron::http::JobResultCode::kSuccess && result.job.has_value(), name,
-      "registered test-only Backend create did not commit with production identity/clock ports");
-  id = result.job->job_id;
+  if (result.code != sitometron::http::JobResultCode::kSuccess || !result.job)
+    Fail(name,
+         "registered test-only Backend create did not commit with production identity/clock ports");
+  id = result.job.value().job_id;
 #else
   // The HTTP-off build has no Backend or Application registry; this is a test-only core fixture.
   const auto result = fixture.writer->CreateJob();
-  Require(result.ingress.code == internal::IngressCode::kAdmitted && result.job_id.has_value(),
-          name, "HTTP-off test-only create did not admit with the production identity source");
+  if (result.ingress.code != internal::IngressCode::kAdmitted || !result.job_id)
+    Fail(name, "HTTP-off test-only create did not admit with the production identity source");
   const auto completion = fixture.writer->AwaitCompletion(result.ingress.ingress_sequence);
   Require(completion && completion->code == internal::Completion::Code::kSuccess, name,
           "HTTP-off test-only create did not commit with the production clock");
-  id = result.job_id->value;
+  id = result.job_id.value().value;
 #endif
   Require(Canonical(id, '7') && fixture.journal.count == 1, name,
           "create did not commit exactly one canonical UUIDv7 Job");
-  const auto& event = *fixture.journal.events[0];
+  const auto& recorded = fixture.journal.events[0];
+  if (!recorded) Fail(name, "committed Journal observation is missing");
+  const auto& event = recorded.value();
   const auto* payload = std::get_if<core::JobCreatedPayload>(&event.payload);
   Require(event.job_id.value == id && payload && payload->session_id == event.job_id, name,
           "Job and Session did not reuse the same generated value");
@@ -154,7 +156,7 @@ void IdentitySeedFailureRefusesStartup() {
       const auto status = EntryStatus(args, FailingFactory, name);
       Require(status == 1 && g_factory_calls == 1 && g_live_v7 == 0, name,
               "seed refusal did not return status 1 and clean up partial construction");
-      Require(capture.output().find("listening") == std::string::npos && !capture.error().empty(),
+      Require(capture.Output().find("listening") == std::string::npos && !capture.Error().empty(),
               name, "seed refusal announced a listener or omitted its startup diagnostic");
     }
   }
@@ -198,8 +200,8 @@ void SitometrondComposesProductionIdentity() {
     OutputCapture capture;
     Require(EntryStatus({}, CountedProductionFactory, name) == 0 && g_factory_calls == 1, name,
             "HTTP-off startup did not construct real ports before returning status 0");
-    Require(capture.output().starts_with("sitometrond ") &&
-                capture.output().find("listening") == std::string::npos,
+    Require(capture.Output().starts_with("sitometrond ") &&
+                capture.Output().find("listening") == std::string::npos,
             name, "HTTP-off startup changed its version-only output");
   }
 #endif

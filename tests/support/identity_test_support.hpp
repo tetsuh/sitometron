@@ -38,11 +38,15 @@ class AssertionFailure final : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+[[noreturn]] inline void Fail(std::string_view name, std::string_view message,
+                              std::source_location where = std::source_location::current()) {
+  throw AssertionFailure(std::string(where.file_name()) + ":" + std::to_string(where.line()) +
+                         ": " + std::string(name) + ": " + std::string(message));
+}
+
 inline void Require(bool condition, std::string_view name, std::string_view message,
                     std::source_location where = std::source_location::current()) {
-  if (!condition)
-    throw AssertionFailure(std::string(where.file_name()) + ":" + std::to_string(where.line()) +
-                           ": " + std::string(name) + ": " + std::string(message));
+  if (!condition) Fail(name, message, where);
 }
 
 inline bool Canonical(std::string_view value, char version) {

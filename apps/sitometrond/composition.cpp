@@ -18,6 +18,7 @@
 
 #include "job_orchestrator.hpp"
 #include "sitometron/core/job_ports.hpp"
+#include "sitometron/identity/system_clock.hpp"
 #include "sitometron/journal/replay.hpp"
 #include "sitometron/journal/segment_journal.hpp"
 
@@ -27,35 +28,43 @@ namespace {
 using core::internal::IngressCode;
 using core::internal::JobOrchestrator;
 
-class Phase1Clock final : public core::ClockPort {
+class CountingClock final : public core::ClockPort {
  public:
-  explicit Phase1Clock(std::size_t& reads) : reads_(reads) {}
+  CountingClock(std::unique_ptr<core::ClockPort> port, std::size_t& reads)
+      : port_(std::move(port)), reads_(reads) {
+    if (!port_) throw std::invalid_argument("clock factory returned no port");
+  }
   [[nodiscard]] core::ClockReading Read() override {
     ++reads_;
-    throw std::runtime_error("Phase 1 clock placeholder was called");
+    return port_->Read();
   }
 
  private:
+  std::unique_ptr<core::ClockPort> port_;
   std::size_t& reads_;
 };
 
-class Phase1IdentitySource final : public core::IdentitySourcePort {
+class CountingIdentitySource final : public core::IdentitySourcePort {
  public:
-  explicit Phase1IdentitySource(std::size_t& reads) : reads_(reads) {}
+  CountingIdentitySource(std::unique_ptr<core::IdentitySourcePort> port, std::size_t& reads)
+      : port_(std::move(port)), reads_(reads) {
+    if (!port_) throw std::invalid_argument("identity factory returned no port");
+  }
   [[nodiscard]] core::JobSessionIdentityResult GenerateJobSessionIdentity() override {
     ++reads_;
-    return core::IdentitySourceExhausted{};
+    return port_->GenerateJobSessionIdentity();
   }
   [[nodiscard]] core::WorkerIdentityResult GenerateWorkerIdentity() override {
     ++reads_;
-    return core::IdentitySourceExhausted{};
+    return port_->GenerateWorkerIdentity();
   }
   [[nodiscard]] core::LaunchOperationIdentityResult GenerateLaunchOperationIdentity() override {
     ++reads_;
-    return core::IdentitySourceExhausted{};
+    return port_->GenerateLaunchOperationIdentity();
   }
 
  private:
+  std::unique_ptr<core::IdentitySourcePort> port_;
   std::size_t& reads_;
 };
 
@@ -373,14 +382,15 @@ ParseResult ParseStartupOptions(const std::vector<std::string>& args) {
 }
 
 struct Phase1Composition::Impl {
-  explicit Impl(StartupConfig value)
-      : config(std::move(value)), clock(clock_read_count), identity(identity_read_count) {}
+  Impl(StartupConfig value, IdentityFactory source_factory)
+      : config(std::move(value)), factory(source_factory) {}
 
   StartupConfig config;
+  IdentityFactory factory;
   std::size_t clock_read_count = 0;
   std::size_t identity_read_count = 0;
-  Phase1Clock clock;
-  Phase1IdentitySource identity;
+  std::unique_ptr<CountingClock> clock;
+  std::unique_ptr<CountingIdentitySource> identity;
   Phase1Runner runner;
   Phase1SessionRetainer session;
   std::unique_ptr<journal::SegmentJournal> journal;
@@ -391,10 +401,7 @@ struct Phase1Composition::Impl {
 };
 
 Phase1Composition::Phase1Composition(StartupConfig config, IdentityFactory factory)
-    : impl_(std::make_unique<Impl>(std::move(config))) {
-  // Intentional RED scaffold: startup does not bind the supplied factory until GREEN.
-  (void)factory;
-}
+    : impl_(std::make_unique<Impl>(std::move(config), factory)) {}
 
 Phase1Composition::~Phase1Composition() { Stop(); }
 
@@ -408,11 +415,17 @@ bool Phase1Composition::Start(std::string& error) {
     return false;
   }
   try {
+    if (!impl_->factory) throw std::invalid_argument("identity factory must be present");
+    // Seed both generators and capture the clock origin before constructing any listener.
+    impl_->identity = std::make_unique<CountingIdentitySource>(
+        impl_->factory(identity::kDefaultIdentityCapacity), impl_->identity_read_count);
+    impl_->clock =
+        std::make_unique<CountingClock>(identity::MakeProductionClock(), impl_->clock_read_count);
     impl_->journal = std::make_unique<journal::SegmentJournal>(journal::SystemFileSystem());
     const auto opened = impl_->journal->Open(impl_->config.journal_path);
     if (!opened.ok) {
       error = opened.detail;
-      impl_->journal.reset();
+      Stop();
       return false;
     }
     const auto replayed =
@@ -420,7 +433,7 @@ bool Phase1Composition::Start(std::string& error) {
                                journal::ReplayOptions{impl_->config.max_jobs});
     if (replayed.status != journal::ReplayStatus::kReplayed) {
       error = replayed.detail;
-      impl_->journal.reset();
+      Stop();
       return false;
     }
     core::internal::Config config;
@@ -434,16 +447,13 @@ bool Phase1Composition::Start(std::string& error) {
     config.initial_journal_sequence = replayed.next_sequence;
     config.replayed_jobs = replayed.jobs;
     config.unresolved_jobs = replayed.unresolved;
-    config.ports = {&impl_->clock, impl_->journal.get(), &impl_->runner, &impl_->session,
-                    &impl_->identity};
+    config.ports = {impl_->clock.get(), impl_->journal.get(), &impl_->runner, &impl_->session,
+                    impl_->identity.get()};
     impl_->orchestrator = std::make_unique<JobOrchestrator>(config);
     impl_->backend = MakeJobBackend(*impl_->orchestrator, config.max_jobs, replayed.jobs, {});
     impl_->server = std::make_unique<http::Server>(impl_->config.http, *impl_->backend);
     if (!impl_->server->Start(error)) {
-      impl_->server.reset();
-      impl_->backend.reset();
-      impl_->orchestrator.reset();
-      impl_->journal.reset();
+      Stop();
       return false;
     }
     impl_->started = true;
@@ -475,6 +485,8 @@ void Phase1Composition::Stop() noexcept {
   }
   impl_->backend.reset();
   impl_->journal.reset();
+  impl_->clock.reset();
+  impl_->identity.reset();
   impl_->started = false;
 }
 

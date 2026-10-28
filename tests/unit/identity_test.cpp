@@ -20,7 +20,7 @@
 namespace sitometron::test::identity_checks {
 namespace {
 
-constexpr std::array kKinds{Kind::kJob, Kind::kWorker, Kind::kLaunch};
+constexpr std::array k_kinds{Kind::kJob, Kind::kWorker, Kind::kLaunch};
 
 bool StableGrammar(std::string_view value) {
   const auto alnum = [](unsigned char c) {
@@ -80,9 +80,10 @@ void IdentityUuidV7Canonical() {
   for (std::size_t i = 0; i < 10'000; ++i) {
     for (const auto kind : {Kind::kJob, Kind::kLaunch}) {
       const auto value = Generate(*source, kind);
-      Require(value.has_value(), name, "production v7 generation returned IdentitySourceExhausted");
-      Require(Canonical(*value, '7'), name, "noncanonical UUIDv7 version/variant/text");
-      Require(seen.insert(*value).second, name, "Job/launch UUIDv7 repeated within the instance");
+      if (!value) Fail(name, "production v7 generation returned IdentitySourceExhausted");
+      Require(Canonical(value.value(), '7'), name, "noncanonical UUIDv7 version/variant/text");
+      Require(seen.insert(value.value()).second, name,
+              "Job/launch UUIDv7 repeated within the instance");
     }
   }
   Require(seen.size() == 20'000, name, "combined Job/launch count mismatch");
@@ -94,9 +95,9 @@ void IdentityUuidV4Canonical() {
   std::set<std::string> seen;
   for (std::size_t i = 0; i < 10'000; ++i) {
     const auto value = Generate(*source, Kind::kWorker);
-    Require(value.has_value(), name, "production v4 generation returned IdentitySourceExhausted");
-    Require(Canonical(*value, '4'), name, "noncanonical UUIDv4 version/variant/text");
-    Require(seen.insert(*value).second, name, "Worker UUIDv4 repeated within the instance");
+    if (!value) Fail(name, "production v4 generation returned IdentitySourceExhausted");
+    Require(Canonical(value.value(), '4'), name, "noncanonical UUIDv4 version/variant/text");
+    Require(seen.insert(value.value()).second, name, "Worker UUIDv4 repeated within the instance");
   }
 }
 
@@ -106,9 +107,9 @@ void IdentityStableIdGrammar() {
   auto source = adapter::MakeProductionIdentitySource();
   for (std::size_t i = 0; i < 10'000; ++i) {
     const auto value = Generate(*source, Kind::kLaunch);
-    Require(value.has_value(), name, "launch generation returned IdentitySourceExhausted");
-    Require(value->size() == 36 && Canonical(*value, '7') && StableGrammar(*value) &&
-                CoreAcceptsStable(*value),
+    if (!value) Fail(name, "launch generation returned IdentitySourceExhausted");
+    Require(value.value().size() == 36 && Canonical(value.value(), '7') &&
+                StableGrammar(value.value()) && CoreAcceptsStable(value.value()),
             name,
             "launch identity is not canonical v7 text satisfying the existing StableId grammar");
   }
@@ -129,9 +130,9 @@ void IdentityUuidV7MonotonicBurst() {
   std::vector<std::array<std::uint8_t, 16>> values;
   std::set<std::string> seen;
   std::vector<std::pair<std::int64_t, int>> occupancy;
-  constexpr std::size_t kCount = 10'000;
-  values.reserve(kCount);
-  occupancy.reserve(kCount * 2);
+  constexpr std::size_t k_count = 10'000;
+  values.reserve(k_count);
+  occupancy.reserve(k_count * 2);
   bool wall_forward = true;
   std::int64_t previous_wall = std::numeric_limits<std::int64_t>::min();
   const auto wall_us = [] {
@@ -140,14 +141,14 @@ void IdentityUuidV7MonotonicBurst() {
         .count();
   };
   const auto started = std::chrono::steady_clock::now();
-  for (std::size_t i = 0; i < kCount; ++i) {
+  for (std::size_t i = 0; i < k_count; ++i) {
     const auto before = wall_us();
     const auto value = Generate(*source, Kind::kJob);
     const auto after = wall_us();
-    Require(value.has_value(), name, "burst generation returned IdentitySourceExhausted");
-    Require(Canonical(*value, '7'), name, "burst value is not canonical UUIDv7");
-    Require(seen.insert(*value).second, name, "burst repeated an identity");
-    values.push_back(Bytes(*value).bytes);
+    if (!value) Fail(name, "burst generation returned IdentitySourceExhausted");
+    Require(Canonical(value.value(), '7'), name, "burst value is not canonical UUIDv7");
+    Require(seen.insert(value.value()).second, name, "burst repeated an identity");
+    values.push_back(Bytes(value.value()).bytes);
     wall_forward = wall_forward && before >= previous_wall && after >= before;
     previous_wall = after;
     if (after >= before) {
@@ -172,9 +173,9 @@ void IdentityUuidV7MonotonicBurst() {
     maximum = std::max(maximum, static_cast<std::size_t>(active));
   }
   const bool eligible =
-      StrictBurstEligible(kCount, static_cast<std::uint64_t>(elapsed), maximum, wall_forward);
-  std::cout << name << ": count=" << kCount << " elapsed_ns=" << elapsed
-            << " values_per_us=" << static_cast<double>(kCount) * 1'000.0 / elapsed
+      StrictBurstEligible(k_count, static_cast<std::uint64_t>(elapsed), maximum, wall_forward);
+  std::cout << name << ": count=" << k_count << " elapsed_ns=" << elapsed << " values_per_us="
+            << static_cast<double>(k_count) * 1'000.0 / static_cast<double>(elapsed)
             << " conservative_max_per_us=" << maximum << " wall_forward=" << wall_forward
             << " strict_increase_eligible=" << eligible << '\n';
   if (eligible)
@@ -200,7 +201,7 @@ void CheckRetry(Kind first, Kind second, std::size_t repeats, bool success) {
   const auto attempts = success ? repeats + 1 : 8;
   Require(script.calls == 1 + attempts, name, "retry count is not exactly bounded at eight");
   if (success) {
-    Require(Bytes(*result) == fresh, name,
+    Require(result && Bytes(result.value()) == fresh, name,
             "retry returned the repeated value instead of fresh bytes");
   } else {
     const auto next = Generate(fixture.source, second);
@@ -232,7 +233,7 @@ void CheckCoreExhaustion(ScriptedSource& source) {
 void IdentityNeverRepeatsWithinInstance() {
   constexpr std::string_view name = "identity_never_repeats_within_instance";
   static_assert(sizeof(adapter::UuidBytes) == 16);
-  for (const auto kind : kKinds) {
+  for (const auto kind : k_kinds) {
     ScriptedSource fresh;
     fresh.For(kind).values = {Bytes(kind == Kind::kWorker ? kWorker : kJob)};
     Require(Generate(fresh.source, kind).has_value() && fresh.For(kind).calls == 1, name,
@@ -245,7 +246,7 @@ void IdentityNeverRepeatsWithinInstance() {
     ScriptedSource one(1);
     one.For(kind).values = {Bytes(kind == Kind::kWorker ? kWorker : kJob)};
     Require(Generate(one.source, kind).has_value(), name, "capacity-one first value was refused");
-    for (const auto next : kKinds)
+    for (const auto next : k_kinds)
       Require(!Generate(one.source, next) && one.v7->calls + one.v4->calls == 1, name,
               "capacity is not shared across all three kinds");
   }
@@ -258,13 +259,13 @@ void IdentityNeverRepeatsWithinInstance() {
   ScriptedSource three(3);
   three.v7->values = {Bytes(kJob), Bytes(kFresh)};
   three.v4->values = {Bytes(kWorker)};
-  for (const auto kind : kKinds)
+  for (const auto kind : k_kinds)
     Require(Generate(three.source, kind).has_value(), name,
             "capacity-three mixed generation failed");
-  for (const auto kind : kKinds)
+  for (const auto kind : k_kinds)
     Require(!Generate(three.source, kind) && three.v7->calls + three.v4->calls == 3, name,
             "mixed full set consumed another generator value");
-  for (const auto kind : kKinds) {
+  for (const auto kind : k_kinds) {
     ScriptedSource instance;
     instance.For(kind).values = {Bytes(kind == Kind::kWorker ? kWorker : kJob)};
     Require(Generate(instance.source, kind).has_value(), name,
@@ -278,7 +279,7 @@ void IdentityNeverRepeatsWithinInstance() {
     Require(source.v7->calls + source.v4->calls == capacity, name,
             "partial create did not consume exactly the available capacity");
   }
-  for (const auto exhausted_kind : kKinds) {
+  for (const auto exhausted_kind : k_kinds) {
     ScriptedSource source;
     auto& repeated = source.For(exhausted_kind);
     const auto seed = Bytes(exhausted_kind == Kind::kWorker ? kWorker : kJob);
@@ -301,9 +302,9 @@ void IdentitySourceNeverExhausted() {
   auto source = adapter::MakeProductionIdentitySource();
   std::set<std::string> seen;
   for (std::size_t i = 0; i < 10'000; ++i) {
-    const auto value = Generate(*source, kKinds[i % kKinds.size()]);
-    Require(value.has_value(), name, "production source exhausted within ten thousand mixed calls");
-    Require(seen.insert(*value).second, name, "mixed production calls repeated a value");
+    const auto value = Generate(*source, k_kinds[i % k_kinds.size()]);
+    if (!value) Fail(name, "production source exhausted within ten thousand mixed calls");
+    Require(seen.insert(value.value()).second, name, "mixed production calls repeated a value");
   }
 }
 
@@ -389,7 +390,7 @@ void CheckMonotonic(std::int64_t origin, adapter::TickPeriod period,
 void ClockMonotonicInstant() {
   constexpr std::string_view name = "clock_monotonic_instant";
   using Limit = std::numeric_limits<std::int64_t>;
-  constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
+  constexpr auto k_max = std::numeric_limits<std::uint64_t>::max();
   const auto origin = Ticks(std::chrono::steady_clock::time_point{});
   CheckMonotonic(
       origin.ticks, origin.period,
@@ -397,9 +398,13 @@ void ClockMonotonicInstant() {
   CheckMonotonic(-5, {1, 1'000'000'000}, {{-5, 0}, {-5, 0}, {-4, 1}, {0, 5}, {7, 12}});
   CheckMonotonic(0, {1, 10'000'000}, {{0, 0}, {1, 100}, {2, 200}});
   CheckMonotonic(0, {1, 2'000'000'000}, {{0, 0}, {1, 0}, {2, 1}, {3, 1}});
-  CheckMonotonic(Limit::min(), {1, 1'000'000'000}, {{Limit::min(), 0}, {Limit::max(), kMax}});
+  CheckMonotonic(Limit::min(), {1, 1'000'000'000}, {{Limit::min(), 0}, {Limit::max(), k_max}});
   CheckMonotonic(0, {1, 3'000'000'000},
                  {{Limit::max(), static_cast<std::uint64_t>(Limit::max()) / 3}});
+  // Exercise both wide-product divisions even when intermediate products exceed 64 bits.
+  CheckMonotonic(0, {k_max, k_max - 2}, {{0, 0}, {1, 1'000'000'000}, {10, 10'000'000'000}});
+  CheckMonotonic(0, {(k_max - 2) / 2, k_max - 2},
+                 {{0, 0}, {1, 499'999'999}, {2, 999'999'999}, {3, 1'499'999'999}});
   CheckMonotonic(0, {1, 1'000'000'000}, {{0, 0}, {1, 1}});  // Independent new origin.
   for (const bool overflow : {false, true}) {
     auto state = std::make_shared<SampleState>();
