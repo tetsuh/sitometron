@@ -54,6 +54,7 @@
 #include "apps/sitometrond/composition.hpp"
 #include "core_fakes.hpp"
 #include "job_orchestrator.hpp"
+#include "journal_test_events.hpp"
 #include "reducer_snapshot_json.hpp"
 #include "sitometron/http/server.hpp"
 #include "sitometron/journal/segment_journal.hpp"
@@ -1668,6 +1669,12 @@ int Phase1PortsNotCalled() {
       return Check(false, "rest_v1_phase1_ports_not_called", "test Journal did not commit");
     }
   }
+  const auto segment = directory.Path() / sitometron::journal::SegmentJournal::SegmentName(1);
+  const auto bytes = [&] {
+    std::ifstream input(segment, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  };
+  const auto original = bytes();
   sitometron::daemon::StartupConfig config;
   config.journal_path = directory.Path().string();
   config.max_jobs = 1;
@@ -1696,7 +1703,17 @@ int Phase1PortsNotCalled() {
         result |= Check(false, "rest_v1_phase1_ports_not_called", "readiness body is not JSON");
       }
     }
+    const std::string create_body = R"({"application_id":"app"})";
+    const auto create =
+        SendToPort(composition.listen_port(),
+                   "POST /v1/jobs HTTP/1.1\r\nHost: loopback\r\nContent-Type: application/json\r\n"
+                   "Content-Length: " +
+                       std::to_string(create_body.size()) + "\r\n\r\n" + create_body);
+    result |=
+        ExpectError(create, "rest_v1_phase1_ports_not_called", 422, "job", "unknown_application");
     composition.Stop();
+    result |= Check(bytes() == original, "rest_v1_phase1_ports_not_called",
+                    "production empty-registry create changed the replayed Journal");
     result |= Check(composition.clock_reads() == 0, "rest_v1_phase1_ports_not_called",
                     "Phase 1 clock was read during replay/serve/shutdown");
     result |= Check(composition.identity_reads() == 0, "rest_v1_phase1_ports_not_called",
@@ -3824,22 +3841,30 @@ std::string ReadText(const std::filesystem::path& path) {
 int SitometrondEmptyRegistry() {
   constexpr std::string_view name = "rest_v1_sitometrond_empty_registry";
   int result = 0;
-  for (const bool unresolved : {false, true}) {
-    const ScopedTempDirectory directory("issue106-empty-registry");
+  for (const unsigned seed : {0U, 1U, 2U}) {
+    const bool unresolved = seed == 1;
+    const bool resolved = seed == 2;
+    const ScopedTempDirectory directory("issue115-empty-registry");
     const auto segment = directory.Path() / sitometron::journal::SegmentJournal::SegmentName(1);
-    if (unresolved) {
+    if (unresolved || resolved) {
       sitometron::journal::SegmentJournal journal(sitometron::journal::SystemFileSystem());
       if (!journal.Open(directory.Path().string()).ok)
         return Check(false, name, "seed Journal did not open");
-      const core::Uuid id{std::string(k_job_id)};
-      if (journal.Commit(core::LogicalJobEvent{1,
-                                               1,
-                                               core::EventType::kJobCreated,
-                                               {"2026-10-23T00:00:00Z"},
-                                               id,
-                                               core::JobCreatedPayload{id}}) !=
-          core::LogicalCommitResult::kCommitted)
-        return Check(false, name, "seed Journal did not commit");
+      if (resolved) {
+        for (const auto& event : sitometron::test::ClosedJobEvents(1, 115))
+          if (journal.Commit(event) != core::LogicalCommitResult::kCommitted)
+            return Check(false, name, "resolved seed Journal did not commit");
+      } else {
+        const core::Uuid id{std::string(k_job_id)};
+        if (journal.Commit(core::LogicalJobEvent{1,
+                                                 1,
+                                                 core::EventType::kJobCreated,
+                                                 {"2026-10-23T00:00:00Z"},
+                                                 id,
+                                                 core::JobCreatedPayload{id}}) !=
+            core::LogicalCommitResult::kCommitted)
+          return Check(false, name, "seed Journal did not commit");
+      }
     }
     const auto original = ReadText(segment);
     sitometron::daemon::StartupConfig config;
@@ -3878,14 +3903,22 @@ int SitometrondEmptyRegistry() {
                 << " round_trip_us=" << elapsed << '\n';
       result |= RestError(response, name, 404, "job", "job_not_found");
     }
+    if (resolved) {
+      const auto turns_before = daemon.writer_turn_count();
+      result |= RestError(SendToPort(daemon.listen_port(),
+                                     Request("POST", JobPath(sitometron::test::Job(115), true))),
+                          name, 409, "job", "command_not_allowed_in_state");
+      result |= Check(daemon.writer_turn_count() == turns_before + 1, name,
+                      "terminal replay cancel did not take one reducer-rejection writer turn");
+    }
     const auto list = SendToPort(daemon.listen_port(), Request("GET", "/v1/jobs"));
     result |= ExpectStatus(list, name, 200);
     if (list.status == 200)
-      result |= Check(Json::parse(list.body).at("jobs").size() == (unresolved ? 1U : 0U), name,
+      result |= Check(Json::parse(list.body).at("jobs").size() == (seed != 0 ? 1U : 0U), name,
                       "production empty registry created a resident Job");
     daemon.Stop();
     result |= Check(daemon.clock_reads() == 0 && daemon.identity_reads() == 0, name,
-                    "production empty registry accessed the inert clock or identity source");
+                    "production empty registry accessed the clock or identity source");
     result |= Check(ReadText(segment) == original, name,
                     "production registry refusal changed Journal bytes");
   }

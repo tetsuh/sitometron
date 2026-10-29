@@ -27,13 +27,27 @@ the manifest already resolves, to the same target. Issue #96 adds the Boost port
 links all three dependencies privately to `sitometron_http`, and records the Linux and Windows
 closure evidence. Issue #105 implements the REST behavior on that target.
 
+Accepted [ADR-0013](adr/0013-generate-production-identities-and-read-the-clock-with-boost-uuid.md)
+authorizes the separate `sitometron_identity` adapter under Issue #115. Its only direct dependency
+port is the already provisioned `boost-uuid` 1.91.0 and its only direct third-party target is
+PRIVATE `Boost::uuid`. The four authorized direct headers are `<boost/uuid/uuid.hpp>`,
+`<boost/uuid/uuid_io.hpp>`, `<boost/uuid/time_generator_v7.hpp>`, and
+`<boost/uuid/random_generator.hpp>`; upstream transitive includes remain opaque prerequisites.
+The adapter exposes only owned interfaces/values. Only its clock implementation directly includes
+`<chrono>`; its identity source/owned helpers include neither `<chrono>` nor `<random>` and name
+no separate clock, standard random device, or scanner-listed OS entropy/time API. Dedicated
+allowlist, public-boundary, and source-purity scanners validate those rules and planted violations.
+Forwarding call counters belong to the daemon composition, not this adapter. Capacity is a
+constructor/factory argument with default 1,048,576 identities, not a new command-line option.
+No manifest port or core dependency authorization is added.
+
 Issue #17 implemented the allowlist and activated all five stable `NFR-005` checks on Linux and
 Windows. Accepted ADR-0003 and Issue #12 later authorized only the private synchronization headers
 and private `Threads::Threads` linkage required by the single writer, without adding a manifest
 dependency or public concurrency type. The exact reviewed standard-header, direct-target/include,
 private-link, and public-API rules are encoded in the mechanical dependency checks rather than
 repeated as a partial list here. UUID generator headers, unapproved Boost components, transitive
-headers, dependency-owned public types, and concurrency-owned public types remain rejected.
+headers, dependency-owned public types, and concurrency-owned public types remain rejected in the core.
 
 Sitos remains outside the Sitometron vcpkg manifest. Phase 4 builds and installs one pinned Sitos
 release or commit separately, verifies provenance and required contracts, and consumes it as an
