@@ -42,7 +42,9 @@ The code fixes these facts:
 
 The owner decided on 2026-10-28 under Issue #103: a closed Job is retired only when a creation needs
 its slot, and the oldest closed Job goes first, so that terminal Jobs stay readable while there is
-room and the rule follows from Journal order alone.
+room and the rule follows from Journal order alone. On 2026-10-30 the owner decided that a Job
+whose acknowledgment obligation under ADR-0002 is open is not closed, so retirement never cancels
+an ACK retry and ADR-0002 is unchanged.
 
 ## Decision
 
@@ -52,44 +54,62 @@ writer and replay apply identically, and we will make the trace a ring.
 ### 1. When a Job is retired
 
 A resident Job is closed when the Journal says so: its state is terminal, its `resources_released`
-is recorded, and its `cleanup_status_recorded` is recorded. Only a closed Job is retirable, and the
-predicate reads committed state alone; the gate and lease state of ADR-0003 never changes which Job
-is retirable, so the writer and replay evaluate the same predicate over the same records. A
-terminal Job whose cleanup status is `incomplete` while its process exit is unconfirmed is closed
-too, because its cleanup status is recorded; ADR-0012 row 13 drives it no further, and this ADR
-retires it like any other closed Job, retiring its process-exit gate with the claim below.
+is recorded, its `cleanup_status_recorded` is recorded, and, if a terminal Worker event
+(`worker_completed` or `worker_failed`) was recorded for it, its `process_exit_confirmed` is
+recorded too. The last condition keeps ADR-0002's acknowledgment rule intact: a terminal Worker
+event binds an ACK obligation that only the first accepted `process_exit_confirmed` clears, and
+ADR-0003 retains the Worker gate for that obligation, so a Job whose obligation is open is not
+closed and is not retired. A `late_worker_event` after `process_exit_confirmed` binds no retry
+obligation, because ADR-0002 ends the retries at confirmed exit, so it does not reopen the Job.
+Every condition is a Journal fact and none is ever undone, so the closed set only grows, and the
+writer and replay evaluate the same predicate over the same records; the gate and lease state of
+ADR-0003 never changes which Job is closed. A terminal Job whose cleanup status is `incomplete`
+while its process exit is unconfirmed after a terminal Worker event is therefore not closed;
+ADR-0012 row 13 drives it no further, and it keeps its slot until its exit is confirmed.
 
-Retirement is decided where ADR-0003 places the resident bound: in the ingress resident-slot
-allocator, under the ingress mutex, when a `job_created` for a new Job finds no free resident slot.
-The allocator then claims the closed resident with the smallest `job_created` Journal sequence as
-the victim and reserves its slot provisionally for the new Job, exactly as it reserves a free slot
-today. The claim retires every gate of the victim that is still registered, so that no source can
-acquire a lease for the victim afterwards. The allocator refuses rather than skips: if the victim
-has a callback lease in flight at that moment, it does not choose the next closed Job but answers
-`resident_limit`, and the caller retries the creation after the lease has finished. At most one
-retirement claim is outstanding at a time; a creation that would need a second claim answers
-`resident_limit` until the first creation has committed or released its claim. If no resident Job
-is closed, admission answers `resident_limit` as ADR-0003 says and nothing is retired. A closed Job
-is never retired while a slot is free, and never because of time.
+Admission. The ingress resident-slot allocator of ADR-0003 keeps one spare slot beyond `max_jobs`
+for a creation that will retire a Job; `max_jobs` remains the bound on resident Jobs, and the spare
+slot only ever holds a provisional creation. Under the ingress mutex, when a `job_created` for a
+new Job finds no free resident slot, the allocator admits it with a retirement ticket if at least
+one resident Job is closed in the committed state and no other ticket is outstanding; the ticket
+reserves the spare slot provisionally, exactly as a free slot is reserved today, so the creation has
+a provisional slot for its gates. Otherwise admission answers `resident_limit` as ADR-0003 says and
+nothing is retired. Because the closed set only grows, a closed Job still exists when the
+creation's turn comes.
 
-The victim stays installed and readable through the writer's materialization and logical commit of
-the new Job's `job_created`. Only after commit success does the no-fail snapshot installation of
-ADR-0003 reset the victim's slot and install the new Job in it, in one step of the same turn. If
-the creation is not committed (a reducer rejection, a precommit failure, or a logical-commit
-failure), the claim is released as a provisional reservation is released today and the victim stays
-resident; a failed commit latches the writer as ADR-0003 says and retires nothing.
+Selection. The writer selects the victim at the creation's turn, in the validate step of ADR-0003's
+turn order, against the state after every earlier FIFO turn has been applied: the closed resident
+with the smallest `job_created` Journal sequence. That is the state replay sees at the same record
+(Section 4). The writer refuses rather than skips: if that victim has a callback lease in flight,
+the turn ends without a reducer decision, a Journal sequence, or a record; the creation's completion
+reports `resident_limit`, the ticket is released, and the caller retries once the lease has
+finished. No other closed Job is chosen in its place. Otherwise the writer marks the victim claimed
+under the ingress mutex: while the claim stands, a source that asks for a lease on the victim is
+refused and keeps its fact, exactly as a lease is refused for an unknown Job today.
+
+Commit. The victim stays installed and readable through materialization and logical commit of the
+new Job's `job_created`. Only after commit success does the no-fail snapshot installation of
+ADR-0003 reset the victim's slot, retire its gates, and install the new Job in the spare slot, in
+one step of the same turn; the victim's slot becomes the next spare. If the creation is not
+committed (a reducer rejection, a precommit failure, or a logical-commit failure), the ticket and
+the claim are released as a provisional reservation is released today, the victim stays resident
+with its gates, and a source refused during the claim may acquire its lease again; a failed commit
+latches the writer as ADR-0003 says and retires nothing. A closed Job is never retired while a slot
+is free, and never because of time.
 
 ### 2. What retirement removes and what stays
 
-Retirement resets the slot: the two state banks, the prepared effect and trace banks, the gate
-registrations and identity slots, and the ADR-0012 post-commit mark for that Job. It increments
-every timer-gate generation of the slot before reuse, so a notification armed for the retired Job is
-rejected as stale by the existing generation rule. The ADR-0013 identity source keeps the retired
-identifiers in its remembered set, as ADR-0013 Section 2 decided.
+Retirement resets the victim's slot: the two state banks, the prepared effect and trace banks, the
+gate registrations and identity slots, and the ADR-0012 post-commit mark for that Job; the reset
+slot becomes the spare. It increments every timer-gate generation of that slot before any later
+reuse, so a notification armed for the retired Job is rejected as stale by the existing generation
+rule, and a timer callback that still holds no lease cannot acquire one, as Section 1 says. The
+ADR-0013 identity source keeps the retired identifiers in its remembered set, as ADR-0013 Section 2
+decided.
 
 The Journal keeps every record (ADR-0006 Section 8); retirement is not a Journal event and appends
-nothing. A later input for a retired Job never reaches the writer through a critical source: the
-claim retired the victim's gates, and ADR-0003 lets a critical source submit only through a
+nothing. A later input for a retired Job never reaches the writer through a critical source:
+retirement reset the victim's gates, and ADR-0003 lets a critical source submit only through a
 registered gate and a held lease, so a Worker fact, a process-exit observation, a release fact, or a
 cleanup fact for a retired Job fails to acquire its lease and is dropped by its source, with no
 ingress result, no reducer turn, no Journal record, and no failure latch. A terminate command for
@@ -99,13 +119,20 @@ already says of pruned Jobs.
 
 ### 3. External effects
 
-Nothing in ADR-0008 changes. `GET /v1/jobs/{job_id}` for a retired Job answers `404` `job`/
+ADR-0008's answers are unchanged. `GET /v1/jobs/{job_id}` for a retired Job answers `404` `job`/
 `job_not_found`, as ADR-0008 Section 3 already states for a Job that a retirement decision removes.
-The list holds the resident Jobs and no longer holds a retired one; it stays bounded by `max_jobs`
-and ordered by `job_created` sequence. A cancel for a retired Job is a cancel for an unknown Job.
-When the slot is reused, the Phase 1 creation-order index removes the retired identifier and
-appends the new one, so the list keeps the surviving older Jobs before the new Job in ascending
-`job_created` sequence.
+One sentence of ADR-0008's Decision is superseded: "`capacity_exhausted` does not clear without
+operator action in this slice" becomes "`capacity_exhausted` clears when a resident Job closes, when
+a callback lease on the oldest closed Job finishes, or when an outstanding retirement ticket is
+released"; a client may retry a create after that `503`. This ADR names that superseding path, and
+every other rule of ADR-0008 stands. The list holds the resident Jobs and no longer holds a retired
+one; it stays bounded by `max_jobs` and ordered by `job_created` sequence. A cancel for a retired
+Job is a cancel for an unknown Job. When a Job is retired, the Phase 1 creation-order index removes
+the retired identifier and appends the new one, so the list keeps the surviving older Jobs before
+the new Job in ascending `job_created` sequence. A creation whose completion reports
+`resident_limit` (Section 1) is answered as the ingress result of the same name is answered today:
+`503` `service`/`capacity_exhausted`, before any `202`, as ADR-0008 Section 3 orders the writer's
+results.
 
 ### 4. Journal and replay
 
@@ -116,9 +143,13 @@ the rule depends only on the records and their order, the resident set after rep
 resident set the previous process held when it appended the last record. Replay refuses to start
 with `journal_capacity_exceeded` only when a `job_created` finds `max_jobs` Jobs of which none is
 closed at that point in the fold. The writer and replay share one implementation of the
-retirability predicate and the oldest-first choice, so they cannot diverge; and because the writer
-refuses a creation rather than skipping the oldest closed Job when runtime state blocks it (Section
-1), every retirement the writer performed is the one replay performs at the same record.
+retirability predicate and the oldest-first choice, so they cannot diverge. Two rules of Section 1
+make the equality hold: the writer selects the victim at the creation's turn, after every earlier
+FIFO turn is applied, so a closing fact queued ahead of the creation (for example the
+`cleanup_status_recorded` of an older Job) closes that Job for the writer and for replay alike at
+the creation's record; and the writer refuses a creation rather than skipping the oldest closed Job
+when a lease blocks it, so a refusal leaves no record and every retirement the writer performed is
+the one replay performs at the same record.
 
 Offline pruning (ADR-0006 Section 8) is unchanged: a pruned prefix removes closed Jobs from replay
 entirely, which only reduces what replay has to retire. Because retirement keeps every record, a
@@ -150,21 +181,29 @@ This ADR is that decision. It fills the reserved case and changes ADR-0003 in th
 named here as its superseding path:
 
 - "Resident Job bound": "For a new Job ID, it atomically reserves a resident slot and a normal FIFO
-  slot before admitting `job_created`" becomes "it atomically reserves a free resident slot, or
-  claims the slot of the oldest closed Job under ADR-0014 Section 1, and a normal FIFO slot before
-  admitting `job_created`".
+  slot before admitting `job_created`" becomes "it atomically reserves a free resident slot, or the
+  spare slot with a retirement ticket under ADR-0014 Section 1, and a normal FIFO slot before
+  admitting `job_created`". `J` remains the bound on resident Jobs; the spare slot holds only a
+  provisional creation.
 - The result-table row "New Job with no resident slot, including simultaneous normal-capacity
-  exhaustion: `resident_limit`" applies when no slot is free and no closed Job can be claimed: none
-  is closed, the oldest closed Job has a callback lease in flight, or a retirement claim is already
-  outstanding.
-- The "Permit retirement" column of every per-Job source gate gains one cause: the retirement claim
-  of ADR-0014 Section 1 retires the gate.
+  exhaustion: `resident_limit`" applies when no slot is free and no ticket can be issued: no
+  resident Job is closed in the committed state, or a ticket is already outstanding.
+- The turn order "validate and decide" gains, for a creation admitted with a ticket, the outcome
+  `resident_limit` when the selected victim has a callback lease in flight: the creation's
+  completion reports it, and no reducer decision, Journal sequence, or record is produced. It is an
+  ingress-level result delivered through the completion, not an ADR-0002 rejection reason.
+- The gate table gains two causes: while the writer's claim on the victim stands, a lease on the
+  victim is refused and the source keeps its fact; and retirement at commit retires every gate of
+  the victim. The sentence "Once a valid source registration and permit exist, ingress performs no
+  second lifecycle-state filter" gains this one exception: a lease request for a claimed victim is
+  refused, because the victim is closed and about to be absent.
 
-Every other rule of ADR-0003 stands: the fixed population `J`, the resident-slot allocator as the
-sole authority for the bound, the precedence of `resident_limit` over `normal_full`, the provisional
-reservation rules, and the closed input classes. ADR-0002's terminal-state rejection semantics are
-unchanged because a retired Job is absent, not terminal: its inputs are decided by the absent-entity
-rules that already exist for pruned Jobs. No Journal event is added, so ADR-0002's event set and
+Every other rule of ADR-0003 stands: the resident-slot allocator as the sole authority for the
+bound, the precedence of `resident_limit` over `normal_full`, the provisional reservation rules,
+and the closed input classes. ADR-0002 is unchanged: its terminal-state rejection semantics hold
+because a retired Job is absent, not terminal, and its inputs are decided by the absent-entity rules
+that already exist for pruned Jobs; its acknowledgment rule holds because a Job with an open ACK
+obligation is not closed (Section 1). No Journal event is added, so ADR-0002's event set and
 ADR-0003's input classes stay closed.
 
 ### 7. Not decided here
@@ -188,25 +227,34 @@ Its named checks, Planned until the implementation Issue activates them:
 - `job_retirement_oldest_closed_first`: with `max_jobs` residents of which several are closed, a
   creation retires the one with the smallest `job_created` sequence and succeeds; the retired Job is
   absent to `SnapshotFor` and the others are untouched; the victim is still readable until the new
-  Job's commit, and with a logical-commit failure injected the victim stays resident and the writer
-  latches;
+  Job's commit; with a precommit materialization failure injected after the victim is selected, the
+  victim stays installed with its gates, no Job is committed, and the ticket is released along the
+  fail-closed path; and with a logical-commit failure injected the victim stays resident and the
+  writer latches;
 - `job_retirement_requires_closed`: with `max_jobs` residents of which none is closed (terminal but
-  unreleased, or released but no cleanup record), a creation answers `resident_limit` and retires
-  nothing; with one closed Job whose callback lease is in flight, or while a retirement claim is
-  outstanding, a creation answers `resident_limit` and retires nothing, and the creation after the
-  lease or claim has finished retires that same Job;
+  unreleased; released but no cleanup record; or terminal, released, and cleanup recorded with a
+  terminal Worker event but no `process_exit_confirmed`), or while a retirement ticket is
+  outstanding, admission answers `resident_limit` and retires nothing; with one closed Job whose
+  callback lease is in flight, the creation is admitted with a ticket and its completion reports
+  `resident_limit` with nothing retired; in both cases the creation after the lease or ticket has
+  finished retires that same Job;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
   closed Jobs are resident;
-- `job_retirement_resets_slot`: after retirement, the slot's banks, prepared banks, gate
-  registrations, identity slots, and post-commit mark are those of the new Job, and every timer-gate
-  generation is greater than before;
+- `job_retirement_resets_slot`: after retirement, the victim's slot is empty (banks, prepared banks,
+  gate registrations, identity slots, and post-commit mark reset) with every timer-gate generation
+  greater than before, the new Job is resident in the former spare slot, and the next retirement
+  reuses the reset slot;
 - `job_retirement_stale_timer_rejected`: a timeout notification armed for the retired Job's
-  generation is rejected as stale after the slot is reused;
-- `job_retirement_late_fact_absent`: a Worker or process-exit source fails to acquire its lease for
-  the retired Job and submits nothing, without a failure latch; a terminate for the retired Job is
-  decided as `job_not_found`; nothing is appended;
+  generation cannot acquire its lease and is dropped without a failure latch, and after the reset
+  slot is reused by a later creation it is rejected as stale by the generation rule;
+- `job_retirement_late_fact_absent`: a Worker, process-exit, resource-release, or cleanup source,
+  including a delayed duplicate release or cleanup fact, fails to acquire its lease for the retired
+  Job and submits nothing, without a failure latch; a terminate for the retired Job is decided as
+  `job_not_found`; nothing is appended;
 - `journal_replay_retires_like_writer`: a Journal written by a run that retired Jobs replays to the
-  same resident set, with the same residents in the same order, as the run held at its last record;
+  same resident set, with the same residents in the same order, as the run held at its last record,
+  including a run in which an older Job's `cleanup_status_recorded` was queued ahead of a creation
+  while a newer Job was already closed, so that both the writer and replay retired the older Job;
 - `journal_replay_capacity_after_retirement`: replay refuses with `journal_capacity_exceeded` only
   when a `job_created` finds `max_jobs` Jobs with none closed, and succeeds when one is closed;
 - `job_trace_ring_wraps`: more turns than `trace_capacity` succeed, with turns of differing record
@@ -247,8 +295,13 @@ Traceability from Issue #103's required decisions:
 - Bad: replay does more work per `job_created` when the fold is full, selecting the oldest closed
   Job; the cost is bounded by `max_jobs`.
 - Bad: a creation can answer `resident_limit` while the oldest closed Job still has a callback lease
-  in flight or another retirement claim is outstanding, although a closed Job exists; the next
+  in flight or another retirement ticket is outstanding, although a closed Job exists; the next
   creation succeeds. The refusal keeps the writer's choice equal to replay's.
+- Bad: a Job with an open acknowledgment obligation (a terminal Worker event recorded, its process
+  exit never confirmed) is not closed and holds its slot for the process lifetime; ADR-0002's ACK
+  rule is kept rather than cancelled by retirement.
+- Neutral: a creation's completion can report `resident_limit`, and the allocator holds one spare
+  slot beyond `max_jobs`; one sentence of ADR-0008's Decision is superseded.
 - Neutral: one sentence of ADR-0006 Section 5 is superseded; the Journal format and the pruning
   rules are untouched.
 
@@ -261,6 +314,12 @@ Traceability from Issue #103's required decisions:
   designed (H11), and because a time-based rule cannot be reproduced by replay from the Journal.
 - **Record retirement as a Journal event**: rejected because it adds an event to ADR-0002's closed
   set and an input class to ADR-0003, two superseding ADRs for a fact the Journal already implies.
+- **Select the victim in the ingress allocator at admission**: rejected on 2026-10-29 because the
+  allocator sees only committed state while replay sees every record before the creation, so a
+  closing fact queued ahead of the creation would make the writer and replay retire different Jobs.
+- **Retire a Job whose ACK obligation is open and cancel the retries**: rejected on 2026-10-30
+  because it would supersede ADR-0002's acknowledgment rule for the rare case of a Job whose exit is
+  never confirmed; keeping such a Job resident costs one slot and no protocol change.
 - **Let the source of ADR-0013 forget retired identifiers**: rejected on 2026-10-27 under Issue
   #102; the remembered set is kept for the source instance's lifetime.
 - **Defer H7 to Phase 2**: rejected because the daemon would accept at most `max_jobs` creations per
