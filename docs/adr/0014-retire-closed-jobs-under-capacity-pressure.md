@@ -230,8 +230,10 @@ ADR-0003's input classes stay closed.
 
 This ADR adds `OPS-006` (MUST): reuse the resident slot of a closed Job only when a creation needs
 it, retiring the closed Job with the smallest `job_created` sequence, with the writer and replay
-applying one rule so that the resident set after a restart equals the set before it, and keep the
-trace bounded without failing a turn.
+applying one rule so that the resident set after a restart is the one the durable Journal implies
+(equal to the set the previous process held after its last committed turn; a `job_created` durable
+under an unknown commit outcome may add a retirement the latched writer did not apply, Section 4),
+and keep the trace bounded without failing a turn.
 
 Its named checks, Planned until the implementation Issue activates them:
 
