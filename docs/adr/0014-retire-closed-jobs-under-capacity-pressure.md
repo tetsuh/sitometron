@@ -139,8 +139,16 @@ results.
 Replay applies the rule of Section 1 while it folds the Journal: when a replayed `job_created`
 finds `max_jobs` Jobs in the fold, replay retires the replayed Job that is closed at that point in
 the fold and has the smallest `job_created` sequence, and seeds the new Job in its place. Because
-the rule depends only on the records and their order, the resident set after replay equals the
-resident set the previous process held when it appended the last record. Replay refuses to start
+the rule depends only on the records and their order, the resident set after replay is a function
+of the durable Journal alone, and the durable Journal is the restart authority (ADR-0006 Section
+3): the resident set after replay equals the set the previous process held after its last turn
+whose `Commit()` returned `kCommitted`. One permitted case differs by design: when `Commit()` of a
+retiring `job_created` returns `kOutcomeUnknown`, the record may be durable although the writer,
+fail-closed under ADR-0003, latched without applying it and kept the victim resident. ADR-0006
+Section 3 says such a record is committed, so replay folds it and retires the victim; the latched
+process served nothing after that turn, so no reader observed the two sets side by side. The
+definite-failure case is unchanged: no record is durable, the victim stays, and replay keeps it too.
+Replay refuses to start
 with `journal_capacity_exceeded` only when a `job_created` finds `max_jobs` Jobs of which none is
 closed at that point in the fold. The writer and replay share one implementation of the
 retirability predicate and the oldest-first choice, so they cannot diverge. Two rules of Section 1
@@ -169,9 +177,12 @@ turn holds, the oldest retained turns are evicted whole, one after another, unti
 turn never holds more than `trace_capacity` records because `HasTraceCapacity` still sizes the
 per-turn prepared banks, which stay bounded as today, so whole-turn eviction always makes room. A
 reader can rely on these properties: the ordinals of the retained records are consecutive and end
-at the most recent one; a record is never reordered or altered; and every retained turn is complete,
-because turns are retained and evicted only whole. `HasTraceCapacity` no longer fails a turn. The
-trace is diagnostic test support and no production reader depends on it.
+at the most recent one; a record is never reordered or altered; and every retained turn holds all
+the records its turn published, because turns are retained and evicted only whole. A turn that
+fails at logical commit published its records up to `JournalAttempt` before `Commit()` was called
+(the writer order of ADR-0003) and nothing after; those records are retained as published, the
+failure latch means no later turn follows, and the trace is not rolled back. `HasTraceCapacity` no
+longer fails a turn. The trace is diagnostic test support and no production reader depends on it.
 
 ### 6. The ADR-0003 change
 
@@ -252,14 +263,19 @@ Its named checks, Planned until the implementation Issue activates them:
   Job and submits nothing, without a failure latch; a terminate for the retired Job is decided as
   `job_not_found`; nothing is appended;
 - `journal_replay_retires_like_writer`: a Journal written by a run that retired Jobs replays to the
-  same resident set, with the same residents in the same order, as the run held at its last record,
-  including a run in which an older Job's `cleanup_status_recorded` was queued ahead of a creation
-  while a newer Job was already closed, so that both the writer and replay retired the older Job;
+  same resident set, with the same residents in the same order, as the run held after its last
+  committed turn, including a run in which an older Job's `cleanup_status_recorded` was queued ahead
+  of a creation while a newer Job was already closed, so that both the writer and replay retired the
+  older Job; and with a retiring `job_created` whose complete record is durable while `Commit()`
+  returns `kOutcomeUnknown`, the writer latches with the victim still resident, and replay of that
+  Journal retires the victim and seeds the new Job, which is the asserted restart set;
 - `journal_replay_capacity_after_retirement`: replay refuses with `journal_capacity_exceeded` only
   when a `job_created` finds `max_jobs` Jobs with none closed, and succeeds when one is closed;
 - `job_trace_ring_wraps`: more turns than `trace_capacity` succeed, with turns of differing record
-  counts; the retained ordinals are consecutive and end at the latest, and every retained turn is
-  complete;
+  counts; the retained ordinals are consecutive and end at the latest, and every retained turn holds
+  all the records it published; and with a logical-commit failure injected on the last turn, the
+  trace ends with that turn's `JournalAttempt`, no `JournalCommitted` or later record follows, and
+  the earlier retained turns are unchanged;
 - `rest_v1_retired_job_absent`: after a retirement through the HTTP layer, `GET` of the retired Job
   is `404` `job_not_found`, the list omits it and lists the surviving older Jobs before the new Job
   in `job_created` order, and a cancel of it is `404`; and
