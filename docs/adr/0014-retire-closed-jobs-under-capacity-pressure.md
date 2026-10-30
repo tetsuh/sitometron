@@ -142,8 +142,9 @@ ADR-0008's answers are unchanged. `GET /v1/jobs/{job_id}` for a retired Job answ
 One sentence of ADR-0008's Decision is superseded: "`capacity_exhausted` does not clear without
 operator action in this slice" becomes "`capacity_exhausted` clears when the oldest closed Job can
 be retired: a resident Job is closed, no callback lease on the oldest closed Job is in flight, no
-admitted input for it holds a permit queued or in flight, and no other retirement ticket is
-outstanding"; a newer Job closing while the oldest closed Job is still blocked does not clear it. A
+admitted input for it holds a permit queued or in flight, no creation claim on its identifier is
+outstanding, and no other retirement ticket is outstanding"; a newer Job closing while the oldest
+closed Job is still blocked does not clear it. A
 client may retry a create after that `503`. This ADR names that superseding path, and every other
 rule of ADR-0008 stands. The list holds the resident Jobs and no longer holds a retired
 one; it stays bounded by `max_jobs` and ordered by `job_created` sequence. A cancel for a retired
