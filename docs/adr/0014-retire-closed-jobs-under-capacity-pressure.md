@@ -84,13 +84,14 @@ Selection. The writer selects the victim at the creation's turn, in the validate
 turn order, against the state after every earlier FIFO turn has been applied: the closed resident
 with the smallest `job_created` Journal sequence. That is the state replay sees at the same record
 (Section 4). The writer refuses rather than skips: if that victim is still owned by ADR-0003's
-ingress bookkeeping, because a callback lease on it is in flight or an admitted input for it holds
-a permit while queued behind the creation or in flight, the turn ends without a reducer decision, a
+ingress bookkeeping, because a callback lease on it is in flight or an admitted input for it holds a
+permit while queued behind the creation or in flight, the turn ends without a reducer decision, a
 Journal sequence, or a record; the creation's completion reports `resident_limit`, the ticket is
 released, and the caller retries once that lease or turn has finished and released the permit. No
-other closed Job is chosen in its place, and no admitted entry is disposed of or reassigned. Otherwise the writer marks the victim claimed
-under the ingress mutex: while the claim stands, a source that asks for a lease on the victim is
-refused and keeps its fact, exactly as a lease is refused for an unknown Job today.
+other closed Job is chosen in its place, and no admitted entry is disposed of or reassigned.
+Otherwise the writer marks the victim claimed under the ingress mutex: while the claim stands, a
+source that asks for a lease on the victim is refused and keeps its fact, exactly as a lease is
+refused for an unknown Job today.
 
 Commit. The victim stays installed and readable through materialization and logical commit of the
 new Job's `job_created`. Only after commit success does the no-fail snapshot installation of
