@@ -80,18 +80,29 @@ resident permit and the shutdown permit are held (Section 6). Otherwise admissio
 `resident_limit` as ADR-0003 says and nothing is retired. Because the closed set only grows, a
 closed Job still exists when the creation's turn comes.
 
-Selection. The writer selects the victim at the creation's turn, in the validate step of ADR-0003's
-turn order, against the state after every earlier FIFO turn has been applied: the closed resident
-with the smallest `job_created` Journal sequence. That is the state replay sees at the same record
-(Section 4). The writer refuses rather than skips: if that victim is still owned by ADR-0003's
-ingress bookkeeping, because a callback lease on it is in flight or an admitted input for it holds a
-permit while queued behind the creation or in flight, the turn ends without a reducer decision, a
-Journal sequence, or a record; the creation's completion reports `resident_limit`, the ticket is
-released, and the caller retries once that lease or turn has finished and released the permit. No
-other closed Job is chosen in its place, and no admitted entry is disposed of or reassigned.
-Otherwise the writer marks the victim claimed under the ingress mutex: while the claim stands, a
-source that asks for a lease on the victim is refused and keeps its fact, exactly as a lease is
-refused for an unknown Job today.
+Selection. At the ticketed creation's turn, in the validate step of ADR-0003's turn order and
+against the state after every earlier FIFO turn has been applied, the writer first asks whether
+retirement is still needed: a ticket proves capacity pressure at admission, and an earlier
+provisional reservation may have been released without a record since (a malformed or rejected
+creation). If fewer than `max_jobs` Jobs are resident in the committed state, the creation proceeds
+as an ordinary one into the free slot, retires nothing, and releases the ticket; replay, which sees
+no record of the released reservation, makes the same choice. Only when `max_jobs` Jobs are
+resident does the writer select the victim: the closed resident with the smallest `job_created`
+Journal sequence, which is the one replay selects at the same record (Section 4). The writer
+refuses rather than skips: if any ownership of the victim's slot is outstanding in ADR-0003's
+ingress bookkeeping, because a callback lease on it is in flight, an admitted input for it holds a
+permit while queued behind the creation or in flight, or a creation claim on its identifier is
+outstanding, the turn ends without a reducer decision, a Journal sequence, or a record; the
+creation's completion reports `resident_limit`, the ticket is released, and the caller retries once
+that ownership has been released. No other closed Job is chosen in its place, and no admitted entry
+is disposed of or reassigned. Otherwise the writer marks the victim claimed under the ingress mutex.
+While the claim stands, no new ownership of the victim's slot is granted: a source that asks for a
+lease is refused and keeps its fact, exactly as for an unknown Job today; a terminate for the victim
+is admitted through normal admission, as for an unknown Job, and the reducer decides it by the state
+it finds at its own turn (`job_not_found` after the retirement, the terminal-state rejection if the
+creation was not committed); and a `job_created` for the victim's identifier is admitted as for a
+new identifier, so it needs a free slot or a ticket. The ingress mutex is not held across the
+commit; the claim is what keeps the bookkeeping stable until commit or rollback.
 
 Commit. The victim stays installed and readable through materialization and logical commit of the
 new Job's `job_created`. Only after commit success does the no-fail snapshot installation of
@@ -145,29 +156,29 @@ results.
 
 ### 4. Journal and replay
 
-Replay applies the rule of Section 1 while it folds the Journal: when a replayed `job_created`
-finds `max_jobs` Jobs in the fold, replay retires the replayed Job that is closed at that point in
-the fold and has the smallest `job_created` sequence, and seeds the new Job in its place. Because
-the rule depends only on the records and their order, the resident set after replay is a function
-of the durable Journal alone, and the durable Journal is the restart authority (ADR-0006 Section
-3): the guarantee is stated against that authority alone. The resident set after replay of the
-retained Journal equals the set the previous process held after its last fully installed turn (a
-turn whose `Commit()` returned `kCommitted` and whose no-fail snapshot installation completed),
-less any Job that offline pruning under ADR-0006 Section 8 removed from the retained Journal in
-between, which is absent after replay. The previous process's in-memory set can differ from the
-replayed set only where a durable record was never installed in memory: when `Commit()` of a
-retiring `job_created` returned `kOutcomeUnknown` and the writer, fail-closed under ADR-0003,
-latched without applying it, or when the process crashed after `Commit()` returned `kCommitted` and
-before installation. In both cases ADR-0006 Section 3 says the record is committed, so replay folds
-it and retires the victim; the previous process served nothing after that point, so no reader
-observed the two sets side by side. The definite-failure case is unchanged: no record is durable,
-the victim stays, and replay keeps it too.
-Replay refuses to start
+Replay applies the rule of Section 1 while it folds the Journal: when a replayed `job_created` finds
+`max_jobs` Jobs in the fold, replay retires the replayed Job that is closed at that point in the
+fold and has the smallest `job_created` sequence, and seeds the new Job in its place. Because the
+rule depends only on the records and their order, the resident set after replay is a function of the
+durable Journal alone, and the durable Journal is the restart authority (ADR-0006 Section 3): the
+guarantee is stated against that authority alone. The resident set after replay of the retained
+Journal equals the set the previous process held after its last fully installed turn (a turn whose
+`Commit()` returned `kCommitted` and whose no-fail snapshot installation completed), less any Job
+that offline pruning under ADR-0006 Section 8 removed from the retained Journal in between, which is
+absent after replay. The previous process's in-memory set can differ from the replayed set only
+where a durable record was never installed in memory: when `Commit()` of a retiring `job_created`
+returned `kOutcomeUnknown` and the writer, fail-closed under ADR-0003, latched without applying it,
+or when the process crashed after `Commit()` returned `kCommitted` and before installation. In both
+cases ADR-0006 Section 3 says the record is committed, so replay folds it and retires the victim;
+the previous process applied no later writer turn, so the two sets are never both current, although
+reads and lists of its last installed set keep working until it stops, as ADR-0008 Section 6 says,
+and show the victim once more before the restart shows the new Job. The definite-failure case is
+unchanged: no record is durable, the victim stays, and replay keeps it too. Replay refuses to start
 with `journal_capacity_exceeded` only when a `job_created` finds `max_jobs` Jobs of which none is
-closed at that point in the fold. The writer and replay share one implementation of the
-retirability predicate and the oldest-first choice, so they cannot diverge. Two rules of Section 1
-make the equality hold: the writer selects the victim at the creation's turn, after every earlier
-FIFO turn is applied, so a closing fact queued ahead of the creation (for example the
+closed at that point in the fold. The writer and replay share one implementation of the retirability
+predicate and the oldest-first choice, so they cannot diverge. Two rules of Section 1 make the
+equality hold: the writer selects the victim at the creation's turn, after every earlier FIFO turn
+is applied, so a closing fact queued ahead of the creation (for example the
 `cleanup_status_recorded` of an older Job) closes that Job for the writer and for replay alike at
 the creation's record; and the writer refuses a creation rather than skipping the oldest closed Job
 when a lease blocks it, so a refusal leaves no record and every retirement the writer performed is
@@ -199,7 +210,12 @@ the records its turn published, because turns are retained and evicted only whol
 fails at logical commit published its records up to `JournalAttempt` before `Commit()` was called
 (the writer order of ADR-0003) and nothing after; those records are retained as published, the
 failure latch means no later turn follows, and the trace is not rolled back. `HasTraceCapacity` no
-longer fails a turn. The trace is diagnostic test support and no production reader depends on it.
+longer fails a turn. The diagnostic ingress-sequence history, which the writer also preallocates to
+`trace_capacity` entries and appends to once per admission (including the shutdown marker and
+admissions the reducer later rejects), becomes a ring of the same capacity: the oldest entry is
+overwritten, its fullness is no longer a `service_failed` cause in ordinary admission or in the
+shutdown submission, and `CopyIngressSequences` returns the retained tail in admission order. The
+trace and the history are diagnostic test support and no production reader depends on them.
 
 ### 6. The ADR-0003 change
 
@@ -227,8 +243,12 @@ named here as its superseding path:
 - The gate table gains two causes: while the writer's claim on the victim stands, a lease on the
   victim is refused and the source keeps its fact; and retirement at commit retires every gate of
   the victim. The sentence "Once a valid source registration and permit exist, ingress performs no
-  second lifecycle-state filter" gains this one exception: a lease request for a claimed victim is
-  refused, because the victim is closed and about to be absent.
+  second lifecycle-state filter" gains this one exception: while the claim stands, no new ownership
+  of the victim's slot is granted (lease, gate permit, or creation claim), because the victim is
+  closed and about to be absent; a terminate for it takes the unknown-Job path of normal admission,
+  and a `job_created` for its identifier is treated as a new identifier (Section 1).
+- The ingress-sequence history bound: its fullness is no longer a `service_failed` cause (Section
+  5).
 
 Every other rule of ADR-0003 stands: the resident-slot allocator as the sole authority for the
 bound, the precedence of `resident_limit` over `normal_full`, the provisional reservation rules,
@@ -274,14 +294,20 @@ Its named checks, Planned until the implementation Issue activates them:
   outstanding, admission of a creation for a different new Job answers `resident_limit` and retires
   nothing, while a `job_created` for the ticketed provisional identifier claims that reservation
   under ADR-0003's same-identifier rules and the writer decides `job_already_exists` after the first
-  success; with one closed Job whose
-  callback lease is in flight, or for which a critical input was admitted behind the ticketed
-  creation and its callback has already returned, the creation is admitted with a ticket and its
-  completion reports `resident_limit` with nothing retired, the queued input is processed by its own
-  turn with its permit intact, and in every case the creation after the lease, turn, or ticket has
-  finished retires that same Job;
+  success; with one closed Job whose callback lease is in flight, or for which a critical input was
+  admitted behind the ticketed creation and its callback has already returned, the creation is
+  admitted with a ticket and its completion reports `resident_limit` with nothing retired, the
+  queued input is processed by its own turn with its permit intact, and in every case the creation
+  after the lease, turn, or ticket has finished retires that same Job; with a `job_created` for the
+  closed victim's identifier admitted behind the ticketed creation, the creation reports
+  `resident_limit` and that turn is decided `job_already_exists` with the victim's slot intact; and
+  with a terminate for the claimed victim submitted while the creation's commit is paused, the
+  terminate is admitted through normal admission, the creation commits and retires the victim, and
+  the terminate is decided `job_not_found` without touching the reused slot;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
-  closed Jobs are resident;
+  closed Jobs are resident; and when a malformed creation that held the last provisional slot is
+  rejected behind a ticketed creation, the ticketed creation installs into the freed slot, retires
+  nothing, and releases its ticket;
 - `job_retirement_resets_slot`: after retirement, the victim's slot is empty (banks, prepared banks,
   gate registrations, identity slots, and post-commit mark reset) with every timer-gate generation
   greater than before, the new Job is resident in the former spare slot, and the next retirement
@@ -297,7 +323,9 @@ Its named checks, Planned until the implementation Issue activates them:
   same resident set, with the same residents in the same order, as the run held after its last
   committed turn, including a run in which an older Job's `cleanup_status_recorded` was queued ahead
   of a creation while a newer Job was already closed, so that both the writer and replay retired the
-  older Job; and with a retiring `job_created` whose complete record is durable while `Commit()`
+  older Job; including a run in which a malformed creation released its provisional slot behind a
+  ticketed creation, so that neither the writer nor replay retired anything; and with a retiring
+  `job_created` whose complete record is durable while `Commit()`
   returns `kOutcomeUnknown`, or whose process stops after `kCommitted` and before installation, the
   previous process still holds the victim, and replay of that Journal retires the victim and seeds
   the new Job, which is the asserted restart set; and after a
@@ -309,9 +337,11 @@ Its named checks, Planned until the implementation Issue activates them:
   counts; the retained ordinals are consecutive and end at the latest, and every retained turn holds
   all the records it published; and with a logical-commit failure injected on the last turn, the
   trace ends with that turn's `JournalAttempt`, no `JournalCommitted` or later record follows, and
-  the earlier retained turns are unchanged; and with the ordinal injected near its maximum, the
-  retained ordinals stay consecutive up to the maximum and the turn that would exceed it latches
-  failure;
+  the earlier retained turns are unchanged; with the ordinal injected near its maximum, the retained
+  ordinals stay consecutive up to the maximum and the turn that would exceed it latches failure; and
+  with more admissions than `trace_capacity`, counting reducer-rejected cancels for unknown Jobs,
+  admission keeps succeeding, the ingress-sequence history holds the latest `trace_capacity`
+  sequences in order, and the shutdown marker is still admitted;
 - `rest_v1_retired_job_absent`: after a retirement through the HTTP layer, `GET` of the retired Job
   is `404` `job_not_found`, the list omits it and lists the surviving older Jobs before the new Job
   in `job_created` order, and a cancel of it is `404`; and
@@ -356,7 +386,8 @@ Traceability from Issue #103's required decisions:
   exit never confirmed) is not closed and holds its slot for the process lifetime; ADR-0002's ACK
   rule is kept rather than cancelled by retirement.
 - Neutral: a creation's completion can report `resident_limit`, and the allocator holds one spare
-  slot beyond `max_jobs`; one sentence of ADR-0008's Decision is superseded.
+  slot beyond `max_jobs`; one sentence of ADR-0008's Decision is superseded; the diagnostic
+  ingress-sequence history becomes a ring like the trace.
 - Neutral: one sentence of ADR-0006 Section 5 is superseded; the Journal format and the pruning
   rules are untouched.
 
