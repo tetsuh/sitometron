@@ -129,11 +129,12 @@ already says of pruned Jobs.
 ADR-0008's answers are unchanged. `GET /v1/jobs/{job_id}` for a retired Job answers `404` `job`/
 `job_not_found`, as ADR-0008 Section 3 already states for a Job that a retirement decision removes.
 One sentence of ADR-0008's Decision is superseded: "`capacity_exhausted` does not clear without
-operator action in this slice" becomes "`capacity_exhausted` clears when a resident Job closes, when
-a callback lease on the oldest closed Job finishes, when an admitted input for that Job has finished
-its turn and released its permit, or when an outstanding retirement ticket is released"; a client
-may retry a create after that `503`. This ADR names that superseding path, and
-every other rule of ADR-0008 stands. The list holds the resident Jobs and no longer holds a retired
+operator action in this slice" becomes "`capacity_exhausted` clears when the oldest closed Job can
+be retired: a resident Job is closed, no callback lease on the oldest closed Job is in flight, no
+admitted input for it holds a permit queued or in flight, and no other retirement ticket is
+outstanding"; a newer Job closing while the oldest closed Job is still blocked does not clear it. A
+client may retry a create after that `503`. This ADR names that superseding path, and every other
+rule of ADR-0008 stands. The list holds the resident Jobs and no longer holds a retired
 one; it stays bounded by `max_jobs` and ordered by `job_created` sequence. A cancel for a retired
 Job is a cancel for an unknown Job. When a Job is retired, the Phase 1 creation-order index removes
 the retired identifier and appends the new one, so the list keeps the surviving older Jobs before
@@ -254,7 +255,8 @@ applying one rule so that the resident set after a restart is the one the retain
 implies (equal to the set the previous process held after its last fully installed turn, less any
 Job offline pruning removed; a durable `job_created` the previous process never installed, under an
 unknown commit outcome or a crash before installation, may add a retirement, Section 4), and keep
-the trace bounded without failing a turn.
+the trace bounded without failing a turn because the ring is full (the ordinal exhaustion of
+Section 5 is the only trace-related failure).
 
 Its named checks, Planned until the implementation Issue activates them:
 
