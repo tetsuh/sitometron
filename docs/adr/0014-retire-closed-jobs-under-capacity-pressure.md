@@ -97,11 +97,12 @@ Commit. The victim stays installed and readable through materialization and logi
 new Job's `job_created`. Only after commit success does the no-fail snapshot installation of
 ADR-0003 reset the victim's slot, retire its gates, and install the new Job in the spare slot, in
 one step of the same turn; the victim's slot becomes the next spare. If the creation is not
-committed (a reducer rejection, a precommit failure, or a logical-commit failure), the ticket and
-the claim are released as a provisional reservation is released today, the victim stays resident
-with its gates, and a source refused during the claim may acquire its lease again; a failed commit
-latches the writer as ADR-0003 says and retires nothing. A closed Job is never retired while a slot
-is free, and never because of time.
+committed, the ticket and the claim are released as a provisional reservation is released today
+and the victim stays resident with its gates. After a reducer rejection the process goes on, and a
+source refused during the claim may acquire its lease again. After a precommit or logical-commit
+failure the writer latches as ADR-0003 says and retires nothing; the source keeps its fact, and no
+lease is granted in the latched process because admission answers `service_failed` until a restart.
+A closed Job is never retired while a slot is free, and never because of time.
 
 ### 2. What retirement removes and what stays
 
@@ -129,8 +130,9 @@ ADR-0008's answers are unchanged. `GET /v1/jobs/{job_id}` for a retired Job answ
 `job_not_found`, as ADR-0008 Section 3 already states for a Job that a retirement decision removes.
 One sentence of ADR-0008's Decision is superseded: "`capacity_exhausted` does not clear without
 operator action in this slice" becomes "`capacity_exhausted` clears when a resident Job closes, when
-a callback lease on the oldest closed Job finishes, or when an outstanding retirement ticket is
-released"; a client may retry a create after that `503`. This ADR names that superseding path, and
+a callback lease on the oldest closed Job finishes, when an admitted input for that Job has finished
+its turn and released its permit, or when an outstanding retirement ticket is released"; a client
+may retry a create after that `503`. This ADR names that superseding path, and
 every other rule of ADR-0008 stands. The list holds the resident Jobs and no longer holds a retired
 one; it stays bounded by `max_jobs` and ordered by `job_created` sequence. A cancel for a retired
 Job is a cancel for an unknown Job. When a Job is retired, the Phase 1 creation-order index removes
@@ -147,15 +149,18 @@ finds `max_jobs` Jobs in the fold, replay retires the replayed Job that is close
 the fold and has the smallest `job_created` sequence, and seeds the new Job in its place. Because
 the rule depends only on the records and their order, the resident set after replay is a function
 of the durable Journal alone, and the durable Journal is the restart authority (ADR-0006 Section
-3): the resident set after replay of the retained Journal equals the set the previous process held
-after its last turn whose `Commit()` returned `kCommitted`, less any Job that offline pruning under
-ADR-0006 Section 8 removed from the retained Journal in between, which is absent after replay. One
-permitted case differs by design: when `Commit()` of a
-retiring `job_created` returns `kOutcomeUnknown`, the record may be durable although the writer,
-fail-closed under ADR-0003, latched without applying it and kept the victim resident. ADR-0006
-Section 3 says such a record is committed, so replay folds it and retires the victim; the latched
-process served nothing after that turn, so no reader observed the two sets side by side. The
-definite-failure case is unchanged: no record is durable, the victim stays, and replay keeps it too.
+3): the guarantee is stated against that authority alone. The resident set after replay of the
+retained Journal equals the set the previous process held after its last fully installed turn (a
+turn whose `Commit()` returned `kCommitted` and whose no-fail snapshot installation completed),
+less any Job that offline pruning under ADR-0006 Section 8 removed from the retained Journal in
+between, which is absent after replay. The previous process's in-memory set can differ from the
+replayed set only where a durable record was never installed in memory: when `Commit()` of a
+retiring `job_created` returned `kOutcomeUnknown` and the writer, fail-closed under ADR-0003,
+latched without applying it, or when the process crashed after `Commit()` returned `kCommitted` and
+before installation. In both cases ADR-0006 Section 3 says the record is committed, so replay folds
+it and retires the victim; the previous process served nothing after that point, so no reader
+observed the two sets side by side. The definite-failure case is unchanged: no record is durable,
+the victim stays, and replay keeps it too.
 Replay refuses to start
 with `journal_capacity_exceeded` only when a `job_created` finds `max_jobs` Jobs of which none is
 closed at that point in the fold. The writer and replay share one implementation of the
@@ -180,7 +185,9 @@ sentence only; this ADR names the superseding path, and every other rule of ADR-
 
 ### 5. The trace
 
-The global trace becomes a ring of `trace_capacity` records. Ordinals keep increasing without bound.
+The global trace becomes a ring of `trace_capacity` records. Ordinals are a 64-bit counter that
+keeps increasing and never wraps; if it ever reached its maximum, the writer would latch failure as
+it does for any exhausted non-wrapping sequence, a bound no process reaches in practice.
 A turn's prepared trace is appended to the ring as a whole: when fewer records are free than the
 turn holds, the oldest retained turns are evicted whole, one after another, until the turn fits. A
 turn never holds more than `trace_capacity` records because `HasTraceCapacity` still sizes the
@@ -244,10 +251,10 @@ ADR-0003's input classes stay closed.
 This ADR adds `OPS-006` (MUST): reuse the resident slot of a closed Job only when a creation needs
 it, retiring the closed Job with the smallest `job_created` sequence, with the writer and replay
 applying one rule so that the resident set after a restart is the one the retained durable Journal
-implies (equal to the set the previous process held after its last committed turn, less any Job
-offline pruning removed; a `job_created` durable under an unknown commit outcome may add a
-retirement the latched writer did not apply, Section 4), and keep the trace bounded without failing
-a turn.
+implies (equal to the set the previous process held after its last fully installed turn, less any
+Job offline pruning removed; a durable `job_created` the previous process never installed, under an
+unknown commit outcome or a crash before installation, may add a retirement, Section 4), and keep
+the trace bounded without failing a turn.
 
 Its named checks, Planned until the implementation Issue activates them:
 
@@ -262,7 +269,10 @@ Its named checks, Planned until the implementation Issue activates them:
 - `job_retirement_requires_closed`: with `max_jobs` residents of which none is closed (terminal but
   unreleased; released but no cleanup record; or terminal, released, and cleanup recorded with a
   terminal Worker event but no `process_exit_confirmed`), or while a retirement ticket is
-  outstanding, admission answers `resident_limit` and retires nothing; with one closed Job whose
+  outstanding, admission of a creation for a different new Job answers `resident_limit` and retires
+  nothing, while a `job_created` for the ticketed provisional identifier claims that reservation
+  under ADR-0003's same-identifier rules and the writer decides `job_already_exists` after the first
+  success; with one closed Job whose
   callback lease is in flight, or for which a critical input was admitted behind the ticketed
   creation and its callback has already returned, the creation is admitted with a ticket and its
   completion reports `resident_limit` with nothing retired, the queued input is processed by its own
@@ -286,8 +296,9 @@ Its named checks, Planned until the implementation Issue activates them:
   committed turn, including a run in which an older Job's `cleanup_status_recorded` was queued ahead
   of a creation while a newer Job was already closed, so that both the writer and replay retired the
   older Job; and with a retiring `job_created` whose complete record is durable while `Commit()`
-  returns `kOutcomeUnknown`, the writer latches with the victim still resident, and replay of that
-  Journal retires the victim and seeds the new Job, which is the asserted restart set; and after a
+  returns `kOutcomeUnknown`, or whose process stops after `kCommitted` and before installation, the
+  previous process still holds the victim, and replay of that Journal retires the victim and seeds
+  the new Job, which is the asserted restart set; and after a
   prunable prefix holding a closed Job that the previous run still held resident is pruned, replay
   of the retained Journal leaves that Job absent and retires among the remaining Jobs as before;
 - `journal_replay_capacity_after_retirement`: replay refuses with `journal_capacity_exceeded` only
@@ -296,12 +307,16 @@ Its named checks, Planned until the implementation Issue activates them:
   counts; the retained ordinals are consecutive and end at the latest, and every retained turn holds
   all the records it published; and with a logical-commit failure injected on the last turn, the
   trace ends with that turn's `JournalAttempt`, no `JournalCommitted` or later record follows, and
-  the earlier retained turns are unchanged;
+  the earlier retained turns are unchanged; and with the ordinal injected near its maximum, the
+  retained ordinals stay consecutive up to the maximum and the turn that would exceed it latches
+  failure;
 - `rest_v1_retired_job_absent`: after a retirement through the HTTP layer, `GET` of the retired Job
   is `404` `job_not_found`, the list omits it and lists the surviving older Jobs before the new Job
   in `job_created` order, and a cancel of it is `404`; and
 - `rest_v1_daemon_outlives_max_jobs`: through the HTTP layer, more than `max_jobs` Jobs are created
-  and closed in one process without a `capacity_exhausted` answer.
+  and closed in one process without a `capacity_exhausted` answer; and a create that answered `503`
+  `capacity_exhausted` while an admitted input for the oldest closed Job held its permit succeeds
+  when retried after that input's turn.
 
 All checks drive the writer with the Issue #11 fakes and inject every input; none sleeps or reads a
 host clock.

@@ -66,7 +66,9 @@ timed_out
 
 `absent` appears only as an entity position for `job_created`. It is not a Job state.
 
-A resident Job becomes `absent` again only through retirement. Proposed
+Within a running process, a resident Job becomes `absent` again only through retirement; across a
+restart, offline prefix pruning (ADR-0006 Section 8) can also leave a previously resident Job absent
+after replay. Proposed
 [ADR-0014](adr/0014-retire-closed-jobs-under-capacity-pressure.md) under
 [Issue #103](https://github.com/tetsuh/sitometron/issues/103) decides when a closed resident Job is
 retired; until it is Accepted, a successfully created Job holds its resident slot for the process
