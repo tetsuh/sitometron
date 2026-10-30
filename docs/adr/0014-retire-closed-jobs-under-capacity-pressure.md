@@ -83,10 +83,12 @@ closed Job still exists when the creation's turn comes.
 Selection. The writer selects the victim at the creation's turn, in the validate step of ADR-0003's
 turn order, against the state after every earlier FIFO turn has been applied: the closed resident
 with the smallest `job_created` Journal sequence. That is the state replay sees at the same record
-(Section 4). The writer refuses rather than skips: if that victim has a callback lease in flight,
-the turn ends without a reducer decision, a Journal sequence, or a record; the creation's completion
-reports `resident_limit`, the ticket is released, and the caller retries once the lease has
-finished. No other closed Job is chosen in its place. Otherwise the writer marks the victim claimed
+(Section 4). The writer refuses rather than skips: if that victim is still owned by ADR-0003's
+ingress bookkeeping, because a callback lease on it is in flight or an admitted input for it holds
+a permit while queued behind the creation or in flight, the turn ends without a reducer decision, a
+Journal sequence, or a record; the creation's completion reports `resident_limit`, the ticket is
+released, and the caller retries once that lease or turn has finished and released the permit. No
+other closed Job is chosen in its place, and no admitted entry is disposed of or reassigned. Otherwise the writer marks the victim claimed
 under the ingress mutex: while the claim stands, a source that asks for a lease on the victim is
 refused and keeps its fact, exactly as a lease is refused for an unknown Job today.
 
@@ -206,7 +208,8 @@ named here as its superseding path:
   exhaustion: `resident_limit`" applies when no slot is free and no ticket can be issued: no
   resident Job is closed in the committed state, or a ticket is already outstanding.
 - The turn order "validate and decide" gains, for a creation admitted with a ticket, the outcome
-  `resident_limit` when the selected victim has a callback lease in flight: the creation's
+  `resident_limit` when the selected victim has a callback lease in flight or an admitted input
+  holding a permit queued or in flight: the creation's
   completion reports it, and no reducer decision, Journal sequence, or record is produced. It is an
   ingress-level result delivered through the completion, not an ADR-0002 rejection reason.
 - The critical reserve bound "`R = 9 * J + 1`" becomes "`R = 9 * (J + 1) + 1`": the spare slot of
@@ -259,8 +262,10 @@ Its named checks, Planned until the implementation Issue activates them:
   unreleased; released but no cleanup record; or terminal, released, and cleanup recorded with a
   terminal Worker event but no `process_exit_confirmed`), or while a retirement ticket is
   outstanding, admission answers `resident_limit` and retires nothing; with one closed Job whose
-  callback lease is in flight, the creation is admitted with a ticket and its completion reports
-  `resident_limit` with nothing retired; in both cases the creation after the lease or ticket has
+  callback lease is in flight, or for which a critical input was admitted behind the ticketed
+  creation and its callback has already returned, the creation is admitted with a ticket and its
+  completion reports `resident_limit` with nothing retired, the queued input is processed by its own
+  turn with its permit intact, and in every case the creation after the lease, turn, or ticket has
   finished retires that same Job;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
   closed Jobs are resident;
@@ -326,8 +331,9 @@ Traceability from Issue #103's required decisions:
 - Bad: replay does more work per `job_created` when the fold is full, selecting the oldest closed
   Job; the cost is bounded by `max_jobs`.
 - Bad: a creation can answer `resident_limit` while the oldest closed Job still has a callback lease
-  in flight or another retirement ticket is outstanding, although a closed Job exists; the next
-  creation succeeds. The refusal keeps the writer's choice equal to replay's.
+  in flight or an admitted input queued or in flight, or another retirement ticket is outstanding,
+  although a closed Job exists; the next creation succeeds. The refusal keeps the writer's choice
+  equal to replay's and leaves every admitted entry owned until its own turn.
 - Bad: a Job with an open acknowledgment obligation (a terminal Worker event recorded, its process
   exit never confirmed) is not closed and holds its slot for the process lifetime; ADR-0002's ACK
   rule is kept rather than cancelled by retirement.
