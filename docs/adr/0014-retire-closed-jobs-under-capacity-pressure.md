@@ -152,7 +152,10 @@ rule, and a timer callback that still holds no lease cannot acquire one, as Sect
 generations are non-wrapping (ADR-0002), so the increments are checked during the ticketed turn's
 precommit materialization: if any generation of the victim's slot is at its maximum, the turn
 fails before commit on ADR-0003's fail-closed path, the victim stays resident, and no `job_created`
-is committed; the no-fail installation never meets an unincrementable generation. The
+is committed; the no-fail installation never meets an unincrementable generation. Retirement
+removes nothing from the global trace: the records the retired Job's turns published stay in the
+ring until ordinary whole-turn eviction (Section 5); only the slot's prepared trace banks are
+reset. The
 ADR-0013 identity source keeps the retired identifiers in its remembered set, as ADR-0013 Section 2
 decided.
 
@@ -423,7 +426,9 @@ Its named checks, Planned until the implementation Issue activates them:
   ordinals stay consecutive up to the maximum and the turn that would exceed it latches failure; and
   with more admissions than `trace_capacity`, counting reducer-rejected cancels for unknown Jobs,
   admission keeps succeeding, the ingress-sequence history holds the latest `trace_capacity`
-  sequences in order, and the shutdown marker is still admitted;
+  sequences in order, and the shutdown marker is still admitted; and after a retirement, the records
+  the retired Job's turns published are still retained with consecutive ordinals until whole-turn
+  eviction removes them;
 - `rest_v1_retired_job_absent`: after a retirement through the HTTP layer, `GET` of the retired Job
   is `404` `job_not_found`, the list omits it and lists the surviving older Jobs before the new Job
   in `job_created` order, and a cancel of it is `404`; and
