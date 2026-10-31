@@ -56,8 +56,10 @@ writer and replay apply identically, and we will make the trace a ring.
 
 ### 1. When a Job is retired
 
-A resident Job is closed when the Journal says so: its state is terminal, its `resources_released`
-is recorded, its `cleanup_status_recorded` is recorded, and, if any Worker event that binds an
+A resident Job is closed when the Journal says so: its state is terminal, it holds no committed
+allocation (no `resources_committed` was recorded, or `resources_released` is recorded after it,
+which is the resource condition ADR-0006 Section 6 uses for a resolved Job), its
+`cleanup_status_recorded` is recorded, and, if any Worker event that binds an
 acknowledgment (`worker_completed`, `worker_failed`, or the `late_worker_event` that ADR-0002
 normalizes a delayed Worker event to) was recorded for it, its `process_exit_confirmed` is recorded
 too. The last condition keeps ADR-0002's acknowledgment retry rule intact: such an event binds an
@@ -195,24 +197,28 @@ guarantee is stated against that authority alone. The resident set after replay 
 Journal equals the set the previous process held after its last fully installed turn (a turn whose
 `Commit()` returned `kCommitted` and whose no-fail snapshot installation completed), less any Job
 that offline pruning under ADR-0006 Section 8 removed from the retained Journal in between, which is
-absent after replay. The previous process's in-memory set can differ from the replayed set only
-where a durable record was never installed in memory: when `Commit()` of a retiring `job_created`
-returned `kOutcomeUnknown` and the writer, fail-closed under ADR-0003, latched without applying it,
-or when the process crashed after `Commit()` returned `kCommitted` and before installation. In both
-cases ADR-0006 Section 3 says the record is committed, so replay folds it and retires the victim;
-the previous process applied no later writer turn, so the two sets are never both current, although
-reads and lists of its last installed set keep working until it stops, as ADR-0008 Section 6 says,
-and show the victim once more before the restart shows the new Job. The definite-failure case is
-unchanged: no record is durable, the victim stays, and replay keeps it too. Replay refuses to start
-with `journal_capacity_exceeded` only when a `job_created` finds `max_jobs` Jobs of which none is
-closed at that point in the fold. The writer and replay share one implementation of the retirability
-predicate and the oldest-first choice, so they cannot diverge. Two rules of Section 1 make the
-equality hold: the writer selects the victim at the creation's turn, after every earlier FIFO turn
-is applied, so a closing fact queued ahead of the creation (for example the
-`cleanup_status_recorded` of an older Job) closes that Job for the writer and for replay alike at
-the creation's record; and the writer refuses a creation rather than skipping the oldest closed Job
-when a lease blocks it, so a refusal leaves no record and every retirement the writer performed is
-the one replay performs at the same record.
+absent after replay. The equality is stated for a replay under the same configured `max_jobs`: the
+fold of one Journal with a larger `max_jobs` keeps Jobs the previous process retired, and with a
+smaller one retires more or refuses with `journal_capacity_exceeded`, because the rule is a function
+of the records and the bound together. The previous process's in-memory set can differ from the
+replayed set only where a durable `job_created` was never installed in memory, whether it added a
+resident or replaced one: when `Commit()` returned `kOutcomeUnknown`, or never returned, and the
+writer, fail-closed under ADR-0003, latched without applying it, or when the process crashed after
+`Commit()` returned `kCommitted` and before installation. In every such case ADR-0006 Section 3 says
+the record is committed, so replay folds it, adds the Job, and retires the victim if the record was
+a retiring one; the previous process applied no later writer turn, so the two sets are never both
+current, although reads and lists of its last installed set keep working until it stops, as ADR-0008
+Section 6 says, and show the old set once more before the restart shows the new one. The
+definite-failure case is unchanged: no record is durable, the victim stays, and replay keeps it too.
+Replay refuses to start with `journal_capacity_exceeded` only when a `job_created` finds `max_jobs`
+Jobs of which none is closed at that point in the fold. The writer and replay share one
+implementation of the retirability predicate and the oldest-first choice, so they cannot diverge.
+Two rules of Section 1 make the equality hold: the writer selects the victim at the creation's turn,
+after every earlier FIFO turn is applied, so a closing fact queued ahead of the creation (for
+example the `cleanup_status_recorded` of an older Job) closes that Job for the writer and for replay
+alike at the creation's record; and the writer refuses a creation rather than skipping the oldest
+closed Job when a lease blocks it, so a refusal leaves no record and every retirement the writer
+performed is the one replay performs at the same record.
 
 Offline pruning (ADR-0006 Section 8) is unchanged: a pruned prefix removes closed Jobs from replay
 entirely, which only reduces what replay has to retire, and a pruned Job that the previous process
@@ -309,9 +315,10 @@ ADR-0003's input classes stay closed.
 This ADR adds `OPS-006` (MUST): reuse the resident slot of a closed Job only when a creation needs
 it, retiring the closed Job with the smallest `job_created` sequence, with the writer and replay
 applying one rule so that the resident set after a restart is the one the retained durable Journal
-implies (equal to the set the previous process held after its last fully installed turn, less any
-Job offline pruning removed; a durable `job_created` the previous process never installed, under an
-unknown commit outcome or a crash before installation, may add a retirement, Section 4), and keep
+implies under the same configured `max_jobs` (equal to the set the previous process held after its
+last fully installed turn, less any Job offline pruning removed; a durable `job_created` the
+previous process never installed, under an unknown commit outcome or a crash before installation,
+may add a Job or a retirement, Section 4), and keep
 the trace bounded without failing a turn because the ring is full (the ordinal exhaustion of
 Section 5 is the only trace-related failure).
 
@@ -348,9 +355,11 @@ Its named checks, Planned until the implementation Issue activates them:
   successor admitted behind it and a creation for another new identifier admitted after that, the
   ticket stays with the reservation, the other creation answers `resident_limit`, the successor
   performs the ticketed check at its turn and commits with the retirement when it is possible, and
-  the ticket is released only then or when the last same-identifier claim is released; and with a
-  Job whose `process_exit_confirmed` precedes a distinct `late_worker_event`, the Job is closed and
-  is retired oldest-first under capacity pressure even while that event's acknowledgment is still
+  the ticket is released only then or when the last same-identifier claim is released; with a Job
+  cancelled or terminated before any `resources_committed`, so that no `resources_released` exists,
+  the Job is closed once its cleanup status is recorded and is retired oldest-first; and with a Job
+  whose `process_exit_confirmed` precedes a distinct `late_worker_event`, the Job is closed and is
+  retired oldest-first under capacity pressure even while that event's acknowledgment is still
   unacknowledged, its Worker gate is retired with the slot, and the ACK effect is not dispatched
   again after the reset;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
@@ -380,13 +389,17 @@ Its named checks, Planned until the implementation Issue activates them:
   of a creation while a newer Job was already closed, so that both the writer and replay retired the
   older Job; including a run in which a malformed creation admitted ahead of a ticketed creation
   released its provisional slot before the ticketed turn, so that neither the writer nor replay
-  retired anything; and with a retiring
-  `job_created` whose complete record is durable while `Commit()`
-  returns `kOutcomeUnknown`, or whose process stops after `kCommitted` and before installation, the
-  previous process still holds the victim, and replay of that Journal retires the victim and seeds
-  the new Job, which is the asserted restart set; and after a
-  prunable prefix holding a closed Job that the previous run still held resident is pruned, replay
-  of the retained Journal leaves that Job absent and retires among the remaining Jobs as before;
+  retired anything; and with a retiring `job_created` whose complete record is durable while
+  `Commit()` returns `kOutcomeUnknown`, or whose process stops after `kCommitted` and before
+  installation, the previous process still holds the victim, and replay of that Journal retires the
+  victim and seeds the new Job, which is the asserted restart set; after a prunable prefix holding a
+  closed Job that the previous run still held resident is pruned, including a Job closed without any
+  allocation, replay of the retained Journal leaves that Job absent and retires among the remaining
+  Jobs as before; with an ordinary, non-retiring `job_created` durable while `Commit()` returns
+  `kOutcomeUnknown` or never returns, the previous process holds the old set and replay adds the
+  Job; and replaying one Journal under a larger `max_jobs` keeps Jobs the previous run retired while
+  a smaller one retires more or refuses, which the check records as the configured-bound condition
+  of the equality;
 - `journal_replay_capacity_after_retirement`: replay refuses with `journal_capacity_exceeded` only
   when a `job_created` finds `max_jobs` Jobs with none closed, and succeeds when one is closed;
 - `job_trace_ring_wraps`: more turns than `trace_capacity` succeed, with turns of differing record
