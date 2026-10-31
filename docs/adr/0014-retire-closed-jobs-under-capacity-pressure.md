@@ -34,8 +34,9 @@ The code fixes these facts:
   (around lines 932 and 2007); the reducer contract validates a timeout against its phase generation
   before the candidate event, so a notification for an earlier generation is rejected as stale.
 - ADR-0006 Section 6 defines an unresolved Job as non-terminal, with unreleased resources, or with
-  no recorded cleanup status. A Job that is none of these is closed, which is also the condition
-  ADR-0006 Section 8 uses for a prunable prefix.
+  no recorded cleanup status. A Job that is none of these is resolved, which is also the condition
+  ADR-0006 Section 8 uses for a prunable prefix; neither condition looks at the acknowledgment
+  obligation of ADR-0002.
 - The Phase 1 composition keeps a creation-order index of `max_jobs` entries that it fills from
   replay and from successful creations (`apps/sitometrond/composition.cpp`, around line 107, Issue
   #106).
@@ -221,16 +222,24 @@ alike at the creation's record; and the writer refuses a creation rather than sk
 closed Job when a lease blocks it, so a refusal leaves no record and every retirement the writer
 performed is the one replay performs at the same record.
 
-Offline pruning (ADR-0006 Section 8) is unchanged: a pruned prefix removes closed Jobs from replay
-entirely, which only reduces what replay has to retire, and a pruned Job that the previous process
-still held resident is absent after replay, as ADR-0006 already says. Because retirement keeps
+Offline pruning (ADR-0006 Section 8) keeps its mechanism, and its eligibility gains the
+acknowledgment condition of Section 1: a prefix is prunable only when every Job with a record in it
+is closed under Section 1 within the prefix, so a Job with an acknowledgment-binding Worker event
+is prunable only when its `process_exit_confirmed` is in the prefix too; otherwise the operator
+operation refuses, and the Job's Worker binding stays replayable with its open obligation. A pruned
+prefix therefore removes only closed Jobs from replay, which only reduces what replay has to
+retire, and a pruned Job that the previous process still held resident is absent after replay, as
+ADR-0006 already says. Because retirement keeps
 every record, a Job retired in one run and still present in the retained Journal is retired again
 by replay, at the same point.
 
-This changes one sentence of ADR-0006 Section 5, the capacity refusal: "replay would create more
-resident Jobs than the configured maximum" becomes "replay would create more resident Jobs than the
-configured maximum after retiring closed Jobs under this ADR's rule". ADR-0006 is superseded in that
-sentence only; this ADR names the superseding path, and every other rule of ADR-0006 stands.
+This changes two sentences of ADR-0006. In Section 5, the capacity refusal "replay would create
+more resident Jobs than the configured maximum" becomes "replay would create more resident Jobs
+than the configured maximum after retiring closed Jobs under this ADR's rule". In Section 8, the
+prunable condition "every Job with a record in it has a terminal outcome, released resources, and a
+recorded cleanup status within the prefix" becomes "every Job with a record in it is closed under
+ADR-0014 Section 1 within the prefix". ADR-0006 is superseded in those two sentences only; this ADR
+names the superseding paths, and every other rule of ADR-0006 stands.
 
 ### 5. The trace
 
@@ -398,11 +407,12 @@ Its named checks, Planned until the implementation Issue activates them:
   victim and seeds the new Job, which is the asserted restart set; after a prunable prefix holding a
   closed Job that the previous run still held resident is pruned, including a Job closed without any
   allocation, replay of the retained Journal leaves that Job absent and retires among the remaining
-  Jobs as before; with an ordinary, non-retiring `job_created` durable while `Commit()` returns
-  `kOutcomeUnknown` or never returns, the previous process holds the old set and replay adds the
-  Job; and replaying one Journal under a larger `max_jobs` keeps Jobs the previous run retired while
-  a smaller one retires more or refuses, which the check records as the configured-bound condition
-  of the equality;
+  Jobs as before, while a prefix holding a Job whose acknowledgment-binding Worker event has no
+  `process_exit_confirmed` in the prefix is refused as not prunable; with an ordinary, non-retiring
+  `job_created` durable while `Commit()` returns `kOutcomeUnknown` or never returns, the previous
+  process holds the old set and replay adds the Job; and replaying one Journal under a larger
+  `max_jobs` keeps Jobs the previous run retired while a smaller one retires more or refuses, which
+  the check records as the configured-bound condition of the equality;
 - `journal_replay_capacity_after_retirement`: replay refuses with `journal_capacity_exceeded` only
   when a `job_created` finds `max_jobs` Jobs with none closed, and succeeds when one is closed;
 - `job_trace_ring_wraps`: more turns than `trace_capacity` succeed, with turns of differing record
@@ -461,8 +471,8 @@ Traceability from Issue #103's required decisions:
 - Neutral: a creation's completion can report `resident_limit`, and the allocator holds one spare
   slot beyond `max_jobs`; one sentence of ADR-0008's Decision is superseded; the diagnostic
   ingress-sequence history becomes a ring like the trace.
-- Neutral: one sentence of ADR-0006 Section 5 is superseded; the Journal format and the pruning
-  rules are untouched.
+- Neutral: two sentences of ADR-0006 are superseded (the Section 5 capacity refusal and the Section
+  8 prunable condition); the Journal format and the pruning mechanism are untouched.
 
 ## Options considered
 
