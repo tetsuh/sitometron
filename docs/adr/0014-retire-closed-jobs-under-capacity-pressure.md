@@ -394,32 +394,36 @@ Its named checks, Planned until the implementation Issue activates them:
   has already returned, the creation is admitted with a ticket and its completion reports
   `resident_limit` with nothing retired, the queued input is processed by its own turn with its
   permit intact, and in every case the creation after the lease, turn, or ticket has finished
-  retires that same Job; with a `job_created` for the closed victim's identifier admitted behind the
-  ticketed creation, the creation reports `resident_limit` and that turn is decided
-  `job_already_exists` with the victim's slot intact; and with a terminate for the claimed victim
-  submitted while the creation's commit is paused, the terminate is admitted through normal
-  admission, the creation commits and retires the victim, and the terminate is decided
-  `job_not_found` without touching the reused slot; with the writer paused by a non-sleeping barrier
-  after it claims the victim and before commit, a fresh lease request from each critical source of
-  the victim is refused, no permit or entry is transferred, and the source keeps its fact; and for
-  each refusal or rejection of a ticketed turn (a malformed or reducer-rejected first creation, a
-  victim-ownership refusal, and the below-`max_jobs` reserved refusal) with a same-identifier
-  successor admitted behind it and a creation for another new identifier admitted after that, the
-  ticket stays with the reservation, the other creation answers `resident_limit`, the successor
-  performs the ticketed check at its turn and commits with the retirement when it is possible, and
-  the ticket is released only then or when the last same-identifier claim is released; with a
-  terminal Worker event whose ACK succeeded while the exit is unconfirmed, the allocation stays
-  committed, the Job is not closed, and with it as the only candidate admission answers
-  `resident_limit`, as replay's Journal-only decision does; with a delayed `worker_completed` or
-  `worker_failed` for a closed Job that never had a Worker binding, the reducer rejects it, nothing
-  is recorded, and the Job stays closed and is retired; with the same delayed events for a Job whose
-  launch failed, the folded snapshot already confirms its exit, the Job stays closed, and the
-  ticketed creation retires it; with a Job cancelled or terminated before any `resources_committed`,
-  so that no `resources_released` exists, the Job is closed once its cleanup status is recorded and
-  is retired oldest-first; and with a Job whose `process_exit_confirmed` precedes a distinct
-  `late_worker_event`, the Job is closed and is retired oldest-first under capacity pressure even
-  while that event's acknowledgment is still unacknowledged, its Worker gate is retired with the
-  slot, and the ACK effect is not dispatched again after the reset;
+  retires that same Job; with several closed Jobs, an ownership blocker (a callback lease, or an
+  admitted input holding a permit) on the oldest, and a younger closed Job free of any blocker, the
+  ticketed creation's completion reports `resident_limit` with no record instead of retiring the
+  younger Job, and the retry after the blocker has cleared retires the oldest; with a `job_created`
+  for the closed victim's identifier admitted behind the ticketed creation, the creation reports
+  `resident_limit` and that turn is decided `job_already_exists` with the victim's slot intact; and
+  with a terminate for the claimed victim submitted while the creation's commit is paused, the
+  terminate is admitted through normal admission, the creation commits and retires the victim, and
+  the terminate is decided `job_not_found` without touching the reused slot; with the writer paused
+  by a non-sleeping barrier after it claims the victim and before commit, a fresh lease request from
+  each critical source of the victim is refused, no permit or entry is transferred, and the source
+  keeps its fact; and for each refusal or rejection of a ticketed turn (a malformed or
+  reducer-rejected first creation, a victim-ownership refusal, and the below-`max_jobs` reserved
+  refusal) with a same-identifier successor admitted behind it and a creation for another new
+  identifier admitted after that, the ticket stays with the reservation, the other creation answers
+  `resident_limit`, the successor performs the ticketed check at its turn and commits with the
+  retirement when it is possible, and the ticket is released only then or when the last
+  same-identifier claim is released; with a terminal Worker event whose ACK succeeded while the exit
+  is unconfirmed, the allocation stays committed, the Job is not closed, and with it as the only
+  candidate admission answers `resident_limit`, as replay's Journal-only decision does; with a
+  delayed `worker_completed` or `worker_failed` for a closed Job that never had a Worker binding,
+  the reducer rejects it, nothing is recorded, and the Job stays closed and is retired; with the
+  same delayed events for a Job whose launch failed, the folded snapshot already confirms its exit,
+  the Job stays closed, and the ticketed creation retires it; with a Job cancelled or terminated
+  before any `resources_committed`, so that no `resources_released` exists, the Job is closed once
+  its cleanup status is recorded and is retired oldest-first; and with a Job whose
+  `process_exit_confirmed` precedes a distinct `late_worker_event`, the Job is closed and is retired
+  oldest-first under capacity pressure even while that event's acknowledgment is still
+  unacknowledged, its Worker gate is retired with the slot, and the ACK effect is not dispatched
+  again after the reset;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
   closed Jobs are resident; when a malformed creation that holds the last provisional slot is
   admitted ahead of a ticketed creation, is rejected at its earlier turn, and no same-identifier
@@ -445,23 +449,26 @@ Its named checks, Planned until the implementation Issue activates them:
   same resident set, with the same residents in the same order, as the run held after its last
   committed turn, including a run in which an older Job's `cleanup_status_recorded` was queued ahead
   of a creation while a newer Job was already closed, so that both the writer and replay retired the
-  older Job; including a run in which a malformed creation admitted ahead of a ticketed creation
-  released its provisional slot before the ticketed turn, so that neither the writer nor replay
-  retired anything; and with a retiring `job_created` whose complete record is durable while
-  `Commit()` returns `kOutcomeUnknown`, or whose process stops after `kCommitted` and before
-  installation, the previous process still holds the victim, and replay of that Journal retires the
-  victim and seeds the new Job, which is the asserted restart set; after a prunable prefix holding a
-  closed Job that the previous run still held resident is pruned, including a Job closed without any
-  allocation, replay of the retained Journal leaves that Job absent and retires among the remaining
-  Jobs as before, while a prefix holding a Job whose acknowledgment-binding Worker event is followed
-  by no exit confirmation of either kind in the prefix is refused as not prunable, and a prefix
-  holding a launch-failed Job with delayed Worker events is pruned because the fold confirms its
-  exit; with an ordinary, non-retiring `job_created` durable while `Commit()` returns
-  `kOutcomeUnknown` or never returns, the previous process holds the old set and replay adds the
-  Job; and replaying one Journal under a larger `max_jobs` keeps Jobs the previous run retired while
-  a smaller one retires more or refuses, and a Journal with a post-closure audit for a Job that the
-  smaller bound retires earlier is refused as `journal_corrupt` at the smaller bound and replays at
-  the original one, which the check records as the configured-bound condition of the equality;
+  older Job; including a run in which a ticketed creation was refused because the oldest closed Job
+  had an ownership blocker while a younger closed Job was free, so that the retried creation and
+  replay both retired the oldest; including a run in which a malformed creation admitted ahead of a
+  ticketed creation released its provisional slot before the ticketed turn, so that neither the
+  writer nor replay retired anything; and with a retiring `job_created` whose complete record is
+  durable while `Commit()` returns `kOutcomeUnknown`, or whose process stops after `kCommitted` and
+  before installation, the previous process still holds the victim, and replay of that Journal
+  retires the victim and seeds the new Job, which is the asserted restart set; after a prunable
+  prefix holding a closed Job that the previous run still held resident is pruned, including a Job
+  closed without any allocation, replay of the retained Journal leaves that Job absent and retires
+  among the remaining Jobs as before, while a prefix holding a Job whose acknowledgment-binding
+  Worker event is followed by no exit confirmation of either kind in the prefix is refused as not
+  prunable, and a prefix holding a launch-failed Job with delayed Worker events is pruned because
+  the fold confirms its exit; with an ordinary, non-retiring `job_created` durable while `Commit()`
+  returns `kOutcomeUnknown` or never returns, the previous process holds the old set and replay adds
+  the Job; and replaying one Journal under a larger `max_jobs` keeps Jobs the previous run retired
+  while a smaller one retires more or refuses, and a Journal with a post-closure audit for a Job
+  that the smaller bound retires earlier is refused as `journal_corrupt` at the smaller bound and
+  replays at the original one, which the check records as the configured-bound condition of the
+  equality;
 - `journal_replay_capacity_after_retirement`: replay refuses with `journal_capacity_exceeded` only
   when a `job_created` finds `max_jobs` Jobs with none closed, and succeeds when one is closed;
 - `job_trace_ring_wraps`: more turns than `trace_capacity` succeed, with turns of differing record
@@ -505,7 +512,10 @@ Traceability from Issue #103's required decisions:
 ## Consequences
 
 - Good: a daemon's lifetime is no longer bounded by `max_jobs` creations or `trace_capacity` turns;
-  it serves Jobs as long as closed Jobs can be retired.
+  it serves Jobs as long as closed Jobs can be retired and the ADR-0013 identity source has room.
+  That source keeps every identity it issued, including those of retired Jobs and of refused
+  creations (three per creation), and latches the core when its capacity of 1,048,576 by default is
+  full, so the daemon is restarted at that point, as ADR-0013 Section 2 says.
 - Good: a terminal Job stays readable until its slot is needed, so a client that polls after
   completion sees the outcome in normal operation.
 - Good: the rule is a pure function of Journal order, so replay reproduces the resident set and no
