@@ -98,6 +98,19 @@ jobs:
         run: bash tests/tooling/bootstrap_sh_test.sh
       - name: Run canonical Linux bootstrap
         run: ./bootstrap.sh
+      - name: Qualify identity with HTTP disabled
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: "6"
+        run: |
+          set -euo pipefail
+          nice -n 15 cmake -S . -B build/http-off -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DSITOMETRON_ENABLE_HTTP=OFF \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/.cache/vcpkg/x64-linux/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/build/vcpkg-installed/x64-linux" \
+            -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_APPLOCAL_DEPS=OFF
+          nice -n 15 cmake --build build/http-off
+          nice -n 15 ctest --test-dir build/http-off -j 4 --output-on-failure
       - name: Run clang-tidy 18.1.3
         run: |
           set -euo pipefail
@@ -120,8 +133,9 @@ jobs:
           cmake --build --preset asan-ubsan
           ctest --test-dir build/dev-linux --show-only=json-v1 > "$RUNNER_TEMP/dev-tests.json"
           ctest --test-dir build/asan-ubsan --show-only=json-v1 > "$RUNNER_TEMP/asan-tests.json"
+          ctest --test-dir build/http-off --show-only=json-v1 > "$RUNNER_TEMP/http-off-tests.json"
           uv run --frozen --only-group schema python - \
-            "$RUNNER_TEMP/dev-tests.json" "$RUNNER_TEMP/asan-tests.json" <<'PY'
+            "$RUNNER_TEMP/dev-tests.json" "$RUNNER_TEMP/asan-tests.json" "$RUNNER_TEMP/http-off-tests.json" <<'PY'
           import json
           import sys
 
@@ -131,11 +145,28 @@ jobs:
 
           development = names(sys.argv[1])
           sanitized = names(sys.argv[2])
-          if len(development) != 130 or len(development) != len(set(development)):
-              raise SystemExit(f"expected 130 unique dev-linux CTests; found {len(development)}")
+          http_off = names(sys.argv[3])
+          identity_checks = set('''
+              identity_uuidv7_canonical identity_uuidv7_monotonic_burst identity_uuidv4_canonical
+              identity_stable_id_grammar identity_never_repeats_within_instance
+              identity_source_never_exhausted clock_recorded_at_rfc3339 clock_monotonic_instant
+              identity_dependency_allowlist identity_public_api_isolation
+              identity_source_reads_no_other_clock_or_entropy identity_seed_failure_refuses_startup
+              sitometrond_composes_production_identity
+          '''.split())
+          if len(development) != 143 or len(development) != len(set(development)):
+              raise SystemExit(f"expected 143 unique dev-linux CTests; found {len(development)} total/{len(set(development))} unique")
           if len(sanitized) != len(set(sanitized)) or set(development) != set(sanitized):
               raise SystemExit("ASan/UBSan CTest name set differs from dev-linux")
-          print(f"ASan/UBSan CTest parity: {len(sanitized)} tests")
+          if len(http_off) != 82 or len(http_off) != len(set(http_off)):
+              raise SystemExit(f"expected 82 unique HTTP-off CTests; found {len(http_off)} total/{len(set(http_off))} unique")
+          if not identity_checks <= set(development) & set(sanitized) & set(http_off):
+              raise SystemExit("an ID-001 check is missing from a configuration")
+          if not set(http_off) <= set(development) or any(
+              not name.startswith(('rest_v1_', 'http_')) for name in set(development) - set(http_off)
+          ):
+              raise SystemExit("HTTP-off differs by more than the HTTP-only checks")
+          print(f"ASan/UBSan CTest parity: {len(sanitized)} tests; HTTP-off: {len(http_off)}")
           PY
           ctest --preset asan-ubsan
       - name: Verify direct installed-port closure
@@ -253,6 +284,38 @@ jobs:
             if ($imports -match "(?i)$forbidden") { throw "HTTP smoke executable imports forbidden DLL family: $forbidden" }
           }
           & $smoke
+      - name: Record identity entropy linkage and qualify HTTP-off
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -property installationPath
+          Import-Module "$install\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
+          $probe = Join-Path $env:GITHUB_WORKSPACE 'build/dev-windows/sitometron_identity_entropy_probe.exe'
+          if (-not (Test-Path -LiteralPath $probe -PathType Leaf)) { throw "identity entropy probe is missing: $probe" }
+          $linkEntry = Select-String -LiteralPath "$env:GITHUB_WORKSPACE/build/dev-windows/build.ninja" -Pattern '^build sitometron_identity_entropy_probe\.exe:' -Context 0,14
+          if (-not $linkEntry) { throw 'identity entropy probe link entry is missing' }
+          $linkEntry | Write-Output
+          & dumpbin.exe /imports $probe
+          & dumpbin.exe /dependents $probe
+          & $probe
+          & dumpbin.exe /imports (Join-Path $env:GITHUB_WORKSPACE 'build/dev-windows/sitometrond.exe')
+          cmake -S . -B build/http-off -G Ninja `
+            -DCMAKE_BUILD_TYPE=Debug -DSITOMETRON_ENABLE_HTTP=OFF `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE/.cache/vcpkg/x64-windows/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            "-DVCPKG_INSTALLED_DIR=$env:GITHUB_WORKSPACE/build/vcpkg-installed/x64-windows" `
+            -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_APPLOCAL_DEPS=OFF
+          cmake --build build/http-off --parallel 6
+          ctest --test-dir build/http-off -j 4 --output-on-failure
+          $development = @((ctest --test-dir build/dev-windows --show-only=json-v1 | ConvertFrom-Json).tests.name)
+          $httpOff = @((ctest --test-dir build/http-off --show-only=json-v1 | ConvertFrom-Json).tests.name)
+          if ($development.Count -ne 143 -or @($development | Sort-Object -Unique).Count -ne 143) { throw 'expected 143 unique Windows development CTests' }
+          if ($httpOff.Count -ne 82 -or @($httpOff | Sort-Object -Unique).Count -ne 82) { throw 'expected 82 unique Windows HTTP-off CTests' }
+          $identityChecks = @('identity_uuidv7_canonical', 'identity_uuidv7_monotonic_burst', 'identity_uuidv4_canonical', 'identity_stable_id_grammar', 'identity_never_repeats_within_instance', 'identity_source_never_exhausted', 'clock_recorded_at_rfc3339', 'clock_monotonic_instant', 'identity_dependency_allowlist', 'identity_public_api_isolation', 'identity_source_reads_no_other_clock_or_entropy', 'identity_seed_failure_refuses_startup', 'sitometrond_composes_production_identity')
+          foreach ($check in $identityChecks) { if ($development -notcontains $check -or $httpOff -notcontains $check) { throw "missing Windows identity check: $check" } }
       - name: Save vcpkg filesystem binary cache
         if: success() && steps.vcpkg-cache-identity.outputs.available == 'true' && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
