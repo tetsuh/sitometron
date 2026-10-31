@@ -138,6 +138,10 @@ gate registrations and identity slots, and the ADR-0012 post-commit mark for tha
 slot becomes the spare. It increments every timer-gate generation of that slot before any later
 reuse, so a notification armed for the retired Job is rejected as stale by the existing generation
 rule, and a timer callback that still holds no lease cannot acquire one, as Section 1 says. The
+generations are non-wrapping (ADR-0002), so the increments are checked during the ticketed turn's
+precommit materialization: if any generation of the victim's slot is at its maximum, the turn
+fails before commit on ADR-0003's fail-closed path, the victim stays resident, and no `job_created`
+is committed; the no-fail installation never meets an unincrementable generation. The
 ADR-0013 identity source keeps the retired identifiers in its remembered set, as ADR-0013 Section 2
 decided.
 
@@ -315,26 +319,27 @@ Its named checks, Planned until the implementation Issue activates them:
   terminal Worker event but no `process_exit_confirmed`; or terminal through a non-Worker outcome,
   released, and cleanup recorded, with a delayed Worker event normalized to `late_worker_event`
   before any `process_exit_confirmed`, whose retained ACK gate stays intact), or while a retirement
-  ticket is
-  outstanding, admission of a creation for a different new Job answers `resident_limit` and retires
-  nothing, while a `job_created` for the ticketed provisional identifier claims that reservation
-  under ADR-0003's same-identifier rules and the writer decides `job_already_exists` after the first
-  success; with one closed Job whose callback lease is in flight, or for which a critical input was
-  admitted behind the ticketed creation and its callback has already returned, the creation is
-  admitted with a ticket and its completion reports `resident_limit` with nothing retired, the
-  queued input is processed by its own turn with its permit intact, and in every case the creation
-  after the lease, turn, or ticket has finished retires that same Job; with a `job_created` for the
-  closed victim's identifier admitted behind the ticketed creation, the creation reports
-  `resident_limit` and that turn is decided `job_already_exists` with the victim's slot intact; and
-  with a terminate for the claimed victim submitted while the creation's commit is paused, the
-  terminate is admitted through normal admission, the creation commits and retires the victim, and
-  the terminate is decided `job_not_found` without touching the reused slot; and for each refusal or
-  rejection of a ticketed turn (a malformed or reducer-rejected first creation, a victim-ownership
-  refusal, and the below-`max_jobs` reserved refusal) with a same-identifier successor admitted
-  behind it and a creation for another new identifier admitted after that, the ticket stays with the
-  reservation, the other creation answers `resident_limit`, the successor performs the ticketed
-  check at its turn and commits with the retirement when it is possible, and the ticket is released
-  only then or when the last same-identifier claim is released;
+  ticket is outstanding, admission of a creation for a different new Job answers `resident_limit`
+  and retires nothing, while a `job_created` for the ticketed provisional identifier claims that
+  reservation under ADR-0003's same-identifier rules and the writer decides `job_already_exists`
+  after the first success; with one closed Job whose callback lease is in flight, or for which a
+  critical input was admitted behind the ticketed creation and its callback has already returned,
+  the creation is admitted with a ticket and its completion reports `resident_limit` with nothing
+  retired, the queued input is processed by its own turn with its permit intact, and in every case
+  the creation after the lease, turn, or ticket has finished retires that same Job; with a
+  `job_created` for the closed victim's identifier admitted behind the ticketed creation, the
+  creation reports `resident_limit` and that turn is decided `job_already_exists` with the victim's
+  slot intact; and with a terminate for the claimed victim submitted while the creation's commit is
+  paused, the terminate is admitted through normal admission, the creation commits and retires the
+  victim, and the terminate is decided `job_not_found` without touching the reused slot; and for
+  each refusal or rejection of a ticketed turn (a malformed or reducer-rejected first creation, a
+  victim-ownership refusal, and the below-`max_jobs` reserved refusal) with a same-identifier
+  successor admitted behind it and a creation for another new identifier admitted after that, the
+  ticket stays with the reservation, the other creation answers `resident_limit`, the successor
+  performs the ticketed check at its turn and commits with the retirement when it is possible, and
+  the ticket is released only then or when the last same-identifier claim is released; and with a
+  Job whose `process_exit_confirmed` precedes a distinct `late_worker_event`, the Job is closed and
+  is retired oldest-first under capacity pressure;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
   closed Jobs are resident; when a malformed creation that holds the last provisional slot is
   admitted ahead of a ticketed creation, is rejected at its earlier turn, and no same-identifier
@@ -346,7 +351,9 @@ Its named checks, Planned until the implementation Issue activates them:
 - `job_retirement_resets_slot`: after retirement, the victim's slot is empty (banks, prepared banks,
   gate registrations, identity slots, and post-commit mark reset) with every timer-gate generation
   greater than before, the new Job is resident in the former spare slot, and the next retirement
-  reuses the reset slot;
+  reuses the reset slot; and with one timer-gate generation of the victim's slot at its maximum, the
+  ticketed turn fails before commit, the victim stays resident with its generations unchanged, and
+  no `job_created` is committed;
 - `job_retirement_stale_timer_rejected`: a timeout notification armed for the retired Job's
   generation cannot acquire its lease and is dropped without a failure latch, and after the reset
   slot is reused by a later creation it is rejected as stale by the generation rule;
