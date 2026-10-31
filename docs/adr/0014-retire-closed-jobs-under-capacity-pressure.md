@@ -78,42 +78,50 @@ reserve accounting: the allocator preallocates its gates and sizes the critical 
 `max_jobs + 1` slots, so a ticketed creation's terminate gate finds a permit even when every
 resident permit and the shutdown permit are held (Section 6). Otherwise admission answers
 `resident_limit` as ADR-0003 says and nothing is retired. Because the closed set only grows, a
-closed Job still exists when the creation's turn comes.
+closed Job still exists when the creation's turn comes. The ticket belongs to the spare slot's
+provisional reservation, not to one turn: ADR-0003's same-identifier rules apply to that
+reservation unchanged, so a later `job_created` for the ticketed identifier claims it without
+another ticket, and whichever same-identifier turn is the first to proceed performs the check
+below. A refused or rejected turn releases the ticket only when ADR-0003 would release the
+reservation: no creation claim on the identifier remains and no associated callback is in flight.
+While the ticket is held, a creation for another new identifier at full capacity answers
+`resident_limit`.
 
 Selection. At the ticketed creation's turn, in the validate step of ADR-0003's turn order and
 against the state after every earlier FIFO turn has been applied, the writer first asks whether
 retirement is still needed: a ticket proves capacity pressure at admission, and an earlier
 provisional reservation may have been released without a record since (a malformed or rejected
-creation). If fewer than `max_jobs` Jobs are resident in the committed state, no retirement
-happens: when an ordinary slot is free after counting the provisional reservations still held under
+creation). If fewer than `max_jobs` Jobs are resident in the committed state, no retirement happens:
+when an ordinary slot is free after counting the provisional reservations still held under
 ADR-0003's same-identifier rules, the creation proceeds as an ordinary one into that slot and
 releases the ticket; when every ordinary slot is either resident or still reserved, the turn ends
 without a reducer decision, a Journal sequence, or a record, the creation's completion reports
-`resident_limit`, the ticket is released, and the caller retries once a reservation has become
-resident or been released. Replay, which sees fewer than `max_jobs` Jobs at that record and no
-record of any reservation, retires nothing either, so both branches keep the writer and replay
-equal. Only when `max_jobs` Jobs are resident does the writer select the victim: the closed resident with the smallest `job_created`
-Journal sequence, which is the one replay selects at the same record (Section 4). The writer
-refuses rather than skips: if any ownership of the victim's slot is outstanding in ADR-0003's
-ingress bookkeeping, because a callback lease on it is in flight, an admitted input for it holds a
-permit while queued behind the creation or in flight, or a creation claim on its identifier is
-outstanding, the turn ends without a reducer decision, a Journal sequence, or a record; the
-creation's completion reports `resident_limit`, the ticket is released, and the caller retries once
-that ownership has been released. No other closed Job is chosen in its place, and no admitted entry
-is disposed of or reassigned. Otherwise the writer marks the victim claimed under the ingress mutex.
-While the claim stands, no new ownership of the victim's slot is granted: a source that asks for a
-lease is refused and keeps its fact, exactly as for an unknown Job today; a terminate for the victim
-is admitted through normal admission, as for an unknown Job, and the reducer decides it by the state
-it finds at its own turn (`job_not_found` after the retirement, the terminal-state rejection if the
-creation was not committed); and a `job_created` for the victim's identifier is admitted as for a
-new identifier, so it needs a free slot or a ticket. The ingress mutex is not held across the
-commit; the claim is what keeps the bookkeeping stable until commit or rollback.
+`resident_limit`, the ticket is released under the rule above, and the caller retries once a
+reservation has become resident or been released. Replay, which sees fewer than `max_jobs` Jobs at
+that record and no record of any reservation, retires nothing either, so both branches keep the
+writer and replay equal. Only when `max_jobs` Jobs are resident does the writer select the victim:
+the closed resident with the smallest `job_created` Journal sequence, which is the one replay
+selects at the same record (Section 4). The writer refuses rather than skips: if any ownership of
+the victim's slot is outstanding in ADR-0003's ingress bookkeeping, because a callback lease on it
+is in flight, an admitted input for it holds a permit while queued behind the creation or in flight,
+or a creation claim on its identifier is outstanding, the turn ends without a reducer decision, a
+Journal sequence, or a record; the creation's completion reports `resident_limit`, the ticket is
+released under the rule above, and the caller retries once that ownership has been released. No
+other closed Job is chosen in its place, and no admitted entry is disposed of or reassigned.
+Otherwise the writer marks the victim claimed under the ingress mutex. While the claim stands, no
+new ownership of the victim's slot is granted: a source that asks for a lease is refused and keeps
+its fact, exactly as for an unknown Job today; a terminate for the victim is admitted through normal
+admission, as for an unknown Job, and the reducer decides it by the state it finds at its own turn
+(`job_not_found` after the retirement, the terminal-state rejection if the creation was not
+committed); and a `job_created` for the victim's identifier is admitted as for a new identifier, so
+it needs a free slot or a ticket. The ingress mutex is not held across the commit; the claim is what
+keeps the bookkeeping stable until commit or rollback.
 
 Commit. The victim stays installed and readable through materialization and logical commit of the
 new Job's `job_created`. Only after commit success does the no-fail snapshot installation of
 ADR-0003 reset the victim's slot, retire its gates, and install the new Job in the spare slot, in
 one step of the same turn; the victim's slot becomes the next spare. If the creation is not
-committed, the ticket and the claim are released as a provisional reservation is released today
+committed, the claim is released, the ticket follows the reservation under the Admission rule above,
 and the victim stays resident with its gates. After a reducer rejection the process goes on, and a
 source refused during the claim may acquire its lease again. After a precommit or logical-commit
 failure the writer latches as ADR-0003 says and retires nothing; the source keeps its fact, and no
@@ -311,15 +319,21 @@ Its named checks, Planned until the implementation Issue activates them:
   `resident_limit` and that turn is decided `job_already_exists` with the victim's slot intact; and
   with a terminate for the claimed victim submitted while the creation's commit is paused, the
   terminate is admitted through normal admission, the creation commits and retires the victim, and
-  the terminate is decided `job_not_found` without touching the reused slot;
+  the terminate is decided `job_not_found` without touching the reused slot; and for each refusal or
+  rejection of a ticketed turn (a malformed or reducer-rejected first creation, a victim-ownership
+  refusal, and the below-`max_jobs` reserved refusal) with a same-identifier successor admitted
+  behind it and a creation for another new identifier admitted after that, the ticket stays with the
+  reservation, the other creation answers `resident_limit`, the successor performs the ticketed
+  check at its turn and commits with the retirement when it is possible, and the ticket is released
+  only then or when the last same-identifier claim is released;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
-  closed Jobs are resident; when a malformed creation that held the last provisional slot is
-  rejected behind a ticketed creation and no same-identifier claim remains, the ticketed creation
-  installs into the freed slot, retires nothing, and releases its ticket; and when that malformed
-  creation is followed by a valid same-identifier creation that keeps the reservation, the ticketed
-  creation's completion reports `resident_limit` with nothing retired and no record, the
-  same-identifier creation commits into its reserved slot, and the retried ticketed creation then
-  retires the oldest closed Job;
+  closed Jobs are resident; when a malformed creation that holds the last provisional slot is
+  admitted ahead of a ticketed creation, is rejected at its earlier turn, and no same-identifier
+  claim remains, the ticketed creation installs into the freed slot, retires nothing, and releases
+  its ticket; and in the order malformed `F`, ticketed `T`, valid same-identifier `F`, all admitted
+  before `F` is processed, the first `F` is rejected with the reservation kept for the second, `T`'s
+  completion reports `resident_limit` with nothing retired and no record, the second `F` commits
+  into its reserved slot, and a retried `T` then retires the oldest closed Job;
 - `job_retirement_resets_slot`: after retirement, the victim's slot is empty (banks, prepared banks,
   gate registrations, identity slots, and post-commit mark reset) with every timer-gate generation
   greater than before, the new Job is resident in the former spare slot, and the next retirement
@@ -335,8 +349,9 @@ Its named checks, Planned until the implementation Issue activates them:
   same resident set, with the same residents in the same order, as the run held after its last
   committed turn, including a run in which an older Job's `cleanup_status_recorded` was queued ahead
   of a creation while a newer Job was already closed, so that both the writer and replay retired the
-  older Job; including a run in which a malformed creation released its provisional slot behind a
-  ticketed creation, so that neither the writer nor replay retired anything; and with a retiring
+  older Job; including a run in which a malformed creation admitted ahead of a ticketed creation
+  released its provisional slot before the ticketed turn, so that neither the writer nor replay
+  retired anything; and with a retiring
   `job_created` whose complete record is durable while `Commit()`
   returns `kOutcomeUnknown`, or whose process stops after `kCommitted` and before installation, the
   previous process still holds the victim, and replay of that Journal retires the victim and seeds
@@ -392,8 +407,9 @@ Traceability from Issue #103's required decisions:
   Job; the cost is bounded by `max_jobs`.
 - Bad: a creation can answer `resident_limit` while the oldest closed Job still has a callback lease
   in flight or an admitted input queued or in flight, or another retirement ticket is outstanding,
-  although a closed Job exists; the next creation succeeds. The refusal keeps the writer's choice
-  equal to replay's and leaves every admitted entry owned until its own turn.
+  although a closed Job exists; a later creation succeeds once those blockers have cleared and a
+  closed Job is still resident. The refusal keeps the writer's choice equal to replay's and leaves
+  every admitted entry owned until its own turn.
 - Bad: a Job with an open acknowledgment obligation (a terminal Worker event recorded, its process
   exit never confirmed) is not closed and holds its slot for the process lifetime; ADR-0002's ACK
   rule is kept rather than cancelled by retirement.
