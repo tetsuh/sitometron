@@ -241,9 +241,11 @@ the one replay performs at the same record.
 
 Offline pruning (ADR-0006 Section 8) keeps its mechanism, and its eligibility gains the
 acknowledgment condition of Section 1: a prefix is prunable only when every Job with a record in it
-is closed under Section 1 within the prefix, so a Job with an acknowledgment-binding Worker event
-is prunable only when its `process_exit_confirmed` is in the prefix too; otherwise the operator
-operation refuses, and the Job's Worker binding stays replayable with its open obligation. A pruned
+is closed under Section 1 as folded from the prefix's records alone, so a Job with an
+acknowledgment-binding Worker event is prunable only when the prefix also confirms its exit by
+either path of Section 1 (a `process_exit_confirmed` record or a failed launch observation);
+otherwise the operator operation refuses, and the Job's Worker binding stays replayable with its
+open obligation. A pruned
 prefix therefore removes only closed Jobs from replay, which only reduces what replay has to
 retire, and a pruned Job that the previous process still held resident is absent after replay, as
 ADR-0006 already says. Because retirement keeps
@@ -430,14 +432,15 @@ Its named checks, Planned until the implementation Issue activates them:
   victim and seeds the new Job, which is the asserted restart set; after a prunable prefix holding a
   closed Job that the previous run still held resident is pruned, including a Job closed without any
   allocation, replay of the retained Journal leaves that Job absent and retires among the remaining
-  Jobs as before, while a prefix holding a Job whose acknowledgment-binding Worker event has no
-  `process_exit_confirmed` in the prefix is refused as not prunable; with an ordinary, non-retiring
-  `job_created` durable while `Commit()` returns `kOutcomeUnknown` or never returns, the previous
-  process holds the old set and replay adds the Job; and replaying one Journal under a larger
-  `max_jobs` keeps Jobs the previous run retired while a smaller one retires more or refuses, and a
-  Journal with a post-closure audit for a Job that the smaller bound retires earlier is refused as
-  `journal_corrupt` at the smaller bound and replays at the original one, which the check records
-  as the configured-bound condition of the equality;
+  Jobs as before, while a prefix holding a Job whose acknowledgment-binding Worker event is followed
+  by no exit confirmation of either kind in the prefix is refused as not prunable, and a prefix
+  holding a launch-failed Job with delayed Worker events is pruned because the fold confirms its
+  exit; with an ordinary, non-retiring `job_created` durable while `Commit()` returns
+  `kOutcomeUnknown` or never returns, the previous process holds the old set and replay adds the
+  Job; and replaying one Journal under a larger `max_jobs` keeps Jobs the previous run retired while
+  a smaller one retires more or refuses, and a Journal with a post-closure audit for a Job that the
+  smaller bound retires earlier is refused as `journal_corrupt` at the smaller bound and replays at
+  the original one, which the check records as the configured-bound condition of the equality;
 - `journal_replay_capacity_after_retirement`: replay refuses with `journal_capacity_exceeded` only
   when a `job_created` finds `max_jobs` Jobs with none closed, and succeeds when one is closed;
 - `job_trace_ring_wraps`: more turns than `trace_capacity` succeed, with turns of differing record
@@ -471,7 +474,7 @@ Traceability from Issue #103's required decisions:
 | 3. External effects | 3 | `rest_v1_retired_job_absent`, `rest_v1_daemon_outlives_max_jobs` |
 | 4. Journal and replay | 4 | `journal_replay_retires_like_writer`, `journal_replay_capacity_after_retirement` |
 | 5. The trace | 5 | `job_trace_ring_wraps` |
-| 6. The ADR-0003 change | 6 | no check; the path is stated, and the ADR-0003 and ADR-0002 checks stay active unchanged |
+| 6. The ADR-0003 change | 6 | no new check; the ADR-0003 and ADR-0002 checks stay active, and `job_ingress_capacity_and_reserve` keeps its name with its expected reserve updated to `9 * (J + 1) + 1` when the implementation Issue activates this ADR; the saturated spare-slot vector of `job_retirement_oldest_closed_first` covers the new permit |
 | 7. Tests | this section | all of the above |
 
 ## Consequences
