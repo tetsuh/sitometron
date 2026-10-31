@@ -54,17 +54,20 @@ writer and replay apply identically, and we will make the trace a ring.
 ### 1. When a Job is retired
 
 A resident Job is closed when the Journal says so: its state is terminal, its `resources_released`
-is recorded, its `cleanup_status_recorded` is recorded, and, if a terminal Worker event
-(`worker_completed` or `worker_failed`) was recorded for it, its `process_exit_confirmed` is
-recorded too. The last condition keeps ADR-0002's acknowledgment rule intact: a terminal Worker
-event binds an ACK obligation that only the first accepted `process_exit_confirmed` clears, and
-ADR-0003 retains the Worker gate for that obligation, so a Job whose obligation is open is not
-closed and is not retired. A `late_worker_event` after `process_exit_confirmed` binds no retry
-obligation, because ADR-0002 ends the retries at confirmed exit, so it does not reopen the Job.
+is recorded, its `cleanup_status_recorded` is recorded, and, if any Worker event that binds an
+acknowledgment (`worker_completed`, `worker_failed`, or the `late_worker_event` that ADR-0002
+normalizes a delayed Worker event to) was recorded for it, its `process_exit_confirmed` is recorded
+too. The last condition keeps ADR-0002's acknowledgment rule intact: such an event binds an ACK
+obligation that only the first accepted `process_exit_confirmed` clears, and ADR-0003 retains the
+Worker gate for that obligation, so a Job whose obligation is open is not closed and is not
+retired. A `late_worker_event` recorded after `process_exit_confirmed` binds no retry obligation,
+because ADR-0002 ends the retries at confirmed exit, so it does not reopen the Job; the condition
+is already met for it.
 Every condition is a Journal fact and none is ever undone, so the closed set only grows, and the
 writer and replay evaluate the same predicate over the same records; the gate and lease state of
 ADR-0003 never changes which Job is closed. A terminal Job whose cleanup status is `incomplete`
-while its process exit is unconfirmed after a terminal Worker event is therefore not closed;
+while its process exit is unconfirmed after an acknowledgment-binding Worker event is therefore not
+closed;
 ADR-0012 row 13 drives it no further, and it keeps its slot until its exit is confirmed.
 
 Admission. The ingress resident-slot allocator of ADR-0003 keeps one spare slot beyond `max_jobs`
@@ -309,7 +312,10 @@ Its named checks, Planned until the implementation Issue activates them:
   registers its terminate gate and is admitted without `service_failed`;
 - `job_retirement_requires_closed`: with `max_jobs` residents of which none is closed (terminal but
   unreleased; released but no cleanup record; or terminal, released, and cleanup recorded with a
-  terminal Worker event but no `process_exit_confirmed`), or while a retirement ticket is
+  terminal Worker event but no `process_exit_confirmed`; or terminal through a non-Worker outcome,
+  released, and cleanup recorded, with a delayed Worker event normalized to `late_worker_event`
+  before any `process_exit_confirmed`, whose retained ACK gate stays intact), or while a retirement
+  ticket is
   outstanding, admission of a creation for a different new Job answers `resident_limit` and retires
   nothing, while a `job_created` for the ticketed provisional identifier claims that reservation
   under ADR-0003's same-identifier rules and the writer decides `job_already_exists` after the first
@@ -413,9 +419,9 @@ Traceability from Issue #103's required decisions:
   although a closed Job exists; a later creation succeeds once those blockers have cleared and a
   closed Job is still resident. The refusal keeps the writer's choice equal to replay's and leaves
   every admitted entry owned until its own turn.
-- Bad: a Job with an open acknowledgment obligation (a terminal Worker event recorded, its process
-  exit never confirmed) is not closed and holds its slot for the process lifetime; ADR-0002's ACK
-  rule is kept rather than cancelled by retirement.
+- Bad: a Job with an open acknowledgment obligation (a terminal or late Worker event recorded, its
+  process exit never confirmed) is not closed and holds its slot for the process lifetime;
+  ADR-0002's ACK rule is kept rather than cancelled by retirement.
 - Neutral: a creation's completion can report `resident_limit`, and the allocator holds one spare
   slot beyond `max_jobs`; one sentence of ADR-0008's Decision is superseded; the diagnostic
   ingress-sequence history becomes a ring like the trace.
