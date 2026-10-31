@@ -291,6 +291,13 @@ successful slots can be reused without changing ADR-0002's terminal-state reject
 This ADR is that decision. It fills the reserved case and changes ADR-0003 in these places, each
 named here as its superseding path:
 
+- "Resident Job bound", the lifetime rule: "Every successfully committed `job_created` holds its
+  snapshot and resident slot for the Phase 0A process lifetime" and "Producer quiescence retires
+  source gates and permits but does not delete the snapshot or permit slot reuse" become "Every
+  successfully committed `job_created` holds its snapshot and resident slot until ADR-0014
+  retirement removes the snapshot and resets the slot for reuse (Sections 1 and 2)", and
+  "Consequently at most `J` distinct Job IDs can be created successfully in one Phase 0A process"
+  no longer holds: `J` bounds the resident Jobs at any time, not the creations in a process.
 - "Resident Job bound": "For a new Job ID, it atomically reserves a resident slot and a normal FIFO
   slot before admitting `job_created`" becomes "it atomically reserves a free resident slot, or the
   spare slot with a retirement ticket under ADR-0014 Section 1, and a normal FIFO slot before
