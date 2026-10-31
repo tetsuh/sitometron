@@ -42,9 +42,12 @@ The code fixes these facts:
 
 The owner decided on 2026-10-28 under Issue #103: a closed Job is retired only when a creation needs
 its slot, and the oldest closed Job goes first, so that terminal Jobs stay readable while there is
-room and the rule follows from Journal order alone. On 2026-10-30 the owner decided that a Job
-whose acknowledgment obligation under ADR-0002 is open is not closed, so retirement never cancels
-an ACK retry and ADR-0002 is unchanged.
+room and the rule follows from Journal order alone. On 2026-10-30 the owner decided that a Job whose
+acknowledgment retry obligation under ADR-0002 is open is not closed, so retirement never cancels an
+ACK retry and ADR-0002 is unchanged; on 2026-10-31 the owner decided that the single acknowledgment
+of a `late_worker_event` recorded after `process_exit_confirmed`, which ADR-0002 does not retry,
+does not keep a Job resident, and that retirement retires its Worker gate (Section 6 names the
+ADR-0003 sentence).
 
 ## Decision
 
@@ -57,12 +60,16 @@ A resident Job is closed when the Journal says so: its state is terminal, its `r
 is recorded, its `cleanup_status_recorded` is recorded, and, if any Worker event that binds an
 acknowledgment (`worker_completed`, `worker_failed`, or the `late_worker_event` that ADR-0002
 normalizes a delayed Worker event to) was recorded for it, its `process_exit_confirmed` is recorded
-too. The last condition keeps ADR-0002's acknowledgment rule intact: such an event binds an ACK
-obligation that only the first accepted `process_exit_confirmed` clears, and ADR-0003 retains the
-Worker gate for that obligation, so a Job whose obligation is open is not closed and is not
-retired. A `late_worker_event` recorded after `process_exit_confirmed` binds no retry obligation,
-because ADR-0002 ends the retries at confirmed exit, so it does not reopen the Job; the condition
-is already met for it.
+too. The last condition keeps ADR-0002's acknowledgment retry rule intact: such an event binds an
+ACK obligation that the adapter retries until delivery or the first accepted
+`process_exit_confirmed`, and ADR-0003 retains the Worker gate for it until a successful ACK or the
+confirmed exit retires the gate, so a Job whose retry obligation is open is not closed and is not
+retired. A `late_worker_event` recorded after `process_exit_confirmed` is different: ADR-0002 ends
+the retries at confirmed exit, so its acknowledgment is a single best-effort attempt with no retry
+obligation; the condition is already met for it and it does not reopen the Job. The owner decided
+on 2026-10-31 that retiring such a Job also retires its Worker gate, dropping that single attempt if
+it is still unacknowledged; this is not a cancellation of an ACK retry, and the ADR-0003 sentence it
+changes is named in Section 6.
 Every condition is a Journal fact and none is ever undone, so the closed set only grows, and the
 writer and replay evaluate the same predicate over the same records; the gate and lease state of
 ADR-0003 never changes which Job is closed. A terminal Job whose cleanup status is `incomplete`
@@ -268,11 +275,15 @@ named here as its superseding path:
   `J + 1` slots; the derivation is otherwise unchanged.
 - The gate table gains two causes: while the writer's claim on the victim stands, a lease on the
   victim is refused and the source keeps its fact; and retirement at commit retires every gate of
-  the victim. The sentence "Once a valid source registration and permit exist, ingress performs no
-  second lifecycle-state filter" gains this one exception: while the claim stands, no new ownership
-  of the victim's slot is granted (lease, gate permit, or creation claim), because the victim is
-  closed and about to be absent; a terminate for it takes the unknown-Job path of normal admission,
-  and a `job_created` for its identifier is treated as a new identifier (Section 1).
+  the victim. In the Worker row, "Successful ACK or confirmed process exit retires the Worker gate
+  and identity" becomes "Successful ACK, confirmed process exit, or retirement under ADR-0014
+  retires the Worker gate and identity"; the only sequence a retirement can drop is a post-exit
+  `late_worker_event`'s single acknowledgment, because a Job with an open retry obligation is not
+  closed (Section 1). The sentence "Once a valid source registration and permit exist, ingress
+  performs no second lifecycle-state filter" gains this one exception: while the claim stands, no
+  new ownership of the victim's slot is granted (lease, gate permit, or creation claim), because the
+  victim is closed and about to be absent; a terminate for it takes the unknown-Job path of normal
+  admission, and a `job_created` for its identifier is treated as a new identifier (Section 1).
 - The ingress-sequence history bound: its fullness is no longer a `service_failed` cause (Section
   5).
 
@@ -339,7 +350,9 @@ Its named checks, Planned until the implementation Issue activates them:
   performs the ticketed check at its turn and commits with the retirement when it is possible, and
   the ticket is released only then or when the last same-identifier claim is released; and with a
   Job whose `process_exit_confirmed` precedes a distinct `late_worker_event`, the Job is closed and
-  is retired oldest-first under capacity pressure;
+  is retired oldest-first under capacity pressure even while that event's acknowledgment is still
+  unacknowledged, its Worker gate is retired with the slot, and the ACK effect is not dispatched
+  again after the reset;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
   closed Jobs are resident; when a malformed creation that holds the last provisional slot is
   admitted ahead of a ticketed creation, is rejected at its earlier turn, and no same-identifier
