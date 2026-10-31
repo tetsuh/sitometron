@@ -249,10 +249,13 @@ named here as its superseding path:
   exhaustion: `resident_limit`" applies when no slot is free and no ticket can be issued: no
   resident Job is closed in the committed state, or a ticket is already outstanding.
 - The turn order "validate and decide" gains, for a creation admitted with a ticket, the outcome
-  `resident_limit` when the selected victim has a callback lease in flight or an admitted input
-  holding a permit queued or in flight: the creation's
-  completion reports it, and no reducer decision, Journal sequence, or record is produced. It is an
-  ingress-level result delivered through the completion, not an ADR-0002 rejection reason.
+  `resident_limit` in four cases of Section 1: fewer than `max_jobs` Jobs are resident but every
+  ordinary slot is resident or still held by a provisional reservation; the selected victim has a
+  callback lease in flight; an admitted input for the victim holds a permit queued or in flight; or
+  a creation claim on the victim's identifier is outstanding. In each case the creation's completion
+  reports `resident_limit`, no reducer decision, Journal sequence, or record is produced, and the
+  ticket follows its reservation. It is an ingress-level result delivered through the completion,
+  not an ADR-0002 rejection reason.
 - The critical reserve bound "`R = 9 * J + 1`" becomes "`R = 9 * (J + 1) + 1`": the spare slot of
   Section 1 is a provisional slot with the per-Job gates of the table, so the reserve counts
   `J + 1` slots; the derivation is otherwise unchanged.
