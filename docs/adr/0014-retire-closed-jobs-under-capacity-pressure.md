@@ -30,9 +30,11 @@ The code fixes these facts:
   refuses to start when the fold reaches `max_jobs` Jobs (`src/journal/replay.cpp`, around line
   279, `journal_capacity_exceeded`, ADR-0006 Section 5). A retirement rule that replay cannot
   reproduce would make a daemon that created more than `J` Jobs impossible to restart.
-- Each resident's timer gates carry a generation that the writer increments when a gate is reused
-  (around lines 932 and 2007); the reducer contract validates a timeout against its phase generation
-  before the candidate event, so a notification for an earlier generation is rejected as stale.
+- Each resident's timer gates carry a generation that the writer increments when a gate is re-armed:
+  precommit materialization checks it against its maximum and computes the next value (around lines
+  1092 to 1125), and the post-commit installation stores it (around line 1232); the reducer contract
+  validates a timeout against its phase generation before the candidate event, so a notification for
+  an earlier generation is rejected as stale.
 - ADR-0006 Section 6 defines an unresolved Job as non-terminal, with unreleased resources, or with
   no recorded cleanup status. A Job that is none of these is resolved, which is also the condition
   ADR-0006 Section 8 uses for a prunable prefix; neither condition looks at the acknowledgment
@@ -320,8 +322,10 @@ named here as its superseding path:
   new ownership of the victim's slot is granted (lease, gate permit, or creation claim), because the
   victim is closed and about to be absent; a terminate for it takes the unknown-Job path of normal
   admission, and a `job_created` for its identifier is treated as a new identifier (Section 1).
-- The ingress-sequence history bound: its fullness is no longer a `service_failed` cause (Section
-  5).
+
+Separately from ADR-0003, which states no bound on it, the implementation's diagnostic
+ingress-sequence history becomes a ring whose fullness is no longer a `service_failed` cause; that
+is a change this ADR makes in Section 5, not a superseded ADR-0003 rule.
 
 Every other rule of ADR-0003 stands: the resident-slot allocator as the sole authority for the
 bound, the precedence of `resident_limit` over `normal_full`, the provisional reservation rules,
