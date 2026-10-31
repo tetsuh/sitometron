@@ -84,10 +84,15 @@ Selection. At the ticketed creation's turn, in the validate step of ADR-0003's t
 against the state after every earlier FIFO turn has been applied, the writer first asks whether
 retirement is still needed: a ticket proves capacity pressure at admission, and an earlier
 provisional reservation may have been released without a record since (a malformed or rejected
-creation). If fewer than `max_jobs` Jobs are resident in the committed state, the creation proceeds
-as an ordinary one into the free slot, retires nothing, and releases the ticket; replay, which sees
-no record of the released reservation, makes the same choice. Only when `max_jobs` Jobs are
-resident does the writer select the victim: the closed resident with the smallest `job_created`
+creation). If fewer than `max_jobs` Jobs are resident in the committed state, no retirement
+happens: when an ordinary slot is free after counting the provisional reservations still held under
+ADR-0003's same-identifier rules, the creation proceeds as an ordinary one into that slot and
+releases the ticket; when every ordinary slot is either resident or still reserved, the turn ends
+without a reducer decision, a Journal sequence, or a record, the creation's completion reports
+`resident_limit`, the ticket is released, and the caller retries once a reservation has become
+resident or been released. Replay, which sees fewer than `max_jobs` Jobs at that record and no
+record of any reservation, retires nothing either, so both branches keep the writer and replay
+equal. Only when `max_jobs` Jobs are resident does the writer select the victim: the closed resident with the smallest `job_created`
 Journal sequence, which is the one replay selects at the same record (Section 4). The writer
 refuses rather than skips: if any ownership of the victim's slot is outstanding in ADR-0003's
 ingress bookkeeping, because a callback lease on it is in flight, an admitted input for it holds a
@@ -143,8 +148,10 @@ One sentence of ADR-0008's Decision is superseded: "`capacity_exhausted` does no
 operator action in this slice" becomes "`capacity_exhausted` clears when the oldest closed Job can
 be retired: a resident Job is closed, no callback lease on the oldest closed Job is in flight, no
 admitted input for it holds a permit queued or in flight, no creation claim on its identifier is
-outstanding, and no other retirement ticket is outstanding"; a newer Job closing while the oldest
-closed Job is still blocked does not clear it. A
+outstanding, and no other retirement ticket is outstanding, or when a ticketed creation that found
+the committed set below `max_jobs` with the remaining slots provisionally reserved is retried after
+a reservation became resident or was released"; a newer Job closing while the oldest closed Job is
+still blocked does not clear it. A
 client may retry a create after that `503`. This ADR names that superseding path, and every other
 rule of ADR-0008 stands. The list holds the resident Jobs and no longer holds a retired
 one; it stays bounded by `max_jobs` and ordered by `job_created` sequence. A cancel for a retired
@@ -306,9 +313,13 @@ Its named checks, Planned until the implementation Issue activates them:
   terminate is admitted through normal admission, the creation commits and retires the victim, and
   the terminate is decided `job_not_found` without touching the reused slot;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
-  closed Jobs are resident; and when a malformed creation that held the last provisional slot is
-  rejected behind a ticketed creation, the ticketed creation installs into the freed slot, retires
-  nothing, and releases its ticket;
+  closed Jobs are resident; when a malformed creation that held the last provisional slot is
+  rejected behind a ticketed creation and no same-identifier claim remains, the ticketed creation
+  installs into the freed slot, retires nothing, and releases its ticket; and when that malformed
+  creation is followed by a valid same-identifier creation that keeps the reservation, the ticketed
+  creation's completion reports `resident_limit` with nothing retired and no record, the
+  same-identifier creation commits into its reserved slot, and the retried ticketed creation then
+  retires the oldest closed Job;
 - `job_retirement_resets_slot`: after retirement, the victim's slot is empty (banks, prepared banks,
   gate registrations, identity slots, and post-commit mark reset) with every timer-gate generation
   greater than before, the new Job is resident in the former spare slot, and the next retirement
