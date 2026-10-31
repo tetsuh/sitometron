@@ -403,26 +403,29 @@ Its named checks, Planned until the implementation Issue activates them:
   creation reports `resident_limit` and that turn is decided `job_already_exists` with the victim's
   slot intact; and with a terminate for the claimed victim submitted while the creation's commit is
   paused, the terminate is admitted through normal admission, the creation commits and retires the
-  victim, and the terminate is decided `job_not_found` without touching the reused slot; and for
-  each refusal or rejection of a ticketed turn (a malformed or reducer-rejected first creation, a
-  victim-ownership refusal, and the below-`max_jobs` reserved refusal) with a same-identifier
-  successor admitted behind it and a creation for another new identifier admitted after that, the
-  ticket stays with the reservation, the other creation answers `resident_limit`, the successor
-  performs the ticketed check at its turn and commits with the retirement when it is possible, and
-  the ticket is released only then or when the last same-identifier claim is released; with a
-  terminal Worker event whose ACK succeeded but for which no `process_exit_confirmed` is recorded, a
-  ticketed creation refuses without retirement and replay makes the same Journal-only decision; with
-  the only closed Job's exit unconfirmed and a delayed `worker_completed` or `worker_failed`
-  admitted for it ahead of a ticketed creation, the Job is reopened by that turn, the creation's
-  completion reports `resident_limit` with nothing retired, and the Job is retired by a later
-  creation once its exit is confirmed; with the same delayed events for a Job whose launch failed,
-  the folded snapshot already confirms its exit, the Job stays closed, and the ticketed creation
-  retires it; with a Job cancelled or terminated before any `resources_committed`, so that no
-  `resources_released` exists, the Job is closed once its cleanup status is recorded and is retired
-  oldest-first; and with a Job whose `process_exit_confirmed` precedes a distinct
-  `late_worker_event`, the Job is closed and is retired oldest-first under capacity pressure even
-  while that event's acknowledgment is still unacknowledged, its Worker gate is retired with the
-  slot, and the ACK effect is not dispatched again after the reset;
+  victim, and the terminate is decided `job_not_found` without touching the reused slot; with the
+  writer paused by a non-sleeping barrier after it claims the victim and before commit, a fresh
+  lease request from each critical source of the victim is refused, no permit or entry is
+  transferred, and the source keeps its fact; and for each refusal or rejection of a ticketed turn
+  (a malformed or reducer-rejected first creation, a victim-ownership refusal, and the
+  below-`max_jobs` reserved refusal) with a same-identifier successor admitted behind it and a
+  creation for another new identifier admitted after that, the ticket stays with the reservation,
+  the other creation answers `resident_limit`, the successor performs the ticketed check at its turn
+  and commits with the retirement when it is possible, and the ticket is released only then or when
+  the last same-identifier claim is released; with a terminal Worker event whose ACK succeeded but
+  for which no `process_exit_confirmed` is recorded, a ticketed creation refuses without retirement
+  and replay makes the same Journal-only decision; with the only closed Job's exit unconfirmed and a
+  delayed `worker_completed` or `worker_failed` admitted for it ahead of a ticketed creation, the
+  Job is reopened by that turn, the creation's completion reports `resident_limit` with nothing
+  retired, and the Job is retired by a later creation once its exit is confirmed; with the same
+  delayed events for a Job whose launch failed, the folded snapshot already confirms its exit, the
+  Job stays closed, and the ticketed creation retires it; with a Job cancelled or terminated before
+  any `resources_committed`, so that no `resources_released` exists, the Job is closed once its
+  cleanup status is recorded and is retired oldest-first; and with a Job whose
+  `process_exit_confirmed` precedes a distinct `late_worker_event`, the Job is closed and is retired
+  oldest-first under capacity pressure even while that event's acknowledgment is still
+  unacknowledged, its Worker gate is retired with the slot, and the ACK effect is not dispatched
+  again after the reset;
 - `job_retirement_not_under_free_slot`: with a free slot, a creation retires nothing, however many
   closed Jobs are resident; when a malformed creation that holds the last provisional slot is
   admitted ahead of a ticketed creation, is rejected at its earlier turn, and no same-identifier
