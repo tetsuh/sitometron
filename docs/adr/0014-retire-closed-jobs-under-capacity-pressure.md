@@ -275,9 +275,13 @@ when `trace_capacity` is smaller than the largest number of records one turn can
 reducer's closed event and effect sets that is 14 records (the Journal attempt, the commit
 observation, and the snapshot activation; two source registrations; two records for each of at most
 four effects; and the response release, as `RequiredTraceSlots` in `src/core/job_orchestrator.cpp`
-counts them), and the bound is derived from those sets, not configured. The composition sizes
-`trace_capacity` to at least that bound, where it now uses the total FIFO capacity, which can be 11
-at the smallest valid configuration. `HasTraceCapacity` becomes a check of one turn's records
+counts them), and the bound is derived from those sets, not configured. The construction rule is
+therefore `trace_capacity >= max(total FIFO capacity, 14)`. The existing rule `trace_capacity >=
+total FIFO capacity` stays, and under Section 6's reserve `9 * (J + 1) + 1` the smallest valid total
+FIFO capacity is 20 (`J = 1`, normal capacity 1), so the existing rule already implies the 14-record
+bound in every valid configuration and the composition keeps sizing `trace_capacity` to the total
+FIFO capacity; the 14-record check stays explicit so that a later change to either capacity cannot
+silently break whole-turn retention. `HasTraceCapacity` becomes a check of one turn's records
 against that bound, which cannot fail after a valid construction; ring fullness only ever causes
 whole-turn eviction. A reader can rely on these properties: the ordinals of the retained records are
 consecutive and end at the most recent one; a record is never reordered or altered; and every
@@ -473,10 +477,11 @@ Its named checks, Planned until the implementation Issue activates them:
   admission keeps succeeding, the ingress-sequence history holds the latest `trace_capacity`
   sequences in order, and the shutdown marker is still admitted; and after a retirement, the records
   the retired Job's turns published are still retained with consecutive ordinals until whole-turn
-  eviction removes them; with `trace_capacity` at the 14-record bound, a
-  `terminal_outcome_committed` turn with four effects is retained whole in an empty ring and evicted
-  whole by the next turn that needs its room; and a configuration with `trace_capacity` one record
-  below the bound is refused at construction;
+  eviction removes them; at the smallest valid configuration (`max_jobs` 1, normal capacity 1,
+  `trace_capacity` equal to the total FIFO capacity of 20), a `terminal_outcome_committed` turn with
+  four effects is retained whole and evicted whole by the next turn that needs its room; a
+  configuration with `trace_capacity` one below the total FIFO capacity is refused at construction;
+  and the 14-record per-turn bound is asserted against the reducer's closed event and effect sets;
 - `rest_v1_retired_job_absent`: after a retirement through the HTTP layer, `GET` of the retired Job
   is `404` `job_not_found`, the list omits it and lists the surviving older Jobs before the new Job
   in `job_created` order, and a cancel of it is `404`; and
