@@ -165,6 +165,13 @@ class AcquireGitleaksTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
+    def test_archive_fixture_is_byte_identical_across_clock_seconds(self) -> None:
+        seconds = iter(range(1_000, 1_100))
+        with patch("time.time", side_effect=lambda: float(next(seconds))):
+            first = valid_archive()
+            second = valid_archive()
+        self.assertEqual(first, second)
+
     def test_parses_exact_pins_and_constructs_frozen_url(self) -> None:
         write_pins(self.root / "tools")
         pin = self.module.read_tool_pin(self.root / "tools")
