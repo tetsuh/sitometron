@@ -287,10 +287,10 @@ class Replayer {
                             std::to_string(options_.max_jobs) + " Jobs" +
                             Location(segment.name, record.sequence));
         index_of_.erase(result_.jobs[*victim].job_id.value);
-        const auto offset = static_cast<std::ptrdiff_t>(*victim);
-        result_.jobs.erase(result_.jobs.begin() + offset);
-        result_.spans.erase(result_.spans.begin() + offset);
-        result_.created_sequences.erase(result_.created_sequences.begin() + offset);
+        const auto victim_offset = static_cast<std::ptrdiff_t>(*victim);
+        result_.jobs.erase(result_.jobs.begin() + victim_offset);
+        result_.spans.erase(result_.spans.begin() + victim_offset);
+        result_.created_sequences.erase(result_.created_sequences.begin() + victim_offset);
         for (auto& [id, index] : index_of_) {
           (void)id;
           if (index > *victim) --index;
