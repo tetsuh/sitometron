@@ -3433,6 +3433,29 @@ int JobRetirementRequiresClosed() {
   return result;
 }
 
+int RetirementRejectedReservationWithQueuedTerminate() {
+  retirement::Plan plan;
+  plan.Close(1);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::Create(3));
+  retirement::Fixture fixture(plan, 2, 4);
+  if (!fixture.Run(plan, 0, setup))
+    return Check(false, "queued provisional terminate setup commits");
+  auto& writer = *fixture.writer;
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto malformed = retirement::Submit(writer, retirement::Event(2, "job_created"));
+  if (!hold.Wait(malformed)) return Check(false, "provisional F pauses before malformed rejection");
+  const auto terminate = retirement::Submit(writer, retirement::Terminate(2));
+  const auto ticket = retirement::Submit(writer, retirement::Create(3));
+  hold.Release();
+  return Check(
+      retirement::Rejected(writer, malformed, RejectionReason::kInvalidEventPayload) &&
+          retirement::Rejected(writer, terminate, RejectionReason::kJobNotFound) &&
+          retirement::Success(writer, ticket) && writer.SnapshotFor(retirement::Job(1)) &&
+          !writer.SnapshotFor(retirement::Job(2)) && fixture.Verify(),
+      "final queued permit releases a rejected provisional reservation before ticket fallback");
+}
+
 int RetirementFreeSlotKeepsQueuedOwners() {
   retirement::Plan plan;
   plan.Close(1);
@@ -3517,6 +3540,7 @@ int JobRetirementNotUnderFreeSlot() {
     }
   }
   result |= RetirementFreeSlotKeepsQueuedOwners();
+  result |= RetirementRejectedReservationWithQueuedTerminate();
   return result;
 }
 
