@@ -1234,7 +1234,8 @@ int JobIngressCapacityAndReserve() {
   result |= Check(marker.code == IngressCode::kAdmitted && population.normal_occupancy() == 2 &&
                       population.live_critical_permit_count() == 19 &&
                       population.critical_occupancy() == 19 && population.total_occupancy() == 21,
-                  "all source relationships plus shutdown occupy exact N=2 R=19 T=21");
+                  "two residents plus shutdown hold 19 critical permits and 21 total slots within "
+                  "the configured bounds");
   result |= Check(population.Release(normal_one.ingress_sequence, WriterPhase::kBeforeDequeue),
                   "full reserve population releases through the keyed FIFO barrier");
   for (const auto& turn : turns)
@@ -1593,12 +1594,12 @@ int JobIngressFailClosed() {
                       invalid_timer_result.admitted.code == IngressCode::kServiceFailed &&
                       invalid_timer.failed() && invalid_timer.sealed(),
                   "invalid timer ingress latches fail-closed outside the ingress lock");
-  // Owner decision D13-1/A: R = 9 * J + 1 assigns one permit to every valid per-resident
-  // critical relationship plus the marker. Once those permits are occupied, every corresponding
-  // source gate is occupied too, so a free-gate reserve-acquisition failure is unreachable from a
-  // valid state. Do not add a synthetic production seam to violate that invariant. The following
-  // impossible-accounting case qualifies sticky fail-closed behavior without claiming to execute
-  // the unreachable acquisition branch.
+  // ADR-0014 sizes R = 9 * (J + 1) + 1 for resident/spare relationships plus the marker.
+  // The D13-1/A accounting proof still applies: once those permits are occupied, every
+  // corresponding source gate is occupied too, so a free-gate reserve-acquisition failure is
+  // unreachable from a valid state. Do not add a synthetic production seam to violate that
+  // invariant. The following impossible-accounting case qualifies sticky fail-closed behavior
+  // without claiming to execute the unreachable acquisition branch.
   JobOrchestratorHarness corruption(PositiveConfig());
   result |= DriveToRunning(corruption, ids, allocation);
   const auto critical_obligation = MakeWorkerCompleted(ids.primary_job, ids.worker, 1);
