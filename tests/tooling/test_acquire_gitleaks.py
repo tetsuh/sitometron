@@ -71,7 +71,7 @@ def build_archive(
     payload = b"".join(members)
     if terminate:
         payload += b"\0" * (512 * terminator_blocks)
-    return gzip.compress(payload + trailing)
+    return gzip.compress(payload + trailing, mtime=0)
 
 GITLEAKS_BODY = b"#!/bin/sh\nprintf '%s\\n' 8.30.1\n"
 def valid_members() -> dict[str, bytes]:
@@ -379,8 +379,8 @@ class AcquireGitleaksTest(unittest.TestCase):
                 list(base.values()), trailing=tar_member(b"EVIL", b"x")
             ),
             "nonzero trailing data": build_archive(list(base.values()), trailing=b"EVIL"),
-            "truncated content": gzip.compress(tar_header(b"LICENSE", 4096) + b"x" * 100),
-            "truncated header": gzip.compress(b"".join(base.values()) + b"x" * 100),
+            "truncated content": gzip.compress(tar_header(b"LICENSE", 4096) + b"x" * 100, mtime=0),
+            "truncated header": gzip.compress(b"".join(base.values()) + b"x" * 100, mtime=0),
             "checksum mismatch": with_member("LICENSE", tar_member(b"LICENSE", b"x", checksum_field=b"000000\0 ")),
             "not gzip": b"plain bytes, not an archive",
             "empty archive": build_archive([]),
