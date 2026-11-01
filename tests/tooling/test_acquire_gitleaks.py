@@ -171,6 +171,10 @@ class AcquireGitleaksTest(unittest.TestCase):
             first = valid_archive()
             second = valid_archive()
         self.assertEqual(first, second)
+        # RFC 1952 header: mtime bytes 4-7 are zero and the OS byte (9) is 255 ("unknown") on
+        # every platform, so the digest does not depend on the host or its zlib build.
+        self.assertEqual(first[4:8], b"\0\0\0\0")
+        self.assertEqual(first[9], 255)
 
     def test_parses_exact_pins_and_constructs_frozen_url(self) -> None:
         write_pins(self.root / "tools")
