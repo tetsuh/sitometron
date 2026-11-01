@@ -64,6 +64,15 @@ def tar_member(name: bytes, data: bytes, **header_options: object) -> bytes:
     header = tar_header(name, len(data), **header_options)  # type: ignore[arg-type]
     return header + data + b"\0" * ((-len(data)) % 512)
 
+def gzip_fixture(data: bytes) -> bytes:
+    # gzip.compress(..., mtime=0) lets zlib write the header, whose OS byte depends on the host.
+    # GzipFile writes the OS byte as 255 on every platform; mtime=0 keeps the header fixed.
+    buffer = io.BytesIO()
+    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as stream:
+        stream.write(data)
+    return buffer.getvalue()
+
+
 def build_archive(
     members: list[bytes], *, terminate: bool = True, terminator_blocks: int = 2,
     trailing: bytes = b"",
@@ -71,7 +80,7 @@ def build_archive(
     payload = b"".join(members)
     if terminate:
         payload += b"\0" * (512 * terminator_blocks)
-    return gzip.compress(payload + trailing, mtime=0)
+    return gzip_fixture(payload + trailing)
 
 GITLEAKS_BODY = b"#!/bin/sh\nprintf '%s\\n' 8.30.1\n"
 def valid_members() -> dict[str, bytes]:
@@ -383,8 +392,8 @@ class AcquireGitleaksTest(unittest.TestCase):
                 list(base.values()), trailing=tar_member(b"EVIL", b"x")
             ),
             "nonzero trailing data": build_archive(list(base.values()), trailing=b"EVIL"),
-            "truncated content": gzip.compress(tar_header(b"LICENSE", 4096) + b"x" * 100, mtime=0),
-            "truncated header": gzip.compress(b"".join(base.values()) + b"x" * 100, mtime=0),
+            "truncated content": gzip_fixture(tar_header(b"LICENSE", 4096) + b"x" * 100),
+            "truncated header": gzip_fixture(b"".join(base.values()) + b"x" * 100),
             "checksum mismatch": with_member("LICENSE", tar_member(b"LICENSE", b"x", checksum_field=b"000000\0 ")),
             "not gzip": b"plain bytes, not an archive",
             "empty archive": build_archive([]),
