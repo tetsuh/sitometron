@@ -68,11 +68,10 @@ timed_out
 
 Within a running process, a resident Job becomes `absent` again only through retirement; across a
 restart, offline prefix pruning (ADR-0006 Section 8) can also leave a previously resident Job absent
-after replay. Proposed
-[ADR-0014](adr/0014-retire-closed-jobs-under-capacity-pressure.md) under
+after replay. Accepted [ADR-0014](adr/0014-retire-closed-jobs-under-capacity-pressure.md) under
 [Issue #103](https://github.com/tetsuh/sitometron/issues/103) decides when a closed resident Job is
-retired; until it is Accepted, a successfully created Job holds its resident slot for the process
-lifetime (ADR-0003).
+retired; until its implementation Issue lands, a successfully created Job holds its resident slot
+for the process lifetime (ADR-0003).
 
 The state enum does not contain enough information to decide every input. The reducer snapshot also
 tracks the first latched reason, successful completion candidate, completion mode, resource status,
