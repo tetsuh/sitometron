@@ -668,7 +668,7 @@ int ReplayFifoRetirementVectors() {
     const auto setup = plan.inputs.size();
     if (form <= 1) plan.Add(retirement::Cleanup(1));
     plan.Add(retirement::Create(3));
-    retirement::Fixture fixture(plan, 2, 4);
+    retirement::Fixture fixture(plan, {.jobs = 2, .normal = 4});
     if (!fixture.Run(plan, 0, setup)) return Check(false, "FIFO replay premise commits");
     auto& writer = *fixture.writer;
     retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
@@ -696,11 +696,10 @@ int ReplayFifoRetirementVectors() {
                           retirement::Success(writer, second),
                       "malformed predecessor releases ordinary slot without a retirement record");
     }
-    if (writer.SnapshotFor(retirement::Job(3)))
-      result |= SameResidents(fixture,
-                              form == 2 ? std::vector<Uuid>{retirement::Job(1), retirement::Job(3)}
-                                        : std::vector<Uuid>{retirement::Job(2), retirement::Job(3)},
-                              2);
+    result |= SameResidents(fixture,
+                            form == 2 ? std::vector<Uuid>{retirement::Job(1), retirement::Job(3)}
+                                      : std::vector<Uuid>{retirement::Job(2), retirement::Job(3)},
+                            2);
   }
   return result;
 }
@@ -770,7 +769,7 @@ int ReplayDurableInstallWindows() {
       plan.Add(retirement::Create(2));
       plan.journal.back().result = returned;
       CommitReturnGate gate(plan);
-      retirement::Fixture fixture(plan, retiring ? 1 : 2, 8, 1024, &gate);
+      retirement::Fixture fixture(plan, retirement::Limits{.jobs = retiring ? 1U : 2U}, &gate);
       if (!fixture.Run(plan, 0, setup)) return Check(false, "commit-return window setup commits");
       CommitGateRelease release(gate);
       const auto input = retirement::Submit(*fixture.writer, retirement::Create(2));

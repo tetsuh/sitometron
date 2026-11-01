@@ -18,6 +18,31 @@
 
 namespace sitometron::core::internal {
 
+// ADR-0006 resolution and ADR-0014 retirement share this Journal-only policy.
+inline bool IsUnresolved(const Snapshot& snapshot) noexcept {
+  return !IsTerminalState(snapshot.state) ||
+         snapshot.resource_status == ResourceStatus::kCommitted ||
+         snapshot.cleanup_status == CleanupStatus::kPending;
+}
+inline bool IsClosed(const Snapshot& snapshot) noexcept {
+  // Nonpending includes reducer-derived incomplete cleanup (no event-seen metadata).
+  // https://github.com/tetsuh/sitometron/issues/120#issuecomment-6554697941
+  return !IsUnresolved(snapshot) &&
+         (!snapshot.pending_worker_event_ack || snapshot.process_exit_confirmed);
+}
+template <typename SnapshotAt, typename SequenceAt>
+std::optional<std::size_t> OldestClosed(std::size_t count, SnapshotAt snapshot_at,
+                                        SequenceAt sequence_at) {
+  std::optional<std::size_t> oldest;
+  for (std::size_t index = 0; index != count; ++index) {
+    const auto* snapshot = snapshot_at(index);
+    if (snapshot != nullptr && IsClosed(*snapshot) &&
+        (!oldest || sequence_at(index) < sequence_at(*oldest)))
+      oldest = index;
+  }
+  return oldest;
+}
+
 enum class IngressCode {
   kAdmitted,
   kCoalescedPending,
@@ -45,6 +70,7 @@ enum class WriterPhase {
   kBeforeDequeue,
   kAfterDequeueAuthorized,
   kAfterDecision,
+  kVictimClaimed,
   kBeforeCommit,
   kAfterCommit,
   kAfterApply,
@@ -80,7 +106,7 @@ struct TraceRecord {
   friend bool operator==(const TraceRecord&, const TraceRecord&) = default;
 };
 struct Completion {
-  enum class Code { kSuccess, kReducerRejection, kServiceFailed };
+  enum class Code { kSuccess, kReducerRejection, kResidentLimit, kServiceFailed };
   Code code = Code::kServiceFailed;
   std::optional<Rejection> rejection;
 };
@@ -109,9 +135,10 @@ struct Config {
   // writer with readiness false and admission closed.
   std::vector<Snapshot> replayed_jobs;
   std::vector<Uuid> unresolved_jobs;
+  std::vector<std::uint64_t> replayed_created_sequences{};
   constexpr std::size_t critical_reserve() const noexcept {
     constexpr auto m = std::numeric_limits<std::size_t>::max();
-    return max_jobs > (m - 1U) / 9U ? 0U : 9U * max_jobs + 1U;
+    return max_jobs > (m - 1U) / 9U - 1U ? 0U : 9U * (max_jobs + 1U) + 1U;
   }
   constexpr std::size_t total_capacity() const noexcept {
     const auto reserve = critical_reserve();
@@ -150,6 +177,28 @@ class JobOrchestrator final {
   };
   TimerSubmitResult SubmitTimeout(const TimerNotification&);
   IngressResult SubmitShutdown();
+  struct SourceLease {
+    std::size_t index = 0;
+    std::size_t gate = 0;
+    std::uint64_t serial = 0;
+    bool borrowed = false;
+    bool acquired_permit = false;
+  };
+  std::optional<SourceLease> AcquireSourceLease(const Uuid&, EventType, TimeoutPhase);
+  bool ReturnSourceLease(SourceLease);
+  struct SlotState {
+    std::size_t index = 0;
+    std::array<std::uint64_t, 4> timer_generation{};
+    bool state_banks_empty = false;
+    bool prepared_banks_empty = false;
+    bool gates_empty = false;
+    bool identities_empty = false;
+    bool generated_bindings_empty = false;
+  };
+  std::optional<SlotState> InspectSlotForTest(const Uuid&) const;
+  std::optional<SlotState> InspectSlotForTest(std::size_t) const;
+  bool SetTimerGenerationForTest(const Uuid&, TimeoutPhase, std::uint64_t);
+  bool SetNextTraceOrdinalForTest(std::uint64_t);
   bool RetainTimerLease(const Uuid&, TimeoutPhase);
   bool RetainWorkerLease(const Uuid&);
   bool RetainProcessExitLease(const Uuid&);

@@ -2986,7 +2986,7 @@ int RetirementSaturatedSparePermit() {
   plan.Finalize(1, "cancelled");
   plan.Add(retirement::Exit(1)).Add(retirement::Release(1)).Add(retirement::Cleanup(1));
   plan.Add(retirement::WorkerFact(1, 2));
-  retirement::Fixture fixture(plan, 1, 2);
+  retirement::Fixture fixture(plan, {.jobs = 1, .normal = 2});
   auto& writer = *fixture.writer;
   int result = 0;
   for (std::size_t n = 0; n < plan.inputs.size(); ++n) {
@@ -3187,13 +3187,45 @@ int RetirementClaimFenceAndLease() {
               "callback lease refuses without a record; explicit return lets retry retire that "
               "same victim");
   }
+  {
+    // This closed no-Worker lifecycle still has a genuinely armed process-exit timer.
+    // Unlike simultaneously live timer phases, it is a reachable typed-timer fence witness.
+    retirement::Plan timer_plan;
+    timer_plan.Close(1);
+    const auto timer_setup = timer_plan.inputs.size();
+    timer_plan.Add(retirement::Create(2));
+    retirement::Fixture timer(timer_plan, 1);
+    if (!timer.Run(timer_plan, 0, timer_setup))
+      return Check(false, "armed closed timer setup commits");
+    const auto state = retirement::InspectSlot(*timer.writer, retirement::Job(1));
+    const bool available =
+        retirement::AcquireAndReturn(*timer.writer, retirement::Job(1), EventType::kTimeoutExpired,
+                                     TimeoutPhase::kProcessExitConfirmation);
+    retirement::Hold claimed(*timer.writer, ri::WriterPhase::kBeforeCommit);
+    const auto creation = retirement::Submit(*timer.writer, retirement::Create(2));
+    if (!claimed.Wait(creation)) return Check(false, "armed closed timer reaches the claim fence");
+    const auto history = timer.writer->CopyIngressSequences();
+    const auto notification =
+        timer.writer->SubmitTimeout({retirement::Job(1), TimeoutPhase::kProcessExitConfirmation,
+                                     state ? state->timer_generation[3] : 0});
+    result |= Check(
+        available && state && notification.discarded &&
+            !retirement::AcquireAndReturn(*timer.writer, retirement::Job(1),
+                                          EventType::kTimeoutExpired,
+                                          TimeoutPhase::kProcessExitConfirmation) &&
+            timer.writer->CopyIngressSequences() == history && !timer.writer->failed(),
+        "a genuinely armed typed timer is fenced without a candidate, permit transfer or latch");
+    claimed.Release();
+    result |= Check(retirement::Success(*timer.writer, creation) && timer.Verify(),
+                    "typed-timer fence preserves the ticketed creation and its scripted ports");
+  }
   return result;
 }
 
 int RetirementNormalFullKeepsNoTicket() {
   retirement::Plan plan;
   plan.Close(1).Add(retirement::Create(2));
-  retirement::Fixture fixture(plan, 1, 1);
+  retirement::Fixture fixture(plan, {.jobs = 1, .normal = 1});
   if (!fixture.Run(plan, 0, plan.inputs.size() - 1))
     return Check(false, "normal-full ticket setup commits");
   auto& writer = *fixture.writer;
@@ -3217,7 +3249,7 @@ int RetirementNormalFullKeepsNoTicket() {
 int RetirementMalformedTicketSuccessor() {
   retirement::Plan plan;
   plan.Close(1).Add(retirement::Create(2));
-  retirement::Fixture fixture(plan, 1, 4);
+  retirement::Fixture fixture(plan, {.jobs = 1, .normal = 4});
   if (!fixture.Run(plan, 0, plan.inputs.size() - 1))
     return Check(false, "malformed-ticket setup commits");
   auto& writer = *fixture.writer;
@@ -3251,7 +3283,7 @@ int RetirementRefusalKeepsSuccessorTicket(bool reserved) {
   else
     plan.Add(retirement::Cleanup(1));
   plan.Add(retirement::Create(3));
-  retirement::Fixture fixture(plan, 2, 6);
+  retirement::Fixture fixture(plan, {.jobs = 2, .normal = 6});
   auto& writer = *fixture.writer;
   if (!fixture.Run(plan, 0, setup)) return Check(false, "successor-ticket refusal setup commits");
   retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
@@ -3356,6 +3388,8 @@ int JobRetirementRequiresClosed() {
     if (!fixture.Run(plan, 0, setup)) return Check(false, "closed predicate premise commits");
     if (form == 0) {
       const auto snapshot = fixture.writer->SnapshotFor(retirement::Job(1));
+      if (!snapshot)
+        return Check(false, "never-bound Worker control requires the installed closed Job");
       for (const bool failed : {false, true}) {
         const auto raw = retirement::WorkerFact(1, 1, failed);
         const auto normalized = NormalizeCandidate(*snapshot, raw);
@@ -3366,9 +3400,11 @@ int JobRetirementRequiresClosed() {
                   "never-bound delayed Worker fact cannot unclose a Job (reducer-only vector)");
       }
     }
+    const auto acknowledgments = fixture.writer->ack_authorization_count();
     result |= Check(
         fixture.Run(plan, setup, plan.inputs.size()) &&
-            !fixture.writer->SnapshotFor(retirement::Job(1)),
+            !fixture.writer->SnapshotFor(retirement::Job(1)) &&
+            fixture.writer->ack_authorization_count() == acknowledgments,
         "closed no-allocation, reducer-incomplete, failed-launch and post-exit-late Jobs retire");
   }
   {
@@ -3438,7 +3474,7 @@ int RetirementRejectedReservationWithQueuedTerminate() {
   plan.Close(1);
   const auto setup = plan.inputs.size();
   plan.Add(retirement::Create(3));
-  retirement::Fixture fixture(plan, 2, 4);
+  retirement::Fixture fixture(plan, {.jobs = 2, .normal = 4});
   if (!fixture.Run(plan, 0, setup))
     return Check(false, "queued provisional terminate setup commits");
   auto& writer = *fixture.writer;
@@ -3461,7 +3497,7 @@ int RetirementFreeSlotKeepsQueuedOwners() {
   plan.Close(1);
   const auto setup = plan.inputs.size();
   plan.Add(retirement::Create(3)).Add(retirement::Terminate(3));
-  retirement::Fixture fixture(plan, 2, 6);
+  retirement::Fixture fixture(plan, {.jobs = 2, .normal = 6});
   if (!fixture.Run(plan, 0, setup)) return Check(false, "free-slot ownership setup commits");
   auto& writer = *fixture.writer;
   retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
@@ -3505,7 +3541,7 @@ int JobRetirementNotUnderFreeSlot() {
     const auto setup = plan.inputs.size();
     plan.Add(retirement::Create(successor ? 2 : 3));
     if (successor) plan.Add(retirement::Create(3));
-    retirement::Fixture fixture(plan, 2, 4);
+    retirement::Fixture fixture(plan, {.jobs = 2, .normal = 4});
     if (!fixture.Run(plan, 0, setup)) return Check(false, "free-slot recheck setup");
     auto& writer = *fixture.writer;
     retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
@@ -3752,7 +3788,7 @@ int JobTraceRingWraps() {
   retirement::Plan plan;
   plan.Close(1);
   for (unsigned n = 0; n != 40; ++n) plan.Add(retirement::Cleanup(1));
-  retirement::Fixture fixture(plan, 1, 1, 20);
+  retirement::Fixture fixture(plan, {.jobs = 1, .normal = 1, .trace = 20});
   bool ran = fixture.Run(plan, 0, 6);
   if (ran) {
     const auto terminal = fixture.writer->CopyTrace();
@@ -3796,7 +3832,7 @@ int JobTraceRingWraps() {
   }
   {
     retirement::Plan empty;
-    retirement::Fixture history(empty, 1, 1, 20);
+    retirement::Fixture history(empty, {.jobs = 1, .normal = 1, .trace = 20});
     std::vector<std::uint64_t> admitted;
     for (unsigned n = 0; n != 45; ++n) {
       const auto input = retirement::Submit(*history.writer, retirement::Cancel(99));
@@ -3822,7 +3858,7 @@ int JobTraceRingWraps() {
     failed_plan.Close(1);
     for (unsigned n = 0; n < 30; ++n) failed_plan.Add(retirement::Cleanup(1));
     failed_plan.journal.back().result = LogicalCommitResult::kDefiniteFailure;
-    retirement::Fixture failed(failed_plan, 1, 1, 20);
+    retirement::Fixture failed(failed_plan, {.jobs = 1, .normal = 1, .trace = 20});
     if (!failed.Run(failed_plan, 0, failed_plan.inputs.size() - 1)) {
       result |= Check(false, "wrapped trace must reach the injected final logical failure");
     } else {
@@ -3862,7 +3898,7 @@ int JobTraceRingWraps() {
   {
     retirement::Plan retired_plan;
     retired_plan.Close(1).Add(retirement::Create(2));
-    retirement::Fixture retired(retired_plan, 1, 1, 128);
+    retirement::Fixture retired(retired_plan, {.jobs = 1, .normal = 1, .trace = 128});
     if (!retired.Run(retired_plan, 0, retired_plan.inputs.size() - 1))
       return result | Check(false, "retired trace preservation setup commits");
     const auto before = retired.writer->CopyTrace();
@@ -3877,10 +3913,11 @@ int JobTraceRingWraps() {
   }
   {
     retirement::Plan empty;
-    retirement::Fixture sample(empty, 1, 1, 20);
+    retirement::Fixture sample(empty, {.jobs = 1, .normal = 1, .trace = 20});
     bool refused = false;
     try {
-      retirement::Fixture undersized(empty, 1, 1, sample.config.total_capacity() - 1);
+      retirement::Fixture undersized(
+          empty, {.jobs = 1, .normal = 1, .trace = sample.config.total_capacity() - 1});
     } catch (const std::exception&) {
       refused = true;
     }

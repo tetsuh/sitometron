@@ -163,7 +163,8 @@ target_include_directories(
   sitometron_journal
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>)
+    $<INSTALL_INTERFACE:include>
+  PRIVATE src/core)
 target_compile_features(sitometron_journal PUBLIC cxx_std_20)
 target_link_libraries(
   sitometron_journal

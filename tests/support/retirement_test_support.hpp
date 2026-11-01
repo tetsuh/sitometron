@@ -49,7 +49,7 @@ inline c::RawCandidateEvent Cleanup(unsigned number, bool incomplete = false) {
   return Event(number, "cleanup_status_recorded",
                incomplete ? R"({"status":"incomplete"})" : R"({"status":"completed"})");
 }
-inline c::RawCandidateEvent Terminal(unsigned number, std::string outcome) {
+inline c::RawCandidateEvent Terminal(unsigned number, const std::string& outcome) {
   return Event(number, "terminal_outcome_committed", "{\"outcome\":\"" + outcome + "\"}");
 }
 inline c::RawCandidateEvent WorkerFact(unsigned number, std::uint64_t sequence = 1,
@@ -152,13 +152,16 @@ struct Plan {
                               id, std::get<c::WorkerLaunchIntentPayload>(proposal->payload)},
                           std::nullopt});
       if (effect.id == c::EffectId::kRequestCooperativeStop ||
-          effect.id == c::EffectId::kRequestForcedStop)
+          effect.id == c::EffectId::kRequestForcedStop) {
+        if (!applied.snapshot.launch_operation_id || !applied.snapshot.worker_id)
+          throw std::runtime_error("stop effect has no reachable Worker binding");
         runner.push_back({effect.id == c::EffectId::kRequestCooperativeStop
                               ? RunnerCallKind::kCooperativeStop
                               : RunnerCallKind::kForcedStop,
                           c::ApplicationStopRequest{id, *applied.snapshot.launch_operation_id,
                                                     *applied.snapshot.worker_id},
                           std::nullopt});
+      }
     }
     if (found == snapshots.end())
       snapshots.push_back(applied.snapshot);
@@ -173,7 +176,7 @@ struct Plan {
     std::erase_if(snapshots, [&](const auto& snapshot) { return snapshot.job_id == Job(number); });
     return *this;
   }
-  Plan& Finalize(unsigned number, std::string outcome = "cancelled", bool failed = false) {
+  Plan& Finalize(unsigned number, const std::string& outcome = "cancelled", bool failed = false) {
     if (failed) return Add(Event(number, "finalization_failed")).Add(Terminal(number, outcome));
     const auto session_json = "{\"session_id\":\"" + Job(number).value + "\"}";
     return Add(Event(number, "session_retain_requested", session_json))
@@ -237,26 +240,33 @@ inline std::vector<c::LaunchOperationIdentityResult> Launches() {
   return values;
 }
 
+struct Limits {
+  std::size_t jobs = 2;
+  std::size_t normal = 8;
+  std::size_t trace = 1024;
+};
+
 class Fixture {
  public:
-  explicit Fixture(const Plan& plan, std::size_t jobs = 2, std::size_t normal = 8,
-                   std::size_t trace = 1024, c::JobJournalPort* external_journal = nullptr)
+  explicit Fixture(const Plan& plan, std::size_t jobs = 2) : Fixture(plan, Limits{jobs}) {}
+  Fixture(const Plan& plan, Limits limits, c::JobJournalPort* external_journal = nullptr)
       : journal(plan.journal),
         runner(plan.runner, 1),
         session(plan.session, 1),
         identity(Jobs(), Workers(), Launches()) {
-    config.max_jobs = jobs;
-    config.normal_capacity = normal;
-    config.trace_capacity = trace;
+    config.max_jobs = limits.jobs;
+    config.normal_capacity = limits.normal;
+    config.trace_capacity = limits.trace;
     config.completion_capacity = std::max(config.total_capacity(), plan.inputs.size() + 16);
     config.handoff_capacity = 4;
-    config.ack_capacity = std::max<std::size_t>(jobs, 4);
+    config.ack_capacity = std::max<std::size_t>(limits.jobs, 4);
     config.callback_registration_capacity = 16;
     config.ports = {&clock, external_journal ? external_journal : &journal, &runner, &session,
                     &identity};
     writer = std::make_unique<i::JobOrchestrator>(config);
   }
   bool Run(const Plan& plan, std::size_t from, std::size_t until) {
+    if (from > until || until > plan.inputs.size()) return false;
     for (auto n = from; n < until; ++n)
       if (!Success(*writer, Submit(*writer, plan.inputs.at(n)))) return false;
     return true;

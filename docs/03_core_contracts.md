@@ -69,9 +69,13 @@ timed_out
 Within a running process, a resident Job becomes `absent` again only through retirement; across a
 restart, offline prefix pruning (ADR-0006 Section 8) can also leave a previously resident Job absent
 after replay. Accepted [ADR-0014](adr/0014-retire-closed-jobs-under-capacity-pressure.md) under
-[Issue #103](https://github.com/tetsuh/sitometron/issues/103) decides when a closed resident Job is
-retired; until its implementation Issue lands, a successfully created Job holds its resident slot
-for the process lifetime (ADR-0003).
+[Issue #103](https://github.com/tetsuh/sitometron/issues/103), implemented by
+[Issue #120](https://github.com/tetsuh/sitometron/issues/120), retires the oldest closed resident
+by `job_created` sequence only when a creation needs its slot. Terminal state alone is insufficient.
+Writer and replay share the Journal-derived closed predicate and selection; outstanding ownership
+of the oldest victim causes a record-free capacity refusal, never selection of a younger victim.
+The victim stays readable until replacement commit and installation succeed. `max_jobs` bounds
+simultaneous residents, not lifetime creations; trace/history rings are bounded diagnostics.
 
 The state enum does not contain enough information to decide every input. The reducer snapshot also
 tracks the first latched reason, successful completion candidate, completion mode, resource status,
