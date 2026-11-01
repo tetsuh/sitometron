@@ -144,6 +144,99 @@ struct JobOrchestrator::Impl {
     std::array<Gate, static_cast<std::size_t>(GateKind::kCount)> gates{};
   };
 
+  // Never construct heap-owning temporaries during reset: debug STL constructors may
+  // allocate. Check the exact in-place operations, not aggregate construction/moves.
+  template <typename T>
+  static void ClearForReset(T& value) noexcept {
+    static_assert(noexcept(value.clear()));
+    value.clear();
+  }
+  template <typename T>
+  static void OptionalForReset(std::optional<T>& value) noexcept {
+    static_assert(noexcept(value.reset()));
+    value.reset();
+  }
+  template <typename T>
+  static void AssignForReset(T& target, const T& value) noexcept {
+    static_assert(noexcept(target = value));
+    target = value;
+  }
+  static void ResetSnapshotInPlace(Snapshot& snapshot) noexcept {
+    // Exhaustive bindings make a newly added state member a compile-time reset review.
+    auto& [schema_version, job_id, session_id, entity_exists, state, latched_reason,
+           completion_candidate, completion_mode, resource_status, allocation_id, allocation_digest,
+           worker_launch_status, launch_operation_id, worker_id, process_presence,
+           process_exit_confirmed, session_retention_status, finalization_status, cleanup_status,
+           pending_worker_event_ack, pending_worker_id, pending_worker_event_sequence] = snapshot;
+    AssignForReset(schema_version, std::uint32_t{1});
+    ClearForReset(job_id.value);
+    ClearForReset(session_id.value);
+    AssignForReset(entity_exists, false);
+    AssignForReset(state, JobState::kInvalid);
+    OptionalForReset(latched_reason);
+    AssignForReset(completion_candidate, false);
+    AssignForReset(completion_mode, CompletionMode::kInvalid);
+    AssignForReset(resource_status, ResourceStatus::kInvalid);
+    OptionalForReset(allocation_id);
+    OptionalForReset(allocation_digest);
+    AssignForReset(worker_launch_status, LaunchStatus::kInvalid);
+    OptionalForReset(launch_operation_id);
+    OptionalForReset(worker_id);
+    AssignForReset(process_presence, ProcessPresence::kInvalid);
+    AssignForReset(process_exit_confirmed, false);
+    AssignForReset(session_retention_status, RetentionStatus::kInvalid);
+    AssignForReset(finalization_status, FinalizationStatus::kInvalid);
+    AssignForReset(cleanup_status, CleanupStatus::kInvalid);
+    AssignForReset(pending_worker_event_ack, false);
+    OptionalForReset(pending_worker_id);
+    OptionalForReset(pending_worker_event_sequence);
+  }
+  static void ResetApplyInPlace(ApplyResult& result) noexcept {
+    auto& [snapshot, effects, rejection] = result;
+    ResetSnapshotInPlace(snapshot);
+    ClearForReset(effects);
+    OptionalForReset(rejection);
+  }
+  static void ResetCandidateInPlace(RawCandidateEvent& candidate) noexcept {
+    auto& [schema_version, job_id, event_type, payload_json] = candidate;
+    AssignForReset(schema_version, std::uint32_t{1});
+    ClearForReset(job_id.value);
+    ClearForReset(event_type);
+    ClearForReset(payload_json);
+  }
+  static void ResetResidentInPlace(Resident& resident) noexcept {
+    auto& [id, banks, prepared_effects, prepared_trace, active, exists, reserved, ticket, claimed,
+           created_sequence, claims, worker_pending, worker_sequence, worker_ingress_sequence,
+           worker_payload, generated_worker, generated_launch_operation, generated_identities,
+           timer_generation, identity_slots, gates] = resident;
+    ClearForReset(id.value);
+    for (auto& bank : banks) ResetApplyInPlace(bank);
+    // Keep the original vector objects, including their debug iterator proxies and capacities.
+    for (auto& bank : prepared_effects) ClearForReset(bank);
+    for (auto& bank : prepared_trace) ClearForReset(bank);
+    AssignForReset(active, 0);
+    AssignForReset(exists, false);
+    AssignForReset(reserved, false);
+    AssignForReset(ticket, false);
+    AssignForReset(claimed, false);
+    AssignForReset(created_sequence, std::uint64_t{0});
+    AssignForReset(claims, std::size_t{0});
+    AssignForReset(worker_pending, false);
+    AssignForReset(worker_sequence, std::uint64_t{0});
+    AssignForReset(worker_ingress_sequence, std::uint64_t{0});
+    ResetCandidateInPlace(worker_payload);
+    OptionalForReset(generated_worker);
+    OptionalForReset(generated_launch_operation);
+    OptionalForReset(generated_identities);
+    // These temporary arrays contain scalars only; guard both construction and assignment.
+    static_assert(noexcept(decltype(timer_generation){}));
+    static_assert(noexcept(decltype(identity_slots){}));
+    static_assert(noexcept(decltype(gates){}));
+    AssignForReset(timer_generation, {});
+    AssignForReset(identity_slots, {});
+    AssignForReset(gates, {});
+  }
+
   explicit Impl(const Config& value) : config(value) {
     if (config.max_jobs == 0 || config.normal_capacity == 0 || config.critical_reserve() == 0 ||
         config.total_capacity() == 0 || config.trace_capacity == 0 ||
@@ -693,15 +786,8 @@ struct JobOrchestrator::Impl {
       for (auto& generation : generations) ++generation;
     for (const auto& gate : resident.gates)
       if (gate.permit && critical_count != 0) --critical_count;
-    auto prepared_effects = std::move(resident.prepared_effects);
-    auto prepared_trace = std::move(resident.prepared_trace);
-    for (auto& bank : prepared_effects) bank.clear();
-    for (auto& bank : prepared_trace) bank.clear();
-    static_assert(noexcept(resident = Resident{}));
-    resident = Resident{};
-    resident.prepared_effects = std::move(prepared_effects);
-    resident.prepared_trace = std::move(prepared_trace);
-    resident.timer_generation = generations;
+    ResetResidentInPlace(resident);
+    AssignForReset(resident.timer_generation, generations);
   }
   void ReleaseCreationClaimLocked(const Entry& entry) {
     if (entry.victim_index != k_no_resident) residents[entry.victim_index].claimed = false;
@@ -1007,7 +1093,8 @@ struct JobOrchestrator::Impl {
     std::optional<SourceLease> source_lease;
     if (gate != nullptr) {
       source_lease = AcquireGateLocked(*resident, entry.gate, true);
-      if (!source_lease) return ResultLocked(IngressCode::kAdmissionClosed);
+      if (!source_lease)
+        return ResultLocked(failed ? IngressCode::kServiceFailed : IngressCode::kAdmissionClosed);
     }
     if (entry.kind == Entry::Kind::kShutdown) {
       if (mode != Mode::kQuiescing || !shutdown_gate_registered || shutdown_gate_pending)
