@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <barrier>
 #include <cstdint>
 #include <exception>
@@ -8,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -3375,6 +3377,210 @@ int RetirementRejectedClaimRestoresSources() {
   return result;
 }
 
+// Bounded passive Journal: accept/observe actual records, then compare the entire GREEN
+// script. Unexpected retirement must fail the ownership assertion, not a fake Commit matcher.
+class OwnershipJournal final : public JobJournalPort {
+ public:
+  LogicalCommitResult Commit(const LogicalJobEvent& event) noexcept override {
+    try {
+      std::lock_guard lock(mutex_);
+      if (count_ == records_.size()) {
+        failed_ = true;
+        return LogicalCommitResult::kDefiniteFailure;
+      }
+      records_[count_++].emplace(event);
+      return LogicalCommitResult::kCommitted;
+    } catch (...) {
+      failed_ = true;
+      return LogicalCommitResult::kDefiniteFailure;
+    }
+  }
+  std::size_t Count() const {
+    std::lock_guard lock(mutex_);
+    return count_;
+  }
+  bool Verify(const retirement::Plan& plan, retirement::Fixture& fixture) const {
+    std::lock_guard lock(mutex_);
+    if (failed_.load() || count_ != plan.journal.size()) return false;
+    for (std::size_t n = 0; n != count_; ++n) {
+      if (!records_[n]) return false;
+      const auto& actual = *records_[n];
+      const auto& expected = plan.journal[n].event;
+      if (actual.sequence != expected.sequence || actual.job_id != expected.job_id ||
+          actual.event_type != expected.event_type ||
+          !PayloadEqual(actual.payload, expected.payload))
+        return false;
+    }
+    return !fixture.clock.verification_failed() && fixture.runner.Verify() &&
+           fixture.session.Verify() && !fixture.identity.verification_failed();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::array<std::optional<LogicalJobEvent>, 64> records_{};
+  std::size_t count_ = 0;
+  std::atomic<bool> failed_ = false;
+};
+
+int RetirementLeaseSurvivesProtocol(bool ack) {
+  retirement::Plan plan;
+  if (ack) {
+    plan.CloseWorker(1).Add(retirement::WorkerFact(1, 2));
+  } else {
+    plan.Running(1).Add(retirement::WorkerFact(1)).Finalize(1, "succeeded");
+  }
+  const auto before_protocol = plan.inputs.size();
+  if (!ack) plan.Add(retirement::Exit(1)).Add(retirement::Release(1)).Add(retirement::Cleanup(1));
+  const auto closed = plan.inputs.size();
+  plan.Add(retirement::Create(2));
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan, 0, before_protocol)) return Check(false, "ownership lease setup commits");
+  const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
+                                               TimeoutPhase::kInvalid);
+  if (!lease) return Check(false, "ownership regression acquires a real Worker lease");
+  int result = 0;
+  result |= Check(ack ? writer.RetireWorkerAck(retirement::WorkerFact(1, 2))
+                      : fixture.Run(plan, before_protocol, closed),
+                  "protocol ACK or exit/release/cleanup succeeds with lease still unreturned");
+  const auto records = journal.Count();
+  const auto applies = writer.apply_count();
+  const bool refused =
+      retirement::CapacityCompletion(writer, retirement::Submit(writer, retirement::Create(2)));
+  result |=
+      Check(refused && journal.Count() == records && writer.apply_count() == applies &&
+                writer.SnapshotFor(retirement::Job(1)) && !writer.failed(),
+            ack ? "FIX2 ACK retirement preserves the unreturned lease: record-free resident_limit"
+                : "FIX2 process exit preserves the unreturned lease: record-free resident_limit");
+  result |= Check(writer.ReturnSourceLease(*lease),
+                  "original Worker lease returns exactly once after protocol retirement");
+  if (result != 0) return result;
+  return Check(retirement::Success(writer, retirement::Submit(writer, retirement::Create(2))) &&
+                   !writer.SnapshotFor(retirement::Job(1)) && journal.Verify(plan, fixture),
+               "after matching lease return retry retires that same oldest victim");
+}
+
+int RetirementQueuedWorkerSurvivesExit() {
+  retirement::Plan plan;
+  plan.CloseWorker(1);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::Exit(1)).Add(retirement::WorkerFact(1, 2)).Add(retirement::Create(2));
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan, 0, setup))
+    return Check(false, "queued Worker setup closes real Worker Job");
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto exit = retirement::Submit(writer, retirement::Exit(1));
+  if (!hold.Wait(exit)) return Check(false, "duplicate exit pauses before removal");
+  const auto creation = retirement::Submit(writer, retirement::Create(2));
+  const auto worker = retirement::Submit(writer, retirement::WorkerFact(1, 2));
+  int result = Check(
+      creation.code == ri::IngressCode::kAdmitted && worker.code == ri::IngressCode::kAdmitted &&
+          exit.ingress_sequence < creation.ingress_sequence &&
+          creation.ingress_sequence < worker.ingress_sequence,
+      "duplicate exit, ticketed create, distinct Worker fact all admitted before dequeue");
+  hold.Release();
+  result |= Check(retirement::Success(writer, exit),
+                  "duplicate exit retains its own accepted audit turn");
+  result |=
+      Check(retirement::CapacityCompletion(writer, creation),
+            "FIX2 earlier exit cannot erase queued Worker ownership: record-free resident_limit");
+  result |= Check(retirement::Success(writer, worker) && journal.Count() == setup + 2 &&
+                      writer.SnapshotFor(retirement::Job(1)) && !writer.failed(),
+                  "queued Worker keeps its own turn/permit and no creation record appears");
+  if (result != 0) return result;
+  return Check(retirement::Success(writer, retirement::Submit(writer, retirement::Create(2))) &&
+                   !writer.SnapshotFor(retirement::Job(1)) && journal.Verify(plan, fixture),
+               "retry after queued Worker releases ownership retires the same oldest victim");
+}
+
+int RetirementQueuedTimerSurvivesDisarm() {
+  retirement::Plan plan;
+  plan.Running(1).Add(retirement::WorkerFact(1)).Finalize(1, "succeeded").Close(2);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::Exit(1))
+      .Add(retirement::Release(1))
+      .Add(retirement::Cleanup(1))
+      .Add(retirement::Create(3));
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 2}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan, 0, setup))
+    return Check(false, "older terminal/open-exit A and younger closed B setup");
+  const auto state = retirement::InspectSlot(writer, retirement::Job(1));
+  if (!state ||
+      !retirement::AcquireAndReturn(writer, retirement::Job(1), EventType::kTimeoutExpired,
+                                    TimeoutPhase::kProcessExitConfirmation))
+    return Check(false, "older Job has a genuinely armed process-exit timer before admission");
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto exit = retirement::Submit(writer, retirement::Exit(1));
+  if (!hold.Wait(exit)) return Check(false, "exit pauses before removal for queued timer vector");
+  const auto release = retirement::Submit(writer, retirement::Release(1));
+  const auto cleanup = retirement::Submit(writer, retirement::Cleanup(1));
+  const auto creation = retirement::Submit(writer, retirement::Create(3));
+  const auto timer = writer.SubmitTimeout(
+      {retirement::Job(1), TimeoutPhase::kProcessExitConfirmation, state->timer_generation[3]});
+  int result = Check(release.code == ri::IngressCode::kAdmitted &&
+                         cleanup.code == ri::IngressCode::kAdmitted &&
+                         creation.code == ri::IngressCode::kAdmitted && !timer.discarded &&
+                         timer.admitted.code == ri::IngressCode::kAdmitted &&
+                         exit.ingress_sequence < release.ingress_sequence &&
+                         release.ingress_sequence < cleanup.ingress_sequence &&
+                         cleanup.ingress_sequence < creation.ingress_sequence &&
+                         creation.ingress_sequence < timer.admitted.ingress_sequence,
+                     "exit, release, cleanup, create and armed timer all admitted before dequeue");
+  hold.Release();
+  result |=
+      Check(retirement::Success(writer, exit) && retirement::Success(writer, release) &&
+                retirement::Success(writer, cleanup),
+            "earlier FIFO facts close the older Job, not merely the younger admission candidate");
+  result |= Check(
+      retirement::CapacityCompletion(writer, creation),
+      "FIX2 disarm cannot erase queued timer ownership or skip oldest: record-free resident_limit");
+  result |=
+      Check(retirement::Rejected(writer, timer.admitted, RejectionReason::kInvariantViolation) &&
+                journal.Count() == setup + 3 && writer.SnapshotFor(retirement::Job(1)) &&
+                writer.SnapshotFor(retirement::Job(2)) && !writer.failed(),
+            "queued timer reaches its own unchanged reducer rejection with permit intact");
+  if (result != 0) return result;
+  return Check(retirement::Success(writer, retirement::Submit(writer, retirement::Create(3))) &&
+                   !writer.SnapshotFor(retirement::Job(1)) &&
+                   writer.SnapshotFor(retirement::Job(2)) && journal.Verify(plan, fixture),
+               "retry after timer turn retires the same oldest A and preserves younger B");
+}
+
+int RetirementCallbackSurvivesSealing(bool failure) {
+  retirement::Plan plan;
+  plan.CloseWorker(1);
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan)) return Check(false, "callback sealing setup commits");
+  const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
+                                               TimeoutPhase::kInvalid);
+  if (!lease) return Check(false, "callback sealing starts with an actual held source token");
+  int result = 0;
+  if (failure) {
+    result |= Check(writer.LatchReadinessFailure(),
+                    "explicit failure latches while callback owns its token");
+  } else {
+    result |= Check(retirement::Success(writer, writer.SubmitShutdown()),
+                    "shutdown marker reaches draining before the final sealing attempt");
+    result |= Check(!writer.BeginShutdown(),
+                    "normal shutdown defers sealing until the source owner returns");
+  }
+  result |= Check(!writer.sealed(),
+                  failure ? "FIX2 failure cancellation cannot discard a live callback owner"
+                          : "FIX2 quiescence cannot discard a live callback owner");
+  result |=
+      Check(writer.ReturnSourceLease(*lease) && writer.FinishShutdown() && writer.sealed() &&
+                journal.Verify(plan, fixture),
+            "sealing completes only after matching source-token return, with no Journal change");
+  return result;
+}
+
 int JobRetirementRequiresClosed() {
   int result = 0;
   // Each setup is folded from accepted inputs. Runtime ACK success is not a Journal fact.
@@ -3491,6 +3697,12 @@ int JobRetirementRequiresClosed() {
   result |= RetirementRefusalKeepsSuccessorTicket(false);
   result |= RetirementRefusalKeepsSuccessorTicket(true);
   result |= RetirementRejectedClaimRestoresSources();
+  result |= RetirementLeaseSurvivesProtocol(false);
+  result |= RetirementLeaseSurvivesProtocol(true);
+  result |= RetirementQueuedWorkerSurvivesExit();
+  result |= RetirementQueuedTimerSurvivesDisarm();
+  result |= RetirementCallbackSurvivesSealing(false);
+  result |= RetirementCallbackSurvivesSealing(true);
   return result;
 }
 
