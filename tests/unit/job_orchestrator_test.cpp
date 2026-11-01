@@ -3403,11 +3403,13 @@ class OwnershipJournal final : public JobJournalPort {
     std::lock_guard lock(mutex_);
     if (failed_.load() || count_ != plan.journal.size()) return false;
     for (std::size_t n = 0; n != count_; ++n) {
-      if (!records_[n]) return false;
-      const auto& actual = *records_[n];
+      const auto& record = records_[n];
+      if (!record) return false;
+      const auto& actual = *record;
       const auto& expected = plan.journal[n].event;
-      if (actual.sequence != expected.sequence || actual.job_id != expected.job_id ||
-          actual.event_type != expected.event_type ||
+      if (actual.schema_version != expected.schema_version ||
+          actual.recorded_at != expected.recorded_at || actual.sequence != expected.sequence ||
+          actual.job_id != expected.job_id || actual.event_type != expected.event_type ||
           !PayloadEqual(actual.payload, expected.payload))
         return false;
     }
@@ -3488,7 +3490,8 @@ int RetirementQueuedWorkerSurvivesExit() {
       Check(retirement::CapacityCompletion(writer, creation),
             "FIX2 earlier exit cannot erase queued Worker ownership: record-free resident_limit");
   result |= Check(retirement::Success(writer, worker) && journal.Count() == setup + 2 &&
-                      writer.SnapshotFor(retirement::Job(1)) && !writer.failed(),
+                      writer.apply_count() == setup + 2 && writer.SnapshotFor(retirement::Job(1)) &&
+                      !writer.failed(),
                   "queued Worker keeps its own turn/permit and no creation record appears");
   if (result != 0) return result;
   return Check(retirement::Success(writer, retirement::Submit(writer, retirement::Create(2))) &&
@@ -3541,8 +3544,9 @@ int RetirementQueuedTimerSurvivesDisarm() {
       "FIX2 disarm cannot erase queued timer ownership or skip oldest: record-free resident_limit");
   result |=
       Check(retirement::Rejected(writer, timer.admitted, RejectionReason::kInvariantViolation) &&
-                journal.Count() == setup + 3 && writer.SnapshotFor(retirement::Job(1)) &&
-                writer.SnapshotFor(retirement::Job(2)) && !writer.failed(),
+                journal.Count() == setup + 3 && writer.apply_count() == setup + 3 &&
+                writer.SnapshotFor(retirement::Job(1)) && writer.SnapshotFor(retirement::Job(2)) &&
+                !writer.failed(),
             "queued timer reaches its own unchanged reducer rejection with permit intact");
   if (result != 0) return result;
   return Check(retirement::Success(writer, retirement::Submit(writer, retirement::Create(3))) &&

@@ -69,6 +69,10 @@ struct JobOrchestrator::Impl {
     bool callback_lease = false;
     std::uint64_t ingress_sequence = 0;
     std::uint64_t lease_serial = 0;
+    // Ownership is not an ACK/disarm flag. Only the matching turn/token releases it.
+    std::uint64_t queued_sequence = 0;
+    std::uint64_t exported_lease_serial = 0;
+    bool retire_requested = false;
     std::uint8_t identity_slot = k_no_identity_slot;
   };
   struct GeneratedIdentityBundle {
@@ -569,6 +573,7 @@ struct JobOrchestrator::Impl {
       return;
     }
     gate.registered = true;
+    gate.retire_requested = false;
     gate.permit = true;
     ++critical_count;
   }
@@ -579,7 +584,7 @@ struct JobOrchestrator::Impl {
       return std::nullopt;
     auto& gate = resident.gates[static_cast<std::size_t>(kind)];
     if (!gate.registered) return std::nullopt;
-    if (gate.callback_lease) {
+    if (gate.callback_lease || gate.exported_lease_serial != 0) {
       if (borrow_retained && gate.retained)
         return SourceLease{IndexOf(&resident), static_cast<std::size_t>(kind), gate.lease_serial,
                            true, false};
@@ -609,13 +614,14 @@ struct JobOrchestrator::Impl {
       return false;
     auto& resident = residents[lease.index];
     auto& gate = resident.gates[lease.gate];
-    if (!gate.callback_lease || gate.lease_serial != lease.serial) return false;
+    if (!gate.callback_lease || gate.lease_serial != lease.serial ||
+        (gate.exported_lease_serial != 0 && gate.exported_lease_serial != lease.serial))
+      return false;
     if (lease.borrowed) return true;
     gate.callback_lease = false;
-    if (lease.acquired_permit && !gate.pending && !gate.retained && gate.permit) {
-      gate.permit = false;
-      --critical_count;
-    }
+    gate.exported_lease_serial = 0;
+    if (lease.acquired_permit || gate.retire_requested)
+      ReleaseUnusedGateLocked(resident, static_cast<GateKind>(lease.gate));
     if (!resident.exists && !HasOwnership(resident)) ResetSlotLocked(resident, false);
     return true;
   }
@@ -677,11 +683,43 @@ struct JobOrchestrator::Impl {
                              std::size_t count) noexcept {
     for (std::size_t i = 0; i != count; ++i) {
       auto& gate = resident.gates[static_cast<std::size_t>(plan[i])];
-      if (gate.permit) continue;
       gate.registered = true;
+      gate.retire_requested = false;
+      if (gate.permit) continue;
       gate.permit = true;
       ++critical_count;
     }
+  }
+  void ReleaseUnusedGateLocked(Resident& resident, GateKind kind) {
+    auto& gate = resident.gates[static_cast<std::size_t>(kind)];
+    if (gate.queued_sequence != 0 || gate.callback_lease || gate.exported_lease_serial != 0 ||
+        gate.retained)
+      return;
+    gate.pending = false;
+    gate.retire_requested = false;
+    gate.ingress_sequence = 0;
+    gate.identity_slot = k_no_identity_slot;
+    if (IsIdentityGate(kind)) resident.identity_slots[IdentitySlot(kind)] = {};
+    if (gate.permit) {
+      gate.permit = false;
+      if (critical_count != 0) --critical_count;
+    }
+  }
+  void RetireWorkerProtocolLocked(Resident& resident) {
+    auto& worker = resident.gates[static_cast<std::size_t>(GateKind::kWorker)];
+    worker.retained = false;
+    worker.ack_authorized = false;
+    worker.retire_requested = true;
+    // Retain* compatibility helpers own protocol-retained references, not exported tokens.
+    // Their historical ACK/exit release is unchanged; a real SourceLease must be returned.
+    if (worker.exported_lease_serial == 0) worker.callback_lease = false;
+    ReleaseUnusedGateLocked(resident, GateKind::kWorker);
+  }
+  bool HasSourceLeaseOwners() const noexcept {
+    for (const auto& resident : residents)
+      for (const auto& gate : resident.gates)
+        if (gate.exported_lease_serial != 0) return true;
+    return false;
   }
   void ReleaseGateLocked(const Entry& entry, bool successful) {
     if (!entry.critical) {
@@ -698,9 +736,16 @@ struct JobOrchestrator::Impl {
       return;
     }
     auto& gate = residents[entry.resident_index].gates[static_cast<std::size_t>(entry.gate)];
+    if (gate.queued_sequence != entry.sequence) {
+      FailLocked();
+      return;
+    }
+    gate.queued_sequence = 0;
     gate.pending = false;
     if (entry.gate == GateKind::kWorker && successful) {
-      gate.retained = true;  // Exact ACK or confirmed process exit retires this identity.
+      // The identity must survive until a later terminal turn authorizes ACK delivery.
+      gate.retained = true;
+      gate.retire_requested = false;
       return;
     }
     if (entry.gate >= GateKind::kPreparationTimer && entry.gate <= GateKind::kProcessExitTimer) {
@@ -708,27 +753,10 @@ struct JobOrchestrator::Impl {
       // a later arm creates a fresh generation/registration.
       gate.registered = false;
     }
-    if (entry.gate == GateKind::kProcessExit && successful) {
-      auto& worker =
-          residents[entry.resident_index].gates[static_cast<std::size_t>(GateKind::kWorker)];
-      worker.pending = false;
-      worker.retained = false;
-      worker.ack_authorized = false;
-      worker.callback_lease = false;
-      residents[entry.resident_index].identity_slots[IdentitySlot(GateKind::kWorker)] = {};
-      worker.ingress_sequence = 0;
-      if (worker.permit) {
-        worker.permit = false;
-        if (critical_count != 0) --critical_count;
-      }
-    }
-    if (!gate.retained && IsIdentityGate(entry.gate))
-      residents[entry.resident_index].identity_slots[IdentitySlot(entry.gate)] = {};
-    if (!gate.retained && gate.permit) {
-      gate.permit = false;
-      gate.ingress_sequence = 0;
-      if (critical_count != 0) --critical_count;
-    }
+    if (entry.gate == GateKind::kProcessExit && successful)
+      RetireWorkerProtocolLocked(residents[entry.resident_index]);
+    gate.retire_requested = true;
+    ReleaseUnusedGateLocked(residents[entry.resident_index], entry.gate);
     auto& resident = residents[entry.resident_index];
     if (!resident.exists && !HasOwnership(resident)) ResetSlotLocked(resident, false);
   }
@@ -742,42 +770,31 @@ struct JobOrchestrator::Impl {
   }
   void CancelGatesLocked() {
     for (auto& resident : residents) {
-      for (auto& gate : resident.gates) {
-        gate.pending = false;
+      for (std::size_t index = 0; index != resident.gates.size(); ++index) {
+        auto& gate = resident.gates[index];
         gate.retained = false;
         gate.ack_authorized = false;
-        gate.callback_lease = false;
-        gate.identity_slot = k_no_identity_slot;
-        gate.ingress_sequence = 0;
-        if (gate.permit) {
-          gate.permit = false;
-          if (critical_count != 0) --critical_count;
-        }
+        gate.retire_requested = true;
+        if (gate.exported_lease_serial == 0) gate.callback_lease = false;
+        ReleaseUnusedGateLocked(resident, static_cast<GateKind>(index));
       }
-      for (auto& identity : resident.identity_slots) identity = {};
     }
   }
   void RetireGateLocked(Resident& resident, GateKind kind) {
     auto& gate = resident.gates[static_cast<std::size_t>(kind)];
-    gate.pending = false;
-    // A test-owned lease deliberately keeps an already-acquired producer
-    // permit through later phases; disarm only retires an unleased source.
+    gate.retire_requested = true;
+    // A retained registration or in-flight callback still owns its producer permit.
+    // Disarm does not release an admitted timer's queued/in-flight turn either.
     if (gate.retained || gate.callback_lease) return;
-    gate.callback_lease = false;
     if (kind >= GateKind::kPreparationTimer && kind <= GateKind::kProcessExitTimer)
       gate.registered = false;
-    if (IsIdentityGate(kind)) resident.identity_slots[IdentitySlot(kind)] = {};
-    gate.identity_slot = k_no_identity_slot;
-    gate.ingress_sequence = 0;
-    if (gate.permit) {
-      gate.permit = false;
-      if (critical_count != 0) --critical_count;
-    }
+    ReleaseUnusedGateLocked(resident, kind);
   }
   static bool HasOwnership(const Resident& resident) noexcept {
     if (resident.claims != 0) return true;
     for (const auto& gate : resident.gates)
-      if (gate.pending || gate.callback_lease) return true;
+      if (gate.queued_sequence != 0 || gate.callback_lease || gate.exported_lease_serial != 0)
+        return true;
     return false;
   }
   void ResetSlotLocked(Resident& resident, bool advance) noexcept {
@@ -1078,7 +1095,7 @@ struct JobOrchestrator::Impl {
         FailLocked();
         return ResultLocked(IngressCode::kServiceFailed);
       }
-      if (gate->pending ||
+      if (gate->queued_sequence != 0 || gate->pending ||
           (entry.gate == GateKind::kWorker && gate->retained && gate->ingress_sequence != 0)) {
         const bool timer_gate =
             entry.gate >= GateKind::kPreparationTimer && entry.gate <= GateKind::kProcessExitTimer;
@@ -1148,6 +1165,8 @@ struct JobOrchestrator::Impl {
       ++critical_count;
     } else {
       gate->pending = true;
+      gate->queued_sequence = sequence;
+      gate->retire_requested = false;
       if (entry.gate == GateKind::kWorker) gate->ack_authorized = false;
       gate->ingress_sequence = sequence;
       if (entry.identity_ready) {
@@ -1775,7 +1794,9 @@ struct JobOrchestrator::Impl {
         std::ranges::all_of(r.prepared_trace, [](const auto& b) { return b.empty(); });
     state.gates_empty = std::ranges::all_of(r.gates, [](const Gate& g) {
       return !g.registered && !g.pending && !g.retained && !g.ack_authorized && !g.permit &&
-             !g.callback_lease && g.ingress_sequence == 0 && g.identity_slot == k_no_identity_slot;
+             !g.callback_lease && g.queued_sequence == 0 && g.exported_lease_serial == 0 &&
+             !g.retire_requested && g.ingress_sequence == 0 &&
+             g.identity_slot == k_no_identity_slot;
     });
     state.identities_empty =
         r.id.value.empty() && std::ranges::all_of(r.identity_slots, [](const auto& i) {
@@ -2333,7 +2354,9 @@ std::optional<JobOrchestrator::SourceLease> JobOrchestrator::AcquireSourceLease(
     default:
       break;
   }
-  return impl_->AcquireGateLocked(*resident, kind);
+  auto lease = impl_->AcquireGateLocked(*resident, kind);
+  if (lease) resident->gates[lease->gate].exported_lease_serial = lease->serial;
+  return lease;
 }
 bool JobOrchestrator::ReturnSourceLease(SourceLease lease) {
   std::lock_guard lock(impl_->mutex);
@@ -2400,17 +2423,7 @@ bool JobOrchestrator::RetireWorkerAck(const RawCandidateEvent& acked) {
       !Impl::SameIdentity(resident->identity_slots[Impl::IdentitySlot(Impl::GateKind::kWorker)],
                           ack_identity))
     return false;
-  gate.pending = false;
-  gate.retained = false;
-  gate.ack_authorized = false;
-  gate.callback_lease = false;
-  gate.identity_slot = Impl::k_no_identity_slot;
-  resident->identity_slots[Impl::IdentitySlot(Impl::GateKind::kWorker)] = {};
-  gate.ingress_sequence = 0;
-  if (gate.permit) {
-    gate.permit = false;
-    if (impl_->critical_count != 0) --impl_->critical_count;
-  }
+  impl_->RetireWorkerProtocolLocked(*resident);
   return true;
 }
 void JobOrchestrator::LatchFailureFromCallback() noexcept { LatchReadinessFailure(); }
@@ -2430,7 +2443,8 @@ void JobOrchestrator::TrySealFailure(bool allow_one_invocation) noexcept {
   }
   if (invocations != 0 && (!allow_one_invocation || invocations != 1)) return;
   std::lock_guard lock(impl_->mutex);
-  if (!impl_->failed || impl_->fifo_count != 0 || impl_->in_flight) return;
+  if (!impl_->failed || impl_->fifo_count != 0 || impl_->in_flight || impl_->HasSourceLeaseOwners())
+    return;
   impl_->CancelGatesLocked();
   impl_->RetireShutdownGateLocked();
   impl_->mode = Impl::Mode::kSealed;
@@ -2502,6 +2516,7 @@ bool JobOrchestrator::FinishShutdown() {
       if (impl_->fifo_count != 0 || impl_->in_flight) wake_.notify_one();
       return false;
     }
+    if (impl_->HasSourceLeaseOwners()) return false;
     // Retire all source gates only after the stable empty check. The shutdown permit itself is
     // held until the same mutex-protected sealed transition.
     impl_->CancelGatesLocked();
