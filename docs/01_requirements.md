@@ -71,7 +71,7 @@ Accepted ADR-0003 under Issue #10 makes these requirements binding on implementa
 
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
-| `JOB-008` | MUST | Bound ingress through one single-writer FIFO with explicit admission linearization, a fixed resident Job population, critical-reserve isolation, delivery-identity-safe coalescing, and fail-closed capacity invariants; retain each successfully created Phase 0A Job snapshot until separate Normative deletion/retention authority exists. | Accepted [ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) under [Issue #10](https://github.com/tetsuh/sitometron/issues/10) |
+| `JOB-008` | MUST | Bound ingress through one single-writer FIFO with explicit admission linearization, a fixed resident Job population, critical-reserve isolation, delivery-identity-safe coalescing, and fail-closed capacity invariants; retain each successfully created Job snapshot until capacity-pressure retirement under Accepted [ADR-0014](adr/0014-retire-closed-jobs-under-capacity-pressure.md) removes it (implemented by [Issue #120](https://github.com/tetsuh/sitometron/issues/120)); `max_jobs` bounds simultaneous residents. | Accepted [ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) under [Issue #10](https://github.com/tetsuh/sitometron/issues/10) |
 | `OPS-001` | MUST | Close admission, latch persistence/readiness failure, quiesce producers and callbacks, and destroy writer state only in the bounded ingress/shutdown order defined for Phase 0A. | Accepted [ADR-0003](adr/0003-define-single-state-writer-ingress-contract.md) under [Issue #10](https://github.com/tetsuh/sitometron/issues/10) |
 
 ## 7. Normative Phase 0B JobJournal requirements

@@ -1,12 +1,16 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <barrier>
 #include <cstdint>
 #include <exception>
+#include <fstream>
 #include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -17,6 +21,7 @@
 #include <vector>
 
 #include "job_orchestrator_harness.hpp"
+#include "retirement_test_support.hpp"
 
 namespace {
 using namespace sitometron::core;
@@ -1126,8 +1131,8 @@ int JobIngressCapacityAndReserve() {
   const auto ids = Ids();
   const auto allocation = EmptyAllocation();
   result |=
-      Check(PositiveConfig().critical_reserve() == 19 && PositiveConfig().total_capacity() == 21,
-            "positive fixture derives J=2 N=2 R=19 T=21");
+      Check(PositiveConfig().critical_reserve() == 28 && PositiveConfig().total_capacity() == 30,
+            "ADR-0014 requires J=2 N=2 R=28 T=30 (including the spare slot)");
   // Completion ownership is reserved at FIFO insertion, independent of when callers take prior
   // dispositions. The explicitly provisioned completion backlog retains T-1 results while two
   // later turns reserve their own slots.
@@ -1231,7 +1236,8 @@ int JobIngressCapacityAndReserve() {
   result |= Check(marker.code == IngressCode::kAdmitted && population.normal_occupancy() == 2 &&
                       population.live_critical_permit_count() == 19 &&
                       population.critical_occupancy() == 19 && population.total_occupancy() == 21,
-                  "all source relationships plus shutdown occupy exact N=2 R=19 T=21");
+                  "two residents plus shutdown hold 19 critical permits and 21 total slots within "
+                  "the configured bounds");
   result |= Check(population.Release(normal_one.ingress_sequence, WriterPhase::kBeforeDequeue),
                   "full reserve population releases through the keyed FIFO barrier");
   for (const auto& turn : turns)
@@ -1550,6 +1556,30 @@ int JobIngressCoalescing() {
 
 int JobIngressFailClosed() {
   int result = 0;
+  {
+    // Exercise acquisition's own latch, not an already-failed writer or impossible accounting.
+    // Numeric injection only positions the private serial; real acquire/return exhausts it.
+    retirement::Plan plan;
+    plan.Running(1);
+    retirement::Fixture serial(plan, 1);
+    auto& writer = *serial.writer;
+    result |= Check(serial.Run(plan) && writer.SetNextSourceLeaseForTest(UINT64_MAX),
+                    "source-lease exhaustion starts with a real resident and maximum serial");
+    const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
+                                                 TimeoutPhase::kInvalid);
+    result |= Check(lease && lease->serial == UINT64_MAX && writer.ReturnSourceLease(*lease),
+                    "real acquisition and return consume the last nonwrapping source serial");
+    const auto history = writer.CopyIngressSequences();
+    const auto failed_acquisition = writer.SubmitCandidate(retirement::WorkerFact(1));
+    using Code = sitometron::core::internal::IngressCode;
+    result |= Check(writer.failed() && failed_acquisition.code == Code::kServiceFailed &&
+                        failed_acquisition.ingress_sequence == 0 &&
+                        writer.CopyIngressSequences() == history && serial.Verify(),
+                    "source acquisition latches serial exhaustion and reports service_failed, "
+                    "not admission_closed, without admitting an input");
+    result |= Check(writer.SubmitCandidate(retirement::WorkerFact(1)).code == Code::kServiceFailed,
+                    "source-lease exhaustion preserves sticky service_failed on retry");
+  }
   const auto ids = Ids();
   const auto allocation = EmptyAllocation();
   JobOrchestratorHarness precommit(PositiveConfig());
@@ -1590,12 +1620,12 @@ int JobIngressFailClosed() {
                       invalid_timer_result.admitted.code == IngressCode::kServiceFailed &&
                       invalid_timer.failed() && invalid_timer.sealed(),
                   "invalid timer ingress latches fail-closed outside the ingress lock");
-  // Owner decision D13-1/A: R = 9 * J + 1 assigns one permit to every valid per-resident
-  // critical relationship plus the marker. Once those permits are occupied, every corresponding
-  // source gate is occupied too, so a free-gate reserve-acquisition failure is unreachable from a
-  // valid state. Do not add a synthetic production seam to violate that invariant. The following
-  // impossible-accounting case qualifies sticky fail-closed behavior without claiming to execute
-  // the unreachable acquisition branch.
+  // ADR-0014 sizes R = 9 * (J + 1) + 1 for resident/spare relationships plus the marker.
+  // The D13-1/A accounting proof still applies: once those permits are occupied, every
+  // corresponding source gate is occupied too, so a free-gate reserve-acquisition failure is
+  // unreachable from a valid state. Do not add a synthetic production seam to violate that
+  // invariant. The following impossible-accounting case qualifies sticky fail-closed behavior
+  // without claiming to execute the unreachable acquisition branch.
   JobOrchestratorHarness corruption(PositiveConfig());
   result |= DriveToRunning(corruption, ids, allocation);
   const auto critical_obligation = MakeWorkerCompleted(ids.primary_job, ids.worker, 1);
@@ -2974,12 +3004,1175 @@ int JobIngressCompletionAwait() {
   return result;
 }
 
+namespace retirement = sitometron::test::retirement;
+namespace ri = sitometron::core::internal;
+
+int RetirementSaturatedSparePermit() {
+  retirement::Plan plan;
+  plan.Running(1).Add(retirement::Cancel(1)).Add(retirement::WorkerFact(1));
+  plan.Finalize(1, "cancelled");
+  plan.Add(retirement::Exit(1)).Add(retirement::Release(1)).Add(retirement::Cleanup(1));
+  plan.Add(retirement::WorkerFact(1, 2));
+  retirement::Fixture fixture(plan, {.jobs = 1, .normal = 2});
+  auto& writer = *fixture.writer;
+  int result = 0;
+  for (std::size_t n = 0; n < plan.inputs.size(); ++n) {
+    if (!fixture.Run(plan, n, n + 1))
+      return Check(false, "saturated permits use reachable reducer transitions");
+    if (const auto* input = std::get_if<RawCandidateEvent>(&plan.inputs[n])) {
+      if (input->event_type == "resources_committed") {
+        result |= Check(writer.RetainTimerLease(retirement::Job(1), TimeoutPhase::kPreparation) &&
+                            writer.RetainResourcesReleasedLease(retirement::Job(1)),
+                        "preparation/release permits retained after real registration");
+      } else if (input->event_type == "worker_launch_intent") {
+        result |= Check(writer.RetainProcessExitLease(retirement::Job(1)),
+                        "exit callback retains its registered permit");
+      } else if (input->event_type == "worker_running") {
+        result |= Check(writer.RetainTimerLease(retirement::Job(1), TimeoutPhase::kExecution),
+                        "execution permit retained across terminal commit");
+      } else if (input->event_type == "terminal_outcome_committed") {
+        result |= Check(
+            writer.RetainTimerLease(retirement::Job(1), TimeoutPhase::kProcessExitConfirmation) &&
+                writer.RetainCleanupLease(retirement::Job(1)),
+            "terminal sources retain their real permits");
+      }
+    } else {
+      result |= Check(writer.RetainTimerLease(retirement::Job(1), TimeoutPhase::kCooperativeStop),
+                      "cooperative timer permit retained after cancel");
+    }
+  }
+  result |= Check(writer.live_critical_permit_count() == 9,
+                  "all nine resident source permits exist, including the post-exit late ACK");
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto ticket = retirement::Submit(writer, retirement::Create(2));
+  if (!hold.Wait(ticket))
+    return result | Check(false, "saturated resident permits must still admit the spare ticket");
+  const auto marker = writer.SubmitShutdown();
+  result |= Check(
+      marker.code == ri::IngressCode::kAdmitted && !writer.failed() &&
+          writer.live_critical_permit_count() == 11,
+      "resident nine, spare terminate and shutdown all hold distinct permits without failure");
+  hold.Release();
+  result |=
+      Check(retirement::CapacityCompletion(writer, ticket) && retirement::Success(writer, marker),
+            "owned victim refuses at its turn without breaking the queued marker");
+  return result;
+}
+
+int RetirementEarlierCleanupChoosesOldest() {
+  retirement::Plan plan;
+  plan.Add(retirement::Create(1)).Add(retirement::Cancel(1)).Finalize(1);
+  plan.Close(2);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::Cleanup(1)).Add(retirement::Create(3));
+  retirement::Fixture fixture(plan, 2);
+  if (!fixture.Run(plan, 0, setup)) return Check(false, "earlier closing fact setup commits");
+  retirement::Hold hold(*fixture.writer, ri::WriterPhase::kBeforeDequeue);
+  const auto closing = retirement::Submit(*fixture.writer, retirement::Cleanup(1));
+  if (!hold.Wait(closing)) return Check(false, "older cleanup is held before dequeue");
+  const auto ticket = retirement::Submit(*fixture.writer, retirement::Create(3));
+  hold.Release();
+  return Check(
+      retirement::Success(*fixture.writer, closing) &&
+          retirement::Success(*fixture.writer, ticket) &&
+          !fixture.writer->SnapshotFor(retirement::Job(1)) &&
+          fixture.writer->SnapshotFor(retirement::Job(2)) && fixture.Verify(),
+      "writer selects after earlier FIFO cleanup, not the younger Job closed at admission");
+}
+
+int JobRetirementOldestClosedFirst() {
+  int result = 0;
+  for (const auto outcome : {LogicalCommitResult::kCommitted, LogicalCommitResult::kDefiniteFailure,
+                             LogicalCommitResult::kOutcomeUnknown}) {
+    retirement::Plan plan;
+    plan.Close(90).Close(10);
+    const auto setup = plan.inputs.size();
+    plan.Add(retirement::Create(30));
+    plan.journal.back().result = outcome;
+    retirement::Fixture fixture(plan);
+    auto& writer = *fixture.writer;
+    if (!fixture.Run(plan, 0, setup)) return Check(false, "oldest-first reachable setup commits");
+    const auto old = writer.SnapshotFor(retirement::Job(90));
+    retirement::Hold hold(writer, ri::WriterPhase::kBeforeCommit);
+    const auto creation = retirement::Submit(writer, retirement::Create(30));
+    if (!hold.Wait(creation)) {
+      result |= Check(false, "closed capacity must admit a ticketed creation, not resident_limit");
+      continue;
+    }
+    const auto provisional = writer.SnapshotFor(retirement::Job(30));
+    result |= Check(writer.SnapshotFor(retirement::Job(90)).has_value() &&
+                        (!provisional || !provisional->entity_exists),
+                    "oldest victim remains readable before the replacement commit");
+    hold.Release();
+    const auto completion = writer.AwaitCompletion(creation.ingress_sequence);
+    if (outcome == LogicalCommitResult::kCommitted) {
+      const auto survivor = writer.SnapshotFor(retirement::Job(10));
+      const auto installed = writer.SnapshotFor(retirement::Job(30));
+      result |= Check(completion && completion->code == ri::Completion::Code::kSuccess &&
+                          !writer.SnapshotFor(retirement::Job(90)) && survivor &&
+                          survivor->entity_exists && installed && installed->entity_exists &&
+                          writer.resident_count() == 2 && fixture.Verify(),
+                      "minimum creation sequence retires, not UUID text or physical slot order");
+    } else {
+      const auto kept = writer.SnapshotFor(retirement::Job(90));
+      result |= Check(completion && completion->code == ri::Completion::Code::kServiceFailed &&
+                          writer.failed() && kept && old && SnapshotEqual(*kept, *old) &&
+                          !writer.SnapshotFor(retirement::Job(30)) &&
+                          writer.NoForbiddenPostcommitActions(),
+                      "failed replacement keeps the victim without an activation or ACK");
+    }
+  }
+  {
+    retirement::Plan plan;
+    plan.Close(1).Add(retirement::Create(2));
+    retirement::Fixture fixture(plan, 1);
+    if (!fixture.Run(plan, 0, plan.inputs.size() - 1))
+      return result | Check(false, "precommit-failure victim setup commits");
+    auto& writer = *fixture.writer;
+    const auto old = writer.SnapshotFor(retirement::Job(1));
+    const auto attempts = fixture.journal.CopyObservations().size();
+    retirement::Hold hold(writer, ri::WriterPhase::kAfterDecision);
+    const auto creation = retirement::Submit(writer, retirement::Create(2));
+    if (!hold.Wait(creation)) {
+      result |= Check(false,
+                      "ticketed turn must reach selection before injected materialization failure");
+    } else {
+      writer.InjectPrecommitMaterializationFailure();
+      hold.Release();
+      const auto completion = writer.AwaitCompletion(creation.ingress_sequence);
+      const auto kept = writer.SnapshotFor(retirement::Job(1));
+      // Failure cancels gates, not the resident: owner reading, 2026-11-01.
+      // https://github.com/tetsuh/sitometron/issues/120#issuecomment-6554697941
+      result |= Check(completion && completion->code == ri::Completion::Code::kServiceFailed &&
+                          kept && old && SnapshotEqual(*kept, *old) &&
+                          fixture.journal.CopyObservations().size() == attempts &&
+                          writer.NoForbiddenPostcommitActions(),
+                      "precommit failure does not reset the selected victim or append creation");
+    }
+  }
+  result |= RetirementSaturatedSparePermit();
+  result |= RetirementEarlierCleanupChoosesOldest();
+  return result;
+}
+
+int RetirementClaimFenceAndLease() {
+  retirement::Plan plan;
+  plan.CloseWorker(1);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::Create(2));
+  retirement::Fixture fixture(plan, 1);
+  if (!fixture.Run(plan, 0, setup)) return Check(false, "claim-fence closed Worker setup commits");
+  auto& writer = *fixture.writer;
+  constexpr std::array sources{EventType::kWorkerCompleted, EventType::kProcessExitConfirmed,
+                               EventType::kResourcesReleased, EventType::kCleanupStatusRecorded};
+  std::array<bool, sources.size()> available{};
+  for (std::size_t n = 0; n < sources.size(); ++n)
+    available[n] = retirement::AcquireAndReturn(writer, retirement::Job(1), sources[n]);
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeCommit);
+  const auto ticket = retirement::Submit(writer, retirement::Create(2));
+  if (!hold.Wait(ticket)) return Check(false, "claim fence requires an admitted retirement turn");
+  int result = 0;
+  const auto history = writer.CopyIngressSequences();
+  const auto permits = writer.live_critical_permit_count();
+  for (std::size_t n = 0; n < sources.size(); ++n)
+    result |=
+        Check(available[n] && !retirement::AcquireAndReturn(writer, retirement::Job(1), sources[n]),
+              "a previously acquirable source is fenced, not merely disarmed or absent");
+  result |= Check(
+      writer.CopyIngressSequences() == history && writer.live_critical_permit_count() == permits,
+      "claim-fenced acquisition transfers no entry or permit");
+  const auto normal = writer.normal_occupancy();
+  const auto terminate = retirement::Submit(writer, retirement::Terminate(1));
+  result |= Check(terminate.code == ri::IngressCode::kAdmitted &&
+                      writer.normal_occupancy() == normal + 1 &&
+                      retirement::Submit(writer, retirement::Create(1)).code ==
+                          ri::IngressCode::kResidentLimit &&
+                      writer.creation_claim_count(retirement::Job(1)) == 0,
+                  "claimed-victim terminate uses normal admission and same-ID creation cannot "
+                  "acquire a victim claim");
+  hold.Release();
+  result |=
+      Check(retirement::Success(writer, ticket) &&
+                retirement::Rejected(writer, terminate, RejectionReason::kJobNotFound),
+            "terminate submitted under claim observes absence, never the new Job in a reused slot");
+  {
+    retirement::Fixture leased(plan, 1);
+    if (!leased.Run(plan, 0, setup)) return Check(false, "callback-blocker setup commits");
+    const auto attempts = leased.journal.CopyObservations().size();
+    const bool refused = retirement::WhileLeased(
+        *leased.writer, retirement::Job(1), EventType::kCleanupStatusRecorded, [&] {
+          const auto creation = retirement::Submit(*leased.writer, retirement::Create(2));
+          return retirement::CapacityCompletion(*leased.writer, creation) &&
+                 leased.writer->SnapshotFor(retirement::Job(1)).has_value() &&
+                 leased.journal.CopyObservations().size() == attempts;
+        });
+    result |=
+        Check(refused &&
+                  retirement::Success(*leased.writer,
+                                      retirement::Submit(*leased.writer, retirement::Create(2))) &&
+                  leased.Verify(),
+              "callback lease refuses without a record; explicit return lets retry retire that "
+              "same victim");
+  }
+  {
+    // This closed no-Worker lifecycle still has a genuinely armed process-exit timer.
+    // Unlike simultaneously live timer phases, it is a reachable typed-timer fence witness.
+    retirement::Plan timer_plan;
+    timer_plan.Close(1);
+    const auto timer_setup = timer_plan.inputs.size();
+    timer_plan.Add(retirement::Create(2));
+    retirement::Fixture timer(timer_plan, 1);
+    if (!timer.Run(timer_plan, 0, timer_setup))
+      return Check(false, "armed closed timer setup commits");
+    const auto state = retirement::InspectSlot(*timer.writer, retirement::Job(1));
+    const bool timer_available =
+        retirement::AcquireAndReturn(*timer.writer, retirement::Job(1), EventType::kTimeoutExpired,
+                                     TimeoutPhase::kProcessExitConfirmation);
+    retirement::Hold claimed(*timer.writer, ri::WriterPhase::kBeforeCommit);
+    const auto creation = retirement::Submit(*timer.writer, retirement::Create(2));
+    if (!claimed.Wait(creation)) return Check(false, "armed closed timer reaches the claim fence");
+    const auto timer_history = timer.writer->CopyIngressSequences();
+    const auto notification =
+        timer.writer->SubmitTimeout({retirement::Job(1), TimeoutPhase::kProcessExitConfirmation,
+                                     state ? state->timer_generation[3] : 0});
+    result |= Check(
+        timer_available && state && notification.discarded &&
+            !retirement::AcquireAndReturn(*timer.writer, retirement::Job(1),
+                                          EventType::kTimeoutExpired,
+                                          TimeoutPhase::kProcessExitConfirmation) &&
+            timer.writer->CopyIngressSequences() == timer_history && !timer.writer->failed(),
+        "a genuinely armed typed timer is fenced without a candidate, permit transfer or latch");
+    claimed.Release();
+    result |= Check(retirement::Success(*timer.writer, creation) && timer.Verify(),
+                    "typed-timer fence preserves the ticketed creation and its scripted ports");
+  }
+  return result;
+}
+
+int RetirementNormalFullKeepsNoTicket() {
+  retirement::Plan plan;
+  plan.Close(1).Add(retirement::Create(2));
+  retirement::Fixture fixture(plan, {.jobs = 1, .normal = 1});
+  if (!fixture.Run(plan, 0, plan.inputs.size() - 1))
+    return Check(false, "normal-full ticket setup commits");
+  auto& writer = *fixture.writer;
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto queued = retirement::Submit(writer, retirement::Cancel(99));
+  if (!hold.Wait(queued)) return Check(false, "normal capacity is held by an ordinary input");
+  int result = Check(
+      retirement::Submit(writer, retirement::Create(2)).code == ri::IngressCode::kNormalFull &&
+          writer.creation_claim_count(retirement::Job(2)) == 0,
+      "eligible ticket with exhausted normal capacity returns normal_full and retains no "
+      "reservation");
+  hold.Release();
+  result |=
+      Check(retirement::Rejected(writer, queued, RejectionReason::kJobNotFound) &&
+                retirement::Success(writer, retirement::Submit(writer, retirement::Create(2))) &&
+                fixture.Verify(),
+            "normal-full refusal does not strand the only retirement ticket");
+  return result;
+}
+
+int RetirementMalformedTicketSuccessor() {
+  retirement::Plan plan;
+  plan.Close(1).Add(retirement::Create(2));
+  retirement::Fixture fixture(plan, {.jobs = 1, .normal = 4});
+  if (!fixture.Run(plan, 0, plan.inputs.size() - 1))
+    return Check(false, "malformed-ticket setup commits");
+  auto& writer = *fixture.writer;
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto malformed = retirement::Submit(writer, retirement::Event(2, "job_created"));
+  if (!hold.Wait(malformed))
+    return Check(false, "malformed first ticket is admitted before payload validation");
+  const auto successor = retirement::Submit(writer, retirement::Create(2));
+  int result = Check(
+      successor.code == ri::IngressCode::kAdmitted &&
+          writer.creation_claim_count(retirement::Job(2)) == 2 &&
+          retirement::Submit(writer, retirement::Create(3)).code == ri::IngressCode::kResidentLimit,
+      "malformed-first successor shares the sole ticket and excludes another identifier");
+  hold.Release();
+  result |=
+      Check(retirement::Rejected(writer, malformed, RejectionReason::kInvalidEventPayload) &&
+                retirement::Success(writer, successor) && !writer.SnapshotFor(retirement::Job(1)) &&
+                writer.creation_claim_count(retirement::Job(2)) == 0 && fixture.Verify(),
+            "malformed rejection does not release a successor's reservation or ticket");
+  // A well-formed absent first creation is never reducer-rejected: DecideInternal accepts it.
+  return result;
+}
+
+int RetirementRefusalKeepsSuccessorTicket(bool reserved) {
+  retirement::Plan plan;
+  plan.Close(1);
+  if (!reserved) plan.Close(2);
+  const auto setup = plan.inputs.size();
+  if (reserved)
+    plan.Add(retirement::Create(2));
+  else
+    plan.Add(retirement::Cleanup(1));
+  plan.Add(retirement::Create(3));
+  retirement::Fixture fixture(plan, {.jobs = 2, .normal = 6});
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan, 0, setup)) return Check(false, "successor-ticket refusal setup commits");
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto first = retirement::Submit(
+      writer, reserved ? retirement::Event(2, "job_created") : retirement::Create(3));
+  if (!hold.Wait(first))
+    return Check(false, "ticket/ordinary predecessor must enter the bounded FIFO");
+  const auto ticket = reserved ? retirement::Submit(writer, retirement::Create(3)) : first;
+  if (ticket.code != ri::IngressCode::kAdmitted)
+    return Check(false, "successor refusal vector requires spare ticket admission");
+  const auto blocker =
+      retirement::Submit(writer, reserved ? retirement::Create(2) : retirement::Cleanup(1));
+  const auto successor = retirement::Submit(writer, retirement::Create(3));
+  int result = Check(
+      successor.code == ri::IngressCode::kAdmitted &&
+          retirement::Submit(writer, retirement::Create(4)).code == ri::IngressCode::kResidentLimit,
+      "ownership/reservation refusal must leave the one ticket with its same-ID successor");
+  hold.Release();
+  if (reserved)
+    result |= Check(retirement::Rejected(writer, first, RejectionReason::kInvalidEventPayload),
+                    "malformed F releases no claim still required by valid F");
+  result |=
+      Check(retirement::CapacityCompletion(writer, ticket) &&
+                retirement::Success(writer, blocker) && retirement::Success(writer, successor) &&
+                !writer.SnapshotFor(retirement::Job(1)) && writer.SnapshotFor(retirement::Job(2)) &&
+                writer.SnapshotFor(retirement::Job(3)) && fixture.Verify(),
+            "same-ID successor retries selection after the blocker, without another ticket or "
+            "record for refusal");
+  return result;
+}
+
+int RetirementRejectedClaimRestoresSources() {
+  const auto phase = retirement::ClaimedPhase<ri::WriterPhase>();
+  if (!phase)
+    return Check(false,
+                 "private non-sleeping victim-claim checkpoint is required for rejection rollback");
+  retirement::Plan plan;
+  plan.CloseWorker(1);
+  retirement::Fixture fixture(plan, 1);
+  if (!fixture.Run(plan)) return Check(false, "rejected-claim setup commits");
+  auto& writer = *fixture.writer;
+  const bool available =
+      retirement::AcquireAndReturn(writer, retirement::Job(1), EventType::kCleanupStatusRecorded);
+  retirement::Hold hold(writer, *phase);
+  const auto malformed = retirement::Submit(writer, retirement::Event(2, "job_created"));
+  if (!hold.Wait(malformed))
+    return Check(false, "malformed ticket reaches the real claimed-victim fence");
+  const auto terminate = retirement::Submit(writer, retirement::Terminate(1));
+  const auto attempts = fixture.journal.CopyObservations().size();
+  int result =
+      Check(available && !retirement::AcquireAndReturn(writer, retirement::Job(1),
+                                                       EventType::kCleanupStatusRecorded),
+            "malformed creation still fences an otherwise acquirable source while selected");
+  hold.Release();
+  result |= Check(
+      retirement::Rejected(writer, malformed, RejectionReason::kInvalidEventPayload) &&
+          retirement::Rejected(writer, terminate, RejectionReason::kCommandNotAllowedInState) &&
+          retirement::AcquireAndReturn(writer, retirement::Job(1),
+                                       EventType::kCleanupStatusRecorded) &&
+          fixture.journal.CopyObservations().size() == attempts && !writer.failed() &&
+          fixture.Verify(),
+      "non-latching rejection rolls back the claim and restores sources; queued normal terminate "
+      "sees the old terminal Job");
+  return result;
+}
+
+// Bounded passive Journal: accept/observe actual records, then compare the entire GREEN
+// script. Unexpected retirement must fail the ownership assertion, not a fake Commit matcher.
+class OwnershipJournal final : public JobJournalPort {
+ public:
+  LogicalCommitResult Commit(const LogicalJobEvent& event) noexcept override {
+    try {
+      std::lock_guard lock(mutex_);
+      if (count_ == records_.size()) {
+        failed_ = true;
+        return LogicalCommitResult::kDefiniteFailure;
+      }
+      records_[count_++].emplace(event);
+      return LogicalCommitResult::kCommitted;
+    } catch (...) {
+      failed_ = true;
+      return LogicalCommitResult::kDefiniteFailure;
+    }
+  }
+  std::size_t Count() const {
+    std::lock_guard lock(mutex_);
+    return count_;
+  }
+  bool Verify(const retirement::Plan& plan, retirement::Fixture& fixture) const {
+    std::lock_guard lock(mutex_);
+    if (failed_.load() || count_ != plan.journal.size()) return false;
+    for (std::size_t n = 0; n != count_; ++n) {
+      const auto& record = records_[n];
+      if (!record) return false;
+      const auto& actual = *record;
+      const auto& expected = plan.journal[n].event;
+      if (actual.schema_version != expected.schema_version ||
+          actual.recorded_at != expected.recorded_at || actual.sequence != expected.sequence ||
+          actual.job_id != expected.job_id || actual.event_type != expected.event_type ||
+          !PayloadEqual(actual.payload, expected.payload))
+        return false;
+    }
+    return !fixture.clock.verification_failed() && fixture.runner.Verify() &&
+           fixture.session.Verify() && !fixture.identity.verification_failed();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::array<std::optional<LogicalJobEvent>, 64> records_{};
+  std::size_t count_ = 0;
+  std::atomic<bool> failed_ = false;
+};
+
+int RetirementLeaseSurvivesProtocol(bool ack) {
+  retirement::Plan plan;
+  if (ack) {
+    plan.CloseWorker(1).Add(retirement::WorkerFact(1, 2));
+  } else {
+    plan.Running(1).Add(retirement::WorkerFact(1)).Finalize(1, "succeeded");
+  }
+  const auto before_protocol = plan.inputs.size();
+  if (!ack) plan.Add(retirement::Exit(1)).Add(retirement::Release(1)).Add(retirement::Cleanup(1));
+  const auto closed = plan.inputs.size();
+  plan.Add(retirement::Create(2));
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan, 0, before_protocol)) return Check(false, "ownership lease setup commits");
+  const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
+                                               TimeoutPhase::kInvalid);
+  if (!lease) return Check(false, "ownership regression acquires a real Worker lease");
+  int result = 0;
+  result |= Check(ack ? writer.RetireWorkerAck(retirement::WorkerFact(1, 2))
+                      : fixture.Run(plan, before_protocol, closed),
+                  "protocol ACK or exit/release/cleanup succeeds with lease still unreturned");
+  const auto records = journal.Count();
+  const auto applies = writer.apply_count();
+  const bool refused =
+      retirement::CapacityCompletion(writer, retirement::Submit(writer, retirement::Create(2)));
+  result |=
+      Check(refused && journal.Count() == records && writer.apply_count() == applies &&
+                writer.SnapshotFor(retirement::Job(1)) && !writer.failed(),
+            ack ? "FIX2 ACK retirement preserves the unreturned lease: record-free resident_limit"
+                : "FIX2 process exit preserves the unreturned lease: record-free resident_limit");
+  result |= Check(writer.ReturnSourceLease(*lease),
+                  "original Worker lease returns exactly once after protocol retirement");
+  if (result != 0) return result;
+  return Check(retirement::Success(writer, retirement::Submit(writer, retirement::Create(2))) &&
+                   !writer.SnapshotFor(retirement::Job(1)) && journal.Verify(plan, fixture),
+               "after matching lease return retry retires that same oldest victim");
+}
+
+int RetirementQueuedWorkerSurvivesExit() {
+  retirement::Plan plan;
+  plan.CloseWorker(1);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::Exit(1)).Add(retirement::WorkerFact(1, 2)).Add(retirement::Create(2));
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan, 0, setup))
+    return Check(false, "queued Worker setup closes real Worker Job");
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto exit = retirement::Submit(writer, retirement::Exit(1));
+  if (!hold.Wait(exit)) return Check(false, "duplicate exit pauses before removal");
+  const auto creation = retirement::Submit(writer, retirement::Create(2));
+  const auto worker = retirement::Submit(writer, retirement::WorkerFact(1, 2));
+  int result = Check(
+      creation.code == ri::IngressCode::kAdmitted && worker.code == ri::IngressCode::kAdmitted &&
+          exit.ingress_sequence < creation.ingress_sequence &&
+          creation.ingress_sequence < worker.ingress_sequence,
+      "duplicate exit, ticketed create, distinct Worker fact all admitted before dequeue");
+  hold.Release();
+  result |= Check(retirement::Success(writer, exit),
+                  "duplicate exit retains its own accepted audit turn");
+  result |=
+      Check(retirement::CapacityCompletion(writer, creation),
+            "FIX2 earlier exit cannot erase queued Worker ownership: record-free resident_limit");
+  result |= Check(retirement::Success(writer, worker) && journal.Count() == setup + 2 &&
+                      writer.apply_count() == setup + 2 && writer.SnapshotFor(retirement::Job(1)) &&
+                      !writer.failed(),
+                  "queued Worker keeps its own turn/permit and no creation record appears");
+  if (result != 0) return result;
+  return Check(retirement::Success(writer, retirement::Submit(writer, retirement::Create(2))) &&
+                   !writer.SnapshotFor(retirement::Job(1)) && journal.Verify(plan, fixture),
+               "retry after queued Worker releases ownership retires the same oldest victim");
+}
+
+int RetirementQueuedTimerSurvivesDisarm() {
+  retirement::Plan plan;
+  plan.Running(1).Add(retirement::WorkerFact(1)).Finalize(1, "succeeded").Close(2);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::Exit(1))
+      .Add(retirement::Release(1))
+      .Add(retirement::Cleanup(1))
+      .Add(retirement::Create(3));
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 2}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan, 0, setup))
+    return Check(false, "older terminal/open-exit A and younger closed B setup");
+  const auto state = retirement::InspectSlot(writer, retirement::Job(1));
+  if (!state ||
+      !retirement::AcquireAndReturn(writer, retirement::Job(1), EventType::kTimeoutExpired,
+                                    TimeoutPhase::kProcessExitConfirmation))
+    return Check(false, "older Job has a genuinely armed process-exit timer before admission");
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto exit = retirement::Submit(writer, retirement::Exit(1));
+  if (!hold.Wait(exit)) return Check(false, "exit pauses before removal for queued timer vector");
+  const auto release = retirement::Submit(writer, retirement::Release(1));
+  const auto cleanup = retirement::Submit(writer, retirement::Cleanup(1));
+  const auto creation = retirement::Submit(writer, retirement::Create(3));
+  const auto timer = writer.SubmitTimeout(
+      {retirement::Job(1), TimeoutPhase::kProcessExitConfirmation, state->timer_generation[3]});
+  int result = Check(release.code == ri::IngressCode::kAdmitted &&
+                         cleanup.code == ri::IngressCode::kAdmitted &&
+                         creation.code == ri::IngressCode::kAdmitted && !timer.discarded &&
+                         timer.admitted.code == ri::IngressCode::kAdmitted &&
+                         exit.ingress_sequence < release.ingress_sequence &&
+                         release.ingress_sequence < cleanup.ingress_sequence &&
+                         cleanup.ingress_sequence < creation.ingress_sequence &&
+                         creation.ingress_sequence < timer.admitted.ingress_sequence,
+                     "exit, release, cleanup, create and armed timer all admitted before dequeue");
+  hold.Release();
+  result |=
+      Check(retirement::Success(writer, exit) && retirement::Success(writer, release) &&
+                retirement::Success(writer, cleanup),
+            "earlier FIFO facts close the older Job, not merely the younger admission candidate");
+  result |= Check(
+      retirement::CapacityCompletion(writer, creation),
+      "FIX2 disarm cannot erase queued timer ownership or skip oldest: record-free resident_limit");
+  result |=
+      Check(retirement::Rejected(writer, timer.admitted, RejectionReason::kInvariantViolation) &&
+                journal.Count() == setup + 3 && writer.apply_count() == setup + 3 &&
+                writer.SnapshotFor(retirement::Job(1)) && writer.SnapshotFor(retirement::Job(2)) &&
+                !writer.failed(),
+            "queued timer reaches its own unchanged reducer rejection with permit intact");
+  if (result != 0) return result;
+  return Check(retirement::Success(writer, retirement::Submit(writer, retirement::Create(3))) &&
+                   !writer.SnapshotFor(retirement::Job(1)) &&
+                   writer.SnapshotFor(retirement::Job(2)) && journal.Verify(plan, fixture),
+               "retry after timer turn retires the same oldest A and preserves younger B");
+}
+
+int RetirementCallbackSurvivesSealing(bool failure) {
+  retirement::Plan plan;
+  plan.CloseWorker(1);
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan)) return Check(false, "callback sealing setup commits");
+  const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
+                                               TimeoutPhase::kInvalid);
+  if (!lease) return Check(false, "callback sealing starts with an actual held source token");
+  int result = 0;
+  if (failure) {
+    result |= Check(writer.LatchReadinessFailure(),
+                    "explicit failure latches while callback owns its token");
+  } else {
+    result |= Check(retirement::Success(writer, writer.SubmitShutdown()),
+                    "shutdown marker reaches draining before the final sealing attempt");
+    result |= Check(!writer.BeginShutdown(),
+                    "normal shutdown defers sealing until the source owner returns");
+  }
+  result |= Check(!writer.sealed(),
+                  failure ? "FIX2 failure cancellation cannot discard a live callback owner"
+                          : "FIX2 quiescence cannot discard a live callback owner");
+  result |=
+      Check(writer.ReturnSourceLease(*lease) && writer.FinishShutdown() && writer.sealed() &&
+                journal.Verify(plan, fixture),
+            "sealing completes only after matching source-token return, with no Journal change");
+  return result;
+}
+
+int JobRetirementRequiresClosed() {
+  int result = 0;
+  // Each setup is folded from accepted inputs. Runtime ACK success is not a Journal fact.
+  for (unsigned form = 0; form != 4; ++form) {
+    retirement::Plan plan;
+    if (form == 0) {
+      plan.Add(retirement::Create(1));
+    } else {
+      plan.Running(1).Add(retirement::WorkerFact(1));
+      plan.Finalize(1, "succeeded");
+      if (form == 2) plan.Add(retirement::Exit(1));
+      if (form == 3) plan.Add(retirement::Exit(1)).Add(retirement::Release(1));
+    }
+    retirement::Fixture fixture(plan, 1);
+    if (!fixture.Run(plan)) return Check(false, "not-closed premise reaches the unchanged reducer");
+    if (form == 1)
+      result |= Check(fixture.writer->RetireWorkerAck(retirement::WorkerFact(1)),
+                      "terminal ACK success is real but does not confirm process exit");
+    const auto attempts = fixture.journal.CopyObservations().size();
+    result |= Check(retirement::Submit(*fixture.writer, retirement::Create(2)).code ==
+                            ri::IngressCode::kResidentLimit &&
+                        fixture.journal.CopyObservations().size() == attempts &&
+                        !fixture.writer->failed(),
+                    "admitted, committed-allocation, and missing-cleanup Jobs are not closed");
+  }
+  for (unsigned form = 0; form != 5; ++form) {
+    retirement::Plan plan;
+    if (form <= 2) {
+      plan.Close(1, form == 1, form == 2);
+    } else {
+      plan.CloseWorker(1, form == 3).Add(retirement::WorkerFact(1, 2));
+    }
+    const auto setup = plan.inputs.size();
+    plan.Add(retirement::Create(2));
+    retirement::Fixture fixture(plan, 1);
+    if (!fixture.Run(plan, 0, setup)) return Check(false, "closed predicate premise commits");
+    if (form == 0) {
+      const auto snapshot = fixture.writer->SnapshotFor(retirement::Job(1));
+      if (!snapshot)
+        return Check(false, "never-bound Worker control requires the installed closed Job");
+      for (const bool failed : {false, true}) {
+        const auto raw = retirement::WorkerFact(1, 1, failed);
+        const auto normalized = NormalizeCandidate(*snapshot, raw);
+        const auto decision = DecideEvent(*snapshot, std::get<InternalEvent>(normalized.value));
+        const auto* rejected = std::get_if<Rejection>(&decision.value);
+        result |=
+            Check(rejected && rejected->reason == RejectionReason::kInvariantViolation,
+                  "never-bound delayed Worker fact cannot unclose a Job (reducer-only vector)");
+      }
+    }
+    const auto acknowledgments = fixture.writer->ack_authorization_count();
+    result |= Check(
+        fixture.Run(plan, setup, plan.inputs.size()) &&
+            !fixture.writer->SnapshotFor(retirement::Job(1)) &&
+            fixture.writer->ack_authorization_count() == acknowledgments,
+        "closed no-allocation, reducer-incomplete, failed-launch and post-exit-late Jobs retire");
+  }
+  {
+    retirement::Plan plan;
+    plan.Close(1).Add(retirement::Create(2));
+    retirement::Fixture fixture(plan, 1);
+    if (!fixture.Run(plan, 0, plan.inputs.size() - 1)) return Check(false, "ticket claim setup");
+    retirement::Hold hold(*fixture.writer, ri::WriterPhase::kBeforeDequeue);
+    const auto first = retirement::Submit(*fixture.writer, retirement::Create(2));
+    if (!hold.Wait(first)) return result | Check(false, "first retirement ticket is admitted");
+    const auto duplicate = retirement::Submit(*fixture.writer, retirement::Create(2));
+    result |= Check(duplicate.code == ri::IngressCode::kAdmitted &&
+                        fixture.writer->creation_claim_count(retirement::Job(2)) == 2 &&
+                        retirement::Submit(*fixture.writer, retirement::Create(3)).code ==
+                            ri::IngressCode::kResidentLimit,
+                    "one ticket belongs to both same-ID claims, never to another identifier");
+    hold.Release();
+    result |= Check(
+        retirement::Success(*fixture.writer, first) &&
+            retirement::Rejected(*fixture.writer, duplicate, RejectionReason::kJobAlreadyExists),
+        "first ticket success leaves its same-ID successor to the unchanged reducer");
+  }
+  for (bool claim_blocker : {false, true}) {
+    retirement::Plan plan;
+    plan.Close(1).Close(2);
+    const auto setup = plan.inputs.size();
+    if (!claim_blocker) plan.Add(retirement::Cleanup(1));
+    plan.Add(retirement::Create(3));
+    retirement::Fixture fixture(plan);
+    if (!fixture.Run(plan, 0, setup)) return Check(false, "oldest ownership blocker setup");
+    retirement::Hold hold(*fixture.writer, ri::WriterPhase::kBeforeDequeue);
+    const auto ticket = retirement::Submit(*fixture.writer, retirement::Create(3));
+    if (!hold.Wait(ticket)) {
+      result |= Check(false, "ownership refusal is a completion, not an admission refusal");
+      continue;
+    }
+    const auto blocker = retirement::Submit(
+        *fixture.writer, claim_blocker ? retirement::Create(1) : retirement::Cleanup(1));
+    const auto before = fixture.journal.CopyObservations().size();
+    hold.Release();
+    result |= Check(retirement::CapacityCompletion(*fixture.writer, ticket),
+                    "oldest ownership refuses without falling back to the unblocked younger Job");
+    result |= Check(claim_blocker ? retirement::Rejected(*fixture.writer, blocker,
+                                                         RejectionReason::kJobAlreadyExists)
+                                  : retirement::Success(*fixture.writer, blocker),
+                    "the blocker retains its own input, claim and permit until its own turn");
+    result |=
+        Check(fixture.journal.CopyObservations().size() == before + (claim_blocker ? 0 : 1) &&
+                  fixture.writer->SnapshotFor(retirement::Job(1)).has_value() &&
+                  retirement::Success(*fixture.writer,
+                                      retirement::Submit(*fixture.writer, retirement::Create(3))) &&
+                  !fixture.writer->SnapshotFor(retirement::Job(1)) &&
+                  fixture.writer->SnapshotFor(retirement::Job(2)).has_value(),
+              "after blocker release the retry retires the very same oldest resident");
+  }
+  result |= RetirementClaimFenceAndLease();
+  result |= RetirementNormalFullKeepsNoTicket();
+  result |= RetirementMalformedTicketSuccessor();
+  result |= RetirementRefusalKeepsSuccessorTicket(false);
+  result |= RetirementRefusalKeepsSuccessorTicket(true);
+  result |= RetirementRejectedClaimRestoresSources();
+  result |= RetirementLeaseSurvivesProtocol(false);
+  result |= RetirementLeaseSurvivesProtocol(true);
+  result |= RetirementQueuedWorkerSurvivesExit();
+  result |= RetirementQueuedTimerSurvivesDisarm();
+  result |= RetirementCallbackSurvivesSealing(false);
+  result |= RetirementCallbackSurvivesSealing(true);
+  return result;
+}
+
+int RetirementRejectedReservationWithQueuedTerminate() {
+  retirement::Plan plan;
+  plan.Close(1);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::Create(3));
+  retirement::Fixture fixture(plan, {.jobs = 2, .normal = 4});
+  if (!fixture.Run(plan, 0, setup))
+    return Check(false, "queued provisional terminate setup commits");
+  auto& writer = *fixture.writer;
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto malformed = retirement::Submit(writer, retirement::Event(2, "job_created"));
+  if (!hold.Wait(malformed)) return Check(false, "provisional F pauses before malformed rejection");
+  const auto terminate = retirement::Submit(writer, retirement::Terminate(2));
+  const auto ticket = retirement::Submit(writer, retirement::Create(3));
+  hold.Release();
+  return Check(
+      retirement::Rejected(writer, malformed, RejectionReason::kInvalidEventPayload) &&
+          retirement::Rejected(writer, terminate, RejectionReason::kJobNotFound) &&
+          retirement::Success(writer, ticket) && writer.SnapshotFor(retirement::Job(1)) &&
+          !writer.SnapshotFor(retirement::Job(2)) && fixture.Verify(),
+      "final queued permit releases a rejected provisional reservation before ticket fallback");
+}
+
+int RetirementFreeSlotKeepsQueuedOwners() {
+  retirement::Plan plan;
+  plan.Close(1);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::Create(3)).Add(retirement::Terminate(3));
+  retirement::Fixture fixture(plan, {.jobs = 2, .normal = 6});
+  if (!fixture.Run(plan, 0, setup)) return Check(false, "free-slot ownership setup commits");
+  auto& writer = *fixture.writer;
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto malformed = retirement::Submit(writer, retirement::Event(2, "job_created"));
+  if (!hold.Wait(malformed)) return Check(false, "ordinary F reservation is paused before release");
+  const auto ticket = retirement::Submit(writer, retirement::Create(3));
+  if (ticket.code != ri::IngressCode::kAdmitted)
+    return Check(false, "free-slot fallback must first reserve its spare ticket");
+  const auto duplicate = retirement::Submit(writer, retirement::Create(3));
+  const auto terminate = retirement::Submit(writer, retirement::Terminate(3));
+  hold.Release();
+  const bool completed =
+      retirement::Rejected(writer, malformed, RejectionReason::kInvalidEventPayload) &&
+      retirement::Success(writer, ticket) &&
+      retirement::Rejected(writer, duplicate, RejectionReason::kJobAlreadyExists) &&
+      retirement::Success(writer, terminate);
+  const auto latest = writer.SnapshotFor(retirement::Job(3));
+  return Check(completed && latest && latest->state == JobState::kFinalizing &&
+                   latest->latched_reason == TerminalOutcome::kTerminated &&
+                   writer.SnapshotFor(retirement::Job(1)) &&
+                   !writer.SnapshotFor(retirement::Job(2)) &&
+                   writer.creation_claim_count(retirement::Job(3)) == 0 && fixture.Verify(),
+               "free-slot fallback preserves queued same-ID claims and terminate ownership across "
+               "slot rebinding");
+}
+
+int JobRetirementNotUnderFreeSlot() {
+  int result = 0;
+  {
+    retirement::Plan plan;
+    plan.Close(1).Add(retirement::Create(2));
+    retirement::Fixture fixture(plan);
+    result |=
+        Check(fixture.Run(plan) && fixture.writer->SnapshotFor(retirement::Job(1)) &&
+                  fixture.writer->SnapshotFor(retirement::Job(2)) && fixture.Verify(),
+              "ordinary free-slot creation preserves the readable closed Job (baseline coverage)");
+  }
+  for (bool successor : {false, true}) {
+    retirement::Plan plan;
+    plan.Close(1);
+    const auto setup = plan.inputs.size();
+    plan.Add(retirement::Create(successor ? 2 : 3));
+    if (successor) plan.Add(retirement::Create(3));
+    retirement::Fixture fixture(plan, {.jobs = 2, .normal = 4});
+    if (!fixture.Run(plan, 0, setup)) return Check(false, "free-slot recheck setup");
+    auto& writer = *fixture.writer;
+    retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+    const auto malformed = retirement::Submit(writer, retirement::Event(2, "job_created"));
+    if (!hold.Wait(malformed))
+      return Check(false, "last ordinary reservation is held deterministically");
+    const auto ticket = retirement::Submit(writer, retirement::Create(3));
+    if (ticket.code != ri::IngressCode::kAdmitted) {
+      result |= Check(
+          false, "closed resident plus last provisional reservation must admit one spare ticket");
+      continue;
+    }
+    std::optional<ri::IngressResult> valid;
+    if (successor) valid = retirement::Submit(writer, retirement::Create(2));
+    hold.Release();
+    result |= Check(retirement::Rejected(writer, malformed, RejectionReason::kInvalidEventPayload),
+                    "malformed ordinary reservation makes no Journal record");
+    if (successor) {
+      result |= Check(
+          retirement::CapacityCompletion(writer, ticket) && valid &&
+              retirement::Success(writer, *valid) && writer.SnapshotFor(retirement::Job(1)),
+          "F,T,F preserves F's reservation and refuses T while committed population is below J");
+      result |=
+          Check(retirement::Success(writer, retirement::Submit(writer, retirement::Create(3))) &&
+                    !writer.SnapshotFor(retirement::Job(1)),
+                "retry retires oldest only once F has really committed");
+    } else {
+      result |= Check(
+          retirement::Success(writer, ticket) && writer.SnapshotFor(retirement::Job(1)) &&
+              !writer.SnapshotFor(retirement::Job(2)) && writer.SnapshotFor(retirement::Job(3)),
+          "released F gives T an ordinary slot: no retirement and no replay-only discrepancy");
+    }
+  }
+  result |= RetirementFreeSlotKeepsQueuedOwners();
+  result |= RetirementRejectedReservationWithQueuedTerminate();
+  return result;
+}
+
+int JobRetirementResetsSlot() {
+  retirement::Plan plan;
+  plan.CloseWorker(1);
+  const auto first_setup = plan.inputs.size();
+  plan.Close(2).Add(retirement::Create(3));
+  retirement::Fixture fixture(plan, 1);
+  auto& writer = *fixture.writer;
+  const auto generated = writer.CreateJob();
+  if (!retirement::Success(writer, generated.ingress) || !fixture.Run(plan, 1, first_setup))
+    return Check(false, "reset setup commits with real generated identity ownership");
+  int result = Check(writer.GeneratedWorker(retirement::Job(1)) == retirement::Worker(1) &&
+                         writer.GeneratedLaunch(retirement::Job(1)) == retirement::Launch(1),
+                     "reset premise contains nonempty generated Worker and launch bindings");
+  const auto before = retirement::InspectSlot(writer, retirement::Job(1));
+  if (!fixture.Run(plan, first_setup, first_setup + 1)) {
+    result |= Check(false, "retirement must reset a slot before the previous spare can rotate");
+  } else {
+    const auto reset = before ? retirement::InspectSlot(writer, before->index) : std::nullopt;
+    const auto replacement = retirement::InspectSlot(writer, retirement::Job(2));
+    result |=
+        Check(before && reset && replacement && replacement->index != before->index &&
+                  reset->state_banks_empty && reset->prepared_banks_empty && reset->gates_empty &&
+                  reset->identities_empty && reset->generated_bindings_empty,
+              "both state/prepared banks, gates, identities and generated bindings reset in the "
+              "old slot");
+    if (before && reset)
+      for (std::size_t phase = 0; phase != 4; ++phase)
+        result |=
+            Check(reset->timer_generation[phase] > before->timer_generation[phase],
+                  "retirement advances every slot timer generation, including never-armed phases");
+    result |= Check(fixture.Run(plan, first_setup + 1, plan.inputs.size()),
+                    "second retirement reuses the reset spare without old source state");
+    const auto third = retirement::InspectSlot(writer, retirement::Job(3));
+    const auto snapshot = writer.SnapshotFor(retirement::Job(3));
+    // ADR-0012's future post-commit mark is N/A: no supervisor or mark exists at this head.
+    result |= Check(
+        before && third && third->index == before->index && snapshot &&
+            snapshot->state == JobState::kAdmitted &&
+            snapshot->resource_status == ResourceStatus::kNone && !snapshot->worker_id &&
+            !snapshot->launch_operation_id && !snapshot->pending_worker_event_ack &&
+            !writer.SnapshotFor(retirement::Job(1)) && !writer.SnapshotFor(retirement::Job(2)) &&
+            writer.creation_claim_count(retirement::Job(3)) == 0 &&
+            writer.NoPostcommitAllocationOrCopy() && fixture.Verify(),
+        "next retirement rotates back into the clean original victim slot");
+  }
+  for (const auto phase :
+       {TimeoutPhase::kPreparation, TimeoutPhase::kExecution, TimeoutPhase::kCooperativeStop,
+        TimeoutPhase::kProcessExitConfirmation}) {
+    for (const auto generation : {UINT64_MAX, UINT64_MAX - 1}) {
+      retirement::Plan boundary_plan;
+      boundary_plan.CloseWorker(1).Add(retirement::Create(2));
+      retirement::Fixture boundary(boundary_plan, 1);
+      if (!boundary.Run(boundary_plan, 0, boundary_plan.inputs.size() - 1))
+        return Check(false, "generation exhaustion setup commits");
+      auto& bounded = *boundary.writer;
+      const auto snapshot = bounded.SnapshotFor(retirement::Job(1));
+      const auto attempts = boundary.journal.CopyObservations().size();
+      retirement::Hold hold(bounded, ri::WriterPhase::kAfterDecision);
+      const auto ticket = retirement::Submit(bounded, retirement::Create(2));
+      if (!hold.Wait(ticket)) {
+        result |=
+            Check(false, "generation-boundary ticket must be admitted before precommit validation");
+        continue;
+      }
+      const bool injected =
+          retirement::InjectGeneration(bounded, retirement::Job(1), phase, generation);
+      const auto generations = retirement::InspectSlot(bounded, retirement::Job(1));
+      hold.Release();
+      const auto done = bounded.AwaitCompletion(ticket.ingress_sequence);
+      const auto after = retirement::InspectSlot(bounded, retirement::Job(1));
+      const auto kept = bounded.SnapshotFor(retirement::Job(1));
+      if (generation == UINT64_MAX) {
+        result |= Check(
+            injected && generations && after && done &&
+                done->code == ri::Completion::Code::kServiceFailed && bounded.failed() &&
+                after->timer_generation == generations->timer_generation && snapshot && kept &&
+                SnapshotEqual(*snapshot, *kept) &&
+                boundary.journal.CopyObservations().size() == attempts,
+            "each injected maximum generation fails before commit without reset or increment");
+      } else {
+        const auto reset =
+            generations ? retirement::InspectSlot(bounded, generations->index) : std::nullopt;
+        result |= Check(
+            injected && done && done->code == ri::Completion::Code::kSuccess && reset &&
+                reset->timer_generation[static_cast<std::size_t>(phase)] == UINT64_MAX &&
+                !bounded.failed() && !kept && boundary.Verify(),
+            "each maximum-minus-one generation increments to maximum exactly, never wrapping");
+      }
+    }
+  }
+  return result;
+}
+
+int JobRetirementStaleTimerRejected() {
+  retirement::Plan plan;
+  plan.CloseWorker(1).Close(2).Add(retirement::Create(3));
+  plan.Add(retirement::Event(
+      3, "resources_committed",
+      R"({"allocation_id":"allocation-1","allocation_digest":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","resolved_allocation":{"schema_id":"allocation.v1","schema_version":1,"payload_utf8":"{}"}})"));
+  retirement::Fixture fixture(plan, 1);
+  if (!fixture.Run(plan))
+    return Check(false, "stale timer vector must first retire and reuse its original slot");
+  auto& writer = *fixture.writer;
+  const auto before = writer.CopyIngressSequences();
+  const auto old = writer.SubmitTimeout({retirement::Job(1), TimeoutPhase::kPreparation, 1});
+  const auto stale = writer.SubmitTimeout({retirement::Job(3), TimeoutPhase::kPreparation, 1});
+  const auto state = retirement::InspectSlot(writer, retirement::Job(3));
+  int result =
+      Check(old.discarded && stale.discarded && state && state->timer_generation[0] > 1 &&
+                retirement::AcquireAndReturn(writer, retirement::Job(3), EventType::kTimeoutExpired,
+                                             TimeoutPhase::kPreparation) &&
+                writer.CopyIngressSequences() == before && !writer.failed() && fixture.Verify(),
+            "old-ID absence and stale generation discard; the new Job's timer is demonstrably "
+            "acquirable");
+  {
+    // TEST ONLY: raw same-ID recreation deliberately bypasses the production no-repeat source.
+    // It proves the counter fence independently of the retired-ID absence lookup.
+    retirement::Plan aba;
+    aba.CloseWorker(1).Close(2);
+    const auto setup = aba.inputs.size();
+    aba.AfterRetirementOf(1).Add(retirement::Create(1));
+    aba.Add(retirement::Event(
+        1, "resources_committed",
+        R"({"allocation_id":"allocation-1","allocation_digest":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","resolved_allocation":{"schema_id":"allocation.v1","schema_version":1,"payload_utf8":"{}"}})"));
+    retirement::Fixture reused(aba, 1);
+    if (!reused.Run(aba, 0, setup))
+      return result | Check(false, "ABA setup retires the original Job");
+    const auto malformed = retirement::Submit(*reused.writer, retirement::Event(3, "job_created"));
+    result |= Check(
+        retirement::Rejected(*reused.writer, malformed, RejectionReason::kInvalidEventPayload) &&
+            reused.Run(aba, setup, aba.inputs.size()),
+        "rejected provisional reuse preserves reset timer counters for the next reservation");
+    const auto generation = retirement::InspectSlot(*reused.writer, retirement::Job(1));
+    const auto saved =
+        reused.writer->SubmitTimeout({retirement::Job(1), TimeoutPhase::kPreparation, 1});
+    result |=
+        Check(generation && generation->timer_generation[0] > 1 && saved.discarded &&
+                  !reused.writer->failed() && reused.Verify(),
+              "same-ID raw test rejects the saved generation after reset, rollback and reuse");
+  }
+  return result;
+}
+
+int JobRetirementLateFactAbsent() {
+  retirement::Plan plan;
+  plan.CloseWorker(1).Add(retirement::Create(2));
+  retirement::Fixture fixture(plan, 1);
+  if (!fixture.Run(plan))
+    return Check(false, "late-fact vector must first retire the Worker-bound resident");
+  auto& writer = *fixture.writer;
+  const auto before = writer.CopyIngressSequences();
+  const auto attempts = fixture.journal.CopyObservations().size();
+  // A conforming source keeps its fact when acquisition fails; it must not enqueue raw critical
+  // input for an absent Job. That would test impossible accounting, not late-fact absence.
+  const auto worker_fact = retirement::WorkerFact(1, 2);
+  const auto exit_fact = retirement::Exit(1);
+  const auto release_fact = retirement::Release(1);
+  const auto cleanup_fact = retirement::Cleanup(1);
+  int result =
+      Check(!writer.RetainWorkerLease(worker_fact.job_id) &&
+                !writer.RetainProcessExitLease(exit_fact.job_id) &&
+                !writer.RetainResourcesReleasedLease(release_fact.job_id) &&
+                !writer.RetainCleanupLease(cleanup_fact.job_id) &&
+                writer.CopyIngressSequences() == before && !writer.failed(),
+            "all retired critical sources, including duplicate release/cleanup, submit nothing");
+  result |= Check(retirement::Rejected(writer, retirement::Submit(writer, retirement::Terminate(1)),
+                                       RejectionReason::kJobNotFound) &&
+                      fixture.journal.CopyObservations().size() == attempts && fixture.Verify(),
+                  "retired terminate is normal admission and appends no record");
+  return result;
+}
+
+int JobTraceRingWraps() {
+  int result = 0;
+  {
+    std::ifstream input(std::string(SITOMETRON_TEST_SOURCE_DIR) +
+                        "/schemas/core/v1/job-reducer-contract.json");
+    const auto contract = nlohmann::json::parse(input);
+    result |= Check(
+        contract.at("journal_event_kinds").size() ==
+                static_cast<std::size_t>(EventType::kInvalid) &&
+            contract.at("post_sync_effects").size() == static_cast<std::size_t>(EffectId::kInvalid),
+        "trace-bound proof covers the reducer's exact closed event and effect sets");
+    std::size_t maximum = 0;
+    for (const auto& row : contract.at("event_matrix")) {
+      for (const auto& branch : row.at("cases")) {
+        if (branch.at("disposition") == "reject") continue;
+        const auto event = branch.at("journal_event_type").get<std::string>();
+        const std::size_t sources =
+            event == "resources_committed" || event == "worker_launch_intent" ||
+                    event == "terminal_outcome_committed"
+                ? 2
+            : event == "cancel_accepted" || event == "terminate_accepted" ? 1
+                                                                          : 0;
+        const auto effects =
+            branch.contains("post_sync_effects") ? branch.at("post_sync_effects").size() : 0U;
+        const auto records = 4 + sources + 2 * effects;
+        maximum = std::max(maximum, records);
+        result |= Check(records <= 14,
+                        "every accepting reducer case fits the derived fourteen-record turn bound");
+      }
+    }
+    result |=
+        Check(maximum == 14, "closed reducer contract attains, not merely fits, the trace bound");
+  }
+  retirement::Plan plan;
+  plan.Close(1);
+  for (unsigned n = 0; n != 40; ++n) plan.Add(retirement::Cleanup(1));
+  retirement::Fixture fixture(plan, {.jobs = 1, .normal = 1, .trace = 20});
+  bool ran = fixture.Run(plan, 0, 6);
+  if (ran) {
+    const auto terminal = fixture.writer->CopyTrace();
+    result |=
+        Check(std::ranges::count_if(
+                  terminal, [](const auto& record) { return record.journal_sequence == 6; }) == 14,
+              "minimum ring retains the reachable fourteen-record terminal turn whole");
+    ran = fixture.Run(plan, 6, 8);
+    const auto evicted = fixture.writer->CopyTrace();
+    result |=
+        Check(ran && std::ranges::none_of(
+                         evicted, [](const auto& record) { return record.journal_sequence == 6; }),
+              "subsequent turn needing room evicts the fourteen-record turn whole");
+    if (ran) ran = fixture.Run(plan, 8, plan.inputs.size());
+  }
+  result |= Check(fixture.config.total_capacity() == 20,
+                  "smallest valid J=1,N=1 configuration has total FIFO capacity twenty");
+  result |=
+      Check(ran, "more than trace_capacity differing turns must commit without trace-full failure");
+  if (ran) {
+    const auto trace = fixture.writer->CopyTrace();
+    result |= Check(!trace.empty() && trace.size() <= 20 && trace.front().ordinal > 1 &&
+                        trace.front().kind == ri::TraceKind::kJournalAttempt &&
+                        trace.back().kind == ri::TraceKind::kResponseReleased,
+                    "trace ring retains only a bounded tail of whole turns");
+    for (std::size_t n = 0; n < trace.size(); ++n) {
+      result |= Check(trace[n].ordinal == trace.front().ordinal + n,
+                      "ring ordinals are consecutive without reordering");
+      if (n == 0 || trace[n - 1].journal_sequence != trace[n].journal_sequence) {
+        const auto sequence = trace[n].journal_sequence;
+        const auto count = std::ranges::count_if(
+            trace, [sequence](const auto& record) { return record.journal_sequence == sequence; });
+        result |= Check(static_cast<std::size_t>(count) == plan.trace_counts.at(sequence - 1),
+                        "every retained turn contains its complete declared trace");
+      }
+    }
+    result |=
+        Check(*std::max_element(plan.trace_counts.begin(), plan.trace_counts.end()) == 14 &&
+                  fixture.Verify(),
+              "reachable four-effect terminal turn attains the 14-record bound at J=1,N=1,T=20");
+  }
+  {
+    retirement::Plan empty;
+    retirement::Fixture history(empty, {.jobs = 1, .normal = 1, .trace = 20});
+    std::vector<std::uint64_t> admitted;
+    for (unsigned n = 0; n != 45; ++n) {
+      const auto input = retirement::Submit(*history.writer, retirement::Cancel(99));
+      if (!retirement::Rejected(*history.writer, input, RejectionReason::kJobNotFound)) {
+        result |=
+            Check(false, "history fullness must not fail reducer-rejected ordinary admissions");
+        break;
+      }
+      admitted.push_back(input.ingress_sequence);
+    }
+    const auto marker = history.writer->SubmitShutdown();
+    result |= Check(retirement::Success(*history.writer, marker),
+                    "shutdown marker must be admitted after ingress history fills and wraps");
+    if (marker.code == ri::IngressCode::kAdmitted) admitted.push_back(marker.ingress_sequence);
+    if (admitted.size() > 20)
+      result |= Check(
+          history.writer->CopyIngressSequences() ==
+              std::vector<std::uint64_t>(admitted.end() - 20, admitted.end()),
+          "CopyIngressSequences returns the newest twenty admissions including shutdown in order");
+  }
+  {
+    retirement::Plan failed_plan;
+    failed_plan.Close(1);
+    for (unsigned n = 0; n < 30; ++n) failed_plan.Add(retirement::Cleanup(1));
+    failed_plan.journal.back().result = LogicalCommitResult::kDefiniteFailure;
+    retirement::Fixture failed(failed_plan, {.jobs = 1, .normal = 1, .trace = 20});
+    if (!failed.Run(failed_plan, 0, failed_plan.inputs.size() - 1)) {
+      result |= Check(false, "wrapped trace must reach the injected final logical failure");
+    } else {
+      const auto before = failed.writer->CopyTrace();
+      const auto input = retirement::Submit(*failed.writer, retirement::Cleanup(1));
+      const auto done = failed.writer->AwaitCompletion(input.ingress_sequence);
+      const auto after = failed.writer->CopyTrace();
+      result |= Check(done && done->code == ri::Completion::Code::kServiceFailed &&
+                          !after.empty() && after.back().kind == ri::TraceKind::kJournalAttempt,
+                      "logical failure retains its JournalAttempt and publishes nothing after it");
+      for (std::size_t n = 0; n + 1 < after.size(); ++n)
+        result |= Check(std::ranges::find(before, after[n]) != before.end(),
+                        "failed final turn leaves every surviving earlier trace record unchanged");
+    }
+  }
+  if (ran) {
+    retirement::Plan boundary_plan;
+    boundary_plan.Add(retirement::Create(1)).Add(retirement::Create(2));
+    retirement::Fixture boundary(boundary_plan, 2);
+    const bool injected = retirement::InjectOrdinal(*boundary.writer, UINT64_MAX - 3);
+    result |=
+        Check(injected && boundary.Run(boundary_plan, 0, 1),
+              "injected trace counter permits one complete four-record turn ending at maximum");
+    if (injected) {
+      const auto trace = boundary.writer->CopyTrace();
+      result |= Check(trace.size() == 4 && trace.front().ordinal == UINT64_MAX - 3 &&
+                          trace.back().ordinal == UINT64_MAX,
+                      "trace ordinals reach maximum consecutively without wrapping");
+      const auto input = retirement::Submit(*boundary.writer, retirement::Create(2));
+      const auto done = boundary.writer->AwaitCompletion(input.ingress_sequence);
+      result |=
+          Check(done && done->code == ri::Completion::Code::kServiceFailed &&
+                    boundary.writer->failed() && boundary.writer->CopyTrace() == trace,
+                "turn exceeding trace ordinal maximum fails closed without publishing or wrapping");
+    }
+  }
+  {
+    retirement::Plan retired_plan;
+    retired_plan.Close(1).Add(retirement::Create(2));
+    retirement::Fixture retired(retired_plan, {.jobs = 1, .normal = 1, .trace = 128});
+    if (!retired.Run(retired_plan, 0, retired_plan.inputs.size() - 1))
+      return result | Check(false, "retired trace preservation setup commits");
+    const auto before = retired.writer->CopyTrace();
+    result |=
+        Check(retired.Run(retired_plan, retired_plan.inputs.size() - 1, retired_plan.inputs.size()),
+              "retirement must succeed without deleting its victim's global trace");
+    const auto after = retired.writer->CopyTrace();
+    result |= Check(
+        after.size() == before.size() + 4 &&
+            std::equal(before.begin(), before.end(), after.begin()),
+        "slot reset preserves all previously published trace records until ordinary eviction");
+  }
+  {
+    retirement::Plan empty;
+    retirement::Fixture sample(empty, {.jobs = 1, .normal = 1, .trace = 20});
+    bool refused = false;
+    try {
+      retirement::Fixture undersized(
+          empty, {.jobs = 1, .normal = 1, .trace = sample.config.total_capacity() - 1});
+    } catch (const std::exception&) {
+      refused = true;
+    }
+    result |= Check(refused, "trace_capacity one below total FIFO capacity refuses construction");
+  }
+  return result;
+}
+
 using Selector = int (*)();
 struct SelectorEntry {
   std::string_view name;
   Selector function;
 };
-constexpr std::array<SelectorEntry, 16> k_selectors{{
+constexpr std::array<SelectorEntry, 23> k_selectors{{
     {"job_ingress_linearization_order", JobIngressLinearizationOrder},
     {"job_ingress_single_writer", JobIngressSingleWriter},
     {"job_ingress_source_classification", JobIngressSourceClassification},
@@ -2996,6 +4189,13 @@ constexpr std::array<SelectorEntry, 16> k_selectors{{
     {"job_successful_lifecycle_slice", SuccessfulLifecycleSlice},
     {"job_create_returns_identity", JobCreateReturnsIdentity},
     {"job_ingress_completion_await", JobIngressCompletionAwait},
+    {"job_retirement_oldest_closed_first", JobRetirementOldestClosedFirst},
+    {"job_retirement_requires_closed", JobRetirementRequiresClosed},
+    {"job_retirement_not_under_free_slot", JobRetirementNotUnderFreeSlot},
+    {"job_retirement_resets_slot", JobRetirementResetsSlot},
+    {"job_retirement_stale_timer_rejected", JobRetirementStaleTimerRejected},
+    {"job_retirement_late_fact_absent", JobRetirementLateFactAbsent},
+    {"job_trace_ring_wraps", JobTraceRingWraps},
 }};
 }  // namespace
 

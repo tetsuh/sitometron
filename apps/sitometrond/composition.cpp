@@ -150,12 +150,24 @@ class Phase1Backend final : public http::Backend {
     if (!completion) return {};
     if (completion->code == core::internal::Completion::Code::kServiceFailed)
       return {http::JobResultCode::kServiceFailed, std::nullopt};
+    if (completion->code == core::internal::Completion::Code::kResidentLimit)
+      return {http::JobResultCode::kCapacityExhausted, std::nullopt};
     if (completion->code != core::internal::Completion::Code::kSuccess) return {};
     auto job = GetJob(created.job_id->value);
     if (!job) return {};
     {
       const std::lock_guard index(index_mutex_);
-      if (std::ranges::find(order_, job->job_id) == order_.end()) {
+      // Compact only after successful installation. Failure reads retain the old index.
+      std::size_t retained = 0;
+      for (std::size_t i = 0; i != order_size_; ++i) {
+        if (GetJob(order_[i])) {
+          if (retained != i) order_[retained] = order_[i];
+          ++retained;
+        }
+      }
+      order_size_ = retained;
+      if (std::find(order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(order_size_),
+                    job->job_id) == order_.begin() + static_cast<std::ptrdiff_t>(order_size_)) {
         if (order_size_ == order_.size()) throw std::logic_error("resident index exhausted");
         order_[order_size_++] = job->job_id;
       }
@@ -446,6 +458,7 @@ bool Phase1Composition::Start(std::string& error) {
     config.callback_registration_capacity = 16;
     config.initial_journal_sequence = replayed.next_sequence;
     config.replayed_jobs = replayed.jobs;
+    config.replayed_created_sequences = replayed.created_sequences;
     config.unresolved_jobs = replayed.unresolved;
     config.ports = {impl_->clock.get(), impl_->journal.get(), &impl_->runner, &impl_->session,
                     impl_->identity.get()};

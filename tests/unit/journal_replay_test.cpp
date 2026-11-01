@@ -1,8 +1,10 @@
+#include <condition_variable>
 #include <cstdint>
 #include <exception>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -14,7 +16,9 @@
 #include "journal_test_events.hpp"
 #include "memory_file_system.hpp"
 #include "reducer_snapshot_json.hpp"
+#include "retirement_test_support.hpp"
 #include "sitometron/core/job_ports.hpp"
+#include "sitometron/journal/maintenance.hpp"
 #include "sitometron/journal/record_codec.hpp"
 #include "sitometron/journal/replay.hpp"
 #include "sitometron/journal/segment_journal.hpp"
@@ -567,13 +571,22 @@ int ResolvedJobsSeedWriter() {
                         journal.NextSequence() == 16,
                     "the first new record is sequence 15");
     const auto over = orchestrator.Create();
-    result |= Check(over.code == core::internal::IngressCode::kResidentLimit,
-                    "seeded Jobs count toward max_jobs");
+    result |= Check(over.code == core::internal::IngressCode::kAdmitted,
+                    "closed seeded residents must permit a retirement ticket at max_jobs");
+    if (over.code == core::internal::IngressCode::kAdmitted) {
+      const auto done = orchestrator.AwaitCompletion(over.ingress_sequence);
+      result |=
+          Check(done && done->code == core::internal::Completion::Code::kSuccess &&
+                    journal.NextSequence() == 17 && !orchestrator.SnapshotFor(Uuid{Job(101)}) &&
+                    orchestrator.SnapshotFor(Uuid{Job(102)}).has_value(),
+                "seeded oldest closed Job retires and the next sequence is 17");
+    }
   }
-  const auto after = Replay(fs);
-  result |= Check(after.status == ReplayStatus::kReplayed && after.jobs.size() == 3 &&
-                      after.next_sequence == 16,
-                  "the continued Journal replays: " + after.detail);
+  const auto after = Replay(fs, 3);
+  result |= Check(
+      after.status == ReplayStatus::kReplayed && after.jobs.size() == 3 &&
+          after.next_sequence == 17 && after.jobs.front().job_id == Uuid{Job(102)},
+      "the continued Journal replays with retirement under the same max_jobs: " + after.detail);
   // Invalid seeds are refused at construction.
   auto refused = [&](const core::internal::Config& config, const char* what) {
     bool threw = false;
@@ -595,6 +608,350 @@ int ResolvedJobsSeedWriter() {
   auto unknown = SeededConfig(replayed, journal, fakes, 3);
   unknown.unresolved_jobs.push_back(Uuid{Job(999)});
   refused(unknown, "an unresolved ID that was not seeded");
+  return result;
+}
+namespace retirement = sitometron::test::retirement;
+namespace ri = sitometron::core::internal;
+
+MemoryFileSystem PlannedJournal(const retirement::Plan& plan) {
+  std::string bytes;
+  for (const auto& expected : plan.journal) bytes += Bytes(expected.event);
+  return Journal({{1, bytes}});
+}
+
+int ReplayCapacityAfterRetirement() {
+  int result = 0;
+  auto full = Journal({{1, Bytes(Created(1, 1)) + Bytes(Created(2, 2)) + Bytes(Created(3, 3))}});
+  result |=
+      Check(Refused(Replay(full, 2), ReplayStatus::kCapacityExceeded, "journal_capacity_exceeded"),
+            "three open Jobs still exceed two resident slots (baseline coverage)");
+  auto closed = Journal({{1, ClosedJob(1, 1) + ClosedJob(8, 2) + Bytes(Created(15, 3))}});
+  const auto replayed = Replay(closed, 2);
+  result |= Check(
+      replayed.status == ReplayStatus::kReplayed && replayed.jobs.size() == 2 &&
+          replayed.jobs[0].job_id == Uuid{Job(2)} && replayed.jobs[1].job_id == Uuid{Job(3)} &&
+          replayed.next_sequence == 16,
+      "one closed victim must prevent journal_capacity_exceeded at creation: " + replayed.detail);
+  return result;
+}
+
+int SameResidents(retirement::Fixture& fixture, const std::vector<Uuid>& ids, std::size_t bound) {
+  std::string bytes;
+  for (const auto& event : fixture.journal.CopyObservations()) bytes += Bytes(event);
+  auto fs = Journal({{1, bytes}});
+  const auto replayed = Replay(fs, bound);
+  if (replayed.status != ReplayStatus::kReplayed)
+    return Check(false, "interleaved writer Journal must replay: " + replayed.detail);
+  std::vector<Uuid> actual;
+  int result = 0;
+  for (const auto& snapshot : replayed.jobs) {
+    actual.push_back(snapshot.job_id);
+    const auto live = fixture.writer->SnapshotFor(snapshot.job_id);
+    result |= Check(live && SnapshotJson(*live) == SnapshotJson(snapshot),
+                    "interleaved writer and replay snapshots match exactly");
+  }
+  return result |
+         Check(actual == ids, "interleaved writer and replay preserve survivor creation order");
+}
+
+int ReplayFifoRetirementVectors() {
+  int result = 0;
+  for (unsigned form = 0; form != 3; ++form) {
+    retirement::Plan plan;
+    if (form == 0) {
+      plan.Add(retirement::Create(1)).Add(retirement::Cancel(1)).Finalize(1);
+      plan.Close(2);
+    } else {
+      plan.Close(1);
+      if (form == 1) plan.Close(2);
+    }
+    const auto setup = plan.inputs.size();
+    if (form <= 1) plan.Add(retirement::Cleanup(1));
+    plan.Add(retirement::Create(3));
+    retirement::Fixture fixture(plan, {.jobs = 2, .normal = 4});
+    if (!fixture.Run(plan, 0, setup)) return Check(false, "FIFO replay premise commits");
+    auto& writer = *fixture.writer;
+    retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+    const auto first =
+        retirement::Submit(writer, form == 0   ? retirement::Cleanup(1)
+                                   : form == 1 ? retirement::Create(3)
+                                               : retirement::Event(2, "job_created"));
+    if (!hold.Wait(first)) {
+      result |= Check(false, "FIFO replay vector requires a real admitted ticket or predecessor");
+      continue;
+    }
+    const auto second =
+        retirement::Submit(writer, form == 1 ? retirement::Cleanup(1) : retirement::Create(3));
+    hold.Release();
+    if (form == 0) {
+      result |= Check(retirement::Success(writer, first) && retirement::Success(writer, second),
+                      "queued older cleanup closes before selection");
+    } else if (form == 1) {
+      result |= Check(
+          retirement::CapacityCompletion(writer, first) && retirement::Success(writer, second) &&
+              retirement::Success(writer, retirement::Submit(writer, retirement::Create(3))),
+          "refusal appends no record and retry follows the retained blocker turn");
+    } else {
+      result |= Check(retirement::Rejected(writer, first, RejectionReason::kInvalidEventPayload) &&
+                          retirement::Success(writer, second),
+                      "malformed predecessor releases ordinary slot without a retirement record");
+    }
+    result |= SameResidents(fixture,
+                            form == 2 ? std::vector<Uuid>{retirement::Job(1), retirement::Job(3)}
+                                      : std::vector<Uuid>{retirement::Job(2), retirement::Job(3)},
+                            2);
+  }
+  return result;
+}
+
+// Independent port barrier: no callback, writer/ingress pointer, host clock, or producer reentry.
+// The finite fake records the complete event before this gate pauses Commit's return.
+class CommitReturnGate final : public JobJournalPort {
+ public:
+  explicit CommitReturnGate(const retirement::Plan& plan) : journal_(plan.journal) {}
+  LogicalCommitResult Commit(const LogicalJobEvent& event) noexcept override {
+    try {
+      const auto result = journal_.Commit(event);
+      std::unique_lock lock(mutex_);
+      if (armed_) {
+        entered_ = true;
+        cv_.notify_all();
+        cv_.wait(lock, [&] { return !armed_; });
+      }
+      return result;
+    } catch (...) {
+      return LogicalCommitResult::kOutcomeUnknown;
+    }
+  }
+  void Arm() {
+    std::lock_guard lock(mutex_);
+    entered_ = false;
+    armed_ = true;
+  }
+  void Wait() {
+    std::unique_lock lock(mutex_);
+    cv_.wait(lock, [&] { return entered_; });
+  }
+  void Release() {
+    std::lock_guard lock(mutex_);
+    armed_ = false;
+    cv_.notify_all();
+  }
+  std::vector<LogicalJobEvent> Records() const { return journal_.CopyObservations(); }
+  bool Verify() { return journal_.Verify(); }
+
+ private:
+  FakeJobJournal journal_;
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  bool armed_ = false;
+  bool entered_ = false;
+};
+class CommitGateRelease final {
+ public:
+  explicit CommitGateRelease(CommitReturnGate& gate) : gate_(gate) { gate_.Arm(); }
+  ~CommitGateRelease() { gate_.Release(); }
+  CommitGateRelease(const CommitGateRelease&) = delete;
+  CommitGateRelease& operator=(const CommitGateRelease&) = delete;
+
+ private:
+  CommitReturnGate& gate_;
+};
+
+int ReplayDurableInstallWindows() {
+  int result = 0;
+  for (const bool retiring : {false, true}) {
+    for (const auto returned :
+         {LogicalCommitResult::kCommitted, LogicalCommitResult::kOutcomeUnknown}) {
+      retirement::Plan plan;
+      plan.Close(1);
+      const auto setup = plan.inputs.size();
+      plan.Add(retirement::Create(2));
+      plan.journal.back().result = returned;
+      CommitReturnGate gate(plan);
+      retirement::Fixture fixture(plan, retirement::Limits{.jobs = retiring ? 1U : 2U}, &gate);
+      if (!fixture.Run(plan, 0, setup)) return Check(false, "commit-return window setup commits");
+      CommitGateRelease release(gate);
+      const auto input = retirement::Submit(*fixture.writer, retirement::Create(2));
+      if (input.code != ri::IngressCode::kAdmitted) {
+        result |= Check(false, "complete-record retiring Commit must be reachable before return");
+        continue;
+      }
+      gate.Wait();
+      const auto provisional = fixture.writer->SnapshotFor(retirement::Job(2));
+      result |= Check(fixture.writer->SnapshotFor(retirement::Job(1)).has_value() &&
+                          (!provisional || !provisional->entity_exists),
+                      "Commit has not returned: old installed set remains readable");
+      std::string bytes;
+      for (const auto& event : gate.Records()) bytes += Bytes(event);
+      auto fs = Journal({{1, bytes}});
+      const auto replayed = Replay(fs, retiring ? 1 : 2);
+      result |=
+          Check(replayed.status == ReplayStatus::kReplayed &&
+                    replayed.jobs.size() == (retiring ? 1U : 2U) &&
+                    replayed.jobs.back().job_id == retirement::Job(2),
+                "restart authority includes the complete record even while Commit never returned");
+      // This deterministically observes a crash window; it does not claim to crash the host or
+      // qualify physical sync. Release only after asserting the restart projection.
+      gate.Release();
+      const auto done = fixture.writer->AwaitCompletion(input.ingress_sequence);
+      result |=
+          Check(done &&
+                    done->code == (returned == LogicalCommitResult::kCommitted
+                                       ? ri::Completion::Code::kSuccess
+                                       : ri::Completion::Code::kServiceFailed) &&
+                    gate.Verify(),
+                "held return is released once, with the scripted committed/unknown disposition");
+    }
+  }
+  {
+    retirement::Plan plan;
+    plan.Close(1);
+    const auto setup = plan.inputs.size();
+    plan.Add(retirement::Create(2));
+    retirement::Fixture fixture(plan, 1);
+    if (!fixture.Run(plan, 0, setup)) return Check(false, "after-commit crash-window setup");
+    retirement::Hold hold(*fixture.writer, ri::WriterPhase::kAfterCommit);
+    const auto input = retirement::Submit(*fixture.writer, retirement::Create(2));
+    if (!hold.Wait(input))
+      return result | Check(false, "retiring turn reaches committed-before-install checkpoint");
+    std::string bytes;
+    for (const auto& event : fixture.journal.CopyObservations()) bytes += Bytes(event);
+    auto fs = Journal({{1, bytes}});
+    const auto replayed = Replay(fs, 1);
+    result |= Check(
+        fixture.writer->SnapshotFor(retirement::Job(1)).has_value() &&
+            replayed.status == ReplayStatus::kReplayed && replayed.jobs.size() == 1 &&
+            replayed.jobs.front().job_id == retirement::Job(2),
+        "after kCommitted but before installation old reads and restart set deliberately differ");
+    hold.Release();
+    result |= Check(retirement::Success(*fixture.writer, input) && fixture.Verify(),
+                    "paused post-commit turn installs exactly once when released");
+  }
+  return result;
+}
+
+int ReplayRetiresLikeWriter() {
+  int result = 0;
+  {
+    retirement::Plan plan;
+    plan.Close(90).Close(10).Add(retirement::Create(30));
+    retirement::Fixture fixture(plan, 2);
+    const bool ran = fixture.Run(plan);
+    result |= Check(
+        ran, "writer must complete pressure creation before writer/replay equality is asserted");
+    if (ran) {
+      std::string bytes;
+      for (const auto& event : fixture.journal.CopyObservations()) bytes += Bytes(event);
+      auto fs = Journal({{1, bytes}});
+      const auto replayed = Replay(fs, 2);
+      result |=
+          Check(replayed.status == ReplayStatus::kReplayed && replayed.jobs.size() == 2 &&
+                    replayed.jobs[0].job_id == retirement::Job(10) &&
+                    replayed.jobs[1].job_id == retirement::Job(30),
+                "replay chooses the same oldest sequence, not UUID/slot order: " + replayed.detail);
+      for (const auto& snapshot : replayed.jobs) {
+        const auto live = fixture.writer->SnapshotFor(snapshot.job_id);
+        result |= Check(live && SnapshotJson(*live) == SnapshotJson(snapshot),
+                        "each replayed resident equals the last installed writer snapshot");
+      }
+    }
+  }
+  for (const bool retiring : {false, true}) {
+    retirement::Plan plan;
+    plan.Close(1);
+    const auto setup = plan.inputs.size();
+    plan.Add(retirement::Create(2));
+    plan.journal.back().result = LogicalCommitResult::kOutcomeUnknown;
+    retirement::Fixture fixture(plan, retiring ? 1 : 2);
+    if (!fixture.Run(plan, 0, setup)) return Check(false, "durable unknown-result setup commits");
+    const auto input = retirement::Submit(*fixture.writer, retirement::Create(2));
+    if (input.code != ri::IngressCode::kAdmitted) {
+      result |=
+          Check(false, "retiring durable unknown-result creation must first obtain its ticket");
+      continue;
+    }
+    const auto done = fixture.writer->AwaitCompletion(input.ingress_sequence);
+    result |= Check(done && done->code == ri::Completion::Code::kServiceFailed &&
+                        fixture.writer->SnapshotFor(retirement::Job(1)).has_value() &&
+                        !fixture.writer->SnapshotFor(retirement::Job(2)),
+                    "unknown commit preserves old installed reads and latches");
+    // The scripted complete record is treated as durable. This tests restart authority, not
+    // physical flush behavior (qualified independently by the segment-Journal tests).
+    std::string bytes;
+    for (const auto& event : fixture.journal.CopyObservations()) bytes += Bytes(event);
+    auto fs = Journal({{1, bytes}});
+    const auto replayed = Replay(fs, retiring ? 1 : 2);
+    result |= Check(replayed.status == ReplayStatus::kReplayed &&
+                        replayed.jobs.size() == (retiring ? 1U : 2U) &&
+                        replayed.jobs.back().job_id == retirement::Job(2),
+                    "complete durable creation governs restart despite unknown prior outcome: " +
+                        replayed.detail);
+  }
+  {
+    retirement::Plan plan;
+    plan.Close(1).Close(2).Add(retirement::Create(3));
+    auto fs = PlannedJournal(plan);
+    const auto larger = Replay(fs, 3);
+    const auto original = Replay(fs, 2);
+    const auto smaller = Replay(fs, 1);
+    result |= Check(larger.status == ReplayStatus::kReplayed && larger.jobs.size() == 3 &&
+                        original.status == ReplayStatus::kReplayed && original.jobs.size() == 2 &&
+                        original.jobs.front().job_id == retirement::Job(2) &&
+                        smaller.status == ReplayStatus::kReplayed && smaller.jobs.size() == 1 &&
+                        smaller.jobs.front().job_id == retirement::Job(3),
+                    "resident-set equality is conditional on the configured max_jobs");
+  }
+  for (const auto audit : {EventType::kCleanupStatusRecorded, EventType::kResourcesReleased,
+                           EventType::kProcessExitConfirmed, EventType::kLateWorkerEvent}) {
+    retirement::Plan plan;
+    plan.CloseWorker(1).Close(2);
+    if (audit == EventType::kCleanupStatusRecorded) plan.Add(retirement::Cleanup(1));
+    if (audit == EventType::kResourcesReleased) plan.Add(retirement::Release(1));
+    if (audit == EventType::kProcessExitConfirmed) plan.Add(retirement::Exit(1));
+    if (audit == EventType::kLateWorkerEvent) plan.Add(retirement::WorkerFact(1, 2));
+    auto fs = PlannedJournal(plan);
+    result |=
+        Check(Replay(fs, 2).status == ReplayStatus::kReplayed &&
+                  Refused(Replay(fs, 1), ReplayStatus::kCorrupt, "journal_corrupt"),
+              "a smaller bound retiring before a retained post-closure audit must be corrupt");
+  }
+  for (const bool reducer_cleanup : {false, true}) {
+    retirement::Plan prefix;
+    prefix.Close(1, reducer_cleanup);
+    std::string bytes;
+    for (const auto& event : prefix.journal) bytes += Bytes(event.event);
+    const auto next = static_cast<std::uint64_t>(prefix.journal.size() + 1);
+    auto fs = Journal({{1, bytes}, {next, Bytes(Created(next, 2))}});
+    const auto pruned = PruneClosedPrefix(fs, k_dir, PruneOptions{});
+    const auto replayed = Replay(fs, 1);
+    result |= Check(pruned.status == MaintenanceStatus::kDone &&
+                        replayed.status == ReplayStatus::kReplayed && replayed.jobs.size() == 1 &&
+                        replayed.jobs.front().job_id == Uuid{Job(2)},
+                    "offline prune removes a closed no-allocation resident, including "
+                    "reducer-incomplete cleanup");
+  }
+  for (const bool failed_launch : {false, true}) {
+    retirement::Plan prefix;
+    if (failed_launch) {
+      prefix.CloseWorker(1, true).Add(retirement::WorkerFact(1, 2));
+    } else {
+      prefix.Running(1).Add(retirement::WorkerFact(1));
+      prefix.Finalize(1, "succeeded");
+      prefix.Add(retirement::Cleanup(1));
+    }
+    std::string bytes;
+    for (const auto& event : prefix.journal) bytes += Bytes(event.event);
+    const auto next = static_cast<std::uint64_t>(prefix.journal.size() + 1);
+    auto fs = Journal({{1, bytes}, {next, Bytes(Created(next, 2))}});
+    const auto pruned = PruneClosedPrefix(fs, k_dir, PruneOptions{});
+    result |= Check(pruned.status == (failed_launch ? MaintenanceStatus::kDone
+                                                    : MaintenanceStatus::kNothingToDo),
+                    "failed launch confirms exit; an open ACK without either exit path keeps "
+                    "prefix replayable");
+  }
+  result |= ReplayFifoRetirementVectors();
+  result |= ReplayDurableInstallWindows();
   return result;
 }
 }  // namespace
@@ -621,6 +978,8 @@ int main(int argc, char** argv) try {
   if (check == "journal_replay_sequence_continuation") return SequenceContinuation();
   if (check == "journal_unresolved_jobs_block_admission") return UnresolvedJobsBlockAdmission();
   if (check == "journal_resolved_jobs_seed_writer") return ResolvedJobsSeedWriter();
+  if (check == "journal_replay_retires_like_writer") return ReplayRetiresLikeWriter();
+  if (check == "journal_replay_capacity_after_retirement") return ReplayCapacityAfterRetirement();
   std::cerr << "unknown check " << check << '\n';
   return 2;
 } catch (const std::exception& error) {

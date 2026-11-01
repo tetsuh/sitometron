@@ -68,6 +68,11 @@ struct JobOrchestrator::Impl {
     bool permit = false;
     bool callback_lease = false;
     std::uint64_t ingress_sequence = 0;
+    std::uint64_t lease_serial = 0;
+    // Ownership is not an ACK/disarm flag. Only the matching turn/token releases it.
+    std::uint64_t queued_sequence = 0;
+    std::uint64_t exported_lease_serial = 0;
+    bool retire_requested = false;
     std::uint8_t identity_slot = k_no_identity_slot;
   };
   struct GeneratedIdentityBundle {
@@ -90,6 +95,7 @@ struct JobOrchestrator::Impl {
     bool critical = false;
     GateKind gate = GateKind::kCount;
     std::size_t resident_index = k_no_resident;
+    std::size_t victim_index = k_no_resident;
     std::optional<GeneratedIdentityBundle> creation_identities;
     bool authorized = false;
   };
@@ -123,6 +129,10 @@ struct JobOrchestrator::Impl {
     std::array<std::vector<TraceRecord>, 2> prepared_trace;
     int active = 0;
     bool exists = false;
+    bool reserved = false;
+    bool ticket = false;
+    bool claimed = false;
+    std::uint64_t created_sequence = 0;
     std::size_t claims = 0;
     bool worker_pending = false;
     std::uint64_t worker_sequence = 0;
@@ -138,11 +148,104 @@ struct JobOrchestrator::Impl {
     std::array<Gate, static_cast<std::size_t>(GateKind::kCount)> gates{};
   };
 
+  // Never construct heap-owning temporaries during reset: debug STL constructors may
+  // allocate. Check the exact in-place operations, not aggregate construction/moves.
+  template <typename T>
+  static void ClearForReset(T& value) noexcept {
+    static_assert(noexcept(value.clear()));
+    value.clear();
+  }
+  template <typename T>
+  static void OptionalForReset(std::optional<T>& value) noexcept {
+    static_assert(noexcept(value.reset()));
+    value.reset();
+  }
+  template <typename T>
+  static void AssignForReset(T& target, const T& value) noexcept {
+    static_assert(noexcept(target = value));
+    target = value;
+  }
+  static void ResetSnapshotInPlace(Snapshot& snapshot) noexcept {
+    // Exhaustive bindings make a newly added state member a compile-time reset review.
+    auto& [schema_version, job_id, session_id, entity_exists, state, latched_reason,
+           completion_candidate, completion_mode, resource_status, allocation_id, allocation_digest,
+           worker_launch_status, launch_operation_id, worker_id, process_presence,
+           process_exit_confirmed, session_retention_status, finalization_status, cleanup_status,
+           pending_worker_event_ack, pending_worker_id, pending_worker_event_sequence] = snapshot;
+    AssignForReset(schema_version, std::uint32_t{1});
+    ClearForReset(job_id.value);
+    ClearForReset(session_id.value);
+    AssignForReset(entity_exists, false);
+    AssignForReset(state, JobState::kInvalid);
+    OptionalForReset(latched_reason);
+    AssignForReset(completion_candidate, false);
+    AssignForReset(completion_mode, CompletionMode::kInvalid);
+    AssignForReset(resource_status, ResourceStatus::kInvalid);
+    OptionalForReset(allocation_id);
+    OptionalForReset(allocation_digest);
+    AssignForReset(worker_launch_status, LaunchStatus::kInvalid);
+    OptionalForReset(launch_operation_id);
+    OptionalForReset(worker_id);
+    AssignForReset(process_presence, ProcessPresence::kInvalid);
+    AssignForReset(process_exit_confirmed, false);
+    AssignForReset(session_retention_status, RetentionStatus::kInvalid);
+    AssignForReset(finalization_status, FinalizationStatus::kInvalid);
+    AssignForReset(cleanup_status, CleanupStatus::kInvalid);
+    AssignForReset(pending_worker_event_ack, false);
+    OptionalForReset(pending_worker_id);
+    OptionalForReset(pending_worker_event_sequence);
+  }
+  static void ResetApplyInPlace(ApplyResult& result) noexcept {
+    auto& [snapshot, effects, rejection] = result;
+    ResetSnapshotInPlace(snapshot);
+    ClearForReset(effects);
+    OptionalForReset(rejection);
+  }
+  static void ResetCandidateInPlace(RawCandidateEvent& candidate) noexcept {
+    auto& [schema_version, job_id, event_type, payload_json] = candidate;
+    AssignForReset(schema_version, std::uint32_t{1});
+    ClearForReset(job_id.value);
+    ClearForReset(event_type);
+    ClearForReset(payload_json);
+  }
+  static void ResetResidentInPlace(Resident& resident) noexcept {
+    auto& [id, banks, prepared_effects, prepared_trace, active, exists, reserved, ticket, claimed,
+           created_sequence, claims, worker_pending, worker_sequence, worker_ingress_sequence,
+           worker_payload, generated_worker, generated_launch_operation, generated_identities,
+           timer_generation, identity_slots, gates] = resident;
+    ClearForReset(id.value);
+    for (auto& bank : banks) ResetApplyInPlace(bank);
+    // Keep the original vector objects, including their debug iterator proxies and capacities.
+    for (auto& bank : prepared_effects) ClearForReset(bank);
+    for (auto& bank : prepared_trace) ClearForReset(bank);
+    AssignForReset(active, 0);
+    AssignForReset(exists, false);
+    AssignForReset(reserved, false);
+    AssignForReset(ticket, false);
+    AssignForReset(claimed, false);
+    AssignForReset(created_sequence, std::uint64_t{0});
+    AssignForReset(claims, std::size_t{0});
+    AssignForReset(worker_pending, false);
+    AssignForReset(worker_sequence, std::uint64_t{0});
+    AssignForReset(worker_ingress_sequence, std::uint64_t{0});
+    ResetCandidateInPlace(worker_payload);
+    OptionalForReset(generated_worker);
+    OptionalForReset(generated_launch_operation);
+    OptionalForReset(generated_identities);
+    // These temporary arrays contain scalars only; guard both construction and assignment.
+    static_assert(noexcept(decltype(timer_generation){}));
+    static_assert(noexcept(decltype(identity_slots){}));
+    static_assert(noexcept(decltype(gates){}));
+    AssignForReset(timer_generation, {});
+    AssignForReset(identity_slots, {});
+    AssignForReset(gates, {});
+  }
+
   explicit Impl(const Config& value) : config(value) {
     if (config.max_jobs == 0 || config.normal_capacity == 0 || config.critical_reserve() == 0 ||
         config.total_capacity() == 0 || config.trace_capacity == 0 ||
         config.completion_capacity < config.total_capacity() ||
-        config.trace_capacity < config.total_capacity() ||
+        config.trace_capacity < config.total_capacity() || config.trace_capacity < 14 ||
         config.handoff_capacity < k_max_prepared_effects ||
         config.handoff_capacity < k_max_mapped_destinations ||
         config.ack_capacity < config.max_jobs || config.ack_capacity < k_max_ack_destinations ||
@@ -152,7 +255,8 @@ struct JobOrchestrator::Impl {
         config.ports.session == nullptr || config.ports.identity == nullptr)
       throw std::bad_variant_access();
     fifo.resize(config.total_capacity());
-    residents.resize(config.max_jobs);
+    residents.resize(config.max_jobs + 1);
+    spare_index = config.max_jobs;
     completions.resize(config.completion_capacity);
     trace.resize(config.trace_capacity);
     ingress.resize(config.trace_capacity);
@@ -172,7 +276,9 @@ struct JobOrchestrator::Impl {
   // Replay dispatched nothing, so no timer, effect, trace record, or acknowledgment is created.
   void Seed() {
     const auto& jobs = config.replayed_jobs;
-    if (jobs.size() > residents.size()) throw std::bad_variant_access();
+    if (jobs.size() > config.max_jobs || (!config.replayed_created_sequences.empty() &&
+                                          config.replayed_created_sequences.size() != jobs.size()))
+      throw std::bad_variant_access();
     for (std::size_t i = 0; i != jobs.size(); ++i) {
       if (!jobs[i].entity_exists) throw std::bad_variant_access();
       for (std::size_t j = 0; j != i; ++j)
@@ -182,10 +288,15 @@ struct JobOrchestrator::Impl {
       resident.banks[0] = ApplyResult{jobs[i], {}, std::nullopt};
       resident.banks[1] = resident.banks[0];
       resident.exists = true;
+      resident.reserved = true;
+      resident.created_sequence = config.replayed_created_sequences.empty()
+                                      ? static_cast<std::uint64_t>(i + 1)
+                                      : config.replayed_created_sequences[i];
       RegisterGateLocked(resident, GateKind::kTerminate);
     }
     for (const auto& id : config.unresolved_jobs) {
-      if (Find(id) == nullptr) throw std::bad_variant_access();
+      if (Find(id) == nullptr || IsClosed(Find(id)->banks[Find(id)->active].snapshot))
+        throw std::bad_variant_access();
     }
     if (failed) throw std::bad_variant_access();
     // Unresolved Jobs cannot be resumed or concluded by this process (ADR-0002), so it starts
@@ -207,6 +318,8 @@ struct JobOrchestrator::Impl {
   std::size_t fifo_tail = 0;
   std::size_t fifo_count = 0;
   std::vector<Resident> residents;
+  std::size_t spare_index = 0;
+  std::uint64_t next_source_lease = 1;
   std::vector<CompletionSlot> completions;
   std::size_t completion_used = 0;
   std::size_t outstanding = 0;
@@ -214,8 +327,11 @@ struct JobOrchestrator::Impl {
   std::uint64_t in_flight_sequence = 0;
   std::vector<TraceRecord> trace;
   std::size_t trace_count = 0;
+  std::size_t trace_head = 0;
+  std::uint64_t next_trace_ordinal = 1;
   std::vector<std::uint64_t> ingress;
   std::size_t ingress_count = 0;
+  std::size_t ingress_head = 0;
   std::vector<std::uint64_t> ack_observations;
   std::size_t ack_count = 0;
   std::vector<std::shared_ptr<CallbackHandle::Control>> callbacks;
@@ -269,12 +385,12 @@ struct JobOrchestrator::Impl {
 
   Resident* Find(const ::sitometron::core::Uuid& id) {
     for (auto& resident : residents)
-      if (resident.id == id && (resident.exists || resident.claims != 0)) return &resident;
+      if (resident.id == id && resident.reserved) return &resident;
     return nullptr;
   }
   const Resident* Find(const ::sitometron::core::Uuid& id) const {
     for (const auto& resident : residents)
-      if (resident.id == id && (resident.exists || resident.claims != 0)) return &resident;
+      if (resident.id == id && resident.reserved) return &resident;
     return nullptr;
   }
   static GateKind TimerGate(TimeoutPhase phase) {
@@ -457,20 +573,67 @@ struct JobOrchestrator::Impl {
       return;
     }
     gate.registered = true;
+    gate.retire_requested = false;
     gate.permit = true;
     ++critical_count;
+  }
+  std::optional<SourceLease> AcquireGateLocked(Resident& resident, GateKind kind,
+                                               bool borrow_retained = false) {
+    if (failed || recovery_closed || resident.claimed || kind == GateKind::kCount ||
+        (mode != Mode::kRunning && mode != Mode::kQuiescing && mode != Mode::kDraining))
+      return std::nullopt;
+    auto& gate = resident.gates[static_cast<std::size_t>(kind)];
+    if (!gate.registered) return std::nullopt;
+    if (gate.callback_lease || gate.exported_lease_serial != 0) {
+      if (borrow_retained && gate.retained)
+        return SourceLease{IndexOf(&resident), static_cast<std::size_t>(kind), gate.lease_serial,
+                           true, false};
+      return std::nullopt;
+    }
+    if (next_source_lease == 0) {
+      FailLocked();
+      return std::nullopt;
+    }
+    const bool acquired = !gate.permit;
+    if (acquired) {
+      if (critical_count >= config.critical_reserve()) {
+        FailLocked();
+        return std::nullopt;
+      }
+      gate.permit = true;
+      ++critical_count;
+    }
+    gate.callback_lease = true;
+    gate.lease_serial = next_source_lease;
+    next_source_lease = next_source_lease == UINT64_MAX ? 0 : next_source_lease + 1;
+    return SourceLease{IndexOf(&resident), static_cast<std::size_t>(kind), gate.lease_serial, false,
+                       acquired};
+  }
+  bool ReturnGateLocked(SourceLease lease) {
+    if (lease.index >= residents.size() || lease.gate >= static_cast<std::size_t>(GateKind::kCount))
+      return false;
+    auto& resident = residents[lease.index];
+    auto& gate = resident.gates[lease.gate];
+    if (!gate.callback_lease || gate.lease_serial != lease.serial ||
+        (gate.exported_lease_serial != 0 && gate.exported_lease_serial != lease.serial))
+      return false;
+    if (lease.borrowed) return true;
+    gate.callback_lease = false;
+    gate.exported_lease_serial = 0;
+    if (lease.acquired_permit || gate.retire_requested)
+      ReleaseUnusedGateLocked(resident, static_cast<GateKind>(lease.gate));
+    if (!resident.exists && !HasOwnership(resident)) ResetSlotLocked(resident, false);
+    return true;
   }
   bool RetainGate(const ::sitometron::core::Uuid& id, GateKind kind) {
     std::lock_guard lock(mutex);
     auto* resident = Find(id);
-    if (resident == nullptr) return false;
+    if (resident == nullptr || kind == GateKind::kCount) return false;
     auto& gate = resident->gates[static_cast<std::size_t>(kind)];
-    if (mode != Mode::kRunning && mode != Mode::kQuiescing) return false;
-    if (!gate.registered || !gate.permit || gate.retained) return false;
-    // A retained test lease only holds a permit acquired at registration; it
-    // can never manufacture a source permit after an exposure.
+    if (!gate.permit || gate.retained || (mode != Mode::kRunning && mode != Mode::kQuiescing))
+      return false;
+    if (!AcquireGateLocked(*resident, kind)) return false;
     gate.retained = true;
-    gate.callback_lease = true;
     return true;
   }
   std::size_t PlanDerivedSources(const ApplyResult& applied, EventType event_type,
@@ -520,11 +683,43 @@ struct JobOrchestrator::Impl {
                              std::size_t count) noexcept {
     for (std::size_t i = 0; i != count; ++i) {
       auto& gate = resident.gates[static_cast<std::size_t>(plan[i])];
-      if (gate.permit) continue;
       gate.registered = true;
+      gate.retire_requested = false;
+      if (gate.permit) continue;
       gate.permit = true;
       ++critical_count;
     }
+  }
+  void ReleaseUnusedGateLocked(Resident& resident, GateKind kind) {
+    auto& gate = resident.gates[static_cast<std::size_t>(kind)];
+    if (gate.queued_sequence != 0 || gate.callback_lease || gate.exported_lease_serial != 0 ||
+        gate.retained)
+      return;
+    gate.pending = false;
+    gate.retire_requested = false;
+    gate.ingress_sequence = 0;
+    gate.identity_slot = k_no_identity_slot;
+    if (IsIdentityGate(kind)) resident.identity_slots[IdentitySlot(kind)] = {};
+    if (gate.permit) {
+      gate.permit = false;
+      if (critical_count != 0) --critical_count;
+    }
+  }
+  void RetireWorkerProtocolLocked(Resident& resident) {
+    auto& worker = resident.gates[static_cast<std::size_t>(GateKind::kWorker)];
+    worker.retained = false;
+    worker.ack_authorized = false;
+    worker.retire_requested = true;
+    // Retain* compatibility helpers own protocol-retained references, not exported tokens.
+    // Their historical ACK/exit release is unchanged; a real SourceLease must be returned.
+    if (worker.exported_lease_serial == 0) worker.callback_lease = false;
+    ReleaseUnusedGateLocked(resident, GateKind::kWorker);
+  }
+  bool HasSourceLeaseOwners() const noexcept {
+    for (const auto& resident : residents)
+      for (const auto& gate : resident.gates)
+        if (gate.exported_lease_serial != 0) return true;
+    return false;
   }
   void ReleaseGateLocked(const Entry& entry, bool successful) {
     if (!entry.critical) {
@@ -541,9 +736,16 @@ struct JobOrchestrator::Impl {
       return;
     }
     auto& gate = residents[entry.resident_index].gates[static_cast<std::size_t>(entry.gate)];
+    if (gate.queued_sequence != entry.sequence) {
+      FailLocked();
+      return;
+    }
+    gate.queued_sequence = 0;
     gate.pending = false;
     if (entry.gate == GateKind::kWorker && successful) {
-      gate.retained = true;  // Exact ACK or confirmed process exit retires this identity.
+      // The identity must survive until a later terminal turn authorizes ACK delivery.
+      gate.retained = true;
+      gate.retire_requested = false;
       return;
     }
     if (entry.gate >= GateKind::kPreparationTimer && entry.gate <= GateKind::kProcessExitTimer) {
@@ -551,27 +753,12 @@ struct JobOrchestrator::Impl {
       // a later arm creates a fresh generation/registration.
       gate.registered = false;
     }
-    if (entry.gate == GateKind::kProcessExit && successful) {
-      auto& worker =
-          residents[entry.resident_index].gates[static_cast<std::size_t>(GateKind::kWorker)];
-      worker.pending = false;
-      worker.retained = false;
-      worker.ack_authorized = false;
-      worker.callback_lease = false;
-      residents[entry.resident_index].identity_slots[IdentitySlot(GateKind::kWorker)] = {};
-      worker.ingress_sequence = 0;
-      if (worker.permit) {
-        worker.permit = false;
-        if (critical_count != 0) --critical_count;
-      }
-    }
-    if (!gate.retained && IsIdentityGate(entry.gate))
-      residents[entry.resident_index].identity_slots[IdentitySlot(entry.gate)] = {};
-    if (!gate.retained && gate.permit) {
-      gate.permit = false;
-      gate.ingress_sequence = 0;
-      if (critical_count != 0) --critical_count;
-    }
+    if (entry.gate == GateKind::kProcessExit && successful)
+      RetireWorkerProtocolLocked(residents[entry.resident_index]);
+    gate.retire_requested = true;
+    ReleaseUnusedGateLocked(residents[entry.resident_index], entry.gate);
+    auto& resident = residents[entry.resident_index];
+    if (!resident.exists && !HasOwnership(resident)) ResetSlotLocked(resident, false);
   }
   void RetireShutdownGateLocked() {
     shutdown_gate_pending = false;
@@ -583,54 +770,49 @@ struct JobOrchestrator::Impl {
   }
   void CancelGatesLocked() {
     for (auto& resident : residents) {
-      for (auto& gate : resident.gates) {
-        gate.pending = false;
+      for (std::size_t index = 0; index != resident.gates.size(); ++index) {
+        auto& gate = resident.gates[index];
         gate.retained = false;
         gate.ack_authorized = false;
-        gate.callback_lease = false;
-        gate.identity_slot = k_no_identity_slot;
-        gate.ingress_sequence = 0;
-        if (gate.permit) {
-          gate.permit = false;
-          if (critical_count != 0) --critical_count;
-        }
+        gate.retire_requested = true;
+        if (gate.exported_lease_serial == 0) gate.callback_lease = false;
+        ReleaseUnusedGateLocked(resident, static_cast<GateKind>(index));
       }
-      for (auto& identity : resident.identity_slots) identity = {};
     }
   }
   void RetireGateLocked(Resident& resident, GateKind kind) {
     auto& gate = resident.gates[static_cast<std::size_t>(kind)];
-    gate.pending = false;
-    // A test-owned lease deliberately keeps an already-acquired producer
-    // permit through later phases; disarm only retires an unleased source.
-    if (gate.retained) return;
-    gate.callback_lease = false;
+    gate.retire_requested = true;
+    // A retained registration or in-flight callback still owns its producer permit.
+    // Disarm does not release an admitted timer's queued/in-flight turn either.
+    if (gate.retained || gate.callback_lease) return;
     if (kind >= GateKind::kPreparationTimer && kind <= GateKind::kProcessExitTimer)
       gate.registered = false;
-    if (IsIdentityGate(kind)) resident.identity_slots[IdentitySlot(kind)] = {};
-    gate.identity_slot = k_no_identity_slot;
-    gate.ingress_sequence = 0;
-    if (gate.permit) {
-      gate.permit = false;
-      if (critical_count != 0) --critical_count;
-    }
+    ReleaseUnusedGateLocked(resident, kind);
+  }
+  static bool HasOwnership(const Resident& resident) noexcept {
+    if (resident.claims != 0) return true;
+    for (const auto& gate : resident.gates)
+      if (gate.queued_sequence != 0 || gate.callback_lease || gate.exported_lease_serial != 0)
+        return true;
+    return false;
+  }
+  void ResetSlotLocked(Resident& resident, bool advance) noexcept {
+    auto generations = resident.timer_generation;
+    if (advance)
+      for (auto& generation : generations) ++generation;
+    for (const auto& gate : resident.gates)
+      if (gate.permit && critical_count != 0) --critical_count;
+    ResetResidentInPlace(resident);
+    AssignForReset(resident.timer_generation, generations);
   }
   void ReleaseCreationClaimLocked(const Entry& entry) {
+    if (entry.victim_index != k_no_resident) residents[entry.victim_index].claimed = false;
     if (entry.kind == Entry::Kind::kCandidate && entry.candidate.event_type == "job_created" &&
         entry.resident_index != k_no_resident && entry.resident_index < residents.size()) {
       auto& resident = residents[entry.resident_index];
       if (resident.claims != 0) --resident.claims;
-      if (!resident.exists && resident.claims == 0) {
-        for (const auto& gate : resident.gates) {
-          if (gate.permit && critical_count != 0) --critical_count;
-        }
-        // Preserve startup-reserved bank storage across provisional-claim rollback.
-        auto prepared_effects = std::move(resident.prepared_effects);
-        auto prepared_trace = std::move(resident.prepared_trace);
-        resident = Resident{};
-        resident.prepared_effects = std::move(prepared_effects);
-        resident.prepared_trace = std::move(prepared_trace);
-      }
+      if (!resident.exists && !HasOwnership(resident)) ResetSlotLocked(resident, false);
     }
   }
   void Checkpoint(std::uint64_t sequence, WriterPhase phase) {
@@ -644,23 +826,59 @@ struct JobOrchestrator::Impl {
       return !barrier_armed || barrier != phase || barrier_sequence != sequence;
     });
   }
+  std::optional<std::size_t> OrdinaryFree() const noexcept {
+    for (std::size_t i = 0; i != residents.size(); ++i)
+      if (i != spare_index && !residents[i].reserved) return i;
+    return std::nullopt;
+  }
+  std::optional<std::size_t> OldestVictim() const {
+    return OldestClosed(
+        residents.size(),
+        [this](std::size_t i) -> const Snapshot* {
+          return residents[i].exists ? &residents[i].banks[residents[i].active].snapshot : nullptr;
+        },
+        [this](std::size_t i) { return residents[i].created_sequence; });
+  }
+  bool CanReserve() const {
+    return OrdinaryFree().has_value() || (!residents[spare_index].reserved && OldestVictim());
+  }
   Resident* Reserve(const ::sitometron::core::Uuid& id) {
-    if (auto* known = Find(id)) {
+    if (auto* known = Find(id); known != nullptr && !known->claimed) {
       ++known->claims;
       return known;
     }
-    for (auto& resident : residents) {
-      if (!resident.exists && resident.claims == 0) {
-        resident.id = id;
-        resident.claims = 1;
-        resident.banks[0] =
-            ApplyResult{::sitometron::core::InitialSnapshot(id, id), {}, std::nullopt};
-        resident.banks[1] = resident.banks[0];
-        RegisterGateLocked(resident, GateKind::kTerminate);
-        return &resident;
-      }
+    const auto ordinary = OrdinaryFree();
+    if (!ordinary && !CanReserve()) return nullptr;
+    auto& resident = residents[ordinary.value_or(spare_index)];
+    resident.id = id;
+    resident.reserved = true;
+    resident.ticket = !ordinary;
+    resident.claims = 1;
+    resident.banks[0] = ApplyResult{::sitometron::core::InitialSnapshot(id, id), {}, std::nullopt};
+    resident.banks[1] = resident.banks[0];
+    RegisterGateLocked(resident, GateKind::kTerminate);
+    return &resident;
+  }
+  enum class Selection : std::uint8_t { kProceed, kRefuse, kFail };
+  Selection SelectRetirementLocked(Entry& entry) {
+    auto& slot = residents[entry.resident_index];
+    if (!slot.ticket) return Selection::kProceed;
+    const auto committed =
+        std::ranges::count_if(residents, [](const Resident& r) { return r.exists; });
+    if (static_cast<std::size_t>(committed) < config.max_jobs) {
+      const auto ordinary = OrdinaryFree();
+      if (!ordinary) return Selection::kRefuse;
+      // Exchange roles, not ownership: queued entries retain their physical destination.
+      spare_index = *ordinary;
+      slot.ticket = false;
+      return Selection::kProceed;
     }
-    return nullptr;
+    const auto victim = OldestVictim();
+    if (!victim) return Selection::kFail;
+    if (HasOwnership(residents[*victim])) return Selection::kRefuse;
+    residents[*victim].claimed = true;
+    entry.victim_index = *victim;
+    return Selection::kProceed;
   }
   void CompleteLocked(const Entry& entry, Completion completion) {
     // Never search for spare storage on completion: the entry's exact slot and
@@ -699,10 +917,12 @@ struct JobOrchestrator::Impl {
       FailLocked();
       return;
     }
-    trace[trace_count] = std::move(prepared[cursor++]);
-    trace[trace_count].ordinal = static_cast<std::uint64_t>(trace_count + 1);
-    trace[trace_count].ingress_mutex_held = false;
-    trace[trace_count].writer_context = measured_writer_id == std::this_thread::get_id();
+    auto& record = trace[(trace_head + trace_count) % trace.size()];
+    record = std::move(prepared[cursor++]);
+    record.ordinal = next_trace_ordinal;
+    next_trace_ordinal = next_trace_ordinal == UINT64_MAX ? 0 : next_trace_ordinal + 1;
+    record.ingress_mutex_held = false;
+    record.writer_context = measured_writer_id == std::this_thread::get_id();
     ++trace_count;
   }
   struct TracePosition {
@@ -824,7 +1044,8 @@ struct JobOrchestrator::Impl {
 
     const auto job_id =
         entry.kind == Entry::Kind::kCommand ? entry.command.job_id : entry.candidate.job_id;
-    const bool known = Find(job_id) != nullptr;
+    const auto* known_slot = Find(job_id);
+    const bool known = known_slot != nullptr && !known_slot->claimed;
     bool normal = false;
     if (entry.kind == Entry::Kind::kCandidate) {
       normal = !IsCriticalCandidate(entry.candidate);
@@ -846,12 +1067,10 @@ struct JobOrchestrator::Impl {
       return ResultLocked(IngressCode::kServiceFailed);
     }
     // Resident capacity has deterministic precedence over normal FIFO capacity.
-    if (reserve_job && !known && residents.size() == ResidentCount())
-      return ResultLocked(IngressCode::kResidentLimit);
+    if (reserve_job && !known && !CanReserve()) return ResultLocked(IngressCode::kResidentLimit);
     if (normal && normal_count >= config.normal_capacity)
       return ResultLocked(IngressCode::kNormalFull);
-    if (fifo_count == fifo.size() || ingress_count == ingress.size() ||
-        completion_used == completions.size()) {
+    if (fifo_count == fifo.size() || completion_used == completions.size()) {
       FailLocked();
       return ResultLocked(IngressCode::kServiceFailed);
     }
@@ -876,15 +1095,7 @@ struct JobOrchestrator::Impl {
         FailLocked();
         return ResultLocked(IngressCode::kServiceFailed);
       }
-      if (!gate->permit) {
-        if (critical_count >= config.critical_reserve()) {
-          FailLocked();
-          return ResultLocked(IngressCode::kServiceFailed);
-        }
-        gate->permit = true;
-        ++critical_count;
-      }
-      if (gate->pending ||
+      if (gate->queued_sequence != 0 || gate->pending ||
           (entry.gate == GateKind::kWorker && gate->retained && gate->ingress_sequence != 0)) {
         const bool timer_gate =
             entry.gate >= GateKind::kPreparationTimer && entry.gate <= GateKind::kProcessExitTimer;
@@ -896,6 +1107,12 @@ struct JobOrchestrator::Impl {
       }
       entry.resident_index = IndexOf(resident);
     }
+    std::optional<SourceLease> source_lease;
+    if (gate != nullptr) {
+      source_lease = AcquireGateLocked(*resident, entry.gate, true);
+      if (!source_lease)
+        return ResultLocked(failed ? IngressCode::kServiceFailed : IngressCode::kAdmissionClosed);
+    }
     if (entry.kind == Entry::Kind::kShutdown) {
       if (mode != Mode::kQuiescing || !shutdown_gate_registered || shutdown_gate_pending)
         return ResultLocked(IngressCode::kAdmissionClosed);
@@ -906,7 +1123,7 @@ struct JobOrchestrator::Impl {
     }
     if (reserve_job) {
       resident = Find(entry.candidate.job_id);
-      if (resident == nullptr) {
+      if (resident == nullptr || resident->claimed) {
         resident = Reserve(entry.candidate.job_id);
         if (resident == nullptr) return ResultLocked(IngressCode::kResidentLimit);
       } else {
@@ -948,6 +1165,8 @@ struct JobOrchestrator::Impl {
       ++critical_count;
     } else {
       gate->pending = true;
+      gate->queued_sequence = sequence;
+      gate->retire_requested = false;
       if (entry.gate == GateKind::kWorker) gate->ack_authorized = false;
       gate->ingress_sequence = sequence;
       if (entry.identity_ready) {
@@ -955,12 +1174,13 @@ struct JobOrchestrator::Impl {
         resident->identity_slots[IdentitySlot(entry.gate)] = entry.identity;
       }
     }
+    if (source_lease) ReturnGateLocked(*source_lease);
     const auto completion_before = completion_total + outstanding;
     fifo[fifo_tail] = std::move(entry);
     fifo_tail = (fifo_tail + 1) % fifo.size();
     ++fifo_count;
     ++outstanding;
-    ingress[ingress_count++] = sequence;
+    AppendIngress(sequence);
     return {IngressCode::kAdmitted, sequence, completion_before};
   }
   bool Dequeue(Entry& out) {
@@ -1011,7 +1231,7 @@ struct JobOrchestrator::Impl {
   std::size_t ResidentCount() const {
     std::size_t count = 0;
     for (const auto& resident : residents)
-      if (resident.exists || resident.claims != 0) ++count;
+      if (resident.reserved) ++count;
     return count;
   }
   std::size_t RequiredTraceSlots(EventType event_type, const ApplyResult& applied) const {
@@ -1036,7 +1256,26 @@ struct JobOrchestrator::Impl {
   }
   bool HasTraceCapacity(std::size_t required) const {
     std::lock_guard lock(mutex);
-    return required <= trace.size() - trace_count;
+    return required <= trace.size() && next_trace_ordinal != 0 &&
+           required - 1 <= UINT64_MAX - next_trace_ordinal;
+  }
+  void ReserveTraceTurn(std::size_t required) noexcept {
+    std::lock_guard lock(mutex);
+    while (trace.size() - trace_count < required) {
+      const auto sequence = trace[trace_head].journal_sequence;
+      do {
+        trace[trace_head] = TraceRecord{};
+        trace_head = (trace_head + 1) % trace.size();
+        --trace_count;
+      } while (trace_count != 0 && trace[trace_head].journal_sequence == sequence);
+    }
+  }
+  void AppendIngress(std::uint64_t sequence) noexcept {
+    ingress[(ingress_head + ingress_count) % ingress.size()] = sequence;
+    if (ingress_count != ingress.size())
+      ++ingress_count;
+    else
+      ingress_head = (ingress_head + 1) % ingress.size();
   }
   static TraceKind MappedKind(EffectId id) noexcept {
     switch (id) {
@@ -1343,6 +1582,25 @@ struct JobOrchestrator::Impl {
           entry.candidate.event_type == "job_created")
         resident = Reserve(entry.candidate.job_id);
     }
+    if (entry.kind == Entry::Kind::kCandidate && entry.candidate.event_type == "job_created") {
+      Selection selection;
+      {
+        std::lock_guard lock(mutex);
+        selection = SelectRetirementLocked(entry);
+        if (selection == Selection::kRefuse) {
+          ReleaseCreationClaimLocked(entry);
+          ReleaseGateLocked(entry, false);
+          CompleteLocked(entry, {Completion::Code::kResidentLimit, std::nullopt});
+        }
+      }
+      if (selection == Selection::kRefuse) return;
+      if (selection == Selection::kFail) {
+        FailTurn(entry);
+        return;
+      }
+      if (entry.victim_index != k_no_resident)
+        Checkpoint(entry.sequence, WriterPhase::kVictimClaimed);
+    }
     ::sitometron::core::Snapshot before =
         ::sitometron::core::InitialSnapshot(unknown_job, unknown_job);
     {
@@ -1383,6 +1641,9 @@ struct JobOrchestrator::Impl {
     {
       std::lock_guard lock(mutex);
       cannot_materialize = precommit_failure || destination_capacity == 0 || next_journal == 0;
+      if (entry.victim_index != k_no_resident)
+        for (const auto generation : residents[entry.victim_index].timer_generation)
+          if (generation == UINT64_MAX) cannot_materialize = true;
       ++destination_capacity_checks;
     }
     if (cannot_materialize) {
@@ -1443,6 +1704,7 @@ struct JobOrchestrator::Impl {
       record.journal_sequence = journal_sequence;
     Checkpoint(entry.sequence, WriterPhase::kBeforeCommit);
     std::size_t trace_cursor = 0;
+    ReserveTraceTurn(resident->prepared_trace[static_cast<std::size_t>(inactive)].size());
     PublishPrepared(*resident, inactive, trace_cursor);  // JournalAttempt, before Commit().
     if (const auto commit = config.ports.journal->Commit(event);
         commit != LogicalCommitResult::kCommitted) {
@@ -1454,12 +1716,18 @@ struct JobOrchestrator::Impl {
     Checkpoint(entry.sequence, WriterPhase::kAfterCommit);
     {
       std::lock_guard lock(mutex);
-      // Commit success only flips a scalar index; no prospective value is moved
-      // or constructed after the logical boundary.
+      // Install the prepared bank and reset the unowned victim in one ingress transaction.
+      // Reset uses only no-throw clears/moves of previously reserved storage.
       resident->active = inactive;
       resident->exists = resident->banks[inactive].snapshot.entity_exists;
-      if (event.event_type == EventType::kJobCreated && resident->exists && resident->claims != 0)
-        --resident->claims;
+      if (event.event_type == EventType::kJobCreated) {
+        resident->created_sequence = event.sequence;
+        resident->ticket = false;
+        if (entry.victim_index != k_no_resident) {
+          ResetSlotLocked(residents[entry.victim_index], true);
+          spare_index = entry.victim_index;
+        }
+      }
       ++apply_total;
       ++prepared_turn_count;
       ActivateSourcesLocked(*resident, source_plan, source_count);
@@ -1511,6 +1779,34 @@ struct JobOrchestrator::Impl {
     }
     Complete(entry, {Completion::Code::kSuccess, std::nullopt});
     Checkpoint(entry.sequence, WriterPhase::kTurnFinished);
+  }
+  SlotState InspectSlotLocked(std::size_t index) const {
+    const auto& r = residents[index];
+    SlotState state;
+    state.index = index;
+    state.timer_generation = r.timer_generation;
+    state.state_banks_empty = std::ranges::all_of(r.banks, [](const auto& bank) {
+      return !bank.snapshot.entity_exists && bank.snapshot.job_id.value.empty() &&
+             bank.snapshot.session_id.value.empty() && bank.effects.empty() && !bank.rejection;
+    });
+    state.prepared_banks_empty =
+        std::ranges::all_of(r.prepared_effects, [](const auto& b) { return b.empty(); }) &&
+        std::ranges::all_of(r.prepared_trace, [](const auto& b) { return b.empty(); });
+    state.gates_empty = std::ranges::all_of(r.gates, [](const Gate& g) {
+      return !g.registered && !g.pending && !g.retained && !g.ack_authorized && !g.permit &&
+             !g.callback_lease && g.queued_sequence == 0 && g.exported_lease_serial == 0 &&
+             !g.retire_requested && g.ingress_sequence == 0 &&
+             g.identity_slot == k_no_identity_slot;
+    });
+    state.identities_empty =
+        r.id.value.empty() && std::ranges::all_of(r.identity_slots, [](const auto& i) {
+          return !i.valid && i.event_sequence == 0 && i.timer_generation == 0 &&
+                 std::ranges::all_of(i.job_id, [](char c) { return c == 0; }) &&
+                 std::ranges::all_of(i.worker_id, [](char c) { return c == 0; });
+        });
+    state.generated_bindings_empty =
+        !r.generated_worker && !r.generated_launch_operation && !r.generated_identities;
+    return state;
   }
 };
 JobOrchestrator::JobOrchestrator(const Config& config) : impl_(std::make_unique<Impl>(config)) {
@@ -1898,6 +2194,7 @@ JobOrchestrator::TimerSubmitResult JobOrchestrator::SubmitTimeout(
       if (impl_->recovery_closed)
         return TimerSubmitResult{false, impl_->ResultLocked(IngressCode::kAdmissionClosed)};
       const auto* resident = impl_->Find(notification.job_id);
+      if (resident != nullptr && resident->claimed) return TimerSubmitResult{true, {}};
       if (resident == nullptr) {
         TimerState unknown;
         unknown.job_id = notification.job_id;
@@ -1949,7 +2246,7 @@ JobOrchestrator::TimerSubmitResult JobOrchestrator::SubmitTimeout(
       if (impl_->failed)
         return TimerSubmitResult{false, impl_->ResultLocked(IngressCode::kServiceFailed)};
       const auto* resident = impl_->Find(notification.job_id);
-      if (resident == nullptr) return TimerSubmitResult{true, {}};
+      if (resident == nullptr || resident->claimed) return TimerSubmitResult{true, {}};
       // Re-run the pure ingress decision under the insertion lock. A disarm or generation change
       // during text construction therefore discards rather than failing or entering the reducer.
       const auto ingress = IngestTimer(snapshot_state(*resident), notification);
@@ -1987,7 +2284,7 @@ IngressResult JobOrchestrator::SubmitShutdown() {
     if (impl_->mode != Impl::Mode::kRunning)
       return impl_->ResultLocked(IngressCode::kAdmissionClosed);
     if (!impl_->shutdown_gate_registered || impl_->next_ingress == 0 ||
-        impl_->fifo_count == impl_->fifo.size() || impl_->ingress_count == impl_->ingress.size() ||
+        impl_->fifo_count == impl_->fifo.size() ||
         impl_->completion_used == impl_->completions.size() ||
         impl_->critical_count >= impl_->config.critical_reserve()) {
       impl_->FailLocked();
@@ -2026,10 +2323,77 @@ IngressResult JobOrchestrator::SubmitShutdown() {
     impl_->fifo_tail = (impl_->fifo_tail + 1) % impl_->fifo.size();
     ++impl_->fifo_count;
     ++impl_->outstanding;
-    impl_->ingress[impl_->ingress_count++] = sequence;
+    impl_->AppendIngress(sequence);
     result = {IngressCode::kAdmitted, sequence, before};
   }
   return KickIf(this, result);
+}
+std::optional<JobOrchestrator::SourceLease> JobOrchestrator::AcquireSourceLease(
+    const Uuid& id, EventType event, TimeoutPhase phase) {
+  std::lock_guard lock(impl_->mutex);
+  auto* resident = impl_->Find(id);
+  if (resident == nullptr) return std::nullopt;
+  auto kind = Impl::GateKind::kCount;
+  switch (event) {
+    case EventType::kWorkerCompleted:
+    case EventType::kWorkerFailed:
+      kind = Impl::GateKind::kWorker;
+      break;
+    case EventType::kProcessExitConfirmed:
+      kind = Impl::GateKind::kProcessExit;
+      break;
+    case EventType::kResourcesReleased:
+      kind = Impl::GateKind::kResourcesReleased;
+      break;
+    case EventType::kCleanupStatusRecorded:
+      kind = Impl::GateKind::kCleanup;
+      break;
+    case EventType::kTimeoutExpired:
+      if (static_cast<std::size_t>(phase) < 4) kind = Impl::TimerGate(phase);
+      break;
+    default:
+      break;
+  }
+  auto lease = impl_->AcquireGateLocked(*resident, kind);
+  if (lease) resident->gates[lease->gate].exported_lease_serial = lease->serial;
+  return lease;
+}
+bool JobOrchestrator::ReturnSourceLease(SourceLease lease) {
+  std::lock_guard lock(impl_->mutex);
+  return impl_->ReturnGateLocked(lease);
+}
+std::optional<JobOrchestrator::SlotState> JobOrchestrator::InspectSlotForTest(
+    const Uuid& id) const {
+  std::lock_guard lock(impl_->mutex);
+  const auto* resident = impl_->Find(id);
+  if (resident == nullptr) return std::nullopt;
+  return impl_->InspectSlotLocked(impl_->IndexOf(resident));
+}
+std::optional<JobOrchestrator::SlotState> JobOrchestrator::InspectSlotForTest(
+    std::size_t index) const {
+  std::lock_guard lock(impl_->mutex);
+  if (index >= impl_->residents.size()) return std::nullopt;
+  return impl_->InspectSlotLocked(index);
+}
+bool JobOrchestrator::SetTimerGenerationForTest(const Uuid& id, TimeoutPhase phase,
+                                                std::uint64_t value) {
+  std::lock_guard lock(impl_->mutex);
+  auto* resident = impl_->Find(id);
+  if (resident == nullptr || static_cast<std::size_t>(phase) >= 4) return false;
+  resident->timer_generation[static_cast<std::size_t>(phase)] = value;
+  return true;
+}
+bool JobOrchestrator::SetNextTraceOrdinalForTest(std::uint64_t value) {
+  std::lock_guard lock(impl_->mutex);
+  if (value == 0) return false;
+  impl_->next_trace_ordinal = value;
+  return true;
+}
+bool JobOrchestrator::SetNextSourceLeaseForTest(std::uint64_t value) {
+  std::lock_guard lock(impl_->mutex);
+  if (value == 0 || impl_->failed) return false;
+  impl_->next_source_lease = value;
+  return true;
 }
 bool JobOrchestrator::RetainTimerLease(const Uuid& id, TimeoutPhase phase) {
   return impl_->RetainGate(id, Impl::TimerGate(phase));
@@ -2059,17 +2423,7 @@ bool JobOrchestrator::RetireWorkerAck(const RawCandidateEvent& acked) {
       !Impl::SameIdentity(resident->identity_slots[Impl::IdentitySlot(Impl::GateKind::kWorker)],
                           ack_identity))
     return false;
-  gate.pending = false;
-  gate.retained = false;
-  gate.ack_authorized = false;
-  gate.callback_lease = false;
-  gate.identity_slot = Impl::k_no_identity_slot;
-  resident->identity_slots[Impl::IdentitySlot(Impl::GateKind::kWorker)] = {};
-  gate.ingress_sequence = 0;
-  if (gate.permit) {
-    gate.permit = false;
-    if (impl_->critical_count != 0) --impl_->critical_count;
-  }
+  impl_->RetireWorkerProtocolLocked(*resident);
   return true;
 }
 void JobOrchestrator::LatchFailureFromCallback() noexcept { LatchReadinessFailure(); }
@@ -2089,7 +2443,8 @@ void JobOrchestrator::TrySealFailure(bool allow_one_invocation) noexcept {
   }
   if (invocations != 0 && (!allow_one_invocation || invocations != 1)) return;
   std::lock_guard lock(impl_->mutex);
-  if (!impl_->failed || impl_->fifo_count != 0 || impl_->in_flight) return;
+  if (!impl_->failed || impl_->fifo_count != 0 || impl_->in_flight || impl_->HasSourceLeaseOwners())
+    return;
   impl_->CancelGatesLocked();
   impl_->RetireShutdownGateLocked();
   impl_->mode = Impl::Mode::kSealed;
@@ -2161,6 +2516,7 @@ bool JobOrchestrator::FinishShutdown() {
       if (impl_->fifo_count != 0 || impl_->in_flight) wake_.notify_one();
       return false;
     }
+    if (impl_->HasSourceLeaseOwners()) return false;
     // Retire all source gates only after the stable empty check. The shutdown permit itself is
     // held until the same mutex-protected sealed transition.
     impl_->CancelGatesLocked();
@@ -2463,14 +2819,20 @@ std::optional<Snapshot> JobOrchestrator::SnapshotFor(const Uuid& id) const {
 }
 std::vector<TraceRecord> JobOrchestrator::CopyTrace() const {
   std::lock_guard lock(impl_->mutex);
-  return {impl_->trace.begin(),
-          impl_->trace.begin() + static_cast<std::ptrdiff_t>(impl_->trace_count)};
+  std::vector<TraceRecord> result;
+  result.reserve(impl_->trace_count);
+  for (std::size_t i = 0; i != impl_->trace_count; ++i)
+    result.push_back(impl_->trace[(impl_->trace_head + i) % impl_->trace.size()]);
+  return result;
 }
 std::vector<LogicalJobEvent> JobOrchestrator::CopyJournalAttempts() const { return {}; }
 std::vector<std::uint64_t> JobOrchestrator::CopyIngressSequences() const {
   std::lock_guard lock(impl_->mutex);
-  return {impl_->ingress.begin(),
-          impl_->ingress.begin() + static_cast<std::ptrdiff_t>(impl_->ingress_count)};
+  std::vector<std::uint64_t> result;
+  result.reserve(impl_->ingress_count);
+  for (std::size_t i = 0; i != impl_->ingress_count; ++i)
+    result.push_back(impl_->ingress[(impl_->ingress_head + i) % impl_->ingress.size()]);
+  return result;
 }
 std::vector<ApplicationLaunchRequest> JobOrchestrator::CopyLaunchRequests() const { return {}; }
 std::vector<SessionRetainRequest> JobOrchestrator::CopySessionRequests() const { return {}; }

@@ -14,6 +14,7 @@
 #include <variant>
 #include <vector>
 
+#include "job_orchestrator.hpp"
 #include "sitometron/journal/record_codec.hpp"
 #include "sitometron/journal/segment_journal.hpp"
 
@@ -133,9 +134,7 @@ std::optional<core::Snapshot> ReplayRecord(const std::optional<core::Snapshot>& 
 }
 
 bool IsUnresolved(const core::Snapshot& snapshot) noexcept {
-  return !core::IsTerminalState(snapshot.state) ||
-         snapshot.resource_status == core::ResourceStatus::kCommitted ||
-         snapshot.cleanup_status == core::CleanupStatus::kPending;
+  return core::internal::IsUnresolved(snapshot);
 }
 
 namespace {
@@ -178,6 +177,7 @@ class Replayer {
     result_.status = status;
     result_.detail = std::move(detail);
     result_.jobs.clear();
+    result_.created_sequences.clear();
     result_.unresolved.clear();
     result_.segments.clear();
     result_.spans.clear();
@@ -276,13 +276,29 @@ class Replayer {
     if (known) {
       result_.jobs[found->second] = std::move(*after);
       result_.spans[found->second].last_segment = segment_index;
-    } else if (result_.jobs.size() >= options_.max_jobs) {
-      return Refuse(ReplayStatus::kCapacityExceeded,
-                    "journal_capacity_exceeded: more than " + std::to_string(options_.max_jobs) +
-                        " Jobs" + Location(segment.name, record.sequence));
     } else {
+      if (result_.jobs.size() >= options_.max_jobs) {
+        const auto victim = core::internal::OldestClosed(
+            result_.jobs.size(), [this](std::size_t i) { return &result_.jobs[i]; },
+            [this](std::size_t i) { return result_.created_sequences[i]; });
+        if (!victim)
+          return Refuse(ReplayStatus::kCapacityExceeded,
+                        "journal_capacity_exceeded: more than " +
+                            std::to_string(options_.max_jobs) + " Jobs" +
+                            Location(segment.name, record.sequence));
+        index_of_.erase(result_.jobs[*victim].job_id.value);
+        const auto victim_offset = static_cast<std::ptrdiff_t>(*victim);
+        result_.jobs.erase(result_.jobs.begin() + victim_offset);
+        result_.spans.erase(result_.spans.begin() + victim_offset);
+        result_.created_sequences.erase(result_.created_sequences.begin() + victim_offset);
+        for (auto& [id, index] : index_of_) {
+          (void)id;
+          if (index > *victim) --index;
+        }
+      }
       index_of_.try_emplace(record.job_id.value, result_.jobs.size());
       result_.jobs.push_back(std::move(*after));
+      result_.created_sequences.push_back(record.sequence);
       result_.spans.push_back(JobSegmentSpan{segment_index, segment_index});
     }
     last_ = record.sequence;

@@ -196,15 +196,16 @@ int PrunePrefixOnly() {
               "a linked segment in the prefix refuses before any move: " + refused.detail);
   }
 
-  // A Journal over the daemon's resident capacity is still prunable, and then starts.
+  // Closed historical Jobs retire during replay; offline pruning remains independently useful.
   auto crowded = Journal({{1, ClosedJob(1, 1)},
                           {8, ClosedJob(8, 2)},
                           {15, Bytes(Created(15, 3)) + Bytes(Created(16, 4))}});
-  result |= Check(Replay(crowded, 2).status == ReplayStatus::kCapacityExceeded,
-                  "four Jobs exceed a capacity of two");
+  const auto retired = Replay(crowded, 2);
+  result |= Check(retired.status == ReplayStatus::kReplayed && Ids(retired.jobs) == Jobs({3, 4}),
+                  "closed historical Jobs must retire before replay reports capacity overflow");
   const auto relieved = Prune(crowded);
   result |= Check(relieved.status == MaintenanceStatus::kDone && relieved.jobs == Jobs({1, 2}),
-                  "capacity overflow does not block pruning: " + relieved.detail);
+                  "offline pruning still archives both closed historical Jobs: " + relieved.detail);
   result |= Check(Replay(crowded, 2).status == ReplayStatus::kReplayed,
                   "after pruning the Journal fits a capacity of two");
   return result;

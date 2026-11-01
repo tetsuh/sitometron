@@ -154,14 +154,26 @@ jobs:
               identity_source_reads_no_other_clock_or_entropy identity_seed_failure_refuses_startup
               sitometrond_composes_production_identity
           '''.split())
-          if len(development) != 143 or len(development) != len(set(development)):
-              raise SystemExit(f"expected 143 unique dev-linux CTests; found {len(development)} total/{len(set(development))} unique")
+          retirement_checks = set('''
+              job_retirement_oldest_closed_first job_retirement_requires_closed
+              job_retirement_not_under_free_slot job_retirement_resets_slot
+              job_retirement_stale_timer_rejected job_retirement_late_fact_absent
+              job_trace_ring_wraps journal_replay_retires_like_writer
+              journal_replay_capacity_after_retirement rest_v1_retired_job_absent
+              rest_v1_daemon_outlives_max_jobs
+          '''.split())
+          if len(development) != 154 or len(development) != len(set(development)):
+              raise SystemExit(f"expected 154 unique dev-linux CTests; found {len(development)} total/{len(set(development))} unique")
           if len(sanitized) != len(set(sanitized)) or set(development) != set(sanitized):
               raise SystemExit("ASan/UBSan CTest name set differs from dev-linux")
-          if len(http_off) != 82 or len(http_off) != len(set(http_off)):
-              raise SystemExit(f"expected 82 unique HTTP-off CTests; found {len(http_off)} total/{len(set(http_off))} unique")
+          if len(http_off) != 91 or len(http_off) != len(set(http_off)):
+              raise SystemExit(f"expected 91 unique HTTP-off CTests; found {len(http_off)} total/{len(set(http_off))} unique")
           if not identity_checks <= set(development) & set(sanitized) & set(http_off):
               raise SystemExit("an ID-001 check is missing from a configuration")
+          if not retirement_checks <= set(development) & set(sanitized) or not {
+              name for name in retirement_checks if not name.startswith('rest_v1_')
+          } <= set(http_off):
+              raise SystemExit("an OPS-006 check is missing from a configuration")
           if not set(http_off) <= set(development) or any(
               not name.startswith(('rest_v1_', 'http_')) for name in set(development) - set(http_off)
           ):
@@ -312,10 +324,13 @@ jobs:
           ctest --test-dir build/http-off -j 4 --output-on-failure
           $development = @((ctest --test-dir build/dev-windows --show-only=json-v1 | ConvertFrom-Json).tests.name)
           $httpOff = @((ctest --test-dir build/http-off --show-only=json-v1 | ConvertFrom-Json).tests.name)
-          if ($development.Count -ne 143 -or @($development | Sort-Object -Unique).Count -ne 143) { throw 'expected 143 unique Windows development CTests' }
-          if ($httpOff.Count -ne 82 -or @($httpOff | Sort-Object -Unique).Count -ne 82) { throw 'expected 82 unique Windows HTTP-off CTests' }
+          if ($development.Count -ne 154 -or @($development | Sort-Object -Unique).Count -ne 154) { throw 'expected 154 unique Windows development CTests' }
+          if ($httpOff.Count -ne 91 -or @($httpOff | Sort-Object -Unique).Count -ne 91) { throw 'expected 91 unique Windows HTTP-off CTests' }
           $identityChecks = @('identity_uuidv7_canonical', 'identity_uuidv7_monotonic_burst', 'identity_uuidv4_canonical', 'identity_stable_id_grammar', 'identity_never_repeats_within_instance', 'identity_source_never_exhausted', 'clock_recorded_at_rfc3339', 'clock_monotonic_instant', 'identity_dependency_allowlist', 'identity_public_api_isolation', 'identity_source_reads_no_other_clock_or_entropy', 'identity_seed_failure_refuses_startup', 'sitometrond_composes_production_identity')
           foreach ($check in $identityChecks) { if ($development -notcontains $check -or $httpOff -notcontains $check) { throw "missing Windows identity check: $check" } }
+          $retirementChecks = @('job_retirement_oldest_closed_first', 'job_retirement_requires_closed', 'job_retirement_not_under_free_slot', 'job_retirement_resets_slot', 'job_retirement_stale_timer_rejected', 'job_retirement_late_fact_absent', 'job_trace_ring_wraps', 'journal_replay_retires_like_writer', 'journal_replay_capacity_after_retirement')
+          foreach ($check in $retirementChecks) { if ($development -notcontains $check -or $httpOff -notcontains $check) { throw "missing Windows retirement check: $check" } }
+          foreach ($check in @('rest_v1_retired_job_absent', 'rest_v1_daemon_outlives_max_jobs')) { if ($development -notcontains $check -or $httpOff -contains $check) { throw "incorrect Windows HTTP retirement check: $check" } }
       - name: Save vcpkg filesystem binary cache
         if: success() && steps.vcpkg-cache-identity.outputs.available == 'true' && steps.vcpkg-binary-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
