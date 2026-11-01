@@ -92,8 +92,11 @@ inline bool CapacityCompletion(i::JobOrchestrator& writer, const i::IngressResul
   const auto result = writer.AwaitCompletion(input.ingress_sequence);
   // Detect the new completion enumerator without requiring a production edit in the RED commit.
   return result && []<typename Code>(Code code) {
-    if constexpr (requires { Code::kResidentLimit; }) return code == Code::kResidentLimit;
-    return false;
+    if constexpr (requires { Code::kResidentLimit; }) {
+      return code == Code::kResidentLimit;
+    } else {
+      return false;
+    }
   }(result->code);
 }
 

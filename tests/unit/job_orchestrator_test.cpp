@@ -3223,22 +3223,22 @@ int RetirementClaimFenceAndLease() {
     if (!timer.Run(timer_plan, 0, timer_setup))
       return Check(false, "armed closed timer setup commits");
     const auto state = retirement::InspectSlot(*timer.writer, retirement::Job(1));
-    const bool available =
+    const bool timer_available =
         retirement::AcquireAndReturn(*timer.writer, retirement::Job(1), EventType::kTimeoutExpired,
                                      TimeoutPhase::kProcessExitConfirmation);
     retirement::Hold claimed(*timer.writer, ri::WriterPhase::kBeforeCommit);
     const auto creation = retirement::Submit(*timer.writer, retirement::Create(2));
     if (!claimed.Wait(creation)) return Check(false, "armed closed timer reaches the claim fence");
-    const auto history = timer.writer->CopyIngressSequences();
+    const auto timer_history = timer.writer->CopyIngressSequences();
     const auto notification =
         timer.writer->SubmitTimeout({retirement::Job(1), TimeoutPhase::kProcessExitConfirmation,
                                      state ? state->timer_generation[3] : 0});
     result |= Check(
-        available && state && notification.discarded &&
+        timer_available && state && notification.discarded &&
             !retirement::AcquireAndReturn(*timer.writer, retirement::Job(1),
                                           EventType::kTimeoutExpired,
                                           TimeoutPhase::kProcessExitConfirmation) &&
-            timer.writer->CopyIngressSequences() == history && !timer.writer->failed(),
+            timer.writer->CopyIngressSequences() == timer_history && !timer.writer->failed(),
         "a genuinely armed typed timer is fenced without a candidate, permit transfer or latch");
     claimed.Release();
     result |= Check(retirement::Success(*timer.writer, creation) && timer.Verify(),
