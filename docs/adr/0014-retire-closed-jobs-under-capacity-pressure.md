@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-10-28
+Accepted — 2026-11-01
 
 ## Context
 
@@ -565,7 +565,7 @@ Traceability from Issue #103's required decisions:
 
 - Issue #103
 - Gate #101 (P1-7); Gate #50 finding H7; Issue #73
-- Requirements: `OPS-006` (Planned)
+- Requirements: `OPS-006` (Normative)
 - Contract Registry: `Resident Job retirement and daemon lifetime`; `Single-state-writer ingress
   and critical reserve` (the reserved case is filled); `JobJournal startup validation, replay, and
   pruning` (one sentence superseded)
