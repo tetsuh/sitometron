@@ -312,21 +312,26 @@ std::optional<SlotState> InspectSlot(Writer& writer, const Key& key) {
                      value->gates_empty,
                      value->identities_empty,
                      value->generated_bindings_empty};
+  } else {
+    return std::nullopt;
   }
-  return std::nullopt;
 }
 template <typename Writer>
 bool InjectGeneration(Writer& writer, const c::Uuid& id, c::TimeoutPhase phase,
                       std::uint64_t value) {
-  if constexpr (requires { writer.SetTimerGenerationForTest(id, phase, value); })
+  if constexpr (requires { writer.SetTimerGenerationForTest(id, phase, value); }) {
     return writer.SetTimerGenerationForTest(id, phase, value);
-  return false;
+  } else {
+    return false;
+  }
 }
 template <typename Writer>
 bool InjectOrdinal(Writer& writer, std::uint64_t value) {
-  if constexpr (requires { writer.SetNextTraceOrdinalForTest(value); })
+  if constexpr (requires { writer.SetNextTraceOrdinalForTest(value); }) {
     return writer.SetNextTraceOrdinalForTest(value);
-  return false;
+  } else {
+    return false;
+  }
 }
 template <typename Writer>
 bool AcquireAndReturn(Writer& writer, const c::Uuid& id, c::EventType event,
@@ -335,14 +340,18 @@ bool AcquireAndReturn(Writer& writer, const c::Uuid& id, c::EventType event,
     auto lease = writer.AcquireSourceLease(id, event, phase);
     if (!lease) return false;
     return writer.ReturnSourceLease(std::move(*lease));
+  } else {
+    return false;
   }
-  return false;
 }
 
 template <typename Phase>
 std::optional<Phase> ClaimedPhase() {
-  if constexpr (requires { Phase::kVictimClaimed; }) return Phase::kVictimClaimed;
-  return std::nullopt;
+  if constexpr (requires { Phase::kVictimClaimed; }) {
+    return Phase::kVictimClaimed;
+  } else {
+    return std::nullopt;
+  }
 }
 template <typename Writer, typename Action>
 bool WhileLeased(Writer& writer, const c::Uuid& id, c::EventType event, Action action) {
@@ -352,8 +361,9 @@ bool WhileLeased(Writer& writer, const c::Uuid& id, c::EventType event, Action a
     const bool observed = action();
     const bool returned = writer.ReturnSourceLease(std::move(*lease));
     return observed && returned;
+  } else {
+    return false;
   }
-  return false;
 }
 
 // Always release a keyed barrier during unwinding, including the expected RED admission failure.
