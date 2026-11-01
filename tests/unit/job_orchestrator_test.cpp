@@ -1554,6 +1554,30 @@ int JobIngressCoalescing() {
 
 int JobIngressFailClosed() {
   int result = 0;
+  {
+    // Exercise acquisition's own latch, not an already-failed writer or impossible accounting.
+    // Numeric injection only positions the private serial; real acquire/return exhausts it.
+    retirement::Plan plan;
+    plan.Running(1);
+    retirement::Fixture serial(plan, 1);
+    auto& writer = *serial.writer;
+    result |= Check(serial.Run(plan) && writer.SetNextSourceLeaseForTest(UINT64_MAX),
+                    "source-lease exhaustion starts with a real resident and maximum serial");
+    const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
+                                                 TimeoutPhase::kInvalid);
+    result |= Check(lease && lease->serial == UINT64_MAX && writer.ReturnSourceLease(*lease),
+                    "real acquisition and return consume the last nonwrapping source serial");
+    const auto history = writer.CopyIngressSequences();
+    const auto failed_acquisition = writer.SubmitCandidate(retirement::WorkerFact(1));
+    using Code = sitometron::core::internal::IngressCode;
+    result |= Check(writer.failed() && failed_acquisition.code == Code::kServiceFailed &&
+                        failed_acquisition.ingress_sequence == 0 &&
+                        writer.CopyIngressSequences() == history && serial.Verify(),
+                    "source acquisition latches serial exhaustion and reports service_failed, "
+                    "not admission_closed, without admitting an input");
+    result |= Check(writer.SubmitCandidate(retirement::WorkerFact(1)).code == Code::kServiceFailed,
+                    "source-lease exhaustion preserves sticky service_failed on retry");
+  }
   const auto ids = Ids();
   const auto allocation = EmptyAllocation();
   JobOrchestratorHarness precommit(PositiveConfig());

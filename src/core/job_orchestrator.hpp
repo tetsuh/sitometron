@@ -199,6 +199,7 @@ class JobOrchestrator final {
   std::optional<SlotState> InspectSlotForTest(std::size_t) const;
   bool SetTimerGenerationForTest(const Uuid&, TimeoutPhase, std::uint64_t);
   bool SetNextTraceOrdinalForTest(std::uint64_t);
+  bool SetNextSourceLeaseForTest(std::uint64_t);
   bool RetainTimerLease(const Uuid&, TimeoutPhase);
   bool RetainWorkerLease(const Uuid&);
   bool RetainProcessExitLease(const Uuid&);

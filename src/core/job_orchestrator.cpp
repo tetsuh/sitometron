@@ -2279,6 +2279,12 @@ bool JobOrchestrator::SetNextTraceOrdinalForTest(std::uint64_t value) {
   impl_->next_trace_ordinal = value;
   return true;
 }
+bool JobOrchestrator::SetNextSourceLeaseForTest(std::uint64_t value) {
+  std::lock_guard lock(impl_->mutex);
+  if (value == 0 || impl_->failed) return false;
+  impl_->next_source_lease = value;
+  return true;
+}
 bool JobOrchestrator::RetainTimerLease(const Uuid& id, TimeoutPhase phase) {
   return impl_->RetainGate(id, Impl::TimerGate(phase));
 }
