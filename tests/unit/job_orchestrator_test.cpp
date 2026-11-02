@@ -3561,7 +3561,8 @@ int RetirementCallbackSurvivesSealing(bool failure) {
   OwnershipJournal journal;
   retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
   auto& writer = *fixture.writer;
-  if (!fixture.Run(plan)) return Check(false, "callback sealing setup commits");
+  if (!fixture.Run(plan) || !writer.WaitForWriterIdle())
+    return Check(false, "callback sealing setup commits and leaves an idle writer");
   const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
                                                TimeoutPhase::kInvalid);
   if (!lease) return Check(false, "callback sealing starts with an actual held source token");
@@ -3578,10 +3579,73 @@ int RetirementCallbackSurvivesSealing(bool failure) {
   result |= Check(!writer.sealed(),
                   failure ? "FIX2 failure cancellation cannot discard a live callback owner"
                           : "FIX2 quiescence cannot discard a live callback owner");
+  const auto records = journal.Count();
+  const auto turns = writer.writer_turn_count();
+  const bool returned = writer.ReturnSourceLease(*lease);
+  result |= Check(
+      returned && writer.sealed() && writer.live_critical_permit_count() == 0 &&
+          journal.Count() == records && writer.writer_turn_count() == turns &&
+          journal.Verify(plan, fixture),
+      failure ? "FIX3 last source return seals idle failure without FinishShutdown or another event"
+              : "FIX3 last source return resumes deferred normal sealing without FinishShutdown");
+  return result;
+}
+
+int RetirementTimerDisarmCompletesOnReturn() {
+  retirement::Plan plan;
+  plan.Running(1);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::WorkerFact(1));
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan, 0, setup))
+    return Check(false, "deferred disarm starts with running Worker");
+  const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kTimeoutExpired,
+                                               TimeoutPhase::kExecution);
+  if (!lease) return Check(false, "deferred disarm holds a real armed execution-timer callback");
+  int result = Check(fixture.Run(plan, setup, plan.inputs.size()),
+                     "accepted Worker fact disarms execution while callback is outstanding");
+  result |= Check(writer.ReturnSourceLease(*lease), "deferred disarm accepts its matching return");
+  const auto fresh = writer.AcquireSourceLease(retirement::Job(1), EventType::kTimeoutExpired,
+                                               TimeoutPhase::kExecution);
+  result |= Check(!fresh, "FIX3 source return completes deferred disarm registration retirement");
+  if (fresh)
+    result |=
+        Check(writer.ReturnSourceLease(*fresh), "failed disarm probe returns its unexpected token");
+  return result | Check(journal.Verify(plan, fixture) && !writer.failed(),
+                        "deferred disarm completion adds no input, record or failure");
+}
+
+int RetirementNormalSealAfterQueuedRelease() {
+  retirement::Plan plan;
+  plan.CloseWorker(1);
+  const auto setup = plan.inputs.size();
+  plan.Add(retirement::Cleanup(1));
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan, 0, setup) || !writer.WaitForWriterIdle())
+    return Check(false, "queued sealing setup leaves a closed resident and idle writer");
+  const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
+                                               TimeoutPhase::kInvalid);
+  if (!lease) return Check(false, "queued sealing holds its real source token");
+  int result =
+      Check(retirement::Success(writer, writer.SubmitShutdown()) && !writer.BeginShutdown(),
+            "normal sealing is requested and deferred on the held source token");
+  retirement::Hold hold(writer, ri::WriterPhase::kBeforeDequeue);
+  const auto cleanup = retirement::Submit(writer, retirement::Cleanup(1));
+  if (!hold.Wait(cleanup)) {
+    (void)writer.ReturnSourceLease(*lease);
+    return Check(false, "registered critical completion pauses before removal during draining");
+  }
+  result |= Check(writer.ReturnSourceLease(*lease) && !writer.sealed(),
+                  "source return cannot seal over the still-owned queued completion");
+  hold.Release();
   result |=
-      Check(writer.ReturnSourceLease(*lease) && writer.FinishShutdown() && writer.sealed() &&
-                journal.Verify(plan, fixture),
-            "sealing completes only after matching source-token return, with no Journal change");
+      Check(retirement::Success(writer, cleanup) && writer.WaitForWriterIdle() && writer.sealed() &&
+                writer.live_critical_permit_count() == 0 && journal.Verify(plan, fixture),
+            "FIX3 queued owner release retries deferred normal sealing without FinishShutdown");
   return result;
 }
 
@@ -3707,6 +3771,8 @@ int JobRetirementRequiresClosed() {
   result |= RetirementQueuedTimerSurvivesDisarm();
   result |= RetirementCallbackSurvivesSealing(false);
   result |= RetirementCallbackSurvivesSealing(true);
+  result |= RetirementTimerDisarmCompletesOnReturn();
+  result |= RetirementNormalSealAfterQueuedRelease();
   return result;
 }
 
