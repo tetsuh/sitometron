@@ -349,6 +349,7 @@ struct JobOrchestrator::Impl {
   bool recovery_closed = false;
   Mode mode = Mode::kRunning;
   bool marker_processed = false;
+  bool normal_source_seal_pending = false;
   bool creation_generation_in_progress = false;
   bool shutdown_pending = false;
   std::uint64_t shutdown_sequence = 0;
@@ -695,6 +696,9 @@ struct JobOrchestrator::Impl {
     if (gate.queued_sequence != 0 || gate.callback_lease || gate.exported_lease_serial != 0 ||
         gate.retained)
       return;
+    if (gate.retire_requested && kind >= GateKind::kPreparationTimer &&
+        kind <= GateKind::kProcessExitTimer)
+      gate.registered = false;
     gate.pending = false;
     gate.retire_requested = false;
     gate.ingress_sequence = 0;
@@ -1848,7 +1852,7 @@ void JobOrchestrator::Run() noexcept {
       std::lock_guard lock(impl_->mutex);
       --impl_->active_writer_turns;
     }
-    TrySealFailure();
+    RetryDeferredSealing();
     {
       std::lock_guard lock(mutex_);
       --active_;
@@ -2359,8 +2363,13 @@ std::optional<JobOrchestrator::SourceLease> JobOrchestrator::AcquireSourceLease(
   return lease;
 }
 bool JobOrchestrator::ReturnSourceLease(SourceLease lease) {
-  std::lock_guard lock(impl_->mutex);
-  return impl_->ReturnGateLocked(lease);
+  bool returned = false;
+  {
+    std::lock_guard lock(impl_->mutex);
+    returned = impl_->ReturnGateLocked(lease);
+  }
+  if (returned) RetryDeferredSealing();
+  return returned;
 }
 std::optional<JobOrchestrator::SlotState> JobOrchestrator::InspectSlotForTest(
     const Uuid& id) const {
@@ -2428,6 +2437,18 @@ bool JobOrchestrator::RetireWorkerAck(const RawCandidateEvent& acked) {
 }
 void JobOrchestrator::LatchFailureFromCallback() noexcept { LatchReadinessFailure(); }
 
+void JobOrchestrator::RetryDeferredSealing() noexcept {
+  // Never re-enter a sealing path while holding the ingress mutex.
+  TrySealFailure();
+  bool retry_normal = false;
+  {
+    std::lock_guard lock(impl_->mutex);
+    retry_normal = impl_->normal_source_seal_pending && !impl_->failed;
+  }
+  // This intent is set only after FinishShutdown sealed/quiesced every callback control,
+  // so this retry cannot wait for the releasing callback's own invocation.
+  if (retry_normal) (void)FinishShutdown();
+}
 void JobOrchestrator::TrySealFailure(bool allow_one_invocation) noexcept {
   bool can_seal = false;
   {
@@ -2448,6 +2469,7 @@ void JobOrchestrator::TrySealFailure(bool allow_one_invocation) noexcept {
   impl_->CancelGatesLocked();
   impl_->RetireShutdownGateLocked();
   impl_->mode = Impl::Mode::kSealed;
+  impl_->normal_source_seal_pending = false;
   for (const auto& control : impl_->callbacks) {
     std::lock_guard control_lock(control->mutex);
     // Failure sealing severs every callback path once all invocation refs have
@@ -2516,7 +2538,12 @@ bool JobOrchestrator::FinishShutdown() {
       if (impl_->fifo_count != 0 || impl_->in_flight) wake_.notify_one();
       return false;
     }
-    if (impl_->HasSourceLeaseOwners()) return false;
+    if (impl_->HasSourceLeaseOwners()) {
+      // Callback admission is already closed and all control invocations/leases are quiet.
+      // Remember only an explicitly requested normal seal, not ordinary draining.
+      if (!failure) impl_->normal_source_seal_pending = true;
+      return false;
+    }
     // Retire all source gates only after the stable empty check. The shutdown permit itself is
     // held until the same mutex-protected sealed transition.
     impl_->CancelGatesLocked();
@@ -2527,6 +2554,7 @@ bool JobOrchestrator::FinishShutdown() {
       accounting_failure = true;
     } else {
       impl_->mode = Impl::Mode::kSealed;
+      impl_->normal_source_seal_pending = false;
     }
   }
   if (accounting_failure) {
