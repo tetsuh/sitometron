@@ -282,6 +282,7 @@ class JobOrchestrator final {
  private:
   friend class CallbackHandle;
   struct Impl;
+  struct FailureExit;
   IngressResult CreateWith(std::optional<Uuid>& created);
   void Run() noexcept;
   void Stop() noexcept;
@@ -289,6 +290,7 @@ class JobOrchestrator final {
   void LatchFailureFromCallback() noexcept;
   void TrySealFailure(bool allow_one_invocation = false) noexcept;
   void RetryDeferredSealing() noexcept;
+  void RetryLatchedFailure() noexcept;
   std::unique_ptr<Impl> impl_;
   // Scheduler mutex. It precedes the ingress mutex (Impl::mutex) in the lock order; producers
   // schedule the writer only after releasing ingress ownership.

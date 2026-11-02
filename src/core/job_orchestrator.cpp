@@ -970,6 +970,8 @@ struct JobOrchestrator::Impl {
     add(TraceKind::kResponseReleased);
   }
   static_assert(noexcept(std::declval<TraceRecord&>() = std::declval<TraceRecord&&>()));
+  // Runtime callers continue the failure path only after unlocking: producer boundaries own
+  // FailureExit; writer-local failures reach the Run completion retry. Seed rejects startup.
   void FailLocked() { failed = true; }
   void Fail() {
     std::lock_guard lock(mutex);
@@ -1813,6 +1815,14 @@ struct JobOrchestrator::Impl {
     return state;
   }
 };
+// Declare before any ingress lock so every return/exception unlocks before failure continuation.
+struct JobOrchestrator::FailureExit {
+  explicit FailureExit(JobOrchestrator& value) noexcept : owner(value) {}
+  FailureExit(const FailureExit&) = delete;
+  FailureExit& operator=(const FailureExit&) = delete;
+  ~FailureExit() { owner.RetryLatchedFailure(); }
+  JobOrchestrator& owner;
+};
 JobOrchestrator::JobOrchestrator(const Config& config) : impl_(std::make_unique<Impl>(config)) {
   // Callback controls are fully allocated before the writer or any producer is exposed.
   for (auto& control : impl_->callbacks) {
@@ -2044,6 +2054,7 @@ static IngressResult KickIf(JobOrchestrator* orchestrator, IngressResult r) noex
   return r;
 }
 IngressResult JobOrchestrator::CreateWith(std::optional<Uuid>& created) {
+  const FailureExit failure_exit{*this};
   // Identity sources are allowed to throw. Reserve one finite creation
   // operation under ingress ownership, then call the port with no ingress lock.
   {
@@ -2135,6 +2146,7 @@ IngressResult JobOrchestrator::SubmitCandidate(const RawCandidateEvent& e) {
   }
 }
 IngressResult JobOrchestrator::SubmitCandidate(RawCandidateEvent&& e) noexcept {
+  const FailureExit failure_exit{*this};
   if (e.event_type == "timeout_expired") return impl_->Result(IngressCode::kAdmissionClosed);
   try {
     return KickIf(this, impl_->Candidate(std::move(e)));
@@ -2153,6 +2165,7 @@ IngressResult JobOrchestrator::SubmitCommand(const Command& c) {
   }
 }
 IngressResult JobOrchestrator::SubmitCommand(Command&& c) noexcept {
+  const FailureExit failure_exit{*this};
   try {
     Impl::Entry entry;
     entry.kind = Impl::Entry::Kind::kCommand;
@@ -2171,6 +2184,7 @@ IngressResult JobOrchestrator::SubmitWorker(RawCandidateEvent&& e) noexcept {
 }
 JobOrchestrator::TimerSubmitResult JobOrchestrator::SubmitTimeout(
     const TimerNotification& notification) {
+  const FailureExit failure_exit{*this};
   try {
     auto snapshot_state = [&](const Impl::Resident& resident) {
       TimerState state;
@@ -2276,6 +2290,7 @@ JobOrchestrator::TimerSubmitResult JobOrchestrator::SubmitTimeout(
   }
 }
 IngressResult JobOrchestrator::SubmitShutdown() {
+  const FailureExit failure_exit{*this};
   // One ingress transaction owns closure, nonzero sequence allocation, marker
   // slot insertion, and the pending global gate publication.
   IngressResult result;
@@ -2334,6 +2349,7 @@ IngressResult JobOrchestrator::SubmitShutdown() {
 }
 std::optional<JobOrchestrator::SourceLease> JobOrchestrator::AcquireSourceLease(
     const Uuid& id, EventType event, TimeoutPhase phase) {
+  const FailureExit failure_exit{*this};
   std::lock_guard lock(impl_->mutex);
   auto* resident = impl_->Find(id);
   if (resident == nullptr) return std::nullopt;
@@ -2405,18 +2421,23 @@ bool JobOrchestrator::SetNextSourceLeaseForTest(std::uint64_t value) {
   return true;
 }
 bool JobOrchestrator::RetainTimerLease(const Uuid& id, TimeoutPhase phase) {
+  const FailureExit failure_exit{*this};
   return impl_->RetainGate(id, Impl::TimerGate(phase));
 }
 bool JobOrchestrator::RetainWorkerLease(const Uuid& id) {
+  const FailureExit failure_exit{*this};
   return impl_->RetainGate(id, Impl::GateKind::kWorker);
 }
 bool JobOrchestrator::RetainProcessExitLease(const Uuid& id) {
+  const FailureExit failure_exit{*this};
   return impl_->RetainGate(id, Impl::GateKind::kProcessExit);
 }
 bool JobOrchestrator::RetainResourcesReleasedLease(const Uuid& id) {
+  const FailureExit failure_exit{*this};
   return impl_->RetainGate(id, Impl::GateKind::kResourcesReleased);
 }
 bool JobOrchestrator::RetainCleanupLease(const Uuid& id) {
+  const FailureExit failure_exit{*this};
   return impl_->RetainGate(id, Impl::GateKind::kCleanup);
 }
 bool JobOrchestrator::RetireWorkerAck(const RawCandidateEvent& acked) {
@@ -2439,7 +2460,7 @@ void JobOrchestrator::LatchFailureFromCallback() noexcept { LatchReadinessFailur
 
 void JobOrchestrator::RetryDeferredSealing() noexcept {
   // Never re-enter a sealing path while holding the ingress mutex.
-  TrySealFailure();
+  RetryLatchedFailure();
   bool retry_normal = false;
   {
     std::lock_guard lock(impl_->mutex);
@@ -2449,11 +2470,31 @@ void JobOrchestrator::RetryDeferredSealing() noexcept {
   // so this retry cannot wait for the releasing callback's own invocation.
   if (retry_normal) (void)FinishShutdown();
 }
+void JobOrchestrator::RetryLatchedFailure() noexcept {
+  bool terminal = false;
+  {
+    std::lock_guard lock(impl_->mutex);
+    if (!impl_->failed) return;
+    terminal = impl_->mode == Impl::Mode::kSealed || impl_->mode == Impl::Mode::kStopped;
+    if (!terminal) impl_->mode = Impl::Mode::kQuiescing;
+  }
+  for (const auto& control : impl_->callbacks) {
+    std::lock_guard lock(control->mutex);
+    control->failed = true;
+    control->sealed = true;
+  }
+  // Late/sticky failures must not resurrect a sealed or stopped writer.
+  if (!terminal) {
+    wake_.notify_one();
+    TrySealFailure();
+  }
+}
 void JobOrchestrator::TrySealFailure(bool allow_one_invocation) noexcept {
   bool can_seal = false;
   {
     std::lock_guard lock(impl_->mutex);
-    can_seal = impl_->failed && impl_->fifo_count == 0 && !impl_->in_flight;
+    can_seal = impl_->failed && impl_->mode != Impl::Mode::kStopped && impl_->fifo_count == 0 &&
+               !impl_->in_flight;
   }
   if (!can_seal) return;
   std::size_t invocations = 0;
@@ -2464,7 +2505,8 @@ void JobOrchestrator::TrySealFailure(bool allow_one_invocation) noexcept {
   }
   if (invocations != 0 && (!allow_one_invocation || invocations != 1)) return;
   std::lock_guard lock(impl_->mutex);
-  if (!impl_->failed || impl_->fifo_count != 0 || impl_->in_flight || impl_->HasSourceLeaseOwners())
+  if (!impl_->failed || impl_->mode == Impl::Mode::kStopped || impl_->fifo_count != 0 ||
+      impl_->in_flight || impl_->HasSourceLeaseOwners())
     return;
   impl_->CancelGatesLocked();
   impl_->RetireShutdownGateLocked();
@@ -2484,15 +2526,8 @@ bool JobOrchestrator::LatchReadinessFailure() {
   {
     std::lock_guard lock(impl_->mutex);
     impl_->FailLocked();
-    impl_->mode = Impl::Mode::kQuiescing;
   }
-  for (const auto& control : impl_->callbacks) {
-    std::lock_guard lock(control->mutex);
-    control->failed = true;
-    control->sealed = true;
-  }
-  wake_.notify_one();
-  TrySealFailure();
+  RetryLatchedFailure();
   return true;
 }
 bool JobOrchestrator::WaitForWriterIdle() {
@@ -2558,7 +2593,7 @@ bool JobOrchestrator::FinishShutdown() {
     }
   }
   if (accounting_failure) {
-    TrySealFailure();
+    RetryLatchedFailure();
     return false;
   }
 
@@ -2891,6 +2926,7 @@ void JobOrchestrator::InjectPrecommitMaterializationFailure() {
   impl_->precommit_failure = true;
 }
 void JobOrchestrator::InjectAccountingCorruption() {
+  const FailureExit failure_exit{*this};
   std::lock_guard lock(impl_->mutex);
   impl_->accounting_failure = true;
   impl_->FailLocked();
