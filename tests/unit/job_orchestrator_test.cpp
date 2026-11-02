@@ -3593,22 +3593,23 @@ int RetirementCallbackSurvivesSealing(bool failure) {
 
 int RetirementTimerDisarmCompletesOnReturn() {
   retirement::Plan plan;
-  plan.Running(1);
+  plan.Running(1).Add(retirement::WorkerFact(1)).Finalize(1, "succeeded");
   const auto setup = plan.inputs.size();
-  plan.Add(retirement::WorkerFact(1));
+  plan.Add(retirement::Exit(1));
   OwnershipJournal journal;
   retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
   auto& writer = *fixture.writer;
   if (!fixture.Run(plan, 0, setup))
-    return Check(false, "deferred disarm starts with running Worker");
+    return Check(false, "deferred disarm starts with terminal Worker awaiting exit");
   const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kTimeoutExpired,
-                                               TimeoutPhase::kExecution);
-  if (!lease) return Check(false, "deferred disarm holds a real armed execution-timer callback");
-  int result = Check(fixture.Run(plan, setup, plan.inputs.size()),
-                     "accepted Worker fact disarms execution while callback is outstanding");
+                                               TimeoutPhase::kProcessExitConfirmation);
+  if (!lease) return Check(false, "deferred disarm holds a real armed process-exit callback");
+  int result =
+      Check(fixture.Run(plan, setup, plan.inputs.size()),
+            "accepted exit actually disarms process-exit timer while callback is outstanding");
   result |= Check(writer.ReturnSourceLease(*lease), "deferred disarm accepts its matching return");
   const auto fresh = writer.AcquireSourceLease(retirement::Job(1), EventType::kTimeoutExpired,
-                                               TimeoutPhase::kExecution);
+                                               TimeoutPhase::kProcessExitConfirmation);
   result |= Check(!fresh, "FIX3 source return completes deferred disarm registration retirement");
   if (fresh)
     result |=
@@ -3647,6 +3648,25 @@ int RetirementNormalSealAfterQueuedRelease() {
                 writer.live_critical_permit_count() == 0 && journal.Verify(plan, fixture),
             "FIX3 queued owner release retries deferred normal sealing without FinishShutdown");
   return result;
+}
+
+int RetirementSourceReturnDoesNotRequestShutdown() {
+  retirement::Plan plan;
+  plan.CloseWorker(1);
+  OwnershipJournal journal;
+  retirement::Fixture fixture(plan, {.jobs = 1}, &journal);
+  auto& writer = *fixture.writer;
+  if (!fixture.Run(plan)) return Check(false, "draining preservation setup commits");
+  const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
+                                               TimeoutPhase::kInvalid);
+  if (!lease) return Check(false, "draining preservation owns a real token");
+  int result =
+      Check(retirement::Success(writer, writer.SubmitShutdown()) && writer.WaitForWriterIdle(),
+            "marker drains without requesting final shutdown");
+  result |= Check(writer.ReturnSourceLease(*lease) && !writer.sealed() && !writer.failed(),
+                  "source return alone does not initiate normal final shutdown");
+  return result | Check(writer.FinishShutdown() && writer.sealed() && journal.Verify(plan, fixture),
+                        "explicit normal shutdown still completes after source quiescence");
 }
 
 int JobRetirementRequiresClosed() {
@@ -3773,6 +3793,7 @@ int JobRetirementRequiresClosed() {
   result |= RetirementCallbackSurvivesSealing(true);
   result |= RetirementTimerDisarmCompletesOnReturn();
   result |= RetirementNormalSealAfterQueuedRelease();
+  result |= RetirementSourceReturnDoesNotRequestShutdown();
   return result;
 }
 
