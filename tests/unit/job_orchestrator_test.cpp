@@ -1556,27 +1556,66 @@ int JobIngressCoalescing() {
 
 int JobIngressFailClosed() {
   int result = 0;
-  {
-    // Exercise acquisition's own latch, not an already-failed writer or impossible accounting.
-    // Numeric injection only positions the private serial; real acquire/return exhausts it.
+  enum class AcquisitionPath : std::uint8_t { kCandidate, kCommand, kTimer, kDirect, kRetain };
+  for (const auto path :
+       {AcquisitionPath::kCandidate, AcquisitionPath::kCommand, AcquisitionPath::kTimer,
+        AcquisitionPath::kDirect, AcquisitionPath::kRetain}) {
+    // Only position the counter; real acquisition/return consumes its maximum.
     retirement::Plan plan;
     plan.Running(1);
     retirement::Fixture serial(plan, 1);
     auto& writer = *serial.writer;
-    result |= Check(serial.Run(plan) && writer.SetNextSourceLeaseForTest(UINT64_MAX),
-                    "source-lease exhaustion starts with a real resident and maximum serial");
+    if (!serial.Run(plan) || !writer.WaitForWriterIdle() ||
+        !writer.SetNextSourceLeaseForTest(UINT64_MAX))
+      return Check(false, "source-lease exhaustion starts with an idle running resident");
     const auto lease = writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
                                                  TimeoutPhase::kInvalid);
-    result |= Check(lease && lease->serial == UINT64_MAX && writer.ReturnSourceLease(*lease),
-                    "real acquisition and return consume the last nonwrapping source serial");
+    if (!lease || lease->serial != UINT64_MAX || !writer.ReturnSourceLease(*lease))
+      return Check(false, "real acquire/return consumes the final nonwrapping source serial");
     const auto history = writer.CopyIngressSequences();
-    const auto failed_acquisition = writer.SubmitCandidate(retirement::WorkerFact(1));
+    const auto turns = writer.writer_turn_count();
     using Code = sitometron::core::internal::IngressCode;
-    result |= Check(writer.failed() && failed_acquisition.code == Code::kServiceFailed &&
-                        failed_acquisition.ingress_sequence == 0 &&
-                        writer.CopyIngressSequences() == history && serial.Verify(),
-                    "source acquisition latches serial exhaustion and reports service_failed, "
-                    "not admission_closed, without admitting an input");
+    bool rejected = false;
+    std::string_view message;
+    switch (path) {
+      case AcquisitionPath::kCandidate: {
+        const auto admission = writer.SubmitCandidate(retirement::WorkerFact(1));
+        rejected = admission.code == Code::kServiceFailed && admission.ingress_sequence == 0;
+        message = "FIX4 idle candidate acquisition failure seals without another operation";
+        break;
+      }
+      case AcquisitionPath::kCommand: {
+        const auto admission = writer.SubmitCommand(Terminate(retirement::Job(1)));
+        rejected = admission.code == Code::kServiceFailed && admission.ingress_sequence == 0;
+        message = "FIX4 idle command acquisition failure seals without another operation";
+        break;
+      }
+      case AcquisitionPath::kTimer: {
+        const auto state = writer.InspectSlotForTest(retirement::Job(1));
+        if (state) {
+          const auto timer = writer.SubmitTimeout(
+              {retirement::Job(1), TimeoutPhase::kExecution, state->timer_generation[1]});
+          rejected = !timer.discarded && timer.admitted.code == Code::kServiceFailed &&
+                     timer.admitted.ingress_sequence == 0;
+        }
+        message = "FIX4 idle typed-timer acquisition failure seals without another operation";
+        break;
+      }
+      case AcquisitionPath::kDirect:
+        rejected = !writer.AcquireSourceLease(retirement::Job(1), EventType::kWorkerCompleted,
+                                              TimeoutPhase::kInvalid);
+        message = "FIX4 idle direct acquisition failure seals without another operation";
+        break;
+      case AcquisitionPath::kRetain:
+        rejected = !writer.RetainWorkerLease(retirement::Job(1));
+        message = "FIX4 idle RetainGate acquisition failure seals without another operation";
+        break;
+    }
+    result |=
+        Check(rejected && writer.failed() && writer.sealed() &&
+                  writer.live_critical_permit_count() == 0 && writer.writer_turn_count() == turns &&
+                  writer.CopyIngressSequences() == history && serial.Verify(),
+              message);
     result |= Check(writer.SubmitCandidate(retirement::WorkerFact(1)).code == Code::kServiceFailed,
                     "source-lease exhaustion preserves sticky service_failed on retry");
   }
@@ -1631,7 +1670,10 @@ int JobIngressFailClosed() {
   const auto critical_obligation = MakeWorkerCompleted(ids.primary_job, ids.worker, 1);
   const auto before_corruption = CaptureEpoch(corruption, ids.primary_job);
   const auto completions_before_corruption = corruption.completion_count();
+  result |= Check(corruption.WaitForWriterIdle(), "accounting fault starts at idle");
   corruption.InjectAccountingCorruption();
+  result |= Check(corruption.failed() && SealedWithNoLiveIngress(corruption),
+                  "FIX4 idle accounting latch seals before any unrelated operation");
   const auto corrupted_delivery = corruption.SubmitWorker(critical_obligation);
   const auto failure_sealed = corruption.BeginShutdown();
   const auto corrupted_retry = corruption.SubmitWorker(critical_obligation);
@@ -1687,10 +1729,38 @@ int JobIngressFailClosed() {
                   "residual critical permit accounting is detected before sticky failure seal");
   JobOrchestratorHarness capacity(PositiveConfig());
   capacity.SetDestinationCapacity(0);
-  result |= Check(capacity.Create().code == IngressCode::kServiceFailed &&
-                      capacity.journal_attempts() == 0 &&
+  result |= Check(capacity.WaitForWriterIdle() &&
+                      capacity.Create().code == IngressCode::kServiceFailed && capacity.failed() &&
+                      SealedWithNoLiveIngress(capacity) && capacity.journal_attempts() == 0 &&
                       capacity.DestinationCapacityCheckedBeforeCommit(),
-                  "destination capacity insufficiency fails before logical commit");
+                  "FIX4 idle destination preflight failure seals without a writer turn");
+  for (const bool shutdown : {false, true}) {
+    auto config = PositiveConfig();
+    config.initial_ingress_sequence = UINT64_MAX;
+    JobOrchestratorHarness ingress(config);
+    result |= ExpectCommitted(ingress, ingress.Create(), EventType::kJobCreated);
+    if (!ingress.WaitForWriterIdle()) return Check(false, "ingress boundary reaches idle");
+    const auto before = CaptureEpoch(ingress, ids.primary_job);
+    const auto failed = shutdown ? ingress.SubmitShutdown() : ingress.Create();
+    result |= Check(failed.code == IngressCode::kServiceFailed && failed.ingress_sequence == 0 &&
+                        ingress.failed() && SealedWithNoLiveIngress(ingress) &&
+                        EpochUnchanged(ingress, ids.primary_job, before),
+                    shutdown ? "FIX4 idle shutdown sequence exhaustion seals without a turn"
+                             : "FIX4 idle ingress sequence exhaustion seals without a turn");
+  }
+  for (const bool known : {false, true}) {
+    JobOrchestratorHarness source(PositiveConfig());
+    if (known) result |= ExpectCommitted(source, source.Create(), EventType::kJobCreated);
+    if (!source.WaitForWriterIdle()) return Check(false, "source invariant fault starts idle");
+    const auto before = CaptureEpoch(source, ids.primary_job);
+    // Internal-source invariant faults, not valid externally malformed reducer payloads.
+    const auto failed = source.SubmitWorker(MakeWorkerCompleted(ids.primary_job, ids.worker, 1));
+    result |= Check(failed.code == IngressCode::kServiceFailed && failed.ingress_sequence == 0 &&
+                        source.failed() && SealedWithNoLiveIngress(source) &&
+                        EpochUnchanged(source, ids.primary_job, before),
+                    known ? "FIX4 idle unregistered-source latch seals without a turn"
+                          : "FIX4 idle unknown-source latch seals without a turn");
+  }
   JobOrchestratorHarness queued(PositiveConfig());
   result |= Check(queued.ArmPause(WriterPhase::kBeforeDequeue) &&
                       queued.ArmBarrier(WriterPhase::kBeforeDequeue),
