@@ -75,13 +75,14 @@ table below and no others:
 | `arguments` | an optional array of 0 to 64 strings, each 0 to 1,024 characters; default empty |
 | `bundle_sha256` | 64 lowercase hexadecimal characters |
 
-No other member is allowed at either level. The JSON Schema states every rule of the table except
-that `executable` is absolute and that `application_id` is unique; Sitometron-owned code checks
-those two, using the host platform's rule for an absolute path. The file is at most 1 MiB, and that
-cap governs: the per-field limits are independent of it, so a file of many maximal entries is
-refused by its size. The loader parses the file from its full byte range and refuses a raw NUL
-anywhere in it. It also refuses the other two inputs that nlohmann-json accepts (ADR-0011): a
-duplicate member name in any one object, found with a parser callback as ADR-0011 describes, and a
+No other member is allowed at either level, and no string in the file may contain U+0000, which JSON
+can carry only as the escape `\u0000`. The JSON Schema states both of these rules and every rule of
+the table except that `executable` is absolute and that `application_id` is unique; Sitometron-owned
+code checks those two, using the host platform's rule for an absolute path. The file is at most 1
+MiB, and that cap governs: the per-field limits are independent of it, so a file of many maximal
+entries is refused by its size. The loader parses the file from its full byte range and refuses a
+raw NUL anywhere in it. It also refuses the other two inputs that nlohmann-json accepts (ADR-0011):
+a duplicate member name in any one object, found with a parser callback as ADR-0011 describes, and a
 leading byte-order mark. The library itself refuses a raw NUL inside a string but accepts one after
 the value, which the full-range rule covers.
 
@@ -190,21 +191,23 @@ Its named checks, Planned until the implementation Issue activates them:
   member at either level; a missing required member; an `application_id` that is empty, of 129
   characters, or outside the ADR-0009 form; a `version` that is empty or of 129 characters; an
   `executable` that is empty or of 4,097 characters; 65 `arguments`, an argument of 1,025
-  characters, or an argument that is not a string; a `bundle_sha256` of 63 or 65 characters, with an
+  characters, or an argument that is not a string; an escaped `\u0000` in `executable`, in an
+  argument, and in each other string member; a `bundle_sha256` of 63 or 65 characters, with an
   uppercase letter, or with a non-hexadecimal character; 1,025 entries;
 - `registry_startup_refuses_invalid`: a missing, unreadable, larger than 1 MiB, non-JSON,
   schema-invalid, duplicate-identifier, or relative-`executable` file, a file with a raw NUL after
   the value, a file with a duplicate member name in one object (at the root and in an entry), and a
   file with a leading byte-order mark each refuses startup with the startup-refusal status, opens no
-  listener, and reports the reason on standard error, with the entry for an entry-level fault;
+  listener, and reports the reason on standard error, with the entry for an entry-level fault, while
+  a valid file of exactly 1 MiB, padded with JSON whitespace, starts;
 - `registry_bundle_digest_verified`: a matching digest is accepted, also through a symbolic link; a
   changed byte in the `executable`, a missing `executable`, a directory in its place, or a regular
   `executable` that cannot be opened for reading refuses startup with the startup-refusal status,
   opens no listener, and reports the entry and the reason on standard error. The unreadable case
   runs on POSIX with a file without read permission; Windows skips it, because a test fixture there
   has no simple portable way to remove read access from the test's own user;
-- `registry_absent_keeps_empty_set`: without `--applications`, startup succeeds and every create is
-  `422` `unknown_application`;
+- `registry_absent_keeps_empty_set`: without `--applications`, and with a valid file whose
+  `applications` array is empty, startup succeeds and every create is `422` `unknown_application`;
 - `rest_v1_sitometrond_options` (the existing Issue #105 check, extended): a repeated
   `--applications` and an empty `--applications` value are each a command-line error with the
   documented status `2`, and a single `--applications PATH` is accepted by the parser;
