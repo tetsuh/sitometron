@@ -42,9 +42,13 @@ the Application Registry ADR that ADR-0008 Section 4 names, limited to the field
 ### 1. The registry file
 
 `sitometrond --applications PATH` names the registry file. The option is optional and appears at
-most once; a repeated or empty `--applications` is a command-line error like any other (Issue
-#105), not a startup refusal of Section 2. Without it the registered set is empty and every create
-answers `422` `unknown_application`, as in Phase 1.
+most once; a repeated or empty `--applications` is a command-line error like any other (Issue #105),
+not a startup refusal of Section 2. Without it the registered set is empty, as in Phase 1. The
+registered set changes only the registration lookup: ADR-0008 Section 5 still decides route, method,
+media type, size, JSON, and validation errors first, and ADR-0009 Section 9 still makes an empty or
+longer `application_id` `validation_failed`. A create that passes those checks names an
+`application_id` of 1 to 128 characters and answers `422` `unknown_application` when it is not
+registered.
 
 The file is one UTF-8 JSON object. The implementation Issue adds its JSON Schema as
 `schemas/application-registry/v1/application-registry.schema.json`, which states the rules of the
@@ -212,12 +216,15 @@ Its named checks, Planned until the implementation Issue activates them:
   runs on POSIX with a file without read permission; Windows skips it, because a test fixture there
   has no simple portable way to remove read access from the test's own user;
 - `registry_absent_keeps_empty_set`: without `--applications`, and with a valid file whose
-  `applications` array is empty, startup succeeds and every create is `422` `unknown_application`;
+  `applications` array is empty, startup succeeds and a create that passes the request checks is
+  `422` `unknown_application`, while a malformed or invalid create keeps its earlier ADR-0008
+  Section 5 answer;
 - `rest_v1_sitometrond_options` (the existing Issue #105 check, extended): a repeated
   `--applications` and an empty `--applications` value are each a command-line error with the
   documented status `2`, and a single `--applications PATH` is accepted by the parser;
 - `rest_v1_registered_application_creates`: with a verified file, a create for a registered
-  identifier is `202` and a create for any other identifier is `422` `unknown_application`;
+  identifier is `202` and a valid create for any other identifier of 1 to 128 characters is `422`
+  `unknown_application`;
 - `registry_launch_identity_from_entry`: the `application` object of a `worker_launch_intent` equals
   the verified entry's `application_id`, `version`, and `bundle_sha256` (activated by the supervisor
   implementation Issue, which first writes that event);
