@@ -79,9 +79,11 @@ No other member is allowed at either level. The JSON Schema states every rule of
 that `executable` is absolute and that `application_id` is unique; Sitometron-owned code checks
 those two, using the host platform's rule for an absolute path. The file is at most 1 MiB, and that
 cap governs: the per-field limits are independent of it, so a file of many maximal entries is
-refused by its size. The loader parses the file from its full byte range and refuses three inputs
-that nlohmann-json accepts (ADR-0011): a raw NUL anywhere, a duplicate member name in any one
-object, found with a parser callback as ADR-0011 describes, and a leading byte-order mark.
+refused by its size. The loader parses the file from its full byte range and refuses a raw NUL
+anywhere in it. It also refuses the other two inputs that nlohmann-json accepts (ADR-0011): a
+duplicate member name in any one object, found with a parser callback as ADR-0011 describes, and a
+leading byte-order mark. The library itself refuses a raw NUL inside a string but accepts one after
+the value, which the full-range rule covers.
 
 ### 2. The bundle and its verification
 
