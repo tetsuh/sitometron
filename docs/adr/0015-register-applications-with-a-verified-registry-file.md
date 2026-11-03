@@ -1,0 +1,217 @@
+# ADR-0015: Register Applications with a verified registry file
+
+## Status
+
+Proposed — 2026-11-03
+
+## Context
+
+ADR-0008 Section 4 leaves registration to this decision: "How an `application_id` resolves to
+something launchable belongs to the Application Registry ADR. This contract fixes only that an
+identifier the deployment does not know is refused with `unknown_application` and creates nothing.
+Until that ADR is Accepted, the registered set is a list of identifiers in the daemon's startup
+configuration." Phase 1 registered nothing and offered no option to register (Gate #101, P1-4), so
+every production create answers `422` `unknown_application`. Phase 2 (Gate #123, P2-1) needs the
+first registered Application.
+
+The code and the Accepted contracts fix these facts:
+
+- `worker_launch_intent` binds a "verified Application identity" (ADR-0002, Decision). The Journal
+  event schema (`schemas/core/v1/job-journal-event.schema.json`) requires its `application` object
+  to hold exactly `application_id`, `version` (1 to 128 characters), and `bundle_sha256` (64
+  lowercase hexadecimal characters), and the reducer checks the same fields. No document defines a
+  bundle, and the walking skeleton wrote a fixed placeholder digest (`spike/src/job_driver.cpp`).
+- ADR-0009 Section 9 already fixes the identifier: "A deployment registers only `application_id`
+  values of the form `[a-z0-9][a-z0-9._:-]*` with 1 to 128 characters, and refuses to start with any
+  other." The Phase 1 composition checks that form (`RegisteredApplicationForm` in
+  `apps/sitometrond/composition.cpp`) on a list that nothing fills.
+- `nlohmann-json` and `boost-hash2` are manifest ports. ADR-0004 lets `sitometron_core` link them;
+  ADR-0011 lets `sitometron_http` link `nlohmann-json`. `sitometrond_composition` may link neither,
+  and it exists only in the HTTP-enabled build.
+
+The owner decided on 2026-11-03, as recorded in Issue #125: in Phase 2 a bundle is the one
+executable file the runner starts, its digest is declared in the registration and verified at
+startup, and the registration is a schema-validated JSON file named by one startup option.
+
+## Decision
+
+We will register Applications in one JSON file that `sitometrond` reads, validates, and verifies at
+startup, and we will take each launch's Application identity from that verified entry. This ADR is
+the Application Registry ADR that ADR-0008 Section 4 names, limited to the fields Phase 2 needs.
+
+### 1. The registry file
+
+`sitometrond --applications PATH` names the registry file. The option is optional and appears at
+most once. Without it the registered set is empty and every create answers `422`
+`unknown_application`, as in Phase 1.
+
+The file is one UTF-8 JSON object. The implementation Issue adds its JSON Schema as
+`schemas/application-registry/v1/application-registry.schema.json`, which states the rules of the
+table below and no others:
+
+```json
+{
+  "schema": "application-registry.v1",
+  "applications": [
+    {
+      "application_id": "demo-worker",
+      "version": "1.0.0",
+      "executable": "/opt/demo/bin/demo-worker",
+      "arguments": ["--mode", "batch"],
+      "bundle_sha256": "<64 lowercase hexadecimal characters>"
+    }
+  ]
+}
+```
+
+| Field | Rule |
+|---|---|
+| `schema` | exactly `application-registry.v1` |
+| `applications` | an array of 0 to 1,024 entries; an empty array is an empty registered set |
+| `application_id` | the ADR-0009 Section 9 form; unique in the file |
+| `version` | 1 to 128 characters, as the Journal event schema requires |
+| `executable` | 1 to 4,096 characters; an absolute path on the host platform |
+| `arguments` | an optional array of 0 to 64 strings, each 0 to 1,024 characters; default empty |
+| `bundle_sha256` | 64 lowercase hexadecimal characters |
+
+No other member is allowed at either level. The JSON Schema states every rule of the table except
+that `executable` is absolute and that `application_id` is unique; Sitometron-owned code checks
+those two, using the host platform's rule for an absolute path. The file is at most 1 MiB, and that
+cap governs: the per-field limits are independent of it, so a file of many maximal entries is
+refused by its size.
+
+### 2. The bundle and its verification
+
+In Phase 2 an Application's bundle is its `executable` file alone. At startup, before any listener
+opens, `sitometrond` reads each `executable`, following symbolic links, and computes the SHA-256 of
+its bytes. Startup refuses with the Issue #105 startup-refusal status, and opens no listener, when
+the file is missing, unreadable, larger than 1 MiB, not UTF-8 JSON, does not match the schema,
+repeats an `application_id`, names an `executable` that is not absolute or is not a readable regular
+file, or names one whose digest differs from its `bundle_sha256`. A refusal reports the entry and
+the reason on standard error.
+
+The verified identity of a launch is the entry's `application_id`, `version`, and `bundle_sha256`.
+The supervisor (ADR-0012) copies those three values into `worker_launch_intent` from the registered
+entry for the Job's `application_id`. Whether the runner checks the digest again at launch is the
+runner's decision (Gate #123, P2-3); this ADR verifies at startup only.
+
+### 3. Lifetime
+
+The registered set is read once at startup and does not change while the daemon runs. Changing an
+Application, its `executable`, or its digest takes a restart. A Job admitted before a restart keeps
+the identity its `worker_launch_intent` recorded; replay never reads the registry file. A replayed
+Job that is not terminal, with or without `worker_launch_intent`, is unresolved: `OPS-004` keeps
+admission closed while it stays, the supervisor does not drive it because it drives only the Jobs
+the running daemon admits (`JOB-009`), and resolving it is outside this slice (Gate #123, P2-9). An
+Application removed from the file, or given a new digest, therefore never launches for a Job
+created before the restart.
+
+### 4. Placement and dependencies
+
+The loader lives in `sitometron_registry`, a static library under `src/registry/` with
+Sitometron-owned public headers under `include/sitometron/registry/`. Its public headers expose a
+registered Application as a struct of standard strings and vectors, and a load result that is
+either the verified set or a refusal reason. `sitometron_core` is not changed.
+
+Only these manifest ports, direct CMake targets, and headers are authorized for
+`sitometron_registry`, in the format of ADR-0010 Section 1:
+
+| Manifest port | Pinned-baseline version | Direct CMake target | Authorized headers |
+|---|---:|---|---|
+| `nlohmann-json` | 3.12.0#2 | `nlohmann_json::nlohmann_json` | `<nlohmann/json.hpp>` for parsing the registry file and value access |
+| `boost-hash2` | 1.91.0 | `Boost::hash2` | `<boost/hash2/sha2.hpp>` for SHA-256 over the `executable` bytes |
+
+The list restricts direct includes; headers that a listed header includes are permitted as its
+implementation. The target links both privately, adds no manifest port, and grants nothing to
+`sitometron_core`, which keeps its ADR-0004 allowlist. Sitometron-owned code checks every schema
+rule; no JSON Schema engine runs at startup, as ADR-0004 states for the core. The implementation
+Issue adds the dependency-allowlist and public-API-isolation scanners for this target in the
+pattern of the `sitometron_identity` scanners.
+
+The target is built only when HTTP is enabled, like `sitometrond_composition`, its only consumer.
+The composition links it, refuses startup as Section 2 states, and passes the verified set to the
+Phase 1 Backend in place of today's empty list, and to the supervisor and the runner when they
+exist. The HTTP-off `sitometrond` reads no command-line option today and does not change.
+
+### 5. What changes in the Accepted ADRs
+
+- ADR-0008 Section 4: the sentence "Until that ADR is Accepted, the registered set is a list of
+  identifiers in the daemon's startup configuration" stops applying when this ADR is Accepted, by
+  its own condition; no sentence of ADR-0008 is superseded. The registered set is the verified set
+  of Section 2.
+- ADR-0002, Decision: "verified Application identity" receives its meaning (Section 2); the rule
+  itself is unchanged.
+- ADR-0009 Section 9: unchanged and adopted as the `application_id` rule.
+- The Journal event schema and the reducer: unchanged.
+
+### 6. Not decided here
+
+- What else the runner passes to the process (working directory, environment, the identities it
+  receives) and whether it re-verifies the digest at launch (Gate #123, P2-3).
+- Bundles of more than one file, signed bundles, and an Application qualification process.
+- Reloading the registry without a restart.
+- Admission policy beyond ADR-0008 and per-Application limits (#35).
+- The External REST v1 I/O model. Owner decision A of 2026-10-24 (PR #112, Issue #106) keeps one
+  I/O thread with synchronous completion waits and revisits it with Phase 2 registration. This ADR
+  keeps that model: from now on a committing create in production also reaches the wait, and the
+  decision on it belongs to the owner under Gate #123.
+
+## Requirements and checks
+
+This ADR adds `APP-001` (MUST): register Applications only through the registry file of Section 1,
+verify every entry's `executable` against its `bundle_sha256` at startup and refuse to start on any
+invalid entry, keep the registered set empty when no file is named, and take each launch's
+Application identity from the verified entry.
+
+Its named checks, Planned until the implementation Issue activates them:
+
+- `registry_schema_vectors`: the schema accepts the valid forms (no `arguments`, an empty
+  `applications` array, one entry at every maximum length) and rejects each near-miss (a wrong
+  `schema`, an `application_id` outside the ADR-0009 form, an uppercase digest, an empty
+  `executable`, an unknown member, more than 1,024 entries, more than 64 `arguments`);
+- `registry_startup_refuses_invalid`: a missing, unreadable, larger than 1 MiB, non-JSON,
+  schema-invalid, duplicate-identifier, or relative-`executable` file refuses startup with the
+  startup-refusal status and opens no listener;
+- `registry_bundle_digest_verified`: a matching digest is accepted, also through a symbolic link; a
+  changed byte in the `executable`, a missing `executable`, or a directory in its place refuses
+  startup;
+- `registry_absent_keeps_empty_set`: without `--applications`, startup succeeds and every create is
+  `422` `unknown_application`;
+- `rest_v1_registered_application_creates`: with a verified file, a create for a registered
+  identifier is `202` and a create for any other identifier is `422` `unknown_application`;
+- `registry_launch_identity_from_entry`: the `application` object of a `worker_launch_intent` equals
+  the verified entry's `application_id`, `version`, and `bundle_sha256` (activated by the supervisor
+  implementation Issue, which first writes that event);
+- `registry_dependency_allowlist` and `registry_public_api_isolation`: the scanners of Section 4,
+  with planted violations.
+
+## Consequences
+
+- Good: the first production create can succeed, and "verified Application identity" means a digest
+  checked against the bytes that will run.
+- Good: the registry is one schema-checked file, so later fields (working directory, limits) extend
+  it without new command-line options.
+- Bad: replacing an executable needs both a new digest in the file and a restart.
+- Bad: the check is at startup only, so a file replaced while the daemon runs is not detected here;
+  the runner may close that gap.
+- Neutral: a new small adapter target with two scanners, in the existing pattern.
+
+## Options considered
+
+- **Compute the digest at startup without a declared value**: rejected on 2026-11-03 because nothing
+  would be verified; the identity would only record whatever file was present.
+- **Repeat a `--application` option per Application**: rejected on 2026-11-03 because options cannot
+  carry a schema, quoting paths and arguments is fragile, and the Registry row promises a schema.
+- **Parse the file in `sitometron_core` or the composition**: rejected because the core is the
+  domain, not deployment configuration, and the composition may link no JSON library and exists
+  only with HTTP.
+- **Make the full Application Registry now**: rejected because Phase 2 needs only these fields;
+  #35 keeps the rest.
+
+## References
+
+- Issue #125; Gate #123 (P2-1); Gate #101 (P1-4); Issue #35
+- Requirements: `APP-001` (Planned)
+- Contract Registry: `Application Registry schema`; `sitometrond` startup configuration and command
+  line
+- Related ADR: ADR-0002, ADR-0004, ADR-0008, ADR-0009, ADR-0011, ADR-0012, ADR-0013

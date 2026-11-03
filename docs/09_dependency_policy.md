@@ -41,6 +41,15 @@ Forwarding call counters belong to the daemon composition, not this adapter. Cap
 constructor/factory argument with default 1,048,576 identities, not a new command-line option.
 No manifest port or core dependency authorization is added.
 
+Proposed [ADR-0015](adr/0015-register-applications-with-a-verified-registry-file.md) under Issue
+#125 authorizes the separate `sitometron_registry` adapter, built only with HTTP enabled. Its only
+direct dependency ports are the already provisioned `nlohmann-json` 3.12.0#2 and `boost-hash2`
+1.91.0, linked PRIVATE as `nlohmann_json::nlohmann_json` and `Boost::hash2`. Its two authorized
+direct headers are `<nlohmann/json.hpp>` and `<boost/hash2/sha2.hpp>`; upstream transitive includes
+remain opaque prerequisites. The adapter exposes only owned types, and dedicated allowlist and
+public-boundary scanners validate those rules. No manifest port or core dependency authorization is
+added.
+
 Issue #17 implemented the allowlist and activated all five stable `NFR-005` checks on Linux and
 Windows. Accepted ADR-0003 and Issue #12 later authorized only the private synchronization headers
 and private `Threads::Threads` linkage required by the single writer, without adding a manifest
