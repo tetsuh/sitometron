@@ -86,10 +86,10 @@ refused by its size.
 In Phase 2 an Application's bundle is its `executable` file alone. At startup, before any listener
 opens, `sitometrond` reads each `executable`, following symbolic links, and computes the SHA-256 of
 its bytes. Startup refuses with the Issue #105 startup-refusal status, and opens no listener, when
-the file is missing, unreadable, larger than 1 MiB, not UTF-8 JSON, does not match the schema,
-repeats an `application_id`, names an `executable` that is not absolute or is not a readable regular
-file, or names one whose digest differs from its `bundle_sha256`. A refusal reports the reason on
-standard error, and the entry when one entry is at fault.
+the registry file is missing, unreadable, larger than 1 MiB, not UTF-8 JSON, does not match the
+schema, repeats an `application_id`, names an `executable` that is not absolute or is not a readable
+regular file, or names one whose digest differs from its `bundle_sha256`. A refusal reports the
+reason on standard error, and the entry when one entry is at fault.
 
 The verified identity of a launch is the entry's `application_id`, `version`, and `bundle_sha256`.
 The supervisor (ADR-0012) copies those three values into `worker_launch_intent` from the launch
@@ -133,12 +133,14 @@ pattern of the `sitometron_identity` scanners.
 The target is built only when HTTP is enabled, like `sitometrond_composition`, its only consumer.
 The composition links it, refuses startup as Section 2 states, and passes the verified identifiers
 to the Phase 1 Backend in place of today's empty list. For a create of a registered identifier, the
-composition hands the supervisor the entry's `application_id`, `version`, and `bundle_sha256` as
-the launch inputs of ADR-0012 Section 2, in the core's own types (`StableId`, a standard string,
-and `Digest`, as `WorkerLaunchIntentPayload` holds them); no registry type enters
-`sitometron_core`. The runner receives the entry, including `executable` and `arguments`, from the
-composition when it exists. The HTTP-off `sitometrond` reads no command-line option today and does
-not change.
+composition hands the supervisor the entry's `application_id`, `version`, and `bundle_sha256` as the
+launch inputs of ADR-0012 Section 2, in the core's own types (`StableId`, a standard string, and
+`Digest`, as `WorkerLaunchIntentPayload` holds them); no registry type enters `sitometron_core`. The
+composition also constructs the runner with the verified set, and the runner resolves a launch
+request's `application_id` to the entry's `executable` and `arguments` itself;
+`ApplicationLaunchRequest` carries no executable path or command (ADR-0005), and this ADR does not
+change it. How the runner uses them is the runner's design (Gate #123, P2-3). The HTTP-off
+`sitometrond` reads no command-line option today and does not change.
 
 ### 5. What changes in the Accepted ADRs
 
@@ -204,7 +206,8 @@ Its named checks, Planned until the implementation Issue activates them:
 ## Consequences
 
 - Good: the first production create can succeed, and "verified Application identity" means a digest
-  checked against the bytes that will run.
+  checked against the `executable` bytes present at startup. That the same bytes run is guaranteed
+  only if the runner re-verifies at launch (Section 6).
 - Good: the registry is one schema-checked file, so later fields (working directory, limits) extend
   it without new command-line options.
 - Bad: replacing an executable needs both a new digest in the file and a restart.
