@@ -49,10 +49,11 @@ struct JobSegmentSpan {
 
 struct ReplayResult {
   ReplayStatus status = ReplayStatus::kCorrupt;
-  std::string detail;                  // refusal code and location when status is not kReplayed
-  std::uint64_t next_sequence = 0;     // last replayed sequence plus one; 1 for an empty Journal
-  std::uint64_t records = 0;           // records replayed
-  std::vector<core::Snapshot> jobs;    // replayed snapshots in creation order
+  std::string detail;                // refusal code and location when status is not kReplayed
+  std::uint64_t next_sequence = 0;   // last replayed sequence plus one; 1 for an empty Journal
+  std::uint64_t records = 0;         // records replayed
+  std::vector<core::Snapshot> jobs;  // surviving snapshots in creation order
+  std::vector<std::uint64_t> created_sequences;  // job_created sequence, parallel to jobs
   std::vector<core::Uuid> unresolved;  // Jobs that are non-terminal or not fully cleaned up
   // Layout for offline maintenance (ADR-0006 Section 8), filled when status is kReplayed.
   std::vector<ReplayedSegment> segments;

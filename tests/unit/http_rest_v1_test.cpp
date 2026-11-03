@@ -56,6 +56,7 @@
 #include "job_orchestrator.hpp"
 #include "journal_test_events.hpp"
 #include "reducer_snapshot_json.hpp"
+#include "retirement_test_support.hpp"
 #include "sitometron/http/server.hpp"
 #include "sitometron/journal/segment_journal.hpp"
 
@@ -3927,7 +3928,185 @@ int SitometrondEmptyRegistry() {
 
 }  // namespace job_routes
 
+namespace job_routes {
+namespace retirement = sitometron::test::retirement;
+
+class RetirementHttp final {
+ public:
+  RetirementHttp(const retirement::Plan& plan, std::size_t max_jobs)
+      : fixture(plan, max_jobs),
+        backend(sitometron::daemon::MakeJobBackend(*fixture.writer, max_jobs, {},
+                                                   {std::string(k_application)})) {
+    Options options;
+    options.listen_port = 0;
+    options.cancel_principal = k_principal;
+    server = std::make_unique<Server>(options, *backend);
+    std::string error;
+    if (!server->Start(error))
+      throw std::runtime_error("retirement HTTP listener failed: " + error);
+  }
+  Response Exchange(const std::string& request) { return SendToPort(server->port(), request); }
+  retirement::Fixture fixture;
+  std::unique_ptr<Backend> backend;
+  std::unique_ptr<Server> server;
+};
+
+int RetirementCreated(RetirementHttp& fixture, unsigned number, std::string_view name) {
+  const auto response = fixture.Exchange(Request("POST", "/v1/jobs", CreateBody()));
+  int result = ExpectStatus(response, name, 202);
+  if (response.status == 202) {
+    const auto body = Json::parse(response.body);
+    result |= Check(body.at("job_id") == retirement::Job(number).value &&
+                        response.headers.at("location") == JobPath(retirement::Job(number).value),
+                    name, "retirement creation returned the wrong generated identifier");
+  }
+  return result;
+}
+
+int RetiredJobAbsent() {
+  constexpr std::string_view name = "rest_v1_retired_job_absent";
+  retirement::Plan plan;
+  plan.Close(1);
+  const auto first_closed = plan.inputs.size();
+  plan.Add(retirement::Create(2)).Add(retirement::Create(3));
+  RetirementHttp fixture(plan, 2);
+  int result = RetirementCreated(fixture, 1, name);
+  if (result != 0) return result;
+  if (!fixture.fixture.Run(plan, 1, first_closed))
+    return Check(false, name, "explicit HTTP fixture lifecycle did not close first Job");
+  result |= RetirementCreated(fixture, 2, name);
+  result |= RetirementCreated(fixture, 3, name);
+  if (result != 0) return result;
+  result |= RestError(fixture.Exchange(Request("GET", JobPath(retirement::Job(1).value))), name,
+                      404, "job", "job_not_found");
+  result |= RestError(fixture.Exchange(Request("POST", JobPath(retirement::Job(1).value, true))),
+                      name, 404, "job", "job_not_found");
+  const auto response = fixture.Exchange(Request("GET", "/v1/jobs"));
+  result |= ExpectStatus(response, name, 200);
+  if (response.status == 200) {
+    const auto jobs = Json::parse(response.body).at("jobs");
+    result |= Check(jobs.size() == 2 && jobs.at(0).at("job_id") == retirement::Job(2).value &&
+                        jobs.at(1).at("job_id") == retirement::Job(3).value,
+                    name, "retired index entry was not removed before appending the new Job");
+  }
+  result |= Check(fixture.fixture.Verify(), name, "retirement bypassed the finite scripted ports");
+  for (const auto outcome :
+       {core::LogicalCommitResult::kDefiniteFailure, core::LogicalCommitResult::kOutcomeUnknown}) {
+    retirement::Plan failed_plan;
+    failed_plan.Close(1);
+    const auto setup = failed_plan.inputs.size();
+    failed_plan.Add(retirement::Create(2));
+    failed_plan.journal.back().result = outcome;
+    RetirementHttp failed(failed_plan, 1);
+    if (RetirementCreated(failed, 1, name) != 0 || !failed.fixture.Run(failed_plan, 1, setup))
+      return result | Check(false, name, "failed-retirement HTTP setup commits");
+    result |= RestError(failed.Exchange(Request("POST", "/v1/jobs", CreateBody())), name, 503,
+                        "service", "service_failed");
+    const auto old = failed.Exchange(Request("GET", JobPath(retirement::Job(1).value)));
+    result |= ExpectStatus(old, name, 200);
+    const auto list = failed.Exchange(Request("GET", "/v1/jobs"));
+    result |= ExpectStatus(list, name, 200);
+    if (list.status == 200) {
+      const auto jobs = Json::parse(list.body).at("jobs");
+      result |= Check(jobs.size() == 1 && jobs.at(0).at("job_id") == retirement::Job(1).value, name,
+                      "failure changed the last-installed resident index");
+    }
+    result |= RestError(failed.Exchange(Request("GET", JobPath(retirement::Job(2).value))), name,
+                        404, "job", "job_not_found");
+  }
+  return result;
+}
+
+int DaemonOutlivesMaxJobs() {
+  constexpr std::string_view name = "rest_v1_daemon_outlives_max_jobs";
+  int result = 0;
+  {
+    retirement::Plan plan;
+    for (unsigned n = 1; n <= 6; ++n) plan.Close(n, n == 3);
+    RetirementHttp fixture(plan, 1);
+    std::size_t cursor = 0;
+    for (unsigned n = 1; n <= 6; ++n) {
+      const auto created = RetirementCreated(fixture, n, name);
+      result |= created;
+      if (created != 0) return result;
+      // Job 3 uses reducer-derived incomplete cleanup, without a cleanup event (owner reading).
+      // https://github.com/tetsuh/sitometron/issues/120#issuecomment-6554697941
+      const auto count = n == 3 ? 4U : 7U;
+      result |=
+          Check(fixture.fixture.Run(plan, cursor + 1, cursor + count), name,
+                "explicit close must commit without clock/supervisor/production registration");
+      cursor += count;
+      const auto response = fixture.Exchange(Request("GET", "/v1/jobs"));
+      result |= ExpectStatus(response, name, 200);
+      if (response.status == 200) {
+        const auto jobs = Json::parse(response.body).at("jobs");
+        result |= Check(jobs.size() == 1 && jobs.at(0).at("job_id") == retirement::Job(n).value,
+                        name, "long-lived process did not keep the latest single resident");
+      }
+    }
+    result |= Check(fixture.fixture.Verify(), name, "long lifetime exhausted a scripted port");
+  }
+  {
+    retirement::Plan plan;
+    plan.Close(1).Close(2);
+    const auto setup = plan.inputs.size();
+    plan.Add(retirement::Cleanup(1)).Add(retirement::Create(4));
+    RetirementHttp fixture(plan, 2);
+    std::size_t cursor = 0;
+    for (unsigned n = 1; n <= 2; ++n) {
+      if (RetirementCreated(fixture, n, name) != 0)
+        return Check(false, name, "retry setup create failed");
+      if (!fixture.fixture.Run(plan, cursor + 1, cursor + 7))
+        return Check(false, name, "retry setup close failed");
+      cursor += 7;
+    }
+    auto& writer = *fixture.fixture.writer;
+    retirement::Hold hold(writer, internal::WriterPhase::kBeforeDequeue);
+    Signal response_signal;
+    const auto admissions = writer.admission_attempt_count();
+    const auto history = writer.CopyIngressSequences();
+    PendingResponse response(response_signal, [&] {
+      return fixture.Exchange(Request("POST", "/v1/jobs", CreateBody()));
+    });
+    writer.WaitForAdmissionAttempts(admissions + 1);
+    const auto inserted = writer.CopyIngressSequences();
+    if (inserted.size() != history.size() + 1) {
+      hold.Release();
+      (void)response.Finish();
+      return Check(false, name,
+                   "blocked-victim create must be ingress-admitted before completion-level 503");
+    }
+    const internal::IngressResult ticket{internal::IngressCode::kAdmitted, inserted.back(), 0};
+    if (!hold.Wait(ticket)) {
+      hold.Release();
+      (void)response.Finish();
+      return Check(false, name, "could not hold ticket before victim selection");
+    }
+    const auto blocker = retirement::Submit(writer, retirement::Cleanup(1));
+    const auto attempts = fixture.fixture.journal.CopyObservations().size();
+    hold.Release();
+    result |= RestError(response.Finish(), name, 503, "service", "capacity_exhausted");
+    result |=
+        Check(retirement::Success(writer, blocker) &&
+                  fixture.fixture.journal.CopyObservations().size() == attempts + 1 &&
+                  writer.SnapshotFor(retirement::Job(1)).has_value(),
+              name, "refused creation recorded a Job, skipped the oldest, or disposed its blocker");
+    result |= RetirementCreated(fixture, 4, name);
+    result |=
+        Check(!writer.SnapshotFor(retirement::Job(1)) &&
+                  writer.SnapshotFor(retirement::Job(2)).has_value() &&
+                  fixture.fixture.journal.CopyObservations().size() == setup + 2 &&
+                  fixture.fixture.Verify(),
+              name, "retry after the admitted input's turn did not retire the same oldest Job");
+  }
+  return result;
+}
+
+}  // namespace job_routes
+
 int Run(std::string_view name, const std::string& sitometrond_path) {
+  if (name == "rest_v1_retired_job_absent") return job_routes::RetiredJobAbsent();
+  if (name == "rest_v1_daemon_outlives_max_jobs") return job_routes::DaemonOutlivesMaxJobs();
   if (name == "rest_v1_openapi_contract") return job_routes::OpenApiContract();
   if (name == "rest_v1_create_commits_before_202") return job_routes::CreateCommitsBefore202();
   if (name == "rest_v1_create_rejects_unknown_application")

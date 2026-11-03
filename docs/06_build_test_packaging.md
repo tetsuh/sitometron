@@ -49,7 +49,7 @@ LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the enumerated 143-test `dev-linux` suite. It runs without suppressions using
+CTest-name parity with the enumerated 154-test `dev-linux` suite. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -169,10 +169,10 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `JOB-005` | C++ test `job_timeout_vectors` | Active |
 | `JOB-006` | C++ test `job_late_cleanup_vectors` | Active |
 | `JOB-007` | C++ test `job_ordering_vectors` | Active |
-| `JOB-008` | C++ tests `job_ingress_linearization_order`, `job_ingress_single_writer`, `job_ingress_source_classification`, `job_ingress_capacity_and_reserve`, `job_ingress_coalescing`, `job_ingress_fail_closed`, `job_create_returns_identity`, `job_ingress_completion_await` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13; creation identity and the completion wait active under Issue #80 |
+| `JOB-008` | C++ tests `job_ingress_linearization_order`, `job_ingress_single_writer`, `job_ingress_source_classification`, `job_ingress_capacity_and_reserve`, `job_ingress_coalescing`, `job_ingress_fail_closed`, `job_create_returns_identity`, `job_ingress_completion_await` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13; creation identity and the completion wait active under Issue #80; ADR-0014 retirement/reserve changes active under Issue #120 (`OPS-006`) |
 | `JOB-009` | CTests `core_supervisor_decision_contract`, `core_supervisor_decision_complete`; C++ tests `job_supervisor_drives_to_cleanup`, `job_supervisor_overtakes`, `job_supervisor_rejection_rederives`, `job_supervisor_ingress_results`, `job_supervisor_no_writer_reentry` | Planned under Proposed ADR-0012 under Issue #104; checks activated by the supervisor implementation Issue |
 | `ID-001` | CTests `identity_uuidv7_canonical`, `identity_uuidv7_monotonic_burst`, `identity_uuidv4_canonical`, `identity_stable_id_grammar`, `identity_never_repeats_within_instance`, `identity_source_never_exhausted`, `clock_recorded_at_rfc3339`, `clock_monotonic_instant`, `identity_dependency_allowlist`, `identity_public_api_isolation`, `identity_source_reads_no_other_clock_or_entropy`, `identity_seed_failure_refuses_startup`, `sitometrond_composes_production_identity` | Active under Accepted ADR-0013 under Issue #102; implemented and activated by Issue #115 |
-| `OPS-006` | C++ tests `job_retirement_oldest_closed_first`, `job_retirement_requires_closed`, `job_retirement_not_under_free_slot`, `job_retirement_resets_slot`, `job_retirement_stale_timer_rejected`, `job_retirement_late_fact_absent`, `job_trace_ring_wraps`; CTests `journal_replay_retires_like_writer`, `journal_replay_capacity_after_retirement`, `rest_v1_retired_job_absent`, `rest_v1_daemon_outlives_max_jobs` | Planned under Accepted ADR-0014 under Issue #103; checks activated by the retirement implementation Issue |
+| `OPS-006` | C++ tests `job_retirement_oldest_closed_first`, `job_retirement_requires_closed`, `job_retirement_not_under_free_slot`, `job_retirement_resets_slot`, `job_retirement_stale_timer_rejected`, `job_retirement_late_fact_absent`, `job_trace_ring_wraps`; CTests `journal_replay_retires_like_writer`, `journal_replay_capacity_after_retirement`, `rest_v1_retired_job_absent`, `rest_v1_daemon_outlives_max_jobs` | Active under Accepted ADR-0014 under Issue #103; implemented and activated by Issue #120 |
 | `OPS-001` | C++ tests `job_ingress_shutdown_quiescence`, `job_ingress_callback_lifetime`, `job_ingress_readiness_failure` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13 |
 | `JRN-001` | CTests `core_job_contract`, `job_fake_logical_commit_results`; C++ tests `job_journal_envelope_vectors`, `job_logical_sequence_exhaustion_fail_closed` | Contract, logical fake-result, complete writer-envelope construction, and non-wrapping sequence checks active; physical record encoding is active under `JRN-004` (Issue #57) and segment layout under `JRN-005` (Issue #59) |
 | `JRN-002` | C++ test `job_logical_commit_order`; CTest `job_fake_effect_observation`; C++ test `job_physical_disk_sync_order` | Logical commit-before-activation/effect ordering active under Issue #12 and deterministically qualified under Issue #13; physical append/data-sync ordering (`job_physical_disk_sync_order`) active under Issue #59 |
@@ -197,11 +197,13 @@ Issue #106 activates the remaining 21 frozen API check names and additionally ac
 `rest_v1_json_rejects_leading_bom`, `rest_v1_json_rejects_lone_surrogate`, and
 `rest_v1_sitometrond_empty_registry`. All 24 additions have recorded intentional RED before implementation.
 
-Issue #115 activates all thirteen `ID-001` names in HTTP-enabled and HTTP-off builds. The enumerated
-current totals are 143 unique HTTP-enabled names, 82 unique HTTP-off names, and 143 ASan/UBSan names;
-the development and sanitizer name sets match exactly, and all thirteen identity names remain in
-every configuration. HTTP-off removes only the 61 HTTP-specific checks. Its generator,
-clock, and registered test-only Backend fixtures exercise real values; Phase 1 production still
+Issue #115 activates all thirteen `ID-001` names in HTTP-enabled and HTTP-off builds. Issue #120
+activates all eleven `OPS-006` names above, including nine non-REST names in HTTP-off builds.
+The enumerated current totals are 154 unique HTTP-enabled names, 91 unique HTTP-off names, and
+154 ASan/UBSan names; the development and sanitizer name sets match exactly, and all thirteen
+identity names remain in every configuration. HTTP-off removes only the 63 HTTP-specific checks.
+These totals come from each built tree's CTest enumeration, not addition-based predictions.
+The identity generator, clock, and registered test-only Backend fixtures exercise real values; Phase 1 production still
 registers no Application, so creates reach neither identity nor clock. Forwarding counters remain
 in the daemon composition. Formatting/arithmetic/collision vectors use injected inputs without real
 sleeps. The burst check logs its observed rate and conservative per-microsecond occupancy and asserts

@@ -163,7 +163,8 @@ target_include_directories(
   sitometron_journal
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>)
+    $<INSTALL_INTERFACE:include>
+  PRIVATE src/core)
 target_compile_features(sitometron_journal PUBLIC cxx_std_20)
 target_link_libraries(
   sitometron_journal
@@ -357,7 +358,10 @@ if(SITOMETRON_BUILD_TESTS)
     PRIVATE
       sitometron::core
       sitometron::test_support
-      sitometron_core_fake_support)
+      sitometron_core_fake_support
+      nlohmann_json::nlohmann_json)
+  target_compile_definitions(sitometron_job_orchestration_tests PRIVATE
+    SITOMETRON_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   sitometron_enable_project_warnings(sitometron_job_orchestration_tests)
   sitometron_enable_sanitizers(sitometron_job_orchestration_tests)
   foreach(_job_orchestration_check IN ITEMS
@@ -376,7 +380,14 @@ if(SITOMETRON_BUILD_TESTS)
       job_logical_commit_failure_fail_closed
       job_successful_lifecycle_slice
       job_create_returns_identity
-      job_ingress_completion_await)
+      job_ingress_completion_await
+      job_retirement_oldest_closed_first
+      job_retirement_requires_closed
+      job_retirement_not_under_free_slot
+      job_retirement_resets_slot
+      job_retirement_stale_timer_rejected
+      job_retirement_late_fact_absent
+      job_trace_ring_wraps)
     add_test(
       NAME ${_job_orchestration_check}
       COMMAND sitometron_job_orchestration_tests ${_job_orchestration_check})
@@ -448,6 +459,7 @@ if(SITOMETRON_BUILD_TESTS)
       sitometron::core
       sitometron::test_support
       sitometron_reducer_json_support
+      sitometron_core_fake_support
       nlohmann_json::nlohmann_json)
   sitometron_enable_project_warnings(sitometron_journal_replay_tests)
   sitometron_enable_sanitizers(sitometron_journal_replay_tests)
@@ -462,7 +474,9 @@ if(SITOMETRON_BUILD_TESTS)
       journal_replay_dispatches_no_effects
       journal_replay_sequence_continuation
       journal_unresolved_jobs_block_admission
-      journal_resolved_jobs_seed_writer)
+      journal_resolved_jobs_seed_writer
+      journal_replay_retires_like_writer
+      journal_replay_capacity_after_retirement)
     add_test(
       NAME ${_journal_replay_check}
       COMMAND sitometron_journal_replay_tests
@@ -626,7 +640,9 @@ if(SITOMETRON_BUILD_TESTS)
         rest_v1_cancel_body
         rest_v1_json_rejects_leading_bom
         rest_v1_json_rejects_lone_surrogate
-        rest_v1_sitometrond_empty_registry)
+        rest_v1_sitometrond_empty_registry
+        rest_v1_retired_job_absent
+        rest_v1_daemon_outlives_max_jobs)
       add_test(
         NAME ${_rest_v1_check}
         COMMAND sitometron_http_tests ${_rest_v1_check})

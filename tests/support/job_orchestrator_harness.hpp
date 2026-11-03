@@ -39,6 +39,7 @@ enum class WriterPhase {
   kBeforeDequeue,
   kAfterDequeueAuthorized,
   kAfterDecision,
+  kVictimClaimed,
   kBeforeCommit,
   kAfterCommit,
   kAfterApply,
@@ -84,7 +85,7 @@ struct TimerSubmitResult {
 struct Completion {
   // A completion is a finite terminal disposition only.  The prospective ApplyResult
   // stays exclusively in the writer-owned resident bank after logical commit.
-  enum class Code { kSuccess, kReducerRejection, kServiceFailed };
+  enum class Code { kSuccess, kReducerRejection, kResidentLimit, kServiceFailed };
   Code code = Code::kServiceFailed;
   std::optional<core::Rejection> rejection;
 };
@@ -103,7 +104,7 @@ struct Config {
 
   [[nodiscard]] constexpr std::size_t critical_reserve() const noexcept {
     constexpr auto maximum = std::numeric_limits<std::size_t>::max();
-    return max_jobs > (maximum - 1U) / 9U ? 0U : 9U * max_jobs + 1U;
+    return max_jobs > (maximum - 1U) / 9U - 1U ? 0U : 9U * (max_jobs + 1U) + 1U;
   }
   [[nodiscard]] constexpr std::size_t total_capacity() const noexcept {
     const auto reserve = critical_reserve();
@@ -117,8 +118,8 @@ struct Config {
 constexpr Config PositiveConfig() {
   return Config{2, 2, 512, 64, 64, 32, 16, 1, 1, core::LogicalCommitResult::kCommitted};
 }
-static_assert(PositiveConfig().critical_reserve() == 19);
-static_assert(PositiveConfig().total_capacity() == 21);
+static_assert(PositiveConfig().critical_reserve() == 28);
+static_assert(PositiveConfig().total_capacity() == 30);
 
 struct AllocationFixture {
   core::StableId id{"allocation-1"};

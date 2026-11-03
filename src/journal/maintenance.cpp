@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "job_orchestrator.hpp"
 #include "sitometron/journal/replay.hpp"
 
 namespace sitometron::journal {
@@ -440,8 +441,9 @@ class Prune {
     std::vector<std::ptrdiff_t> blocked(highest + 2, 0);
     for (std::size_t j = 0; j < replayed.jobs.size(); ++j) {
       const auto first = replayed.spans[j].first_segment;
-      const auto end =
-          IsUnresolved(replayed.jobs[j]) ? highest + 1 : replayed.spans[j].last_segment + 1;
+      const auto end = !core::internal::IsClosed(replayed.jobs[j])
+                           ? highest + 1
+                           : replayed.spans[j].last_segment + 1;
       if (first + 1 < end) {
         ++blocked[first + 1];
         --blocked[end];
