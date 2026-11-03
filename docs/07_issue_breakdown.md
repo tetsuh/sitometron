@@ -86,7 +86,8 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
   Section 9 requires are filed when a logger is needed. Gate #50 closed on 2026-10-04; the design
   inputs it handed over to later Phases are tracked in
   [Issue #73](https://github.com/tetsuh/sitometron/issues/73).
-- Phase 1 owns external REST, Admission, and Application Registry contracts.
+- Phase 1 owns external REST, Admission, and Application Registry contracts, except the Phase 2
+  registration subset that Issue #125 takes below.
   [Issue #76](https://github.com/tetsuh/sitometron/issues/76) owns the External REST v1 Job surface
   through Accepted ADR-0008, and [Issue #86](https://github.com/tetsuh/sitometron/issues/86)
   settles the gaps the prototype found through Accepted ADR-0009.

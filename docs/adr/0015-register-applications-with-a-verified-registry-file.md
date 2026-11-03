@@ -42,8 +42,9 @@ the Application Registry ADR that ADR-0008 Section 4 names, limited to the field
 ### 1. The registry file
 
 `sitometrond --applications PATH` names the registry file. The option is optional and appears at
-most once. Without it the registered set is empty and every create answers `422`
-`unknown_application`, as in Phase 1.
+most once; a repeated or empty `--applications` is a command-line error like any other (Issue
+#105), not a startup refusal of Section 2. Without it the registered set is empty and every create
+answers `422` `unknown_application`, as in Phase 1.
 
 The file is one UTF-8 JSON object. The implementation Issue adds its JSON Schema as
 `schemas/application-registry/v1/application-registry.schema.json`, which states the rules of the
@@ -87,13 +88,14 @@ opens, `sitometrond` reads each `executable`, following symbolic links, and comp
 its bytes. Startup refuses with the Issue #105 startup-refusal status, and opens no listener, when
 the file is missing, unreadable, larger than 1 MiB, not UTF-8 JSON, does not match the schema,
 repeats an `application_id`, names an `executable` that is not absolute or is not a readable regular
-file, or names one whose digest differs from its `bundle_sha256`. A refusal reports the entry and
-the reason on standard error.
+file, or names one whose digest differs from its `bundle_sha256`. A refusal reports the reason on
+standard error, and the entry when one entry is at fault.
 
 The verified identity of a launch is the entry's `application_id`, `version`, and `bundle_sha256`.
-The supervisor (ADR-0012) copies those three values into `worker_launch_intent` from the registered
-entry for the Job's `application_id`. Whether the runner checks the digest again at launch is the
-runner's decision (Gate #123, P2-3); this ADR verifies at startup only.
+The supervisor (ADR-0012) copies those three values into `worker_launch_intent` from the launch
+inputs that the composition hands it for the Job's `application_id` (Section 4). Whether the runner
+checks the digest again at launch is the runner's decision (Gate #123, P2-3); this ADR verifies at
+startup only.
 
 ### 3. Lifetime
 
@@ -129,9 +131,14 @@ Issue adds the dependency-allowlist and public-API-isolation scanners for this t
 pattern of the `sitometron_identity` scanners.
 
 The target is built only when HTTP is enabled, like `sitometrond_composition`, its only consumer.
-The composition links it, refuses startup as Section 2 states, and passes the verified set to the
-Phase 1 Backend in place of today's empty list, and to the supervisor and the runner when they
-exist. The HTTP-off `sitometrond` reads no command-line option today and does not change.
+The composition links it, refuses startup as Section 2 states, and passes the verified identifiers
+to the Phase 1 Backend in place of today's empty list. For a create of a registered identifier, the
+composition hands the supervisor the entry's `application_id`, `version`, and `bundle_sha256` as
+the launch inputs of ADR-0012 Section 2, in the core's own types (`StableId`, a standard string,
+and `Digest`, as `WorkerLaunchIntentPayload` holds them); no registry type enters
+`sitometron_core`. The runner receives the entry, including `executable` and `arguments`, from the
+composition when it exists. The HTTP-off `sitometrond` reads no command-line option today and does
+not change.
 
 ### 5. What changes in the Accepted ADRs
 
@@ -153,8 +160,9 @@ exist. The HTTP-off `sitometrond` reads no command-line option today and does no
 - Admission policy beyond ADR-0008 and per-Application limits (#35).
 - The External REST v1 I/O model. Owner decision A of 2026-10-24 (PR #112, Issue #106) keeps one
   I/O thread with synchronous completion waits and revisits it with Phase 2 registration. This ADR
-  keeps that model: from now on a committing create in production also reaches the wait, and the
-  decision on it belongs to the owner under Gate #123.
+  keeps that model, so from now on a committing create in production also reaches the wait. By
+  owner decision of 2026-11-03, Issue #127 (the Worker protocol, Gate #123 P2-4) revisits it,
+  because whether the Worker listener shares that thread is decided there.
 
 ## Requirements and checks
 
@@ -166,15 +174,23 @@ Application identity from the verified entry.
 Its named checks, Planned until the implementation Issue activates them:
 
 - `registry_schema_vectors`: the schema accepts the valid forms (no `arguments`, an empty
-  `applications` array, one entry at every maximum length) and rejects each near-miss (a wrong
-  `schema`, an `application_id` outside the ADR-0009 form, an uppercase digest, an empty
-  `executable`, an unknown member, more than 1,024 entries, more than 64 `arguments`);
+  `applications` array, an empty argument string, one entry at every minimum and every maximum
+  length) and rejects each near-miss, table-driven: a wrong or missing `schema`; an unknown member
+  at either level; a missing required member; an `application_id` that is empty, of 129
+  characters, or outside the ADR-0009 form; a `version` that is empty or of 129 characters; an
+  `executable` that is empty or of 4,097 characters; 65 `arguments`, an argument of 1,025
+  characters, or an argument that is not a string; a `bundle_sha256` of 63 or 65 characters, with
+  an uppercase letter, or with a non-hexadecimal character; 1,025 entries;
 - `registry_startup_refuses_invalid`: a missing, unreadable, larger than 1 MiB, non-JSON,
   schema-invalid, duplicate-identifier, or relative-`executable` file refuses startup with the
-  startup-refusal status and opens no listener;
+  startup-refusal status, opens no listener, and reports the reason on standard error, with the
+  entry for an entry-level fault;
 - `registry_bundle_digest_verified`: a matching digest is accepted, also through a symbolic link; a
-  changed byte in the `executable`, a missing `executable`, or a directory in its place refuses
-  startup;
+  changed byte in the `executable`, a missing `executable`, a directory in its place, or a regular
+  `executable` that cannot be opened for reading refuses startup with the startup-refusal status,
+  opens no listener, and reports the entry and the reason on standard error. The unreadable case
+  runs on POSIX with a file without read permission; Windows skips it, because a test fixture there
+  has no simple portable way to remove read access from the test's own user;
 - `registry_absent_keeps_empty_set`: without `--applications`, startup succeeds and every create is
   `422` `unknown_application`;
 - `rest_v1_registered_application_creates`: with a verified file, a create for a registered
