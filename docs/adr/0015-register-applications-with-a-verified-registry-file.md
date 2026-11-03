@@ -79,17 +79,20 @@ No other member is allowed at either level. The JSON Schema states every rule of
 that `executable` is absolute and that `application_id` is unique; Sitometron-owned code checks
 those two, using the host platform's rule for an absolute path. The file is at most 1 MiB, and that
 cap governs: the per-field limits are independent of it, so a file of many maximal entries is
-refused by its size.
+refused by its size. The loader parses the file from its full byte range and refuses three inputs
+that nlohmann-json accepts (ADR-0011): a raw NUL anywhere, a duplicate member name in any one
+object, found with a parser callback as ADR-0011 describes, and a leading byte-order mark.
 
 ### 2. The bundle and its verification
 
 In Phase 2 an Application's bundle is its `executable` file alone. At startup, before any listener
 opens, `sitometrond` reads each `executable`, following symbolic links, and computes the SHA-256 of
 its bytes. Startup refuses with the Issue #105 startup-refusal status, and opens no listener, when
-the registry file is missing, unreadable, larger than 1 MiB, not UTF-8 JSON, does not match the
-schema, repeats an `application_id`, names an `executable` that is not absolute or is not a readable
-regular file, or names one whose digest differs from its `bundle_sha256`. A refusal reports the
-reason on standard error, and the entry when one entry is at fault.
+the registry file is missing, unreadable, larger than 1 MiB, not UTF-8 JSON, fails a parsing rule of
+Section 1, does not match the schema, repeats an `application_id`, names an `executable` that is not
+absolute or is not a readable regular file, or names one whose digest differs from its
+`bundle_sha256`. A refusal reports the reason on standard error, and the entry when one entry is at
+fault.
 
 The verified identity of a launch is the entry's `application_id`, `version`, and `bundle_sha256`.
 The supervisor (ADR-0012) copies those three values into `worker_launch_intent` from the launch
@@ -186,9 +189,10 @@ Its named checks, Planned until the implementation Issue activates them:
   characters, or an argument that is not a string; a `bundle_sha256` of 63 or 65 characters, with an
   uppercase letter, or with a non-hexadecimal character; 1,025 entries;
 - `registry_startup_refuses_invalid`: a missing, unreadable, larger than 1 MiB, non-JSON,
-  schema-invalid, duplicate-identifier, or relative-`executable` file refuses startup with the
-  startup-refusal status, opens no listener, and reports the reason on standard error, with the
-  entry for an entry-level fault;
+  schema-invalid, duplicate-identifier, or relative-`executable` file, a file with a raw NUL after
+  the value, a file with a duplicate member name in one object (at the root and in an entry), and a
+  file with a leading byte-order mark each refuses startup with the startup-refusal status, opens no
+  listener, and reports the reason on standard error, with the entry for an entry-level fault;
 - `registry_bundle_digest_verified`: a matching digest is accepted, also through a symbolic link; a
   changed byte in the `executable`, a missing `executable`, a directory in its place, or a regular
   `executable` that cannot be opened for reading refuses startup with the startup-refusal status,
