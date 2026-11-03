@@ -75,9 +75,10 @@ table below and no others:
 | `arguments` | an optional array of 0 to 64 strings, each 0 to 1,024 characters; default empty |
 | `bundle_sha256` | 64 lowercase hexadecimal characters |
 
-No other member is allowed at either level, and no string in the file may contain U+0000, which JSON
-can carry only as the escape `\u0000`. The JSON Schema states both of these rules and every rule of
-the table except that `executable` is absolute and that `application_id` is unique; Sitometron-owned
+Every length limit counts Unicode code points, as JSON Schema `maxLength` does, not bytes. No other
+member is allowed at either level, and no string in the file may contain U+0000, which JSON can
+carry only as the escape `\u0000`. The JSON Schema states both of these rules and every rule of the
+table except that `executable` is absolute and that `application_id` is unique; Sitometron-owned
 code checks those two, using the host platform's rule for an absolute path. The file is at most 1
 MiB, and that cap governs: the per-field limits are independent of it, so a file of many maximal
 entries is refused by its size. The loader parses the file from its full byte range and refuses a
@@ -185,16 +186,19 @@ Its named checks, Planned until the implementation Issue activates them:
 
 - `registry_schema_vectors`: the schema accepts the valid forms (no `arguments`, an empty
   `applications` array, an empty argument string, one entry at every minimum and every maximum
-  length, an entry with exactly 64 `arguments`, and exactly 1,024 entries with distinct identifiers)
-  and rejects each near-miss, table-driven: a root or an entry that is not an object; `applications`
-  or `arguments` that is not an array; a `schema`, `application_id`, `version`, `executable`, or
-  `bundle_sha256` that is not a string; a wrong or missing `schema`; an unknown member at either
-  level; a missing required member; an `application_id` that is empty, of 129 characters, or outside
-  the ADR-0009 form; a `version` that is empty or of 129 characters; an `executable` that is empty
-  or of 4,097 characters; 65 `arguments`, an argument of 1,025 characters, or an argument that is
-  not a string; an escaped `\u0000` in `executable`, in an argument, and in each other string
-  member; a `bundle_sha256` of 63 or 65 characters, with an uppercase letter, or with a
-  non-hexadecimal character; 1,025 entries;
+  length, an entry with exactly 64 `arguments`, exactly 1,024 entries with distinct identifiers, and
+  a `version`, an `executable`, and an argument at their limits written in multibyte UTF-8
+  characters) and rejects each near-miss, table-driven: a root or an entry that is not an object;
+  `applications` or `arguments` that is not an array; a `schema`, `application_id`, `version`,
+  `executable`, or `bundle_sha256` that is not a string; a wrong or missing `schema`; an unknown
+  member at either level; a missing required member; an `application_id` that is empty, of 129
+  characters, or outside the ADR-0009 form; a `version` that is empty or of 129 characters; an
+  `executable` that is empty or of 4,097 characters; 65 `arguments`, an argument of 1,025
+  characters, or an argument that is not a string; an escaped `\u0000` in `executable`, in an
+  argument, and in each other string member; a `bundle_sha256` of 63 or 65 characters, with an
+  uppercase letter, or with a non-hexadecimal character; 1,025 entries; and the multibyte values one
+  character over their limits. The same vectors run against the JSON Schema and against the loader's
+  own checks;
 - `registry_startup_refuses_invalid`: a missing, unreadable, larger than 1 MiB, non-JSON,
   schema-invalid, duplicate-identifier, or relative-`executable` file, a file with a raw NUL after
   the value, a file with a duplicate member name in one object (at the root and in an entry), and a
