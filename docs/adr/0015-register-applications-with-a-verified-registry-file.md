@@ -149,14 +149,16 @@ change it. How the runner uses them is the runner's design (Gate #123, P2-3). Th
 
 ### 5. What changes in the Accepted ADRs
 
-- ADR-0008 Section 4: the sentence "Until that ADR is Accepted, the registered set is a list of
-  identifiers in the daemon's startup configuration" stops applying when this ADR is Accepted, by
-  its own condition; no sentence of ADR-0008 is superseded. The registered set is the verified set
-  of Section 2.
-- ADR-0002, Decision: "verified Application identity" receives its meaning (Section 2); the rule
-  itself is unchanged.
-- ADR-0009 Section 9: unchanged and adopted as the `application_id` rule.
-- The Journal event schema and the reducer: unchanged.
+- [ADR-0008](0008-define-the-external-rest-v1-job-surface.md) Section 4: the sentence "Until that
+  ADR is Accepted, the registered set is a list of identifiers in the daemon's startup
+  configuration" stops applying when this ADR is Accepted, by its own condition; no sentence of
+  ADR-0008 is superseded. The registered set is the verified set of Section 2.
+- [ADR-0002](0002-define-core-job-reducer-contract.md), Decision: "verified Application identity"
+  receives its meaning (Section 2); the rule itself is unchanged.
+- [ADR-0009](0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md) Section 9: unchanged
+  and adopted as the `application_id` rule.
+- The Journal event schema (`schemas/core/v1/job-journal-event.schema.json`) and the reducer:
+  unchanged.
 
 ### 6. Not decided here
 
@@ -203,6 +205,9 @@ Its named checks, Planned until the implementation Issue activates them:
   has no simple portable way to remove read access from the test's own user;
 - `registry_absent_keeps_empty_set`: without `--applications`, startup succeeds and every create is
   `422` `unknown_application`;
+- `rest_v1_sitometrond_options` (the existing Issue #105 check, extended): a repeated
+  `--applications` and an empty `--applications` value are each a command-line error with the
+  documented status `2`, and a single `--applications PATH` is accepted by the parser;
 - `rest_v1_registered_application_creates`: with a verified file, a create for a registered
   identifier is `202` and a create for any other identifier is `422` `unknown_application`;
 - `registry_launch_identity_from_entry`: the `application` object of a `worker_launch_intent` equals
