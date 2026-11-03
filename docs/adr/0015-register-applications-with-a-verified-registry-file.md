@@ -177,12 +177,14 @@ Its named checks, Planned until the implementation Issue activates them:
 
 - `registry_schema_vectors`: the schema accepts the valid forms (no `arguments`, an empty
   `applications` array, an empty argument string, one entry at every minimum and every maximum
-  length) and rejects each near-miss, table-driven: a wrong or missing `schema`; an unknown member
-  at either level; a missing required member; an `application_id` that is empty, of 129
+  length) and rejects each near-miss, table-driven: a root or an entry that is not an object;
+  `applications` or `arguments` that is not an array; a `schema`, `application_id`, `version`,
+  `executable`, or `bundle_sha256` that is not a string; a wrong or missing `schema`; an unknown
+  member at either level; a missing required member; an `application_id` that is empty, of 129
   characters, or outside the ADR-0009 form; a `version` that is empty or of 129 characters; an
   `executable` that is empty or of 4,097 characters; 65 `arguments`, an argument of 1,025
-  characters, or an argument that is not a string; a `bundle_sha256` of 63 or 65 characters, with
-  an uppercase letter, or with a non-hexadecimal character; 1,025 entries;
+  characters, or an argument that is not a string; a `bundle_sha256` of 63 or 65 characters, with an
+  uppercase letter, or with a non-hexadecimal character; 1,025 entries;
 - `registry_startup_refuses_invalid`: a missing, unreadable, larger than 1 MiB, non-JSON,
   schema-invalid, duplicate-identifier, or relative-`executable` file refuses startup with the
   startup-refusal status, opens no listener, and reports the reason on standard error, with the
