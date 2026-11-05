@@ -567,6 +567,30 @@ if(SITOMETRON_BUILD_TESTS)
         -DHTTP_NEGATIVE_MODE=public
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_negative_isolation.cmake)
 
+    add_executable(sitometron_registry_tests tests/unit/registry_test.cpp)
+    target_include_directories(sitometron_registry_tests PRIVATE src/registry)
+    target_compile_definitions(sitometron_registry_tests PRIVATE
+      SITOMETRON_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(sitometron_registry_tests PRIVATE nlohmann_json::nlohmann_json)
+    if(TARGET sitometron::registry)
+      target_link_libraries(sitometron_registry_tests PRIVATE sitometron::registry)
+    endif()
+    sitometron_enable_project_warnings(sitometron_registry_tests)
+    sitometron_enable_sanitizers(sitometron_registry_tests)
+    add_test(NAME registry_schema_vectors COMMAND sitometron_registry_tests)
+    foreach(_registry_scan IN ITEMS allowlist public)
+      if(_registry_scan STREQUAL "allowlist")
+        set(_registry_scan_name registry_dependency_allowlist)
+      else()
+        set(_registry_scan_name registry_public_api_isolation)
+      endif()
+      add_test(NAME ${_registry_scan_name} COMMAND ${CMAKE_COMMAND}
+        -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DSITOMETRON_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -DREGISTRY_NEGATIVE_MODE=${_registry_scan}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_registry_negative_isolation.cmake)
+    endforeach()
+
     add_executable(sitometron_http_tests tests/unit/http_rest_v1_test.cpp)
     target_include_directories(
       sitometron_http_tests
@@ -578,14 +602,20 @@ if(SITOMETRON_BUILD_TESTS)
       PRIVATE
         sitometron::http
         sitometrond_composition
+        sitometrond_entrypoint
         sitometron::core
         sitometron_core_fake_support
         sitometron_reducer_json_support
         Boost::asio
+        Boost::hash2
         nlohmann_json::nlohmann_json)
     sitometron_enable_project_warnings(sitometron_http_tests)
     sitometron_enable_sanitizers(sitometron_http_tests)
     foreach(_rest_v1_check IN ITEMS
+        registry_startup_refuses_invalid
+        registry_bundle_digest_verified
+        registry_absent_keeps_empty_set
+        rest_v1_registered_application_creates
         rest_v1_loopback_only
         rest_v1_unknown_route_and_method
         rest_v1_job_routes_not_ready

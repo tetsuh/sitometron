@@ -25,6 +25,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/write.hpp>
+#include <boost/hash2/sha2.hpp>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
@@ -1947,6 +1948,14 @@ int SitometrondEntrypoint(const std::string& executable) {
       RunAndWait(executable, {"--listen", "127.0.0.1:0", "--max-jobs", "2"});
   result |= Check(missing_journal.started && missing_journal.exit_code == 2, name,
                   "missing required --journal did not exit with status 2");
+  for (const auto& args : std::vector<std::vector<std::string>>{
+           {"--journal", directory.Path().string(), "--applications", ""},
+           {"--journal", directory.Path().string(), "--applications", "one", "--applications",
+            "two"}}) {
+    const auto invalid = RunAndWait(executable, args);
+    result |= Check(invalid.started && invalid.exit_code == 2, name,
+                    "invalid applications option did not exit with status 2");
+  }
 
 #ifdef _WIN32
   // Windows has no portable console-signal path for this subprocess smoke.
@@ -2031,6 +2040,50 @@ int SitometrondOptions() {
     return Check(parsed.ok, "rest_v1_sitometrond_options",
                  std::string(case_name) + " command line was refused: " + parsed.error);
   };
+  const auto applications_path = (directory.Path() / "applications with spaces.json").string();
+  const auto registered = sitometron::daemon::ParseStartupOptions(
+      {"--journal", journal_path, "--applications", applications_path});
+  result |= Check(registered.ok, "rest_v1_sitometrond_options",
+                  "single --applications PATH was refused: " + registered.error);
+  const auto path_matches = []<class Config>(const Config& config, const std::string& path) {
+    if constexpr (requires { config.applications_path == path; })
+      return config.applications_path == path;
+    return false;
+  };
+  if (registered.ok)
+    result |=
+        Check(path_matches(registered.config, applications_path), "rest_v1_sitometrond_options",
+              "applications path was not preserved without reading the file");
+  result |= expect_accepted({"--journal", journal_path, "--applications", "relative.json"},
+                            "relative registry path");
+  for (const auto& args : std::vector<std::vector<std::string>>{
+           {"--journal", journal_path, "--applications", ""},
+           {"--journal", journal_path, "--applications", "one", "--applications", "one"},
+           {"--journal", journal_path, "--applications", "one", "--applications", "two"},
+           {"--journal", journal_path, "--applications"},
+           {"--journal", journal_path, "--applications", "--max-jobs", "2"},
+           {"--journal", journal_path, "--applications=one"},
+           {"--journal", journal_path, "--application", "one"}}) {
+    result |= expect_rejected(args, "invalid applications option");
+    std::ostringstream output;
+    std::ostringstream error;
+    auto* old_out = std::cout.rdbuf(output.rdbuf());
+    auto* old_err = std::cerr.rdbuf(error.rdbuf());
+    const auto status = sitometron::daemon::RunSitometrond(args);
+    std::cout.rdbuf(old_out);
+    std::cerr.rdbuf(old_err);
+    result |= Check(status == 2 && !error.str().empty(), "rest_v1_sitometrond_options",
+                    "invalid applications option did not return status 2 and its reason");
+  }
+  for (const auto flag : {"--help", "-h"}) {
+    std::ostringstream output;
+    auto* old_out = std::cout.rdbuf(output.rdbuf());
+    const auto status = sitometron::daemon::RunSitometrond({flag});
+    std::cout.rdbuf(old_out);
+    result |= Check(status == 0 && output.str().find("--applications PATH") != std::string::npos,
+                    "rest_v1_sitometrond_options", "help does not advertise --applications PATH");
+    result |= expect_rejected({flag, "--applications", applications_path}, "combined help");
+  }
   result |= expect_rejected({}, "missing required --journal");
   result |= expect_rejected({"--journal", ""}, "empty --journal");
   result |= expect_rejected({"--journal", journal_path, "--unknown", "x"}, "unknown");
@@ -3926,6 +3979,9 @@ int SitometrondEmptyRegistry() {
   return result;
 }
 
+// Included here to share this translation unit's existing transport/fixture helpers.
+#include "registry_composition_checks.hpp"
+
 }  // namespace job_routes
 
 namespace job_routes {
@@ -4105,6 +4161,12 @@ int DaemonOutlivesMaxJobs() {
 }  // namespace job_routes
 
 int Run(std::string_view name, const std::string& sitometrond_path) {
+  if (name == "registry_startup_refuses_invalid")
+    return job_routes::RegistryStartupRefusesInvalid();
+  if (name == "registry_bundle_digest_verified") return job_routes::RegistryBundleDigestVerified();
+  if (name == "registry_absent_keeps_empty_set") return job_routes::RegistryAbsentKeepsEmptySet();
+  if (name == "rest_v1_registered_application_creates")
+    return job_routes::RegisteredApplicationCreates();
   if (name == "rest_v1_retired_job_absent") return job_routes::RetiredJobAbsent();
   if (name == "rest_v1_daemon_outlives_max_jobs") return job_routes::DaemonOutlivesMaxJobs();
   if (name == "rest_v1_openapi_contract") return job_routes::OpenApiContract();
