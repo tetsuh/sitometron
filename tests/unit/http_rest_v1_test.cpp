@@ -57,6 +57,8 @@
 #include "job_orchestrator.hpp"
 #include "journal_test_events.hpp"
 #include "reducer_snapshot_json.hpp"
+#include "registry_validation.hpp"
+#include "registry_vector_inventory.hpp"
 #include "retirement_test_support.hpp"
 #include "sitometron/http/server.hpp"
 #include "sitometron/journal/segment_journal.hpp"
@@ -1715,11 +1717,11 @@ int Phase1PortsNotCalled() {
         ExpectError(create, "rest_v1_phase1_ports_not_called", 422, "job", "unknown_application");
     composition.Stop();
     result |= Check(bytes() == original, "rest_v1_phase1_ports_not_called",
-                    "production empty-registry create changed the replayed Journal");
+                    "production no-option create changed the replayed Journal");
     result |= Check(composition.clock_reads() == 0, "rest_v1_phase1_ports_not_called",
-                    "Phase 1 clock was read during replay/serve/shutdown");
+                    "no-option clock was read during replay/serve/shutdown");
     result |= Check(composition.identity_reads() == 0, "rest_v1_phase1_ports_not_called",
-                    "Phase 1 identity source was read during replay/serve/shutdown");
+                    "no-option identity source was read during replay/serve/shutdown");
   }
   return result;
 }
@@ -1984,8 +1986,11 @@ int SitometrondEntrypoint(const std::string& executable) {
 
 int SitometrondOptions() {
   int result = 0;
+  std::size_t parser_vectors = 0;
+  std::size_t entrypoint_vectors = 0;
   const ScopedTempDirectory directory("sitometrond-options-journal");
   const auto journal_path = directory.Path().string();
+  ++parser_vectors;
   const auto valid = sitometron::daemon::ParseStartupOptions(
       {"--journal", journal_path, "--listen", "127.0.0.1:0", "--cancel-principal", "operator",
        "--max-jobs", "7", "--target-limit", "4096", "--header-limit", "8192", "--body-limit",
@@ -2002,10 +2007,13 @@ int SitometrondOptions() {
                     "rest_v1_sitometrond_options", "combined request bound mismatch");
   }
 
+  ++parser_vectors;
   const auto defaults = sitometron::daemon::ParseStartupOptions({"--journal", journal_path});
   result |= Check(defaults.ok, "rest_v1_sitometrond_options",
                   "documented defaults were refused: " + defaults.error);
   if (defaults.ok) {
+    result |= Check(!defaults.config.applications_path.has_value(), "rest_v1_sitometrond_options",
+                    "default parser unexpectedly named a registry");
     result |= Check(defaults.config.http.listen_address == "127.0.0.1",
                     "rest_v1_sitometrond_options", "default listen address mismatch");
     result |= Check(defaults.config.http.listen_port == 8080, "rest_v1_sitometrond_options",
@@ -2030,30 +2038,28 @@ int SitometrondOptions() {
 
   const auto expect_rejected = [&](const std::vector<std::string>& args,
                                    std::string_view case_name) {
+    ++parser_vectors;
     const auto parsed = sitometron::daemon::ParseStartupOptions(args);
     return Check(!parsed.ok, "rest_v1_sitometrond_options",
                  std::string(case_name) + " command line was accepted");
   };
   const auto expect_accepted = [&](const std::vector<std::string>& args,
                                    std::string_view case_name) {
+    ++parser_vectors;
     const auto parsed = sitometron::daemon::ParseStartupOptions(args);
     return Check(parsed.ok, "rest_v1_sitometrond_options",
                  std::string(case_name) + " command line was refused: " + parsed.error);
   };
   const auto applications_path = (directory.Path() / "applications with spaces.json").string();
+  ++parser_vectors;
   const auto registered = sitometron::daemon::ParseStartupOptions(
       {"--journal", journal_path, "--applications", applications_path});
   result |= Check(registered.ok, "rest_v1_sitometrond_options",
                   "single --applications PATH was refused: " + registered.error);
-  const auto path_matches = []<class Config>(const Config& config, const std::string& path) {
-    if constexpr (requires { config.applications_path == path; })
-      return config.applications_path == path;
-    return false;
-  };
   if (registered.ok)
-    result |=
-        Check(path_matches(registered.config, applications_path), "rest_v1_sitometrond_options",
-              "applications path was not preserved without reading the file");
+    result |= Check(registered.config.applications_path == applications_path,
+                    "rest_v1_sitometrond_options",
+                    "applications path was not preserved without reading the file");
   result |= expect_accepted({"--journal", journal_path, "--applications", "relative.json"},
                             "relative registry path");
   for (const auto& args : std::vector<std::vector<std::string>>{
@@ -2069,6 +2075,7 @@ int SitometrondOptions() {
     std::ostringstream error;
     auto* old_out = std::cout.rdbuf(output.rdbuf());
     auto* old_err = std::cerr.rdbuf(error.rdbuf());
+    ++entrypoint_vectors;
     const auto status = sitometron::daemon::RunSitometrond(args);
     std::cout.rdbuf(old_out);
     std::cerr.rdbuf(old_err);
@@ -2078,6 +2085,7 @@ int SitometrondOptions() {
   for (const auto flag : {"--help", "-h"}) {
     std::ostringstream output;
     auto* old_out = std::cout.rdbuf(output.rdbuf());
+    ++entrypoint_vectors;
     const auto status = sitometron::daemon::RunSitometrond({flag});
     std::cout.rdbuf(old_out);
     result |= Check(status == 0 && output.str().find("--applications PATH") != std::string::npos,
@@ -2173,6 +2181,8 @@ int SitometrondOptions() {
                            "rest_v1_sitometrond_options", 200);
   }
   composition.Stop();
+  std::cout << "rest_v1_sitometrond_options: parser vectors=" << parser_vectors
+            << " entrypoint vectors=" << entrypoint_vectors << '\n';
   return result;
 }
 
@@ -2276,7 +2286,7 @@ int JobResponse(const Response& response, std::string_view name, int status,
   return result;
 }
 
-// Metadata for the test-only registry, not an application runner or a daemon registration option.
+// Test-only Backend identifiers; production registration uses the verified registry file.
 struct TestRegistry {
   explicit TestRegistry(std::vector<std::string> values) : identifiers(std::move(values)) {
     for (const auto& id : identifiers) {
@@ -3969,10 +3979,10 @@ int SitometrondEmptyRegistry() {
     result |= ExpectStatus(list, name, 200);
     if (list.status == 200)
       result |= Check(Json::parse(list.body).at("jobs").size() == (seed != 0 ? 1U : 0U), name,
-                      "production empty registry created a resident Job");
+                      "production no-option registry created a resident Job");
     daemon.Stop();
     result |= Check(daemon.clock_reads() == 0 && daemon.identity_reads() == 0, name,
-                    "production empty registry accessed the clock or identity source");
+                    "production no-option registry accessed the clock or identity source");
     result |= Check(ReadText(segment) == original, name,
                     "production registry refusal changed Journal bytes");
   }

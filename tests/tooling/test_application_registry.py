@@ -17,7 +17,6 @@ RELATIVE = Path("schemas/application-registry/v1")
 
 class ApplicationRegistrySchemaTest(unittest.TestCase):
     def helper(self):
-        self.assertTrue(HELPER.is_file(), "registry schema validator is not implemented")
         spec = importlib.util.spec_from_file_location("validate_application_registry", HELPER)
         self.assertIsNotNone(spec)
         module = importlib.util.module_from_spec(spec)
@@ -74,6 +73,38 @@ class ApplicationRegistrySchemaTest(unittest.TestCase):
             vectors["schema_vectors"] = []
             path.write_text(json.dumps(vectors), encoding="utf-8")
             with self.assertRaises((AssertionError, ValueError)):
+                helper.validate_application_registry(root)
+
+    def test_rejects_truncated_vector_file(self):
+        helper = self.helper()
+        with tempfile.TemporaryDirectory(prefix="issue134-schema-") as directory:
+            root, target = self.fixture(directory)
+            path = target / "application-registry-vectors.json"
+            path.write_text(path.read_text(encoding="utf-8")[:-5], encoding="utf-8")
+            with self.assertRaises(ValueError):
+                helper.validate_application_registry(root)
+
+    def test_rejects_removed_schema_or_loader_row(self):
+        helper = self.helper()
+        for group in ("schema_vectors", "loader_only_vectors"):
+            with self.subTest(group=group), tempfile.TemporaryDirectory(prefix="issue134-schema-") as directory:
+                root, target = self.fixture(directory)
+                path = target / "application-registry-vectors.json"
+                vectors = json.loads(path.read_text(encoding="utf-8"))
+                vectors[group].pop()
+                path.write_text(json.dumps(vectors), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    helper.validate_application_registry(root)
+
+    def test_rejects_id_owned_by_both_cpp_checks(self):
+        helper = self.helper()
+        with tempfile.TemporaryDirectory(prefix="issue134-schema-") as directory:
+            root, target = self.fixture(directory)
+            path = target / "application-registry-vectors.json"
+            vectors = json.loads(path.read_text(encoding="utf-8"))
+            vectors["loader_only_vectors"][0]["id"] = vectors["schema_vectors"][0]["id"]
+            path.write_text(json.dumps(vectors), encoding="utf-8")
+            with self.assertRaises(ValueError):
                 helper.validate_application_registry(root)
 
 

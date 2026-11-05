@@ -26,6 +26,8 @@ jobs:
           uv run --frozen --no-build --only-group schema --only-group docs python -m unittest discover -s tests/tooling -p 'test_*.py' -v
       - name: Validate core contracts
         run: uv run --frozen --only-group schema python tools/validate_core_contract.py
+      - name: Validate Application registry
+        run: uv run --frozen --only-group schema python tools/validate_application_registry.py
       - name: Validate repository-relative links
         run: uv run --frozen --no-build --only-group docs python tools/check_relative_links.py
       - name: Validate repository governance
@@ -162,8 +164,14 @@ jobs:
               journal_replay_capacity_after_retirement rest_v1_retired_job_absent
               rest_v1_daemon_outlives_max_jobs
           '''.split())
-          if len(development) != 154 or len(development) != len(set(development)):
-              raise SystemExit(f"expected 154 unique dev-linux CTests; found {len(development)} total/{len(set(development))} unique")
+          registry_checks = set('''
+              registry_schema_vectors registry_startup_refuses_invalid
+              registry_bundle_digest_verified registry_absent_keeps_empty_set
+              rest_v1_registered_application_creates registry_dependency_allowlist
+              registry_public_api_isolation
+          '''.split())
+          if len(development) != 161 or len(development) != len(set(development)):
+              raise SystemExit(f"expected 161 unique dev-linux CTests; found {len(development)} total/{len(set(development))} unique")
           if len(sanitized) != len(set(sanitized)) or set(development) != set(sanitized):
               raise SystemExit("ASan/UBSan CTest name set differs from dev-linux")
           if len(http_off) != 91 or len(http_off) != len(set(http_off)):
@@ -174,8 +182,13 @@ jobs:
               name for name in retirement_checks if not name.startswith('rest_v1_')
           } <= set(http_off):
               raise SystemExit("an OPS-006 check is missing from a configuration")
+          if not registry_checks <= set(development) & set(sanitized) or registry_checks & set(http_off):
+              raise SystemExit("an APP-001 registry check is missing or incorrectly enabled HTTP-off")
+          if 'registry_launch_identity_from_entry' in set(development) | set(sanitized) | set(http_off):
+              raise SystemExit("launch-identity activation belongs to Issue #133")
           if not set(http_off) <= set(development) or any(
-              not name.startswith(('rest_v1_', 'http_')) for name in set(development) - set(http_off)
+              not name.startswith(('rest_v1_', 'http_')) and name not in registry_checks
+              for name in set(development) - set(http_off)
           ):
               raise SystemExit("HTTP-off differs by more than the HTTP-only checks")
           print(f"ASan/UBSan CTest parity: {len(sanitized)} tests; HTTP-off: {len(http_off)}")
@@ -214,6 +227,8 @@ jobs:
           uv run --frozen --no-build --only-group schema --only-group docs python -m unittest discover -s tests/tooling -p 'test_*.py' -v
       - name: Validate core contracts
         run: uv run --frozen --only-group schema python tools/validate_core_contract.py
+      - name: Validate Application registry
+        run: uv run --frozen --only-group schema python tools/validate_application_registry.py
       - name: Validate repository-relative links
         run: uv run --frozen --no-build --only-group docs python tools/check_relative_links.py
       - name: Validate repository governance
@@ -324,8 +339,11 @@ jobs:
           ctest --test-dir build/http-off -j 4 --output-on-failure
           $development = @((ctest --test-dir build/dev-windows --show-only=json-v1 | ConvertFrom-Json).tests.name)
           $httpOff = @((ctest --test-dir build/http-off --show-only=json-v1 | ConvertFrom-Json).tests.name)
-          if ($development.Count -ne 154 -or @($development | Sort-Object -Unique).Count -ne 154) { throw 'expected 154 unique Windows development CTests' }
+          if ($development.Count -ne 161 -or @($development | Sort-Object -Unique).Count -ne 161) { throw 'expected 161 unique Windows development CTests' }
           if ($httpOff.Count -ne 91 -or @($httpOff | Sort-Object -Unique).Count -ne 91) { throw 'expected 91 unique Windows HTTP-off CTests' }
+          $registryChecks = @('registry_schema_vectors', 'registry_startup_refuses_invalid', 'registry_bundle_digest_verified', 'registry_absent_keeps_empty_set', 'rest_v1_registered_application_creates', 'registry_dependency_allowlist', 'registry_public_api_isolation')
+          foreach ($check in $registryChecks) { if ($development -notcontains $check -or $httpOff -contains $check) { throw "incorrect Windows registry check: $check" } }
+          if ($development -contains 'registry_launch_identity_from_entry' -or $httpOff -contains 'registry_launch_identity_from_entry') { throw 'launch-identity activation belongs to Issue #133' }
           $identityChecks = @('identity_uuidv7_canonical', 'identity_uuidv7_monotonic_burst', 'identity_uuidv4_canonical', 'identity_stable_id_grammar', 'identity_never_repeats_within_instance', 'identity_source_never_exhausted', 'clock_recorded_at_rfc3339', 'clock_monotonic_instant', 'identity_dependency_allowlist', 'identity_public_api_isolation', 'identity_source_reads_no_other_clock_or_entropy', 'identity_seed_failure_refuses_startup', 'sitometrond_composes_production_identity')
           foreach ($check in $identityChecks) { if ($development -notcontains $check -or $httpOff -notcontains $check) { throw "missing Windows identity check: $check" } }
           $retirementChecks = @('job_retirement_oldest_closed_first', 'job_retirement_requires_closed', 'job_retirement_not_under_free_slot', 'job_retirement_resets_slot', 'job_retirement_stale_timer_rejected', 'job_retirement_late_fact_absent', 'job_trace_ring_wraps', 'journal_replay_retires_like_writer', 'journal_replay_capacity_after_retirement')

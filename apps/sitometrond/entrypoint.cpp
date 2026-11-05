@@ -27,6 +27,7 @@ void HandleSignal(int) { g_stopping.store(true); }
 void PrintUsage() {
   std::cout << "usage: sitometrond --journal DIR [options]\n"
                "  --listen ADDRESS:PORT       default 127.0.0.1:8080\n"
+               "  --applications PATH         optional verified Application registry\n"
                "  --cancel-principal NAME    default local-operator\n"
                "  --max-jobs N                default 32\n"
                "  --target-limit BYTES       default 8192\n"

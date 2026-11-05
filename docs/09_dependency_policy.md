@@ -42,12 +42,18 @@ constructor/factory argument with default 1,048,576 identities, not a new comman
 No manifest port or core dependency authorization is added.
 
 Accepted [ADR-0015](adr/0015-register-applications-with-a-verified-registry-file.md) under Issue
-#125 authorizes the separate `sitometron_registry` adapter, built only with HTTP enabled. Its only
+#125 authorizes the separate `sitometron_registry` adapter, implemented by Issue #134 and built
+only with HTTP enabled. Its only
 direct dependency ports are the already provisioned `nlohmann-json` 3.12.0#2 and `boost-hash2`
 1.91.0, linked PRIVATE as `nlohmann_json::nlohmann_json` and `Boost::hash2`, and its only direct
 headers `<nlohmann/json.hpp>` and `<boost/hash2/sha2.hpp>`; upstream transitive includes remain
-opaque prerequisites. The adapter exposes only owned types, with dedicated allowlist and
-public-boundary scanners. No manifest port or core dependency authorization is added.
+opaque prerequisites. The adapter exposes only owned strings, vectors, and load/refusal types;
+dedicated allowlist and public-boundary scanners include positive and planted-rejection controls.
+Owned runtime code validates every schema rule, and separately checks unique identifiers, native
+absolute paths, readable regular executables (following symbolic links), and their SHA-256. No
+JSON Schema engine runs at startup; the JSON Schema validator is development-only. The composition
+links the adapter without linking either dependency directly. No manifest port, closure change,
+or core dependency authorization is added.
 
 Issue #17 implemented the allowlist and activated all five stable `NFR-005` checks on Linux and
 Windows. Accepted ADR-0003 and Issue #12 later authorized only the private synchronization headers

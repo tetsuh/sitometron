@@ -92,15 +92,23 @@ See [the build and test specification](docs/06_build_test_packaging.md) and
 and CI-equivalent evidence.
 In-source builds are rejected.
 
-## Phase 1 daemon configuration
+## Daemon configuration
 
 When HTTP is enabled, `sitometrond` requires a Journal directory and serves External REST v1 on a
 loopback address. The adapter serves the create, read, list, and cancel Job routes with strict JSON
-validation and committed-state responses. Phase 1 production registers no Application, so a
-structurally valid create returns `422 job/unknown_application` before ingress, even while
-admission is closed. Contract tests exercise successful creation through the shared production
-Backend with test-only registered identifiers. Health and readiness are available in this
-issue.
+validation and committed-state responses. With `--applications PATH`, the daemon loads the
+[ADR-0015](docs/adr/0015-register-applications-with-a-verified-registry-file.md) registry once at
+startup and verifies every executable's declared SHA-256 before opening a listener. A successful create
+for a verified identifier returns `202` only after `job_created` commits. Without the option, or with an
+empty `applications` array, the registered set is empty and a valid create returns
+`422 job/unknown_application` before ingress, even while admission is closed. Registration changes
+only that lookup: routing, media type, size, JSON, and request-validation errors retain their order.
+
+Interim behavior under Issue #134: no supervisor, application runner, Worker protocol, or timer
+port drives a newly created Job yet. It stays `admitted`, never closes, and holds its resident
+slot. After restart replay reports it unresolved and keeps admission closed (`OPS-004`). Issues
+#133, #126, #127, and #128 and Gate #123 own the subsequent production lifecycle; no-option
+deployments retain Phase 1 behavior.
 
 ```sh
 build/dev-linux/sitometrond --journal /path/to/journal \
@@ -108,16 +116,26 @@ build/dev-linux/sitometrond --journal /path/to/journal \
 ```
 
 Options are strict: unknown, repeated, missing, or malformed values refuse startup. The defaults
-and bounds decided by Issue #105 are:
+and bounds are those of Issue #105, plus the registry option implemented by Issue #134:
 
 - `--listen ADDRESS:PORT`: `127.0.0.1:8080`; loopback only, port `0` permits an ephemeral port;
 - `--journal DIR`: required and has no default;
+- `--applications PATH`: optional UTF-8 JSON registry; absent means no registered Applications;
 - `--cancel-principal NAME`: `local-operator`, 1–256 visible ASCII characters;
 - `--max-jobs N`: 32, range 1–1024;
 - `--target-limit BYTES`: 8192, range 2048–65536;
 - `--header-limit BYTES`: 16384, range 8192–262144;
 - `--body-limit BYTES`: 65536, range 4096–1048576;
 - `--header-timeout-ms N` and `--body-timeout-ms N`: 5000 each, range 1–60000.
+
+The registry format and shared vectors are under `schemas/application-registry/v1/`. Registry
+files are capped at 1 MiB and must satisfy every ADR-0015 byte/field rule. Executable paths must be
+absolute on the host and name readable regular files after following symbolic links. Missing or
+invalid files, duplicate identifiers, or digest mismatches refuse startup with status `1` and a
+standard-error reason (including the entry for an entry fault); repeated/empty startup options
+are command-line errors with status `2`. Registry changes require a restart. Verification is at
+startup only, not a guarantee against later executable replacement. The HTTP-off executable is
+unchanged and reads no startup options.
 
 The combined raw request cap is `header-limit + body-limit + 4096` bytes, including chunk framing
 but excluding skipped leading empty lines.

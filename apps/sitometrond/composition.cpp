@@ -14,6 +14,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "job_orchestrator.hpp"
@@ -21,6 +22,7 @@
 #include "sitometron/identity/system_clock.hpp"
 #include "sitometron/journal/replay.hpp"
 #include "sitometron/journal/segment_journal.hpp"
+#include "sitometron/registry/registry.hpp"
 
 namespace sitometron::daemon {
 namespace {
@@ -295,10 +297,11 @@ ParseResult ParseStartupOptions(const std::vector<std::string>& args) {
       result.error = "unknown or repeated option: " + std::string(flag);
       return result;
     }
-    const bool known_option =
-        flag == "--listen" || flag == "--journal" || flag == "--cancel-principal" ||
-        flag == "--max-jobs" || flag == "--target-limit" || flag == "--header-limit" ||
-        flag == "--body-limit" || flag == "--header-timeout-ms" || flag == "--body-timeout-ms";
+    const bool known_option = flag == "--listen" || flag == "--journal" ||
+                              flag == "--applications" || flag == "--cancel-principal" ||
+                              flag == "--max-jobs" || flag == "--target-limit" ||
+                              flag == "--header-limit" || flag == "--body-limit" ||
+                              flag == "--header-timeout-ms" || flag == "--body-timeout-ms";
     if (!known_option) {
       result.error = "unknown option: " + std::string(flag);
       return result;
@@ -323,6 +326,12 @@ ParseResult ParseStartupOptions(const std::vector<std::string>& args) {
         return result;
       }
       result.config.journal_path = value;
+    } else if (flag == "--applications") {
+      if (value.empty()) {
+        result.error = "--applications needs a nonempty path";
+        return result;
+      }
+      result.config.applications_path = value;
     } else if (flag == "--cancel-principal") {
       if (!VisibleAscii(value, 256)) {
         result.error = "--cancel-principal must be 1 to 256 visible ASCII characters";
@@ -398,6 +407,7 @@ struct Phase1Composition::Impl {
       : config(std::move(value)), factory(source_factory) {}
 
   StartupConfig config;
+  registry::VerifiedApplications applications;
   IdentityFactory factory;
   std::size_t clock_read_count = 0;
   std::size_t identity_read_count = 0;
@@ -427,6 +437,16 @@ bool Phase1Composition::Start(std::string& error) {
     return false;
   }
   try {
+    impl_->applications.clear();
+    if (const auto path = impl_->config.applications_path; path.has_value()) {
+      auto loaded = registry::LoadRegistry(path.value());
+      if (const auto* refusal = std::get_if<registry::RegistryRefusal>(&loaded)) {
+        error = refusal->reason;
+        Stop();
+        return false;
+      }
+      impl_->applications = std::get<registry::VerifiedApplications>(std::move(loaded));
+    }
     if (!impl_->factory) throw std::invalid_argument("identity factory must be present");
     // Seed both generators and capture the clock origin before constructing any listener.
     impl_->identity = std::make_unique<CountingIdentitySource>(
@@ -463,7 +483,12 @@ bool Phase1Composition::Start(std::string& error) {
     config.ports = {impl_->clock.get(), impl_->journal.get(), &impl_->runner, &impl_->session,
                     impl_->identity.get()};
     impl_->orchestrator = std::make_unique<JobOrchestrator>(config);
-    impl_->backend = MakeJobBackend(*impl_->orchestrator, config.max_jobs, replayed.jobs, {});
+    std::vector<std::string> identifiers;
+    identifiers.reserve(impl_->applications.size());
+    for (const auto& application : impl_->applications)
+      identifiers.push_back(application.application_id);
+    impl_->backend =
+        MakeJobBackend(*impl_->orchestrator, config.max_jobs, replayed.jobs, identifiers);
     impl_->server = std::make_unique<http::Server>(impl_->config.http, *impl_->backend);
     if (!impl_->server->Start(error)) {
       Stop();
@@ -500,6 +525,7 @@ void Phase1Composition::Stop() noexcept {
   impl_->journal.reset();
   impl_->clock.reset();
   impl_->identity.reset();
+  impl_->applications.clear();
   impl_->started = false;
 }
 

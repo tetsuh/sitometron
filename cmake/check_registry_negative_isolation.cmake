@@ -4,7 +4,7 @@ if(NOT SITOMETRON_SOURCE_DIR OR NOT SITOMETRON_BINARY_DIR OR NOT REGISTRY_NEGATI
 endif()
 set(_configuration "${SITOMETRON_BINARY_DIR}/registry-scan-inputs.cmake")
 if(NOT EXISTS "${_configuration}")
-  message(FATAL_ERROR "RegistryNegativeIsolation registry scan configuration is not implemented")
+  message(FATAL_ERROR "RegistryNegativeIsolation setup failure: registry scan configuration is missing")
 endif()
 set(_targets "nlohmann_json::nlohmann_json,Boost::hash2")
 set(_scratch "${SITOMETRON_BINARY_DIR}/registry-${REGISTRY_NEGATIVE_MODE}-controls")

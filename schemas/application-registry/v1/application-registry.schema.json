@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "application-registry.schema.json",
+  "title": "Application registry v1",
+  "$comment": "Normative under Accepted ADR-0015. File-level rules enforced by the loader: one UTF-8 JSON text, at most 1 MiB inclusive, full-byte-range parsing, no raw NUL anywhere, no duplicate decoded member name in any object, and no leading byte-order mark. Native absolute executable paths and unique application_id values are owned-code rules, not schema constraints. Executables must be readable regular files after following symbolic links and their exact bytes must match bundle_sha256 before startup publishes any entry.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "applications"],
+  "properties": {
+    "schema": {"type": "string", "const": "application-registry.v1"},
+    "applications": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["application_id", "version", "executable", "bundle_sha256"],
+        "properties": {
+          "application_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._:-]*(?![\\s\\S])"
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "not": {"pattern": "\u0000"}
+          },
+          "executable": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "not": {"pattern": "\u0000"}
+          },
+          "arguments": {
+            "type": "array",
+            "maxItems": 64,
+            "default": [],
+            "items": {
+              "type": "string",
+              "maxLength": 1024,
+              "not": {"pattern": "\u0000"}
+            }
+          },
+          "bundle_sha256": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+          }
+        }
+      }
+    }
+  }
+}

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,14 +20,15 @@ class JobOrchestrator;
 
 namespace sitometron::daemon {
 
-// The daemon passes an empty application list. Contract tests compose this same Backend with
-// registered test-only identifiers and real core ports; this is not a startup registration option.
+// Production passes identifiers from the startup-verified registry, or an empty list without
+// --applications. Contract fixtures can also compose this Backend with test-only identifiers.
 [[nodiscard]] std::unique_ptr<http::Backend> MakeJobBackend(
     core::internal::JobOrchestrator& orchestrator, std::size_t max_jobs,
     const std::vector<core::Snapshot>& replayed, const std::vector<std::string>& applications);
 
 struct StartupConfig {
   std::string journal_path;
+  std::optional<std::string> applications_path;
   std::size_t max_jobs = 32;
   http::Options http;
 };

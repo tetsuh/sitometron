@@ -189,7 +189,7 @@ void SitometrondComposesProductionIdentity() {
   Require(create.code == sitometron::http::JobResultCode::kUnknownApplication && !create.job &&
               composition.identity_reads() == 0 && composition.clock_reads() == 0 &&
               composition.writer_turn_count() == 0,
-          name, "production empty-registry create reached either port or ingress");
+          name, "production no-option create reached either port or ingress");
   const auto cancel = composition.backend().CancelJob(std::string(kJob), "issue115-operator");
   Require(cancel.code == sitometron::http::JobResultCode::kJobNotFound &&
               composition.identity_reads() == 0 && composition.clock_reads() == 0,

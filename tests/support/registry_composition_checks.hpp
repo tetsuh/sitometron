@@ -55,19 +55,15 @@ class RegistryFixture final {
   std::filesystem::path bundle;
   std::filesystem::path file;
   Json document;
+  std::size_t startup_vectors = 0;
+  std::size_t refusal_vectors = 0;
 
  private:
   static inline std::atomic_uint64_t next{0};
 };
 
-template <class Config>
-bool SetRegistryPath(Config& config, const std::filesystem::path& path) {
-  // Intentional RED compatibility: no production success stub and no missing-member compile error.
-  if constexpr (requires { config.applications_path = RegistryFixture::Text(path); }) {
-    config.applications_path = RegistryFixture::Text(path);
-    return true;
-  }
-  return false;
+void SetRegistryPath(sitometron::daemon::StartupConfig& config, const std::filesystem::path& path) {
+  config.applications_path = RegistryFixture::Text(path);
 }
 
 class RegistryOutput final {
@@ -89,9 +85,11 @@ class RegistryOutput final {
 
 int RegistryRefused(RegistryFixture& fixture, std::string_view name, std::string_view reason,
                     std::optional<std::size_t> entry = std::nullopt) {
+  ++fixture.refusal_vectors;
   auto config = fixture.Config();
   int result = 0;
-  if (SetRegistryPath(config, fixture.file)) {
+  SetRegistryPath(config, fixture.file);
+  {
     sitometron::daemon::Phase1Composition daemon(config);
     std::string error;
     const bool started = daemon.Start(error);
@@ -132,25 +130,6 @@ int RegistryRefused(RegistryFixture& fixture, std::string_view name, std::string
   return result;
 }
 
-std::pair<std::string, std::optional<std::size_t>> RegistrySchemaFault(std::string_view id) {
-  if (id.starts_with("root-not-object")) return {"object", std::nullopt};
-  if (id.starts_with("entry-not-object")) return {"object", 0};
-  if (id.starts_with("unknown-root")) return {"unknown", std::nullopt};
-  if (id.starts_with("unknown-entry")) return {"unknown", 0};
-  if (id.starts_with("schema-") || id == "missing-schema") return {"schema", std::nullopt};
-  if (id.starts_with("applications-") || id == "missing-applications")
-    return {"applications", std::nullopt};
-  if (id.starts_with("id-") || id.starts_with("application_id-") || id == "missing-application_id")
-    return {"application_id", 0};
-  if (id.starts_with("digest-") || id.starts_with("bundle_sha256-") ||
-      id == "missing-bundle_sha256")
-    return {"bundle_sha256", 0};
-  if (id.starts_with("version-") || id == "missing-version") return {"version", 0};
-  if (id.starts_with("executable-") || id == "missing-executable") return {"executable", 0};
-  if (id.starts_with("argument")) return {"argument", 0};
-  throw std::runtime_error("schema refusal vector has no field/entry expectation");
-}
-
 std::string RegistryBytes(std::string_view hex) {
   std::string result;
   for (std::size_t index = 0; index < hex.size(); index += 2)
@@ -159,9 +138,9 @@ std::string RegistryBytes(std::string_view hex) {
 }
 
 int RegistryStarted(RegistryFixture& fixture, std::string_view name) {
+  ++fixture.startup_vectors;
   auto config = fixture.Config();
-  if (!SetRegistryPath(config, fixture.file))
-    return Check(false, name, "production StartupConfig has no applications path");
+  SetRegistryPath(config, fixture.file);
   sitometron::daemon::Phase1Composition daemon(config);
   std::string error;
   int result = Check(daemon.Start(error), name, "valid registry refused: " + error);
@@ -179,11 +158,13 @@ int RegistryStartupRefusesInvalid() {
   RegistryFixture fixture;
   std::filesystem::remove(fixture.file);
   int result = RegistryRefused(fixture, name, "registry");
-  auto control = fixture.Config();
-  if (!SetRegistryPath(control, fixture.file)) return result;
-  const auto vectors =
-      ReadJsonFile("schemas/application-registry/v1/application-registry-vectors.json");
-  for (const auto& vector : vectors.at("loader_only_vectors")) {
+  sitometron::test::registry_vectors::Inventory vectors(
+      std::string(SITOMETRON_TEST_SOURCE_DIR) +
+          "/schemas/application-registry/v1/application-registry-vectors.json",
+      sitometron::test::registry_vectors::Group::kLoader);
+  std::size_t lexical_vectors = 0;
+  for (const auto& vector : vectors.Rows()) {
+    vectors.Consume(vector);
     const auto label = std::string(name) + " [" + vector.at("id").get<std::string>() + "]";
     if (vector.contains("bytes_hex")) {
       RegistryFixture::Write(fixture.file,
@@ -204,6 +185,13 @@ int RegistryStartupRefusesInvalid() {
 #endif
         result |= Check(std::filesystem::path(utf8).is_absolute() == absolute, label,
                         "host absolute-path premise changed");
+        const sitometron::registry::RegisteredApplication application{
+            "native", "1", text, {}, std::string(RegistryFixture::k_abc)};
+        const auto refusal =
+            sitometron::registry::internal::ValidateRegistryLocations({application});
+        result |=
+            Check(refusal.has_value() != absolute, label, "owned stage B disagrees with host rule");
+        ++lexical_vectors;
         // UNC/device forms are lexical controls only: never contact a server/open a device.
         if (absolute) continue;
         document["applications"][0]["executable"] = text;
@@ -215,14 +203,18 @@ int RegistryStartupRefusesInvalid() {
     if (vector.contains("entry")) entry = vector.at("entry").get<std::size_t>();
     result |= RegistryRefused(fixture, label, vector.at("reason").get<std::string>(), entry);
   }
-  for (const auto& vector : vectors.at("schema_vectors")) {
-    if (vector.at("valid").get<bool>()) continue;
-    RegistryFixture::Write(fixture.file, vector.at("instance").dump());
-    const auto [reason, entry] = RegistrySchemaFault(vector.at("id").get<std::string>());
-    result |= RegistryRefused(fixture,
-                              std::string(name) + " [" + vector.at("id").get<std::string>() + "]",
-                              reason, entry);
+  const auto consumed = vectors.Finish();
+  // Schema IDs belong only to registry_schema_vectors. These independent startup companions
+  // prove field/entry diagnostics at the executable boundary without consuming those IDs twice.
+  for (const std::size_t index : {0U, 1U}) {
+    auto invalid = fixture.document;
+    if (index == 1) invalid["applications"].push_back(invalid["applications"][0]);
+    invalid["applications"][index]["version"] = 1;
+    RegistryFixture::Write(fixture.file, invalid.dump());
+    result |= RegistryRefused(fixture, name, "version", index);
   }
+  RegistryFixture::Write(fixture.file, R"({"schema":"wrong","applications":[]})");
+  result |= RegistryRefused(fixture, name, "schema");
   // Byte caps are C++-only constructions, not committed megabyte fixtures.
   const auto empty =
       Json{{"schema", "application-registry.v1"}, {"applications", Json::array()}}.dump();
@@ -247,7 +239,9 @@ int RegistryStartupRefusesInvalid() {
   RegistryFixture::Write(fixture.file, many.dump());
   result |= RegistryRefused(fixture, name, "1 MiB");
   // Stage A permits these lengths. Full loading must still apply B/C, without shortening them.
-  for (const auto& path : {std::string("/"), "/" + std::string(4095, 'a')}) {
+  std::string unicode_path = "/";
+  for (unsigned index = 0; index < 4095; ++index) unicode_path.append("😀");
+  for (const auto& path : {std::string("/"), "/" + std::string(4095, 'a'), unicode_path}) {
     auto document = fixture.document;
     document["applications"][0]["executable"] = path;
     RegistryFixture::Write(fixture.file, document.dump());
@@ -276,6 +270,10 @@ int RegistryStartupRefusesInvalid() {
   result |= RegistryRefused(fixture, name, "read");
   std::filesystem::permissions(fixture.file, std::filesystem::perms::owner_all);
 #endif
+  std::cout << name << ": loader-only IDs executed=" << consumed
+            << " native lexical vectors=" << lexical_vectors
+            << " startup vectors=" << fixture.startup_vectors
+            << " refusal vectors=" << fixture.refusal_vectors << '\n';
   return result;
 }
 
@@ -283,8 +281,11 @@ int RegistryBundleDigestVerified() {
   constexpr std::string_view name = "registry_bundle_digest_verified";
   RegistryFixture fixture;
   int result = RegistryStarted(fixture, name);
-  auto config = fixture.Config();
-  if (!SetRegistryPath(config, fixture.file)) return result;
+  const auto unicode_path = fixture.root / std::filesystem::path(u8"bundle-あ-😀");
+  std::filesystem::copy_file(fixture.bundle, unicode_path);
+  fixture.document["applications"][0]["executable"] = RegistryFixture::Text(unicode_path);
+  fixture.Save();
+  result |= RegistryStarted(fixture, name);
   const auto link = fixture.root / "symbolic-link";
   std::error_code linked;
   std::filesystem::create_symlink(fixture.bundle, link, linked);
@@ -332,52 +333,62 @@ int RegistryBundleDigestVerified() {
   fixture.document["applications"][1]["bundle_sha256"] = RegistryFixture::k_abc;
   fixture.Save();
   result |= RegistryRefused(fixture, name, "digest", 1);
+  std::cout << name << ": startup vectors=" << fixture.startup_vectors
+            << " refusal vectors=" << fixture.refusal_vectors << '\n';
   return result;
 }
 
-int RegistryRequestErrors(std::uint16_t port, std::string_view name) {
+int RegistryRequestErrors(std::uint16_t port, std::string_view name, std::size_t& executed) {
   // ADR-0008 Section 5: route, method, media, size, JSON, validation precede registration/ingress.
-  int result = RestError(SendToPort(port, Request("POST", "/v1/jobs", "{")), name, 400, "request",
-                         "malformed_json");
-  result |= RestError(SendToPort(port, Request("POST", "/v1/jobs", "{}")), name, 422, "request",
-                      "validation_failed");
-  result |= RestError(SendToPort(port, Request("POST", "/v1/no-route", "{", "text/plain")), name,
-                      404, "request", "route_not_found");
-  result |= RestError(SendToPort(port, Request("PUT", "/v1/jobs", "{", "text/plain")), name, 405,
-                      "request", "method_not_allowed");
-  result |= RestError(SendToPort(port, Request("POST", "/v1/jobs", "{", "text/plain")), name, 415,
-                      "request", "unsupported_media_type");
-  result |= RestError(SendToPort(port, Request("POST", "/v1/jobs", std::string(65537, 'x'))), name,
-                      413, "request", "payload_too_large");
+  const std::array vectors = {
+      std::pair{Request("POST", "/v1/jobs", "{"), std::pair{400, "malformed_json"}},
+      std::pair{Request("POST", "/v1/jobs", "{}"), std::pair{422, "validation_failed"}},
+      std::pair{Request("POST", "/v1/no-route", "{", "text/plain"),
+                std::pair{404, "route_not_found"}},
+      std::pair{Request("PUT", "/v1/jobs", "{", "text/plain"),
+                std::pair{405, "method_not_allowed"}},
+      std::pair{Request("POST", "/v1/jobs", "{", "text/plain"),
+                std::pair{415, "unsupported_media_type"}},
+      std::pair{Request("POST", "/v1/jobs", std::string(65537, 'x')),
+                std::pair{413, "payload_too_large"}}};
+  int result = 0;
+  for (const auto& [request, expected] : vectors) {
+    ++executed;
+    result |=
+        RestError(SendToPort(port, request), name, expected.first, "request", expected.second);
+  }
   return result;
 }
 
 int RegistryAbsentKeepsEmptySet() {
   constexpr std::string_view name = "registry_absent_keeps_empty_set";
   int result = 0;
+  std::size_t configurations = 0;
+  std::size_t requests = 0;
   for (const bool named : {false, true}) {
     RegistryFixture fixture;
     fixture.document["applications"] = Json::array();
     fixture.Save();
     auto config = fixture.Config();
-    if (named && !SetRegistryPath(config, fixture.file)) {
-      result |= Check(false, name, "explicit valid empty registry is not supported");
-      continue;
-    }
+    if (named) SetRegistryPath(config, fixture.file);
     sitometron::daemon::Phase1Composition daemon(config);
     std::string error;
     if (!daemon.Start(error)) return Check(false, name, "empty registry refused: " + error);
+    ++configurations;
+    ++requests;
     // ADR-0015 Section 1 and ADR-0008 Section 5; matches rest_v1_sitometrond_empty_registry.
     result |= RestError(SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody())),
                         name, 422, "job", "unknown_application");
-    result |= RegistryRequestErrors(daemon.listen_port(), name);
+    result |= RegistryRequestErrors(daemon.listen_port(), name, requests);
     result |= Check(daemon.backend().ListJobs().empty() && daemon.identity_reads() == 0 &&
                         daemon.clock_reads() == 0 && daemon.writer_turn_count() == 0,
                     name, "empty-registry request reached identity/clock/ingress");
     if (!named && result == 0)
-      std::cout << name << ": no-option control already passes before registry implementation\n";
+      std::cout << name << ": no-option startup and rejection controls passed\n";
     daemon.Stop();
   }
+  std::cout << name << ": configurations=" << configurations << " request vectors=" << requests
+            << '\n';
   return result;
 }
 
@@ -385,23 +396,28 @@ int RegisteredApplicationCreates() {
   constexpr std::string_view name = "rest_v1_registered_application_creates";
   RegistryFixture fixture;
   auto config = fixture.Config();
-  if (!SetRegistryPath(config, fixture.file))
-    return Check(false, name, "verified production registry cannot be configured");
+  SetRegistryPath(config, fixture.file);
   sitometron::daemon::Phase1Composition daemon(config);
   std::string error;
   if (!daemon.Start(error)) return Check(false, name, "verified registry refused: " + error);
-  int result = RegistryRequestErrors(daemon.listen_port(), name);
+  std::size_t requests = 0;
+  int result = RegistryRequestErrors(daemon.listen_port(), name, requests);
   // ADR-0009 Section 9: valid-length unregistered IDs are unknown regardless of their alphabet.
   // Escaped U+0000 is the existing rest_v1_json_rejects_raw_nul/escaped-control answer.
   for (const auto& id : {std::string("x"), std::string(128, 'z'), std::string("UPPER"),
-                         std::string("a/b"), std::string("é"), std::string(1, '\0')})
+                         std::string("a/b"), std::string("é"), std::string(1, '\0')}) {
+    ++requests;
     result |=
         RestError(SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody(id))),
                   name, 422, "job", "unknown_application");
-  for (const auto& id : {std::string{}, std::string(129, 'a')})
+  }
+  for (const auto& id : {std::string{}, std::string(129, 'a')}) {
+    ++requests;
     result |=
         RestError(SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody(id))),
                   name, 422, "request", "validation_failed");
+  }
+  ++requests;
   const auto created =
       SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody("demo-worker")));
   result |= ExpectStatus(created, name, 202);  // ADR-0008 Section 4, create commits before 202.
@@ -412,6 +428,7 @@ int RegisteredApplicationCreates() {
         Check(created.headers.at("location") == JobPath(id) && job.at("state") == "admitted" &&
                   !job.at("terminal").get<bool>() && job.at("outcome").is_null(),
               name, "create did not return its committed admitted resource and Location");
+    ++requests;
     result |=
         ExpectStatus(SendToPort(daemon.listen_port(), Request("GET", JobPath(id))), name, 200);
     result |= Check(daemon.backend().ListJobs().size() == 1 && daemon.identity_reads() == 3 &&
@@ -419,6 +436,7 @@ int RegisteredApplicationCreates() {
                     name, "production create did not commit exactly one creation with real ports");
   }
   daemon.Stop();
+  std::cout << name << ": request vectors=" << requests << '\n';
   return result;
 }
 
