@@ -86,7 +86,8 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
   Section 9 requires are filed when a logger is needed. Gate #50 closed on 2026-10-04; the design
   inputs it handed over to later Phases are tracked in
   [Issue #73](https://github.com/tetsuh/sitometron/issues/73).
-- Phase 1 owns external REST, Admission, and Application Registry contracts.
+- Phase 1 owns external REST and Admission contracts. Issue #125 owns the Phase 2 registration
+  subset below, and Issue #35 tracks assignment of the remaining Application Registry fields.
   [Issue #76](https://github.com/tetsuh/sitometron/issues/76) owns the External REST v1 Job surface
   through Accepted ADR-0008, and [Issue #86](https://github.com/tetsuh/sitometron/issues/86)
   settles the gaps the prototype found through Accepted ADR-0009.
@@ -103,6 +104,9 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
 - Phase 2 owns Worker protocol schemas and local process containment.
   [Issue #104](https://github.com/tetsuh/sitometron/issues/104) designs the Job lifecycle supervisor
   through Accepted ADR-0012; Gate #123 owns its implementation.
+  [Issue #125](https://github.com/tetsuh/sitometron/issues/125) designs the Phase 2 registration of
+  Applications through Proposed ADR-0015 (Gate #123, P2-1); Phase 1 registered none (Gate #101,
+  P1-4), and the rest of the Application Registry stays with Issue #35.
 - Phase 3 owns topology, ResourceProfile, scheduling, and reservation contracts.
 - Phase 4 owns the installed Sitos adapter and required upstream contract gates.
 - Phase 5 owns Artifact REST and terminal-manifest contracts.
