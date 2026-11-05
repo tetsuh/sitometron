@@ -117,54 +117,88 @@ std::optional<RegistryRefusal> VerifyExecutable(const RegisteredApplication& app
   return std::nullopt;
 }
 
-}  // namespace
+class DuplicateTracker final {
+ public:
+  bool operator()(int depth, Json::parse_event_t event, Json& value) {
+    if (application_array_ && depth >= 2) context_ = application_index_;
+    switch (event) {
+      case Json::parse_event_t::object_start:
+        keys_.emplace_back();
+        break;
+      case Json::parse_event_t::key:
+        Key(depth, value);
+        break;
+      case Json::parse_event_t::array_start:
+        StartArray(depth);
+        break;
+      case Json::parse_event_t::object_end:
+        keys_.pop_back();
+        break;
+      default:
+        break;
+    }
+    FinishValue(depth, event);
+    return true;
+  }
 
-namespace internal {
+  [[nodiscard]] std::string Prefix() const { return context_ ? Entry(*context_) : "registry: "; }
+  [[nodiscard]] std::optional<RegistryRefusal> Duplicate() const { return duplicate_; }
 
-ValidationResult ValidateRegistryDocument(std::string_view bytes) {
+ private:
+  void Key(int depth, const Json& value) {
+    const auto& key = value.get_ref<const std::string&>();
+    if (depth == 1) root_key_ = key;
+    if (!keys_.back().insert(key).second && !duplicate_)
+      duplicate_ = RegistryRefusal{Prefix() + "duplicate member name"};
+  }
+
+  void StartArray(int depth) {
+    if (depth == 1 && root_key_ == "applications") {
+      application_array_ = true;
+      application_index_ = 0;
+    }
+  }
+
+  void FinishValue(int depth, Json::parse_event_t event) {
+    if (application_array_ && depth == 2 &&
+        (event == Json::parse_event_t::object_end || event == Json::parse_event_t::array_end ||
+         event == Json::parse_event_t::value)) {
+      ++application_index_;
+      context_.reset();
+    }
+    if (event == Json::parse_event_t::array_end && depth == 1) {
+      application_array_ = false;
+      context_.reset();
+    }
+  }
+
+  std::vector<std::set<std::string, std::less<>>> keys_;
+  std::string root_key_;
+  bool application_array_ = false;
+  std::size_t application_index_ = 0;
+  std::optional<std::size_t> context_;
+  std::optional<RegistryRefusal> duplicate_;
+};
+
+std::variant<Json, RegistryRefusal> ParseStrictRegistry(std::string_view bytes) {
   if (bytes.find('\0') != std::string_view::npos) return RegistryRefusal{"registry: raw NUL byte"};
   if (bytes.starts_with("\xef\xbb\xbf"))
     return RegistryRefusal{"registry: leading byte-order mark"};
-  std::vector<std::set<std::string, std::less<>>> keys;
-  std::string root_key;
-  bool application_array = false;
-  std::size_t application_index = 0;
-  std::optional<std::size_t> context;
-  std::optional<RegistryRefusal> duplicate;
-  const auto callback = [&](int depth, Json::parse_event_t event, Json& value) {
-    if (application_array && depth >= 2) context = application_index;
-    if (event == Json::parse_event_t::object_start) keys.emplace_back();
-    if (event == Json::parse_event_t::key) {
-      const auto& key = value.get_ref<const std::string&>();
-      if (depth == 1) root_key = key;
-      if (!keys.back().insert(key).second && !duplicate)
-        duplicate =
-            RegistryRefusal{(context ? Entry(*context) : "registry: ") + "duplicate member name"};
-    }
-    if (event == Json::parse_event_t::array_start && depth == 1 && root_key == "applications") {
-      application_array = true;
-      application_index = 0;
-    }
-    if (event == Json::parse_event_t::object_end) keys.pop_back();
-    if (application_array && depth == 2 &&
-        (event == Json::parse_event_t::object_end || event == Json::parse_event_t::array_end ||
-         event == Json::parse_event_t::value)) {
-      ++application_index;
-      context.reset();
-    }
-    if (event == Json::parse_event_t::array_end && depth == 1) {
-      application_array = false;
-      context.reset();
-    }
-    return true;
+  DuplicateTracker tracker;
+  const auto callback = [&tracker](int depth, Json::parse_event_t event, Json& value) {
+    return tracker(depth, event, value);
   };
   Json document;
   try {
     document = Json::parse(bytes.begin(), bytes.end(), callback);
   } catch (const Json::exception&) {
-    return RegistryRefusal{(context ? Entry(*context) : "registry: ") + "invalid UTF-8 JSON"};
+    return RegistryRefusal{tracker.Prefix() + "invalid UTF-8 JSON"};
   }
-  if (duplicate) return *duplicate;
+  if (const auto duplicate = tracker.Duplicate()) return *duplicate;
+  return document;
+}
+
+internal::ValidationResult ValidateRoot(const Json& document) {
   if (!document.is_object()) return RegistryRefusal{"registry: root must be an object"};
   if (!HasOnly(document, {"schema", "applications"}))
     return RegistryRefusal{"registry: unknown member"};
@@ -179,13 +213,23 @@ ValidationResult ValidateRegistryDocument(std::string_view bytes) {
   std::size_t index = 0;
   for (const auto& entry : document.at("applications")) {
     if (const auto refusal = ValidateEntry(entry, index++)) return *refusal;
-    applications.push_back({entry.at("application_id").get<std::string>(),
-                            entry.at("version").get<std::string>(),
-                            entry.at("executable").get<std::string>(),
-                            entry.value("arguments", std::vector<std::string>{}),
-                            entry.at("bundle_sha256").get<std::string>()});
+    applications.emplace_back(entry.at("application_id").get<std::string>(),
+                              entry.at("version").get<std::string>(),
+                              entry.at("executable").get<std::string>(),
+                              entry.value("arguments", std::vector<std::string>{}),
+                              entry.at("bundle_sha256").get<std::string>());
   }
   return applications;
+}
+
+}  // namespace
+
+namespace internal {
+
+ValidationResult ValidateRegistryDocument(std::string_view bytes) {
+  auto parsed = ParseStrictRegistry(bytes);
+  if (auto* refusal = std::get_if<RegistryRefusal>(&parsed)) return std::move(*refusal);
+  return ValidateRoot(std::get<Json>(parsed));
 }
 
 std::optional<RegistryRefusal> ValidateRegistryLocations(

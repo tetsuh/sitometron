@@ -27,7 +27,7 @@ jobs:
       - name: Validate core contracts
         run: uv run --frozen --only-group schema python tools/validate_core_contract.py
       - name: Validate Application registry
-        run: uv run --frozen --only-group schema python tools/validate_application_registry.py
+        run: uv run --frozen --no-build --only-group schema python tools/validate_application_registry.py
       - name: Validate repository-relative links
         run: uv run --frozen --no-build --only-group docs python tools/check_relative_links.py
       - name: Validate repository governance
@@ -228,7 +228,7 @@ jobs:
       - name: Validate core contracts
         run: uv run --frozen --only-group schema python tools/validate_core_contract.py
       - name: Validate Application registry
-        run: uv run --frozen --only-group schema python tools/validate_application_registry.py
+        run: uv run --frozen --no-build --only-group schema python tools/validate_application_registry.py
       - name: Validate repository-relative links
         run: uv run --frozen --no-build --only-group docs python tools/check_relative_links.py
       - name: Validate repository governance
