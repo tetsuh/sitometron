@@ -120,7 +120,8 @@ and bounds are those of Issue #105, plus the registry option implemented by Issu
 
 - `--listen ADDRESS:PORT`: `127.0.0.1:8080`; loopback only, port `0` permits an ephemeral port;
 - `--journal DIR`: required and has no default;
-- `--applications PATH`: optional UTF-8 JSON registry; absent means no registered Applications;
+- `--applications PATH`: optional UTF-8 JSON registry; absent means no registered Applications.
+  PATH uses the same native path encoding as `--journal`; `executable` values are UTF-8.
 - `--cancel-principal NAME`: `local-operator`, 1–256 visible ASCII characters;
 - `--max-jobs N`: 32, range 1–1024;
 - `--target-limit BYTES`: 8192, range 2048–65536;

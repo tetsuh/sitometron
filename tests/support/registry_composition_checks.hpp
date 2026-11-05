@@ -44,7 +44,7 @@ class RegistryFixture final {
   void Save() const { Write(file, document.dump()); }
   sitometron::daemon::StartupConfig Config() const {
     sitometron::daemon::StartupConfig config;
-    config.journal_path = Text(root / "journal");
+    config.journal_path = (root / "journal").string();
     config.http.listen_address = "127.0.0.1";
     config.http.listen_port = 0;
     return config;
@@ -63,7 +63,7 @@ class RegistryFixture final {
 };
 
 void SetRegistryPath(sitometron::daemon::StartupConfig& config, const std::filesystem::path& path) {
-  config.applications_path = RegistryFixture::Text(path);
+  config.applications_path = path.string();
 }
 
 class RegistryOutput final {
@@ -114,7 +114,7 @@ int RegistryRefused(RegistryFixture& fixture, std::string_view name, std::string
     RegistryOutput capture;
     status = sitometron::daemon::RunSitometrond({"--journal", config.journal_path, "--listen",
                                                  "127.0.0.1:0", "--applications",
-                                                 RegistryFixture::Text(fixture.file)});
+                                                 fixture.file.string()});
     output = capture.out.str();
     error = capture.err.str();
   }
@@ -281,6 +281,27 @@ int RegistryBundleDigestVerified() {
   constexpr std::string_view name = "registry_bundle_digest_verified";
   RegistryFixture fixture;
   int result = RegistryStarted(fixture, name);
+  // CLI paths share the Journal's native narrow encoding, not the JSON string encoding.
+  const auto directory = fixture.root / std::filesystem::path(u8"registry-é");
+  bool representable = false;
+  try {
+    representable = std::filesystem::path(directory.string()) == directory;
+  } catch (const std::filesystem::filesystem_error& error) {
+    std::cout << name << ": non-ASCII registry PATH conversion failed: " << error.code().value()
+              << ": " << error.code().message() << '\n';
+  }
+  if (representable) {
+    std::filesystem::create_directory(directory);
+    const auto original = fixture.file;
+    fixture.file = directory / "applications.json";
+    fixture.Save();
+    result |= RegistryStarted(fixture, name);
+    fixture.file = original;
+    std::cout << name << ": non-ASCII native registry PATH passed\n";
+  } else {
+    std::cout << name << ": native code page cannot express the non-ASCII registry PATH; "
+              << "UTF-8 executable coverage still runs\n";
+  }
   const auto unicode_path = fixture.root / std::filesystem::path(u8"bundle-あ-😀");
   std::filesystem::copy_file(fixture.bundle, unicode_path);
   fixture.document["applications"][0]["executable"] = RegistryFixture::Text(unicode_path);

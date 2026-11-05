@@ -204,7 +204,7 @@ std::optional<RegistryRefusal> ValidateRegistryLocations(
 }  // namespace internal
 
 LoadResult LoadRegistry(const std::string& path) {
-  std::ifstream input(NativePath(path), std::ios::binary);
+  std::ifstream input(std::filesystem::path(path), std::ios::binary);
   if (!input) return RegistryRefusal{"registry: cannot read registry file"};
   // Read at most cap+1 bytes even when file size changes during the read.
   std::string bytes(k_registry_limit + 1, '\0');
