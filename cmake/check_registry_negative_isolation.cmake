@@ -15,7 +15,10 @@ function(registry_probe _expected _script _diagnostic)
     -P "${SITOMETRON_SOURCE_DIR}/cmake/${_script}"
     RESULT_VARIABLE _status OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
   string(CONCAT _text "${_out}" "${_err}")
-  if(NOT _status EQUAL _expected OR NOT _text MATCHES "${_diagnostic}")
+  string(REGEX REPLACE "[ \t\r\n]" "" _actual_text "${_text}")
+  string(REGEX REPLACE "[ \t\r\n]" "" _expected_text "${_diagnostic}")
+  string(FIND "${_actual_text}" "${_expected_text}" _found)
+  if(NOT _status EQUAL _expected OR _found EQUAL -1)
     message(FATAL_ERROR "RegistryNegativeIsolation unexpected status ${_status}: ${_text}")
   endif()
   message(STATUS "RegistryNegativeIsolation expected status ${_status}: ${_diagnostic}")
@@ -43,7 +46,7 @@ if(REGISTRY_NEGATIVE_MODE STREQUAL "allowlist")
     "-DSITOMETRON_REGISTRY_LINK_TARGETS=${_targets}"
     "-DSITOMETRON_REGISTRY_SCAN_FILES=${_macro}")
   foreach(_extra IN ITEMS Boost::uuid Boost::beast sitometron::core registry_unapproved)
-    registry_probe(1 ${_script} "unapproved.*target"
+    registry_probe(1 ${_script} "unapproved registry link target"
       "-DSITOMETRON_REGISTRY_LINK_TARGETS=${_targets},${_extra}"
       "-DSITOMETRON_REGISTRY_SCAN_FILES=${_approved}")
   endforeach()
@@ -81,12 +84,17 @@ foreach(_fixture IN ITEMS dependency_scanner_forbidden_range_open.hpp
     dependency_scanner_forbidden_string_bracket.hpp dependency_scanner_forbidden_tabs.hpp
     dependency_scanner_forbidden_bom.hpp)
   set(_file "${SITOMETRON_SOURCE_DIR}/tests/fixtures/${_fixture}")
+  if(_fixture STREQUAL "dependency_scanner_forbidden_bom.hpp")
+    set(_line 1)
+  else()
+    set(_line 5)
+  endif()
   if(REGISTRY_NEGATIVE_MODE STREQUAL "allowlist")
-    registry_probe(1 ${_script} "${_fixture}:[0-9]+:"
+    registry_probe(1 ${_script} "${_fixture}:${_line}:"
       "-DSITOMETRON_REGISTRY_LINK_TARGETS=${_targets}"
       "-DSITOMETRON_REGISTRY_SCAN_FILES=${_file}")
   else()
-    registry_probe(1 ${_script} "${_fixture}:[0-9]+:"
+    registry_probe(1 ${_script} "${_fixture}:${_line}:"
       "-DSITOMETRON_REGISTRY_PUBLIC_SCAN_FILES=${_file}")
   endif()
 endforeach()
@@ -109,7 +117,7 @@ foreach(_ending IN ITEMS lf crlf)
       set(_directive "#include <${_header}>")
     endif()
     file(WRITE "${_file}" "// physical line one${_eol}${_directive}${_eol}")
-    set(_diagnostic "RegistryScanner forbidden line continuation:[ \t\r\n]+${_file}:2:")
+    set(_diagnostic "RegistryScanner forbidden line continuation: ${_file}:2:")
     if(REGISTRY_NEGATIVE_MODE STREQUAL "allowlist")
       registry_probe(1 ${_script} "${_diagnostic}"
         "-DSITOMETRON_REGISTRY_LINK_TARGETS=${_targets}"

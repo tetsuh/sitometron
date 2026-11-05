@@ -26,9 +26,10 @@ connection on the listener progresses. Every ingress-admitted cancel still reach
 including unknown and resolved-replay Jobs (one reducer-rejection turn), and a committing create
 now reaches it in production as well. ADR-0015 Section 6 retains this model; the owner decision of
 2026-11-03 assigns its reconsideration to Issue #127, not this implementation.
-Until Issues #133/#126/#127/#128 supply the driving components, a registered production Job stays
-`admitted`, holds its resident slot, and replays unresolved after restart, keeping admission closed
-(`OPS-004`). No-option deployments retain Phase 1 behavior.
+Until Issues #133/#126/#127/#128 supply the driving components, no component drives a created
+registered production Job. It stays `admitted` unless an accepted cancel moves it to `finalizing`.
+In either state it never reaches a terminal outcome or closes, holds its resident slot, and replays
+unresolved after restart, keeping admission closed (`OPS-004`). No-option deployments retain Phase 1 behavior.
 The other adapter options remain disabled because their dependencies are not in the manifest.
 See [the dependency policy](09_dependency_policy.md).
 

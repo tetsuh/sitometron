@@ -455,6 +455,20 @@ int RegisteredApplicationCreates() {
     result |= Check(daemon.backend().ListJobs().size() == 1 && daemon.identity_reads() == 3 &&
                         daemon.clock_reads() == 1 && daemon.writer_turn_count() == 1,
                     name, "production create did not commit exactly one creation with real ports");
+    // ADR-0008 Section 4: cancel_accepted committed -> 202 after the event is applied.
+    // ApplyCancelAccepted moves admitted to finalizing; no new REST rule is introduced.
+    ++requests;
+    result |= ExpectStatus(SendToPort(daemon.listen_port(), Request("POST", JobPath(id, true))),
+                           name, 202);
+    ++requests;
+    const auto cancelled = SendToPort(daemon.listen_port(), Request("GET", JobPath(id)));
+    result |= ExpectStatus(cancelled, name, 200);  // ADR-0008 Section 4 read endpoint.
+    if (cancelled.status == 200) {
+      const auto after = Json::parse(cancelled.body);
+      result |= Check(after.at("state") == "finalizing" && !after.at("terminal").get<bool>() &&
+                          after.at("outcome").is_null(),
+                      name, "accepted cancel did not leave the created Job nonterminal/finalizing");
+    }
   }
   daemon.Stop();
   std::cout << name << ": request vectors=" << requests << '\n';

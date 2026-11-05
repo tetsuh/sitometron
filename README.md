@@ -105,8 +105,9 @@ empty `applications` array, the registered set is empty and a valid create retur
 only that lookup: routing, media type, size, JSON, and request-validation errors retain their order.
 
 Interim behavior under Issue #134: no supervisor, application runner, Worker protocol, or timer
-port drives a newly created Job yet. It stays `admitted`, never closes, and holds its resident
-slot. After restart replay reports it unresolved and keeps admission closed (`OPS-004`). Issues
+port drives a newly created Job yet. It stays `admitted` unless an accepted cancel moves it to
+`finalizing`. In either state it never reaches a terminal outcome or closes, holds its resident
+slot, and replays unresolved after restart, keeping admission closed (`OPS-004`). Issues
 #133, #126, #127, and #128 and Gate #123 own the subsequent production lifecycle; no-option
 deployments retain Phase 1 behavior.
 
