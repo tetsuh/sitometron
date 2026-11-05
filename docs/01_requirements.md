@@ -148,9 +148,9 @@ Accepted [ADR-0014](adr/0014-retire-closed-jobs-under-capacity-pressure.md) unde
 |---|---|---|---|
 | `OPS-006` | MUST | Reuse the resident slot of a closed Job only when a creation needs it, retiring the closed Job with the smallest `job_created` sequence, with the writer and replay applying one rule so that the resident set after a restart is the one the retained durable Journal implies under the same configured `max_jobs` (equal to the set the previous process held after its last fully installed turn, less any Job offline pruning removed; a durable `job_created` the previous process never installed, under an unknown commit outcome or a crash before installation, may add a Job or a retirement), and keep the trace bounded without failing a turn because the ring is full (the only trace-related failure is the exhaustion of the 64-bit ordinal). | Accepted [ADR-0014](adr/0014-retire-closed-jobs-under-capacity-pressure.md) under [Issue #103](https://github.com/tetsuh/sitometron/issues/103) |
 
-> **Planned, not yet normative:** [Issue #125](https://github.com/tetsuh/sitometron/issues/125) owns `APP-001` through Proposed
-> [ADR-0015](adr/0015-register-applications-with-a-verified-registry-file.md). Implementers must not treat it as a finalized contract.
+Accepted [ADR-0015](adr/0015-register-applications-with-a-verified-registry-file.md) under
+[Issue #125](https://github.com/tetsuh/sitometron/issues/125) adds `APP-001`, binding on implementation in the same way.
 
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
-| `APP-001` | MUST | Register Applications only through the registry file that `--applications` names, verify every entry's `executable` against its `bundle_sha256` at startup and refuse to start on any invalid entry, keep the registered set empty when no file is named, and take each launch's Application identity from the verified entry. | Proposed [ADR-0015](adr/0015-register-applications-with-a-verified-registry-file.md) under [Issue #125](https://github.com/tetsuh/sitometron/issues/125) |
+| `APP-001` | MUST | Register Applications only through the registry file that `--applications` names, verify every entry's `executable` against its `bundle_sha256` at startup and refuse to start on any invalid entry, keep the registered set empty when no file is named, and take each launch's Application identity from the verified entry. | Accepted [ADR-0015](adr/0015-register-applications-with-a-verified-registry-file.md) under [Issue #125](https://github.com/tetsuh/sitometron/issues/125) |

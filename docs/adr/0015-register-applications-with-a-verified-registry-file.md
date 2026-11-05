@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-11-03
+Accepted — 2026-11-05
 
 ## Context
 
@@ -258,7 +258,7 @@ Its named checks, Planned until the implementation Issue activates them:
 ## References
 
 - Issue #125; Gate #123 (P2-1); Gate #101 (P1-4); Issue #35
-- Requirements: `APP-001` (Planned)
+- Requirements: `APP-001` (Normative)
 - Contract Registry: `Application Registry schema`; `sitometrond` startup configuration and command
   line
 - Related ADR: ADR-0002, ADR-0004, ADR-0008, ADR-0009, ADR-0011, ADR-0012, ADR-0013
