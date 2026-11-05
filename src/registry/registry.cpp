@@ -119,19 +119,20 @@ std::optional<RegistryRefusal> VerifyExecutable(const RegisteredApplication& app
 
 class DuplicateTracker final {
  public:
-  bool operator()(int depth, Json::parse_event_t event, Json& value) {
+  bool operator()(int depth, Json::parse_event_t event, const Json& parsed_value) {
+    using enum Json::parse_event_t;
     if (application_array_ && depth >= 2) context_ = application_index_;
     switch (event) {
-      case Json::parse_event_t::object_start:
+      case object_start:
         keys_.emplace_back();
         break;
-      case Json::parse_event_t::key:
-        Key(depth, value);
+      case key:
+        Key(depth, parsed_value);
         break;
-      case Json::parse_event_t::array_start:
+      case array_start:
         StartArray(depth);
         break;
-      case Json::parse_event_t::object_end:
+      case object_end:
         keys_.pop_back();
         break;
       default:
@@ -141,7 +142,9 @@ class DuplicateTracker final {
     return true;
   }
 
-  [[nodiscard]] std::string Prefix() const { return context_ ? Entry(*context_) : "registry: "; }
+  [[nodiscard]] std::string Prefix() const {
+    return context_.has_value() ? Entry(*context_) : "registry: ";
+  }
   [[nodiscard]] std::optional<RegistryRefusal> Duplicate() const { return duplicate_; }
 
  private:
@@ -160,13 +163,13 @@ class DuplicateTracker final {
   }
 
   void FinishValue(int depth, Json::parse_event_t event) {
+    using enum Json::parse_event_t;
     if (application_array_ && depth == 2 &&
-        (event == Json::parse_event_t::object_end || event == Json::parse_event_t::array_end ||
-         event == Json::parse_event_t::value)) {
+        (event == object_end || event == array_end || event == value)) {
       ++application_index_;
       context_.reset();
     }
-    if (event == Json::parse_event_t::array_end && depth == 1) {
+    if (event == array_end && depth == 1) {
       application_array_ = false;
       context_.reset();
     }
