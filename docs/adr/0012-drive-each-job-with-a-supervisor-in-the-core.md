@@ -300,7 +300,7 @@ Its named checks, Planned until the implementation Issue activates them:
 ## References
 
 - Issue #104
-- Requirements: `JOB-009`; relies on `JOB-001` to `JOB-008`, `OPS-004`
+- Requirements: `JOB-009` (Normative); relies on `JOB-001` to `JOB-008`, `OPS-004`
 - Contract Registry: `Job lifecycle supervisor and decision contract`
 - Related ADR: ADR-0002, ADR-0003, ADR-0005, ADR-0006
 - `spike/README.md`: "What one Job does", External REST v1 finding 14, and findings 1, 5, 9, and 10
