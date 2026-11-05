@@ -18,7 +18,7 @@ ADRs use four-digit sequence numbers and lowercase hyphenated names.
 | [0012](0012-drive-each-job-with-a-supervisor-in-the-core.md) | Accepted | Drive each Job with a supervisor in the core |
 | [0013](0013-generate-production-identities-and-read-the-clock-with-boost-uuid.md) | Accepted | Generate production identities and read the clock with Boost.UUID |
 | [0014](0014-retire-closed-jobs-under-capacity-pressure.md) | Accepted | Retire closed Jobs under capacity pressure, oldest first |
-| [0015](0015-register-applications-with-a-verified-registry-file.md) | Proposed | Register Applications with a verified registry file |
+| [0015](0015-register-applications-with-a-verified-registry-file.md) | Accepted | Register Applications with a verified registry file |
 
 Use [the ADR template](template.md). See [the ADR process](../10_adr_process.md) and
 [the development workflow](../development_workflow.md) for status, review, and merge rules.
