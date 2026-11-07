@@ -154,3 +154,10 @@ Accepted [ADR-0015](adr/0015-register-applications-with-a-verified-registry-file
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
 | `APP-001` | MUST | Register Applications only through the registry file that `--applications` names, verify every entry's `executable` against its `bundle_sha256` at startup and refuse to start on any invalid entry, keep the registered set empty when no file is named, and take each launch's Application identity from the verified entry. | Accepted [ADR-0015](adr/0015-register-applications-with-a-verified-registry-file.md) under [Issue #125](https://github.com/tetsuh/sitometron/issues/125) |
+
+> **Planned, not yet normative:** [Issue #126](https://github.com/tetsuh/sitometron/issues/126) owns `WRK-001` through Proposed
+> [ADR-0016](adr/0016-run-each-job-as-one-local-process.md). Implementers must not treat it as a finalized contract.
+
+| ID | Level | Requirement | Authority |
+|---|---|---|---|
+| `WRK-001` | MUST | Run each Job as one local process started from its verified registry entry with the Job, Worker, and launch-operation identities in its environment, deliver cooperative and forced stops as ADR-0016 Section 3 states, and submit exactly `worker_launch_observed` and `process_exit_confirmed` as its Section 2 states, from storage and threads that never block, allocate, or re-enter the core inside a handoff. | Proposed [ADR-0016](adr/0016-run-each-job-as-one-local-process.md) under [Issue #126](https://github.com/tetsuh/sitometron/issues/126) |
