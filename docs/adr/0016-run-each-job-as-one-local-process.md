@@ -201,13 +201,20 @@ may be stopped; and it has one cell for the next launch, with its own two stop f
 handoff may fill while the mailbox is `finishing`; when the slot thread promotes the next launch, it
 takes those flags with it.
 
-A handoff takes no lock: a launch claims a `free` mailbox, or the empty next-launch cell of a
-`finishing` one, with an atomic compare-and-exchange over the fixed table, and publishes the moved
-request with a release store; a stop finds the mailbox whose current Job or queued next launch it
-names and sets the matching flag, and a repeated stop of the same kind sets nothing new. A handoff
-allocates nothing, blocks on no I/O, throws nothing, and never calls back into the core. A stop that
-finds no mailbox for its Job is ignored: the process has exited or never existed, and Section 3
-ignores such a stop anyway.
+A handoff takes no lock. Each cell, the current one and the next-launch one of every mailbox, has
+one atomic word that packs a generation, the occupied bit, and the two stop flags; the Job identity
+of an occupied cell is written before the word that publishes it. A launch claims a `free` mailbox,
+or the empty next-launch cell of a `finishing` one, with a compare-and-exchange on that word, and
+publishes the moved request with a release store. A stop finds the cell whose Job it names, then
+sets its flag with a compare-and-exchange that carries the generation it read; if the exchange fails
+because the cell changed, it finds the Job again and repeats, and if the Job is in no cell it is
+ignored. A promotion exchanges the next-launch word for an empty word of the next generation and
+carries the flags it read into the current cell, and a release empties a cell the same way, so a
+stop is bound to one Job and one generation: it can neither be lost across a promotion nor land on
+the cell's next occupant. A Job changes cells at most once, so the repeat is bounded. A repeated
+stop of the same kind sets nothing new. A handoff allocates nothing, blocks on no I/O, throws
+nothing, and never calls back into the core. A stop that finds no mailbox for its Job is ignored:
+the process has exited or never existed, and Section 3 ignores such a stop anyway.
 
 A launch always finds a place: the writer holds at most `max_jobs + 1` Jobs with a launch binding,
 the Job being launched is one of them, and every other such Job occupies at most one mailbox as its
@@ -384,10 +391,12 @@ existing non-sleeping barriers:
   leaves every Job as committed, a launch for a slot's next occupant after retirement is queued into
   the `finishing` mailbox while its thread is still taking the old Job's completions and starts once
   it is done, a cooperative and a forced stop handed off before the drain are both delivered in
-  order, a stop for a queued next launch cancels it on promotion, a stop for a Job without a mailbox
-  is ignored, no thread is created after construction, the runner holds at most one completion per
-  thread while a process runs, and a handoff never re-enters ingress; the check runs under the
-  ASan/UBSan configuration and, locally, TSan;
+  order, a stop for a queued next launch cancels it on promotion, a stop handed off at the same time
+  as the promotion or the reuse of its cell (driven through a deterministic interleaving at the
+  compare-and-exchange) still reaches its Job and never the cell's next occupant, a stop for a Job
+  without a mailbox is ignored, no thread is created after construction, the runner holds at most
+  one completion per thread while a process runs, and a handoff never re-enters ingress; the check
+  runs under the ASan/UBSan configuration and, locally, TSan;
 - `process_normal_full_waits`: a `normal_full` answer to `worker_launch_observed` parks the fact in
   its mailbox while that Job's slot thread, another Job's exit report, and a stop delivery all
   proceed; the relay thread is woken by its own capacity flag without polling, including a slot
