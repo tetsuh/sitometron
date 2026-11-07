@@ -55,13 +55,13 @@ JSON Schema engine runs at startup; the JSON Schema validator is development-onl
 links the adapter without linking either dependency directly. No manifest port, closure change,
 or core dependency authorization is added.
 
-Proposed [ADR-0016](adr/0016-run-each-job-as-one-local-process.md) under Issue #126 would authorize,
-once Accepted, the separate `sitometron_process` adapter, built only with HTTP enabled. It would
-link no third-party target and add no manifest port: its only dependencies would be the standard
-library and the platform process APIs (`<spawn.h>`, `<signal.h>`, and `<sys/wait.h>` on Linux;
-`<windows.h>` on Windows), listed in its allowlist by the implementation Issue, with dedicated
-allowlist and public-boundary scanners. The adapter would expose only owned types and implement
-`core::ApplicationRunnerPort`. No core dependency authorization would be added.
+Accepted [ADR-0016](adr/0016-run-each-job-as-one-local-process.md) under Issue #126 authorizes the
+separate `sitometron_process` adapter, built only with HTTP enabled. It links no third-party target
+and adds no manifest port: its only dependencies are the standard library and the platform process
+APIs (`<spawn.h>`, `<signal.h>`, and `<sys/wait.h>` on Linux; `<windows.h>` on Windows), listed in
+its allowlist by the implementation Issue, with dedicated allowlist and public-boundary scanners.
+The adapter exposes only owned types and implements `core::ApplicationRunnerPort`. No core
+dependency authorization is added.
 
 Issue #17 implemented the allowlist and activated all five stable `NFR-005` checks on Linux and
 Windows. Accepted ADR-0003 and Issue #12 later authorized only the private synchronization headers
