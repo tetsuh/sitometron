@@ -117,6 +117,32 @@ endforeach()
 if(SITOMETRON_ENABLE_HTTP)
   find_package(Boost CONFIG REQUIRED COMPONENTS beast asio)
 
+  add_library(sitometron_registry STATIC src/registry/registry.cpp)
+  add_library(sitometron::registry ALIAS sitometron_registry)
+  target_include_directories(sitometron_registry PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+  target_compile_features(sitometron_registry PUBLIC cxx_std_20)
+  target_link_libraries(sitometron_registry PRIVATE nlohmann_json::nlohmann_json Boost::hash2)
+  sitometron_enable_project_warnings(sitometron_registry)
+  sitometron_enable_sanitizers(sitometron_registry)
+  get_target_property(SITOMETRON_REGISTRY_LINK_TARGETS sitometron_registry LINK_LIBRARIES)
+  get_target_property(SITOMETRON_REGISTRY_INTERFACE_LINK_TARGETS sitometron_registry INTERFACE_LINK_LIBRARIES)
+  file(GLOB_RECURSE SITOMETRON_REGISTRY_SCAN_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/registry/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/registry/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/sitometron/registry/*.hpp")
+  file(GLOB_RECURSE SITOMETRON_REGISTRY_PUBLIC_SCAN_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/sitometron/registry/*.hpp")
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_registry_dependency_allowlist.cmake)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_registry_public_api_isolation.cmake)
+  set(SITOMETRON_REGISTRY_SCAN_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/registry-scan-inputs.cmake")
+  file(WRITE "${SITOMETRON_REGISTRY_SCAN_CONFIG}" "")
+  foreach(_registry_input IN ITEMS LINK_TARGETS INTERFACE_LINK_TARGETS SCAN_FILES PUBLIC_SCAN_FILES)
+    file(APPEND "${SITOMETRON_REGISTRY_SCAN_CONFIG}"
+      "set(SITOMETRON_REGISTRY_${_registry_input} [==[${SITOMETRON_REGISTRY_${_registry_input}}]==])\n")
+  endforeach()
+
   add_library(sitometron_http STATIC src/http/http_server.cpp)
   add_library(sitometron::http ALIAS sitometron_http)
   target_include_directories(
@@ -188,6 +214,7 @@ if(SITOMETRON_ENABLE_HTTP)
       sitometron::core
       sitometron::journal
       sitometron::http
+      sitometron::registry
       sitometron::identity)
   sitometron_enable_project_warnings(sitometrond_composition)
   sitometron_enable_sanitizers(sitometrond_composition)
@@ -567,10 +594,33 @@ if(SITOMETRON_BUILD_TESTS)
         -DHTTP_NEGATIVE_MODE=public
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_negative_isolation.cmake)
 
+    add_executable(sitometron_registry_tests tests/unit/registry_test.cpp)
+    target_include_directories(sitometron_registry_tests PRIVATE src/registry)
+    target_compile_definitions(sitometron_registry_tests PRIVATE
+      SITOMETRON_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(sitometron_registry_tests PRIVATE
+      nlohmann_json::nlohmann_json sitometron::registry sitometron::test_support)
+    sitometron_enable_project_warnings(sitometron_registry_tests)
+    sitometron_enable_sanitizers(sitometron_registry_tests)
+    add_test(NAME registry_schema_vectors COMMAND sitometron_registry_tests)
+    foreach(_registry_scan IN ITEMS allowlist public)
+      if(_registry_scan STREQUAL "allowlist")
+        set(_registry_scan_name registry_dependency_allowlist)
+      else()
+        set(_registry_scan_name registry_public_api_isolation)
+      endif()
+      add_test(NAME ${_registry_scan_name} COMMAND ${CMAKE_COMMAND}
+        -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DSITOMETRON_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -DREGISTRY_NEGATIVE_MODE=${_registry_scan}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_registry_negative_isolation.cmake)
+    endforeach()
+
     add_executable(sitometron_http_tests tests/unit/http_rest_v1_test.cpp)
     target_include_directories(
       sitometron_http_tests
-      PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
+      PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/registry)
     target_compile_definitions(
       sitometron_http_tests PRIVATE SITOMETRON_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(
@@ -578,14 +628,21 @@ if(SITOMETRON_BUILD_TESTS)
       PRIVATE
         sitometron::http
         sitometrond_composition
+        sitometrond_entrypoint
+        sitometron::registry
         sitometron::core
         sitometron_core_fake_support
         sitometron_reducer_json_support
         Boost::asio
+        Boost::hash2
         nlohmann_json::nlohmann_json)
     sitometron_enable_project_warnings(sitometron_http_tests)
     sitometron_enable_sanitizers(sitometron_http_tests)
     foreach(_rest_v1_check IN ITEMS
+        registry_startup_refuses_invalid
+        registry_bundle_digest_verified
+        registry_absent_keeps_empty_set
+        rest_v1_registered_application_creates
         rest_v1_loopback_only
         rest_v1_unknown_route_and_method
         rest_v1_job_routes_not_ready
