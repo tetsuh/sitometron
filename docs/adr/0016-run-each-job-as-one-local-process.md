@@ -145,10 +145,12 @@ guarantees one exit report for every launch request it did not report `failed` w
   process live: the runner delivers the stops it holds and reports the exit as for any process.
 
 Every other reducer rejection is final: the runner submits no input twice. The exceptions to the
-guarantee are the two cases in which normal admission has closed under the Job: a launch that the
-stop flag of Section 5 cancels before its spawn, and a `failed` observation whose retries end with
-`admission_closed` or `service_failed` (Section 4). Neither gets a further runner fact; the Job
-stays as committed for the next start, where replay reports it unresolved (ADR-0006).
+guarantee are the cases in which normal admission has closed under the Job: a launch that the stop
+flag of Section 5 cancels before its spawn, a `failed` observation whose retries end with
+`admission_closed` or `service_failed` (Section 4), and any Job one of whose submissions was
+answered `admission_closed` or `service_failed`, including a live process whose `started`
+observation was (Section 5). None gets a further runner fact; the Job stays as committed for the
+next start, where replay reports it unresolved (ADR-0006).
 
 A Worker may be ready to report before the runner's `worker_launch_observed{started}` is committed,
 for example while that observation is parked by `normal_full`, and the reducer refuses
@@ -332,12 +334,15 @@ implements. The adapter includes `<sitometron/core/job_ports.hpp>` and
 `<sitometron/core/job_reducer.hpp>` for the port and the DTOs, and no header of another adapter.
 `sitometron_registry` is not changed. `sitometron_core` gains no public API; the implementation
 Issue extends the core's internal capacity notification to one flag per registered waiter, as
-Section 4 states, without changing a rule of ADR-0012. The composition constructs the port and the
-producer after the core and before any listener opens, with `callback_registration_capacity` sized
-for the `max_jobs + 3` handles of Section 4 and every other producer, and `completion_capacity`
-raised by `max_jobs + 3`, the most completions the runner can hold untaken at once (one per thread),
-on top of what the other producers can hold, so a critical submission never finds completion storage
-exhausted because of the runner.
+Section 4 states, without changing a rule of ADR-0012. The composition constructs the port, which
+needs nothing from the core, before the core and binds it as the core's runner port, because the
+core starts its writer in its constructor and ADR-0005 fixes every port binding before writer
+startup; it constructs the producer after the core, from the core's handles, and before any listener
+opens; and it keeps the port alive until the writer has stopped and no handoff can remain in flight.
+It configures the core with `callback_registration_capacity` sized for the `max_jobs + 3` handles of
+Section 4 and every other producer, and `completion_capacity` raised by `max_jobs + 3`, the most
+completions the runner can hold untaken at once (one per thread), on top of what the other producers
+can hold, so a critical submission never finds completion storage exhausted because of the runner.
 
 `sitometron_process` links no third-party target and adds no manifest port; its only dependencies
 are the standard library and the platform process APIs below, so its allowlist row in the format of
@@ -447,11 +452,13 @@ existing non-sleeping barriers:
   `service_failed` or `admission_closed` is still reaped; a live process whose
   `worker_launch_observed` is answered `service_failed` keeps running until it exits or the runner
   is stopped, and is then reaped; a `failed` observation whose retries end with `admission_closed`
-  gets no `process_exit_confirmed` and its Job stays as committed; shutdown with a live process,
-  with a spawn in progress, with a launch not yet spawned, with a launch still waiting in a cell,
-  with an idle relay thread waiting for capacity, and with a slot thread retrying a `failed`
-  observation, and closure of admission by the core without another capacity event, each delivers a
-  forced stop to each process that exists, wakes every waiter, starts nothing new, submits no fact
+  gets no `process_exit_confirmed` and its Job stays as committed; and closure of admission by the
+  core without a runner stop and without another capacity event wakes every waiter and ends every
+  retry but force-stops nothing and joins nothing, the live process keeps running until it exits or
+  the runner is stopped, and it is then reaped; shutdown with a live process, with a spawn in
+  progress, with a launch not yet spawned, with a launch still waiting in a cell, with an idle relay
+  thread waiting for capacity, and with a slot thread retrying a `failed` observation each delivers
+  a forced stop to each process that exists, wakes every waiter, starts nothing new, submits no fact
   for a launch cancelled before its spawn, reaps every process, and joins every thread;
 - `process_dependency_allowlist` and `process_public_api_isolation`: the scanners of Section 6, with
   planted violations;
