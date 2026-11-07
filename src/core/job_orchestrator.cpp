@@ -442,7 +442,7 @@ struct JobOrchestrator::Impl {
     return k_no_resident;
   }
   void RecordSupervisorRejectionLocked(Driving& d, Flight& flight, const RawCandidateEvent& input,
-                                       RejectionReason reason) {
+                                       RejectionReason reason) const {
     if (d.last_rejected && d.last_reason == reason &&
         d.last_rejected->event_type == input.event_type &&
         d.last_rejected->payload_json == input.payload_json) {
@@ -480,18 +480,18 @@ struct JobOrchestrator::Impl {
   }
   void RecordSupervisorResultLocked(std::size_t selected, const Uuid& job,
                                     const IngressResult& result) {
+    using enum IngressCode;
     auto& r = residents[selected];
     auto& flight = flights[selected];
-    if (result.code == IngressCode::kAdmitted || result.code == IngressCode::kCoalescedPending) {
+    if (result.code == kAdmitted || result.code == kCoalescedPending) {
       flight.sequence = result.ingress_sequence;
       if (r.exists && r.id == flight.job_id) r.driving.max_in_flight = 1;
     } else {
       flight.input.reset();
       flight.job_id.value.clear();
-      if (result.code == IngressCode::kAdmissionClosed ||
-          result.code == IngressCode::kServiceFailed)
+      if (result.code == kAdmissionClosed || result.code == kServiceFailed)
         StopDrivingLocked();
-      else if (result.code != IngressCode::kNormalFull && r.exists && r.id == job) {
+      else if (result.code != kNormalFull && r.exists && r.id == job) {
         r.driving.breached = true;
         ++r.driving.breaches;
       }
@@ -3301,12 +3301,12 @@ void JobOrchestrator::ReapSupervisorCompletion(std::size_t selected) {
 }
 IngressResult JobOrchestrator::SubmitSupervisorInput(RawCandidateEvent submitted,
                                                      std::optional<IngressCode> injected) {
-  if (injected && *injected != IngressCode::kAdmitted &&
-      *injected != IngressCode::kCoalescedPending)
+  using enum IngressCode;
+  if (injected && *injected != kAdmitted && *injected != kCoalescedPending)
     return {*injected, 0, 0};
   auto result = KickIf(
       this, impl_->Candidate(std::move(submitted), std::nullopt, nullptr, std::nullopt, true));
-  if (injected && result.code == IngressCode::kAdmitted) result.code = *injected;
+  if (injected && result.code == kAdmitted) result.code = *injected;
   return result;
 }
 void JobOrchestrator::ParkSupervisorJob(std::size_t selected, const Uuid& job) {

@@ -577,7 +577,8 @@ int RegistryLaunchIdentityFromEntry() {
       const auto record = Json::parse(line);
       if (!retained_job.empty() && record.at("job_id") == retained_job) {
         for (std::size_t i = 0; i < retention_events.size(); ++i) {
-          if (record.at("event_type") != retention_events[i]) continue;
+          if (record.at("event_type").get_ref<const std::string&>() != retention_events[i])
+            continue;
           result |= Check(retention_sequences[i] == 0, name, "duplicate retention continuation");
           retention_sequences[i] = record.at("sequence").get<std::uint64_t>();
           if (i <= 1)
