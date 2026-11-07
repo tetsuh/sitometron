@@ -3978,6 +3978,22 @@ int JobRetirementNotUnderFreeSlot() {
   return result;
 }
 
+template <typename Slot>
+bool SupervisorSlotReset(const Slot& slot) {
+  if constexpr (requires {
+                  slot.supervisor_mark_empty;
+                  slot.supervisor_parked_empty;
+                  slot.supervisor_accounting_empty;
+                  slot.launch_inputs_empty;
+                }) {
+    return slot.supervisor_mark_empty && slot.supervisor_parked_empty &&
+           slot.supervisor_accounting_empty && slot.launch_inputs_empty;
+  } else {
+    (void)slot;
+    return false;
+  }
+}
+
 int JobRetirementResetsSlot() {
   retirement::Plan plan;
   plan.CloseWorker(1);
@@ -4012,7 +4028,9 @@ int JobRetirementResetsSlot() {
                     "second retirement reuses the reset spare without old source state");
     const auto third = retirement::InspectSlot(writer, retirement::Job(3));
     const auto snapshot = writer.SnapshotFor(retirement::Job(3));
-    // ADR-0012's future post-commit mark is N/A: no supervisor or mark exists at this head.
+    result |= Check(reset && SupervisorSlotReset(*reset),
+                    "retirement must reset and expose supervisor mark, parked bit, accounting, "
+                    "and launch inputs for the physical spare slot");
     result |= Check(
         before && third && third->index == before->index && snapshot &&
             snapshot->state == JobState::kAdmitted &&

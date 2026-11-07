@@ -4175,6 +4175,8 @@ int Run(std::string_view name, const std::string& sitometrond_path) {
     return job_routes::RegistryStartupRefusesInvalid();
   if (name == "registry_bundle_digest_verified") return job_routes::RegistryBundleDigestVerified();
   if (name == "registry_absent_keeps_empty_set") return job_routes::RegistryAbsentKeepsEmptySet();
+  if (name == "registry_launch_identity_from_entry")
+    return job_routes::RegistryLaunchIdentityFromEntry();
   if (name == "rest_v1_registered_application_creates")
     return job_routes::RegisteredApplicationCreates();
   if (name == "rest_v1_retired_job_absent") return job_routes::RetiredJobAbsent();

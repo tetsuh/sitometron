@@ -6,10 +6,10 @@
 // are separate. These production-composition checks never inject launch inputs into core.
 class RegistryFixture final {
  public:
-  RegistryFixture() {
+  explicit RegistryFixture(std::string_view prefix = "issue134-registry-") {
     for (unsigned attempt = 0; attempt < 1000; ++attempt) {
       root = std::filesystem::temp_directory_path() /
-             ("issue134-registry-" + std::to_string(next.fetch_add(1)));
+             (std::string(prefix) + std::to_string(next.fetch_add(1)));
       std::error_code error;
       if (std::filesystem::create_directory(root, error)) break;
       if (attempt == 999) throw std::runtime_error("registry fixture directory unavailable");
@@ -472,6 +472,96 @@ int RegisteredApplicationCreates() {
   }
   daemon.Stop();
   std::cout << name << ": request vectors=" << requests << '\n';
+  return result;
+}
+
+// Test observation only; no launch identity is injected into production composition.
+template <typename Composition>
+bool RegistrySupervisorDrained(Composition& daemon) {
+  if constexpr (requires { daemon.WaitForSupervisorIdleForTest(); })
+    return daemon.WaitForSupervisorIdleForTest();
+  else {
+    (void)daemon;
+    return false;
+  }
+}
+
+int RegistryLaunchIdentityFromEntry() {
+  constexpr std::string_view name = "registry_launch_identity_from_entry";
+  RegistryFixture fixture("issue133-registry-");
+  const auto second_bundle = fixture.root / "second-bundle";
+  RegistryFixture::Write(second_bundle, "");
+  fixture.document["applications"][0]["version"] = "v\\\"\\\\-あ";
+  fixture.document["applications"].push_back(
+      Json{{"application_id", "second-worker"},
+           {"version", std::string(128, 'v')},
+           {"executable", RegistryFixture::Text(second_bundle)},
+           {"bundle_sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}});
+  auto minimum = fixture.document["applications"][0];
+  minimum["application_id"] = "minimum-worker";
+  minimum["version"] = "1";
+  fixture.document["applications"].push_back(minimum);
+  fixture.Save();
+  auto config = fixture.Config();
+  SetRegistryPath(config, fixture.file);
+  sitometron::daemon::Phase1Composition daemon(config);
+  std::string error;
+  if (!daemon.Start(error)) return Check(false, name, "verified registry refused: " + error);
+  std::map<std::string, Json> expected;
+  int result = 0;
+  // Interleave entries: reducing to an allowlist or remembering the last entry must fail.
+  for (const std::size_t index : {0U, 1U, 2U, 0U}) {
+    const auto& entry = fixture.document["applications"][index];
+    const auto response = SendToPort(
+        daemon.listen_port(),
+        Request("POST", "/v1/jobs", CreateBody(entry.at("application_id").get<std::string>())));
+    result |= ExpectStatus(response, name, 202);
+    if (response.status == 202) {
+      const auto id = Json::parse(response.body).at("job_id").get<std::string>();
+      expected[id] = Json{{"application_id", entry.at("application_id")},
+                          {"version", entry.at("version")},
+                          {"bundle_sha256", entry.at("bundle_sha256")}};
+    }
+  }
+  const bool drained = RegistrySupervisorDrained(daemon);
+  daemon.Stop();  // Never read Journal files concurrently with the writer.
+  // A changed verified entry must not supply launch inputs to an unresolved replayed Job.
+  fixture.document["applications"][0]["version"] = "changed-on-restart";
+  fixture.Save();
+  {
+    sitometron::daemon::Phase1Composition restarted(config);
+    const bool started = restarted.Start(error);
+    result |= Check(started, name, "restart refused: " + error);
+    if (started)
+      result |= Check(
+          !restarted.backend().GetReadiness().ready && restarted.identity_reads() == 0 &&
+              restarted.clock_reads() == 0 && restarted.writer_turn_count() == 0,
+          name,
+          "unresolved replay generated identities or drove a Job with changed registry inputs");
+    restarted.Stop();
+  }
+  std::map<std::string, Json> observed;
+  for (const auto& file : std::filesystem::directory_iterator(config.journal_path)) {
+    if (file.path().extension() != ".ndjson") continue;
+    std::ifstream input(file.path(), std::ios::binary);
+    std::string line;
+    while (std::getline(input, line)) {
+      const auto record = Json::parse(line);
+      if (record.at("event_type") != "worker_launch_intent") continue;
+      const auto id = record.at("job_id").get<std::string>();
+      result |= Check(observed.emplace(id, record.at("payload").at("application")).second, name,
+                      "duplicate launch intent for one Job");
+    }
+  }
+  result |= Check(expected.size() == 4 && observed.size() == expected.size(), name,
+                  "expected 4 committed worker_launch_intent records from verified entries; got " +
+                      std::to_string(observed.size()));
+  for (const auto& [job, application] : observed)
+    result |= Check(expected.contains(job) && expected.at(job) == application, name,
+                    "launch identity differs from requested verified registry entry");
+  result |= Check(drained, name, "production supervisor has no deterministic drain observation");
+  std::cout << name << ": verified Jobs=" << expected.size()
+            << " launch identities=" << observed.size() << '\n';
   return result;
 }
 
