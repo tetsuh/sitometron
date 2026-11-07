@@ -177,9 +177,10 @@ without a process, is ignored. A forced stop after a cooperative stop is deliver
 the same kind is not. The service thread delivers stops (Section 4), and the runner never signals a
 process identifier it has already reaped.
 
-The runner arms no timer and waits for nothing on its own account: the reducer's timeout effects
-and the timer port decide when a cooperative stop escalates to a forced one, and that decision
-reaches the runner as `HandoffForcedStop`.
+The runner arms no timer and waits for no timeout or grace period of its own; its only wait is for a
+process to exit (Section 4). The reducer's timeout effects and the timer port decide when a
+cooperative stop escalates to a forced one, and that decision reaches the runner as
+`HandoffForcedStop`.
 
 ### 4. Handoffs, storage, and threads
 
@@ -207,11 +208,15 @@ finds no mailbox for its Job is ignored: the process has exited or never existed
 ignores such a stop anyway.
 
 A launch always finds a place: the writer holds at most `max_jobs + 1` Jobs with a launch binding,
-the Job being launched is one of them, and every other such Job occupies at most one mailbox as
-its current Job or one next-launch cell; a retired Job's `finishing` mailbox still accepts a next
-launch. So the other Jobs occupy at most `max_jobs` of the `max_jobs + 1` mailboxes' places, and
-one is left for the launch. The producer treats a launch that finds none as an invariant violation,
-reports it on standard error, and stops accepting launches, because no Journal fact describes it.
+the Job being launched is one of them, and every other such Job occupies at most one mailbox as its
+current Job or one next-launch cell; a retired Job's `finishing` mailbox still accepts a next
+launch. So the other Jobs occupy at most `max_jobs` of the `max_jobs + 1` mailboxes' places, and one
+is left for the launch. The producer treats a launch that finds none as an invariant violation: the
+handoff records it, and the service thread, outside any handoff, reports it on standard error and
+latches the core's fail-closed state through a Sitometron-owned failure interface the composition
+builds on the core's internal latch (ADR-0003), so readiness becomes false and admission closes; the
+affected Job and every other open Job stay as committed for the next start (ADR-0006). No Journal
+fact describes the violation.
 
 Work happens on the producer's threads, all created at construction:
 
@@ -247,12 +252,12 @@ waiter of its own and resubmits, so the reducer result that decides the exit obl
 the thread that owes it, and the mailbox stays `busy` until that obligation is met.
 `admission_closed` and `service_failed` end the retries.
 
-The capacity notification is per waiter: the core keeps one level-triggered flag for each
-registered waiter, sets every flag when a writer turn frees a normal slot, and lets each waiter
-clear only its own, so the supervisor's drain (ADR-0012 Section 4) and the Session retainer
-placeholder (Issue #133) never consume a notification meant for the relay thread. The handles and
-the waiter are Sitometron-owned interfaces the composition builds on the core's internal API; the
-producer never holds the orchestrator.
+The capacity notification is per waiter: the core keeps one level-triggered flag for each registered
+waiter, sets every flag when a writer turn frees a normal slot, and lets each waiter clear only its
+own, so the supervisor's drain (ADR-0012 Section 4) and the Session retainer placeholder (Issue
+#133) never consume a notification meant for the relay thread. The handles, the waiter, and the
+failure interface are Sitometron-owned interfaces the composition builds on the core's internal API;
+the producer never holds the orchestrator.
 
 Stops are delivered under the mailbox lock by whichever thread first finds a stop flag set and a
 process published, the service thread on its wake or the slot thread when it publishes the
@@ -373,13 +378,14 @@ existing non-sleeping barriers:
   either request, each delivered once; a repeated stop of the same kind is not delivered; a stop
   after the exit is ignored; the child's descendants are not signaled;
 - `process_handoff_bounded`: `max_jobs + 1` concurrent launches never allocate or lock inside a
-  handoff, a launch for a slot's next occupant after retirement is queued into the `finishing`
-  mailbox while its thread is still taking the old Job's completions and starts once it is done, a
-  cooperative and a forced stop handed off before the drain are both delivered in order, a stop for
-  a queued next launch cancels it on promotion, a stop for a Job without a mailbox is ignored, no
-  thread is created after construction, the runner holds at most one completion per thread while a
-  process runs, and a handoff never re-enters ingress; the check runs under the ASan/UBSan
-  configuration and, locally, TSan;
+  handoff, a launch that finds no place latches the fail-closed state from the service thread and
+  leaves every Job as committed, a launch for a slot's next occupant after retirement is queued into
+  the `finishing` mailbox while its thread is still taking the old Job's completions and starts once
+  it is done, a cooperative and a forced stop handed off before the drain are both delivered in
+  order, a stop for a queued next launch cancels it on promotion, a stop for a Job without a mailbox
+  is ignored, no thread is created after construction, the runner holds at most one completion per
+  thread while a process runs, and a handoff never re-enters ingress; the check runs under the
+  ASan/UBSan configuration and, locally, TSan;
 - `process_normal_full_waits`: a `normal_full` answer to `worker_launch_observed` parks the fact in
   its mailbox while that Job's slot thread, another Job's exit report, and a stop delivery all
   proceed; the relay thread is woken by its own capacity flag without polling, including a slot
