@@ -297,9 +297,9 @@ lock is never held during a wait, a spawn, or a submission.
 When the composition stops the runner, the producer sets its stop flag, and the service thread
 delivers a forced stop to every published process. A slot thread that finds the flag set before its
 spawn cancels the launch and submits nothing; one that finds it set when it publishes a process
-delivers the forced stop itself; a launch still waiting in a cell is dropped. Each slot thread then waits for
-its exit, reaps it, and takes or abandons its last completion; the producer joins every thread
-before it returns. It delivers no cooperative stop first: a Job open at shutdown is left as
+delivers the forced stop itself; a launch still waiting in a cell is dropped. Each slot thread then
+waits for its exit, reaps it, and takes or abandons its last completion; the producer joins every
+thread before it returns. It delivers no cooperative stop first: a Job open at shutdown is left as
 committed (ADR-0012), so nothing waits for its result.
 
 A slot thread keeps waiting for and reaps its process whatever the writer does. After a fail-closed
@@ -432,9 +432,9 @@ existing non-sleeping barriers:
   `worker_launch_observed` is answered `service_failed` keeps running until it exits or the runner
   is stopped, and is then reaped; a `failed` observation whose retries end with `admission_closed`
   gets no `process_exit_confirmed` and its Job stays as committed; shutdown with a live process,
-  with a spawn in progress, with a launch not yet spawned, and with a launch still waiting in a cell delivers a
-  forced stop to each process that exists, starts nothing new, submits no fact for a launch
-  cancelled before its spawn, reaps every process, and joins every thread;
+  with a spawn in progress, with a launch not yet spawned, and with a launch still waiting in a cell
+  delivers a forced stop to each process that exists, starts nothing new, submits no fact for a
+  launch cancelled before its spawn, reaps every process, and joins every thread;
 - `process_dependency_allowlist` and `process_public_api_isolation`: the scanners of Section 6, with
   planted violations;
 - `rest_v1_protocol_less_process_fails`: through production `sitometrond` with a verified registry,
