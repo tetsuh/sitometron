@@ -189,21 +189,22 @@ construction. The producer object owns the threads, the launch specifications, t
 the parking table, and the capacity waiter of this section; it drains the mailboxes. The port
 retains no reference to the producer, the writer, or ingress (ADR-0005).
 
-A mailbox is in one of three states: `free`; `busy`, holding its current Job from the launch
-handoff until the submission of that Job's last fact, `process_exit_confirmed` or
+A mailbox is in one of three states: `free`; `busy`, holding its current Job from the launch handoff
+until the submission of that Job's last fact, `process_exit_confirmed` or
 `worker_launch_observed{failed}`, has returned from ingress; and `finishing`, from then until the
 mailbox's thread has taken that Job's completions and met the obligations of Section 2. A mailbox
-records, for its current Job, the launch request, two stop flags, one per kind, and the process
-that may be stopped; and it has one cell for the next launch, which a launch handoff may fill
-while the mailbox is `finishing`.
+records, for its current Job, the launch request, two stop flags, one per kind, and the process that
+may be stopped; and it has one cell for the next launch, with its own two stop flags, which a launch
+handoff may fill while the mailbox is `finishing`; when the slot thread promotes the next launch, it
+takes those flags with it.
 
 A handoff takes no lock: a launch claims a `free` mailbox, or the empty next-launch cell of a
 `finishing` one, with an atomic compare-and-exchange over the fixed table, and publishes the moved
-request with a release store; a stop finds the mailbox whose current Job it names and sets its
-flag, and a repeated stop of the same kind sets nothing new. A handoff allocates nothing, blocks
-on no I/O, throws nothing, and never calls back into the core. A stop that finds no mailbox for
-its Job is ignored: the process has exited or never existed, and Section 3 ignores such a stop
-anyway.
+request with a release store; a stop finds the mailbox whose current Job or queued next launch it
+names and sets the matching flag, and a repeated stop of the same kind sets nothing new. A handoff
+allocates nothing, blocks on no I/O, throws nothing, and never calls back into the core. A stop that
+finds no mailbox for its Job is ignored: the process has exited or never existed, and Section 3
+ignores such a stop anyway.
 
 A launch always finds a place: the writer holds at most `max_jobs + 1` Jobs with a launch binding,
 the Job being launched is one of them, and every other such Job occupies at most one mailbox as
@@ -224,22 +225,27 @@ Work happens on the producer's threads, all created at construction:
 - one service thread, woken by handoffs and the stop request, that delivers every stop (Section
   3) to the published process of the mailbox the stop names;
 - one relay thread that waits on the core's normal-capacity notification and resubmits every
-  observation that a `normal_full` answer parked, until it is answered otherwise or the Job's exit
-  has been observed, in which case the parked observation is dropped and only
+  `started` observation that a `normal_full` answer parked, until it is answered otherwise or the
+  Job's exit has been observed, in which case the parked observation is dropped and only
   `process_exit_confirmed` is submitted.
 
 No thread is created after construction, so no launch can fail for want of a thread and no thread
-outlives its mailbox. Each thread submits through its own lifetime-safe ingress handle, obtained
-by the composition from the core (ADR-0003), so each registration has one invocation at a time
-and `max_jobs + 3` registrations serve the runner. A thread takes the completion of each submission
-it made, from that same thread, through the handle, before it makes another submission or waits
-for an exit, so the runner holds at most one completion per thread at any time and a running
-process holds none. The completion carries the reducer result that Section 2 depends on.
+outlives its mailbox. Each thread submits through its own lifetime-safe ingress handle, obtained by
+the composition from the core (ADR-0003), so each registration has one invocation at a time and
+`max_jobs + 3` registrations serve the runner; each slot thread and the relay thread is also a
+registered capacity waiter. A thread takes the completion of each submission it made, from that same
+thread, through the handle, before it makes another submission or waits for an exit, so the runner
+holds at most one completion per thread at any time and a running process holds none. The completion
+carries the reducer result that Section 2 depends on.
 
-A `normal_full` answer parks only the observation: the slot thread records it in the producer's
-parking table, one entry per mailbox, and goes on to wait for the exit. The relay thread resubmits
-it and takes its completion; no thread blocks on capacity except the relay, so no exit report, stop
-delivery, or other Job is delayed by it. `admission_closed` and `service_failed` end the retries.
+A `normal_full` answer to a `started` observation parks only the observation: the slot thread
+records it in the producer's parking table, one entry per mailbox, and goes on to wait for the exit.
+The relay thread resubmits it and takes its completion, so no exit report, stop delivery, or other
+Job is delayed by it. A `normal_full` answer to a `failed` observation is retried by the slot thread
+itself, which has no process to wait for: it waits on the capacity notification as a registered
+waiter of its own and resubmits, so the reducer result that decides the exit obligation returns to
+the thread that owes it, and the mailbox stays `busy` until that obligation is met.
+`admission_closed` and `service_failed` end the retries.
 
 The capacity notification is per waiter: the core keeps one level-triggered flag for each
 registered waiter, sets every flag when a writer turn frees a normal slot, and lets each waiter
@@ -262,10 +268,13 @@ lock is never held during a wait, a spawn, or a submission.
 
 ### 5. Shutdown and failures after the start
 
-When the composition stops the runner, the service thread delivers a forced stop to every published
-process, and each slot thread waits for its exit, reaps it, and takes or abandons its last
-completion; the producer joins every thread before it returns. It delivers no cooperative stop
-first: a Job open at shutdown is left as committed (ADR-0012), so nothing waits for its result.
+When the composition stops the runner, the producer sets its stop flag, and the service thread
+delivers a forced stop to every published process. A slot thread that finds the flag set before its
+spawn cancels the launch and submits nothing; one that finds it set when it publishes a process
+delivers the forced stop itself; a queued next launch is dropped. Each slot thread then waits for
+its exit, reaps it, and takes or abandons its last completion; the producer joins every thread
+before it returns. It delivers no cooperative stop first: a Job open at shutdown is left as
+committed (ADR-0012), so nothing waits for its result.
 
 A slot thread keeps waiting for and reaps its process whatever the writer does. After a fail-closed
 latch or a Journal failure, the submission is answered `service_failed` or `admission_closed`, the
@@ -364,23 +373,26 @@ existing non-sleeping barriers:
   handoff, a launch for a slot's next occupant after retirement is queued into the `finishing`
   mailbox while its thread is still taking the old Job's completions and starts once it is done, a
   cooperative and a forced stop handed off before the drain are both delivered in order, a stop for
-  a Job without a mailbox is ignored, no thread is created after construction, the runner holds at
-  most one completion per thread while a process runs, and a handoff never re-enters ingress; the
-  check runs under the ASan/UBSan configuration and, locally, TSan;
+  a queued next launch cancels it on promotion, a stop for a Job without a mailbox is ignored, no
+  thread is created after construction, the runner holds at most one completion per thread while a
+  process runs, and a handoff never re-enters ingress; the check runs under the ASan/UBSan
+  configuration and, locally, TSan;
 - `process_normal_full_waits`: a `normal_full` answer to `worker_launch_observed` parks the fact in
   its mailbox while that Job's slot thread, another Job's exit report, and a stop delivery all
   proceed; the relay thread is woken by its own capacity flag without polling, including a slot
   freed before the park and a slot whose notification the supervisor drained first, and the fact is
-  then accepted; a `failed` observation that got `normal_full` is parked and resubmitted the same
-  way; after the exit only `process_exit_confirmed` is submitted;
+  then accepted; a `failed` observation that got `normal_full` is retried by its slot thread on its
+  own capacity flag and its obligation is met before the mailbox leaves `busy`; after the exit only
+  `process_exit_confirmed` is submitted;
 - `process_exit_reported_after_rejected_observation`: a launch observation whose completion reports
   a rejection because the Job left `preparing` is followed by exactly one `process_exit_confirmed`
   with the mode Section 2 gives, and a process that was live is stopped and reported; a stop handed
   off while the slot thread waits for the exit reaches the process without waking that thread, and a
   stop handed off while the spawn is in progress reaches the new process once it is published;
 - `process_reaped_after_failure`: a process whose `process_exit_confirmed` is answered
-  `service_failed` or `admission_closed` is still reaped, and shutdown with a live process delivers
-  a forced stop, reaps it, and joins every thread;
+  `service_failed` or `admission_closed` is still reaped; shutdown with a live process, with a spawn
+  in progress, and with a queued next launch delivers a forced stop to each process that exists,
+  starts nothing new, reaps every process, and joins every thread;
 - `process_dependency_allowlist` and `process_public_api_isolation`: the scanners of Section 6, with
   planted violations;
 - `rest_v1_protocol_less_process_fails`: through production `sitometrond` with a verified registry,
