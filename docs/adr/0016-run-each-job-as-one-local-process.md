@@ -200,50 +200,54 @@ construction. The producer object owns the threads, the launch specifications, t
 the parking table, and the capacity waiter of this section; it drains the mailboxes. The port
 retains no reference to the producer, the writer, or ingress (ADR-0005).
 
-A mailbox is in one of three states: `free`; `busy`, holding its current Job from the launch handoff
-until the submission of that Job's last fact, `process_exit_confirmed` or
-`worker_launch_observed{failed}`, has returned from ingress; and `finishing`, from then until the
-mailbox's thread has taken that Job's completions and met the obligations of Section 2. A mailbox
-records, for its current Job, the launch request, two stop flags, one per kind, and the process that
-may be stopped; and it has one cell for the next launch, with its own two stop flags, which a launch
-handoff may fill while the mailbox is `finishing`; when the slot thread promotes the next launch, it
-takes those flags with it.
+Each mailbox has two cells. A cell is empty or holds one Job from its launch handoff until its
+release: the launch request, two stop flags, one per kind, the process that may be stopped, and a
+phase, `active` until the slot thread submits the Job's last fact, `process_exit_confirmed` or
+`worker_launch_observed{failed}`, and `closing` from the moment before that submission until the
+thread has taken the Job's completions and met the obligations of Section 2. A Job never moves
+between cells: its stop flags stay where a stop can find them for its whole stoppable lifetime, and
+the slot thread serves its mailbox's cells in the order they were claimed. A cell is emptied only at
+release.
 
-A handoff takes no lock. Each cell, the current one and the next-launch one of every mailbox, has
-one atomic word that packs a generation, the occupied bit, and the two stop flags; the Job identity
-of an occupied cell is written before the word that publishes it. A launch claims a `free` mailbox,
-or the empty next-launch cell of a `finishing` one, with a compare-and-exchange on that word, and
-publishes the moved request with a release store. A stop finds the cell whose Job it names, then
-sets its flag with a compare-and-exchange that carries the generation it read; if the exchange fails
-because the cell changed, it finds the Job again and repeats, and if the Job is in no cell it is
-ignored. A promotion exchanges the next-launch word for an empty word of the next generation and
-carries the flags it read into the current cell, and a release empties a cell the same way, so a
-stop is bound to one Job and one generation: it can neither be lost across a promotion nor land on
-the cell's next occupant. A Job changes cells at most once, so the repeat is bounded. A repeated
-stop of the same kind sets nothing new. A handoff allocates nothing, blocks on no I/O, throws
-nothing, and never calls back into the core. A stop that finds no mailbox for its Job is ignored:
-the process has exited or never existed, and Section 3 ignores such a stop anyway.
+A handoff takes no lock. Each cell has one atomic word that packs a generation, the occupied bit,
+the phase, and the two stop flags; the Job identity of an occupied cell is written before the word
+that publishes it. A launch claims, with a compare-and-exchange on that word, an empty cell of a
+mailbox whose other cell is empty or `closing`, never of a mailbox whose other cell is `active`, and
+publishes the moved request with a release store. A stop reads every cell of every mailbox, sets the
+flag of the cell whose Job it names with a compare-and-exchange that carries the generation it read,
+and repeats the scan once if that exchange fails because the cell changed; a Job is in one cell for
+its whole lifetime, so a stop that finds it in no cell on a scan that read every cell after the
+Job's launch handoff was published has found a released Job, and is ignored, as Section 3 ignores a
+stop for a Job whose last fact was submitted. A release empties a cell with an exchange to the next
+generation, so a stale stop never lands on the cell's next occupant. A repeated stop of the same
+kind sets nothing new. A handoff allocates nothing, blocks on no I/O, throws nothing, and never
+calls back into the core.
 
 A launch always finds a place: the writer holds at most `max_jobs + 1` Jobs with a launch binding,
-the Job being launched is one of them, and every other such Job occupies at most one mailbox as its
-current Job or one next-launch cell; a retired Job's `finishing` mailbox still accepts a next
-launch. So the other Jobs occupy at most `max_jobs` of the `max_jobs + 1` mailboxes' places, and one
-is left for the launch. The producer treats a launch that finds none as an invariant violation: the
-handoff records it, and the service thread, outside any handoff, reports it on standard error and
-latches the core's fail-closed state through a Sitometron-owned failure interface the composition
-builds on the core's internal latch (ADR-0003), so readiness becomes false and admission closes; the
-affected Job and every other open Job stay as committed for the next start (ADR-0006). No Journal
-fact describes the violation.
+and the Job being launched is one of them, so at most `max_jobs` others have one. A retired Job's
+cell is `closing`, because its last fact was submitted before it could be committed, installed, and
+the Job closed and retired (ADR-0014 Section 1); the `closing` phase is entered before the
+submission, so this holds even while the slot thread is descheduled with the submission in flight.
+Therefore every mailbox with an `active` cell holds one of the at most `max_jobs` other Jobs, and
+every other mailbox offers its empty cell unless a different one of those Jobs already claimed it;
+`max_jobs` Jobs cannot take all `max_jobs + 1` places. The three-Job interleaving with `max_jobs =
+1`, in which two Jobs retire while their threads are descheduled before their submissions return,
+finds the third Job a place in the `closing` cell's partner. The producer treats a launch that finds
+none as an invariant violation: the handoff records it, and the service thread, outside any handoff,
+reports it on standard error and latches the core's fail-closed state through a Sitometron-owned
+failure interface the composition builds on the core's internal latch (ADR-0003), so readiness
+becomes false and admission closes; the affected Job and every other open Job stay as committed for
+the next start (ADR-0006). No Journal fact describes the violation.
 
 Work happens on the producer's threads, all created at construction:
 
-- one slot thread per mailbox, `max_jobs + 1` of them, each serving its mailbox's Jobs one at a
-  time: it takes the launch, checks the stop flags under the mailbox lock and cancels the launch if
-  one is set (Section 3), otherwise starts the process and publishes it under the lock, submits
-  `worker_launch_observed` and takes its completion at once, waits for the exit without reaping
-  it, marks the process gone under the lock, reaps it, submits `process_exit_confirmed`, takes
-  that completion, meets the obligations of Section 2, and then takes the next launch from the
-  cell or returns the mailbox to `free`;
+- one slot thread per mailbox, `max_jobs + 1` of them, each serving its mailbox's cells one at a
+  time in claim order: it takes the cell's launch, checks the stop flags under the mailbox lock and
+  cancels the launch if one is set (Section 3), otherwise starts the process and publishes it under
+  the lock, submits `worker_launch_observed` and takes its completion at once, waits for the exit
+  without reaping it, marks the process gone under the lock, reaps it, marks the cell `closing`,
+  submits `process_exit_confirmed`, takes that completion, meets the obligations of Section 2,
+  releases the cell, and turns to the other cell if it is occupied;
 - one service thread, woken by handoffs and the stop request, that delivers every stop (Section
   3) to the published process of the mailbox the stop names;
 - one relay thread that waits on the core's normal-capacity notification and resubmits every
@@ -293,7 +297,7 @@ lock is never held during a wait, a spawn, or a submission.
 When the composition stops the runner, the producer sets its stop flag, and the service thread
 delivers a forced stop to every published process. A slot thread that finds the flag set before its
 spawn cancels the launch and submits nothing; one that finds it set when it publishes a process
-delivers the forced stop itself; a queued next launch is dropped. Each slot thread then waits for
+delivers the forced stop itself; a launch still waiting in a cell is dropped. Each slot thread then waits for
 its exit, reaps it, and takes or abandons its last completion; the producer joins every thread
 before it returns. It delivers no cooperative stop first: a Job open at shutdown is left as
 committed (ADR-0012), so nothing waits for its result.
@@ -399,12 +403,15 @@ existing non-sleeping barriers:
   after the exit is ignored; the child's descendants are not signaled;
 - `process_handoff_bounded`: `max_jobs + 1` concurrent launches never allocate or lock inside a
   handoff, a launch that finds no place latches the fail-closed state from the service thread and
-  leaves every Job as committed, a launch for a slot's next occupant after retirement is queued into
-  the `finishing` mailbox while its thread is still taking the old Job's completions and starts once
-  it is done, a cooperative and a forced stop handed off before the drain are both delivered in
-  order, a stop for a queued next launch cancels it on promotion, a stop handed off at the same time
-  as the promotion or the reuse of its cell (driven through a deterministic interleaving at the
-  compare-and-exchange) still reaches its Job and never the cell's next occupant, a stop for a Job
+  leaves every Job as committed, a launch for a slot's next occupant after retirement takes the
+  partner cell of the `closing` one while its thread is still taking the old Job's completions and
+  starts once it is done, the three-Job interleaving with `max_jobs = 1` and both threads
+  descheduled with their last submissions in flight finds the third launch a place, a cooperative
+  and a forced stop handed off before the drain are both delivered in order, a stop for a queued
+  launch cancels it when its slot thread turns to it, a stop handed off at the same time as the
+  release or the reuse of a cell, or between the two reads of its scan (driven through a
+  deterministic interleaving at the compare-and-exchange and at the scan), still reaches its Job if
+  its last fact is not yet submitted and never reaches the cell's next occupant, a stop for a Job
   without a mailbox is ignored, no thread is created after construction, the runner holds at most
   one completion per thread while a process runs, and a handoff never re-enters ingress; the check
   runs under the ASan/UBSan configuration and, locally, TSan;
@@ -425,7 +432,7 @@ existing non-sleeping barriers:
   `worker_launch_observed` is answered `service_failed` keeps running until it exits or the runner
   is stopped, and is then reaped; a `failed` observation whose retries end with `admission_closed`
   gets no `process_exit_confirmed` and its Job stays as committed; shutdown with a live process,
-  with a spawn in progress, with a launch not yet spawned, and with a queued next launch delivers a
+  with a spawn in progress, with a launch not yet spawned, and with a launch still waiting in a cell delivers a
   forced stop to each process that exists, starts nothing new, submits no fact for a launch
   cancelled before its spawn, reaps every process, and joins every thread;
 - `process_dependency_allowlist` and `process_public_api_isolation`: the scanners of Section 6, with
@@ -493,10 +500,12 @@ existing non-sleeping barriers:
 - **One daemon-wide capacity signal for every waiter**: rejected because the supervisor drains that
   signal (ADR-0012 Section 4) and another waiter could miss it; one flag per waiter costs one bit
   each.
-- **Hold a mailbox for one Job until its last completion is taken, with no next-launch cell**:
-  rejected because the writer can commit the last fact and retire the Job before the submitting
-  thread returns, so the slot's next occupant could find its mailbox still held; the next-launch
-  cell of a `finishing` mailbox absorbs exactly that case.
+- **A current cell and a next-launch cell, with promotion between them**: rejected because a Job
+  that moves between cells can be missed by a stop that scans the two cells while the move happens,
+  and because a next-launch cell that opens only after the last submission has returned leaves a
+  window, while the thread is descheduled with the submission in flight, in which the writer retires
+  the Job and the next occupant finds no place; two stable cells with the `closing` phase set before
+  the submission close both.
 - **Retry `normal_full` with a timed backoff**: rejected because the core already offers the
   level-triggered capacity notification that ADR-0012 Section 4 defines, the Session retainer
   placeholder waits on it, and a backoff would add a duration and a poll that the notification makes
