@@ -217,8 +217,8 @@ struct Graph {
   std::map<std::string, std::vector<Json>> payloads;
   const Json& Row(std::string_view position, std::string_view event, bool command = false) const {
     for (const auto& row : contract.at(command ? "command_matrix" : "event_matrix"))
-      if (row.at("entity_position") == position &&
-          row.at(command ? "command_kind" : "event_kind") == event)
+      if (row.at("entity_position").get_ref<const std::string&>() == position &&
+          row.at(command ? "command_kind" : "event_kind").get_ref<const std::string&>() == event)
         return row;
     throw std::runtime_error("missing reducer row");
   }

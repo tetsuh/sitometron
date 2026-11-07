@@ -394,10 +394,109 @@ struct JobOrchestrator::Impl {
       const auto epoch = supervisor_barrier_epoch;
       supervisor_barrier_reached = true;
       cv.notify_all();
-      cv.wait(lock, [&] {
+      cv.wait(lock, [this, epoch] {
         return supervisor_stop || !supervisor_barrier_armed || epoch != supervisor_barrier_epoch;
       });
     }
+  }
+  std::size_t CompletedSupervisorFlightLocked() const {
+    for (std::size_t i = 0; i < flights.size(); ++i) {
+      if (const auto sequence = flights[i].sequence;
+          sequence != 0 && std::ranges::any_of(completions, [sequence](const auto& result) {
+            return result.reserved && result.sequence == sequence && result.completed;
+          }))
+        return i;
+    }
+    return k_no_resident;
+  }
+  bool ReadyToDriveLocked(std::size_t i) const {
+    const auto& d = residents[i].driving;
+    return d.enrolled && d.marked && !d.parked && !d.breached && flights[i].sequence == 0;
+  }
+  bool SupervisorWakeReadyLocked() const {
+    if (CompletedSupervisorFlightLocked() != k_no_resident) return true;
+    const bool flight = std::ranges::any_of(flights, [](const auto& f) { return f.sequence != 0; });
+    if (supervisor_stop) return !flight;
+    if (config.hold_supervisor_for_test) return false;
+    if (capacity_signal) return true;
+    for (std::size_t i = 0; i < residents.size(); ++i)
+      if (ReadyToDriveLocked(i)) return true;
+    return false;
+  }
+  void ResumeParkedSupervisorJobsLocked() {
+    if (!capacity_signal) return;
+    capacity_signal = false;
+    for (auto& r : residents) {
+      if (!r.driving.parked || !r.driving.enrolled || r.driving.breached) continue;
+      r.driving.parked = false;
+      r.driving.marked = true;
+    }
+  }
+  std::size_t SelectSupervisorJobLocked() {
+    for (std::size_t offset = 0; offset < residents.size(); ++offset) {
+      const auto i = (next_drive_slot + offset) % residents.size();
+      if (!ReadyToDriveLocked(i)) continue;
+      next_drive_slot = (i + 1) % residents.size();
+      return i;
+    }
+    return k_no_resident;
+  }
+  void RecordSupervisorRejectionLocked(Driving& d, Flight& flight, const RawCandidateEvent& input,
+                                       RejectionReason reason) {
+    if (d.last_rejected && d.last_reason == reason &&
+        d.last_rejected->event_type == input.event_type &&
+        d.last_rejected->payload_json == input.payload_json) {
+      d.breached = true;
+      ++d.breaches;
+    } else {
+      d.last_rejected = std::move(flight.input);
+      d.last_reason = reason;
+    }
+  }
+  bool RecordSupervisorCompletionLocked(std::size_t selected,
+                                        const std::optional<Completion>& completion,
+                                        const RawCandidateEvent& input) {
+    auto& flight = flights[selected];
+    auto& r = residents[selected];
+    bool rejected = false;
+    if (r.exists && r.id == flight.job_id) {
+      auto& d = r.driving;
+      if (!completion || completion->code == Completion::Code::kServiceFailed)
+        StopDrivingLocked();
+      else if (completion->code == Completion::Code::kReducerRejection && completion->rejection) {
+        rejected = true;
+        RecordSupervisorRejectionLocked(d, flight, input, completion->rejection->reason);
+      } else {
+        d.last_rejected.reset();
+        d.last_reason.reset();
+      }
+      if (!d.breached && !supervisor_stop) d.marked = true;
+    }
+    flight.input.reset();
+    flight.job_id.value.clear();
+    flight.sequence = 0;
+    cv.notify_all();
+    return rejected;
+  }
+  void RecordSupervisorResultLocked(std::size_t selected, const Uuid& job,
+                                    const IngressResult& result) {
+    auto& r = residents[selected];
+    auto& flight = flights[selected];
+    if (result.code == IngressCode::kAdmitted || result.code == IngressCode::kCoalescedPending) {
+      flight.sequence = result.ingress_sequence;
+      if (r.exists && r.id == flight.job_id) r.driving.max_in_flight = 1;
+    } else {
+      flight.input.reset();
+      flight.job_id.value.clear();
+      if (result.code == IngressCode::kAdmissionClosed ||
+          result.code == IngressCode::kServiceFailed)
+        StopDrivingLocked();
+      else if (result.code != IngressCode::kNormalFull && r.exists && r.id == job) {
+        r.driving.breached = true;
+        ++r.driving.breaches;
+      }
+    }
+    cv.notify_all();
   }
   std::size_t spare_index = 0;
   std::uint64_t next_source_lease = 1;
@@ -3157,8 +3256,8 @@ RawCandidateEvent MaterializeSupervisor(const Snapshot& s, const SupervisorDecis
       break;
     case 9: {
       const auto outcome = s.latched_reason.value_or(TerminalOutcome::kSucceeded);
-      constexpr std::string_view names[]{"succeeded", "failed", "cancelled", "terminated",
-                                         "timed_out"};
+      constexpr std::array<std::string_view, 5> names{"succeeded", "failed", "cancelled",
+                                                      "terminated", "timed_out"};
       if (static_cast<std::size_t>(outcome) >= 5 || (!s.latched_reason && !s.completion_candidate))
         throw std::bad_variant_access();
       payload = {{"outcome", names[static_cast<std::size_t>(outcome)]}};
@@ -3179,10 +3278,99 @@ RawCandidateEvent MaterializeSupervisor(const Snapshot& s, const SupervisorDecis
 }
 }  // namespace
 
+void JobOrchestrator::ReapSupervisorCompletion(std::size_t selected) {
+  auto& flight = impl_->flights[selected];
+  if (!flight.input) {
+    (void)TakeCompletion(flight.sequence);
+    {
+      std::lock_guard lock(impl_->mutex);
+      flight.sequence = 0;
+      flight.job_id.value.clear();
+    }
+    LatchReadinessFailure();
+    return;
+  }
+  impl_->SupervisorCheckpoint("before_completion_take", flight.input->event_type);
+  const auto completion = TakeCompletion(flight.sequence);
+  bool rejected = false;
+  {
+    std::lock_guard lock(impl_->mutex);
+    rejected = impl_->RecordSupervisorCompletionLocked(selected, completion, *flight.input);
+  }
+  if (rejected) impl_->SupervisorCheckpoint("after_rejected_completion");
+}
+IngressResult JobOrchestrator::SubmitSupervisorInput(RawCandidateEvent submitted,
+                                                     std::optional<IngressCode> injected) {
+  if (injected && *injected != IngressCode::kAdmitted &&
+      *injected != IngressCode::kCoalescedPending)
+    return {*injected, 0, 0};
+  auto result = KickIf(
+      this, impl_->Candidate(std::move(submitted), std::nullopt, nullptr, std::nullopt, true));
+  if (injected && result.code == IngressCode::kAdmitted) result.code = *injected;
+  return result;
+}
+void JobOrchestrator::ParkSupervisorJob(std::size_t selected, const Uuid& job) {
+  impl_->SupervisorCheckpoint("after_normal_full");
+  {
+    std::lock_guard lock(impl_->mutex);
+    auto& r = impl_->residents[selected];
+    if (!impl_->supervisor_stop && r.exists && r.id == job) r.driving.parked = true;
+  }
+  // Checking the level happens at the next loop entry, AFTER the parked bit is visible.
+  impl_->SupervisorCheckpoint("after_park");
+  impl_->SupervisorCheckpoint("after_park_before_wait");
+}
+void JobOrchestrator::DriveSupervisorJob(std::size_t selected) {
+  impl_->SupervisorCheckpoint("before_mark_drain");
+  Snapshot snapshot;
+  std::optional<JobLaunchInputs> inputs;
+  Uuid worker;
+  StableId operation;
+  {
+    std::lock_guard lock(impl_->mutex);
+    auto& r = impl_->residents[selected];
+    if (impl_->supervisor_stop || !r.exists || !r.driving.enrolled || !r.driving.marked ||
+        r.driving.breached)
+      return;
+    r.driving.marked = false;
+    snapshot = r.banks[r.active].snapshot;
+    inputs = r.driving.inputs;
+    if (r.generated_identities) {
+      worker = r.generated_identities->worker;
+      operation = r.generated_identities->launch_operation;
+    }
+    ++r.driving.decisions;
+  }
+  const auto decision = DecideSupervisor(&snapshot, inputs.has_value());
+  impl_->SupervisorCheckpoint("after_decision", decision.event);
+  if (decision.kind != "Submit") return;
+  auto input = MaterializeSupervisor(snapshot, decision, inputs, worker, operation);
+  auto submitted = input;
+  std::optional<IngressCode> injected;
+  {
+    std::lock_guard lock(impl_->mutex);
+    if (impl_->supervisor_stop) return;
+    auto& r = impl_->residents[selected];
+    if (!r.exists || r.id != snapshot.job_id) return;
+    ++r.driving.submissions;
+    auto& f = impl_->flights[selected];
+    f.job_id = snapshot.job_id;
+    f.input = std::move(input);
+    injected = impl_->injected_supervisor_code;
+    impl_->injected_supervisor_code.reset();
+  }
+  const auto result = SubmitSupervisorInput(std::move(submitted), injected);
+  RetryLatchedFailure();
+  {
+    std::lock_guard lock(impl_->mutex);
+    impl_->RecordSupervisorResultLocked(selected, snapshot.job_id, result);
+  }
+  if (result.code == IngressCode::kNormalFull) ParkSupervisorJob(selected, snapshot.job_id);
+}
 void JobOrchestrator::RunSupervisor() noexcept {
   {
     std::unique_lock lock(impl_->mutex);
-    impl_->cv.wait(lock, [&] { return impl_->supervisor_started; });
+    impl_->cv.wait(lock, [this] { return impl_->supervisor_started; });
   }
   {
     std::lock_guard lock(Impl::live_mutex);
@@ -3202,191 +3390,22 @@ void JobOrchestrator::RunSupervisor() noexcept {
         std::unique_lock lock(impl_->mutex);
         impl_->supervisor_busy = false;
         impl_->cv.notify_all();
-        impl_->cv.wait(lock, [&] {
-          for (std::size_t i = 0; i < impl_->flights.size(); ++i) {
-            const auto sequence = impl_->flights[i].sequence;
-            if (sequence != 0)
-              for (const auto& result : impl_->completions)
-                if (result.reserved && result.sequence == sequence && result.completed) return true;
-          }
-          bool flight = false;
-          for (const auto& f : impl_->flights) flight = flight || f.sequence != 0;
-          if (impl_->supervisor_stop) return !flight;
-          if (impl_->config.hold_supervisor_for_test) return false;
-          if (impl_->capacity_signal) return true;
-          for (std::size_t i = 0; i < impl_->residents.size(); ++i) {
-            const auto& d = impl_->residents[i].driving;
-            if (d.enrolled && d.marked && !d.parked && !d.breached &&
-                impl_->flights[i].sequence == 0)
-              return true;
-          }
-          return false;
-        });
-        for (std::size_t i = 0; i < impl_->flights.size(); ++i) {
-          const auto sequence = impl_->flights[i].sequence;
-          if (sequence != 0)
-            for (const auto& result : impl_->completions)
-              if (result.reserved && result.sequence == sequence && result.completed) {
-                selected = i;
-                completion_ready = true;
-                break;
-              }
-          if (completion_ready) break;
-        }
+        impl_->cv.wait(lock, [this] { return impl_->SupervisorWakeReadyLocked(); });
+        selected = impl_->CompletedSupervisorFlightLocked();
+        completion_ready = selected != Impl::k_no_resident;
         if (selected == Impl::k_no_resident && impl_->supervisor_stop) break;
         if (!completion_ready) {
-          if (impl_->capacity_signal) {
-            impl_->capacity_signal = false;
-            for (auto& r : impl_->residents)
-              if (r.driving.parked && r.driving.enrolled && !r.driving.breached) {
-                r.driving.parked = false;
-                r.driving.marked = true;
-              }
-          }
-          for (std::size_t offset = 0; offset < impl_->residents.size(); ++offset) {
-            const auto i = (impl_->next_drive_slot + offset) % impl_->residents.size();
-            const auto& d = impl_->residents[i].driving;
-            if (d.enrolled && d.marked && !d.parked && !d.breached &&
-                impl_->flights[i].sequence == 0) {
-              selected = i;
-              impl_->next_drive_slot = (i + 1) % impl_->residents.size();
-              break;
-            }
-          }
+          impl_->ResumeParkedSupervisorJobsLocked();
+          selected = impl_->SelectSupervisorJobLocked();
           if (selected == Impl::k_no_resident) continue;
         }
         impl_->supervisor_busy = true;
       }
       if (completion_ready) {
-        auto& flight = impl_->flights[selected];
-        if (!flight.input) {
-          (void)TakeCompletion(flight.sequence);
-          {
-            std::lock_guard lock(impl_->mutex);
-            flight.sequence = 0;
-            flight.job_id.value.clear();
-          }
-          LatchReadinessFailure();
-          continue;
-        }
-        impl_->SupervisorCheckpoint("before_completion_take", flight.input->event_type);
-        const auto completion = TakeCompletion(flight.sequence);
-        bool rejected = false;
-        {
-          std::lock_guard lock(impl_->mutex);
-          auto& r = impl_->residents[selected];
-          if (r.exists && r.id == flight.job_id) {
-            auto& d = r.driving;
-            if (!completion || completion->code == Completion::Code::kServiceFailed)
-              impl_->StopDrivingLocked();
-            else if (completion->code == Completion::Code::kReducerRejection &&
-                     completion->rejection) {
-              rejected = true;
-              const auto reason = completion->rejection->reason;
-              if (d.last_rejected && d.last_reason == reason &&
-                  d.last_rejected->event_type == flight.input->event_type &&
-                  d.last_rejected->payload_json == flight.input->payload_json) {
-                d.breached = true;
-                ++d.breaches;
-              } else {
-                d.last_rejected = std::move(flight.input);
-                d.last_reason = reason;
-              }
-            } else {
-              d.last_rejected.reset();
-              d.last_reason.reset();
-            }
-            if (!d.breached && !impl_->supervisor_stop) d.marked = true;
-          }
-          flight.input.reset();
-          flight.job_id.value.clear();
-          flight.sequence = 0;
-          impl_->cv.notify_all();
-        }
-        if (rejected) impl_->SupervisorCheckpoint("after_rejected_completion");
+        ReapSupervisorCompletion(selected);
         continue;
       }
-      impl_->SupervisorCheckpoint("before_mark_drain");
-      Snapshot snapshot;
-      std::optional<JobLaunchInputs> inputs;
-      Uuid worker;
-      StableId operation;
-      {
-        std::lock_guard lock(impl_->mutex);
-        auto& r = impl_->residents[selected];
-        if (impl_->supervisor_stop || !r.exists || !r.driving.enrolled || !r.driving.marked ||
-            r.driving.breached)
-          continue;
-        r.driving.marked = false;
-        snapshot = r.banks[r.active].snapshot;
-        inputs = r.driving.inputs;
-        if (r.generated_identities) {
-          worker = r.generated_identities->worker;
-          operation = r.generated_identities->launch_operation;
-        }
-        ++r.driving.decisions;
-      }
-      const auto decision = DecideSupervisor(&snapshot, inputs.has_value());
-      impl_->SupervisorCheckpoint("after_decision", decision.event);
-      if (decision.kind != "Submit") continue;
-      auto input = MaterializeSupervisor(snapshot, decision, inputs, worker, operation);
-      auto submitted = input;
-      std::optional<IngressCode> injected;
-      {
-        std::lock_guard lock(impl_->mutex);
-        if (impl_->supervisor_stop) continue;
-        auto& r = impl_->residents[selected];
-        if (!r.exists || r.id != snapshot.job_id) continue;
-        ++r.driving.submissions;
-        auto& f = impl_->flights[selected];
-        f.job_id = snapshot.job_id;
-        f.input = std::move(input);
-        injected = impl_->injected_supervisor_code;
-        impl_->injected_supervisor_code.reset();
-      }
-      IngressResult result;
-      if (injected && *injected != IngressCode::kAdmitted &&
-          *injected != IngressCode::kCoalescedPending)
-        result = {*injected, 0, 0};
-      else {
-        result = KickIf(this, impl_->Candidate(std::move(submitted), std::nullopt, nullptr,
-                                               std::nullopt, true));
-        if (injected && result.code == IngressCode::kAdmitted) result.code = *injected;
-      }
-      RetryLatchedFailure();
-      {
-        std::lock_guard lock(impl_->mutex);
-        auto& r = impl_->residents[selected];
-        auto& flight = impl_->flights[selected];
-        if (result.code == IngressCode::kAdmitted ||
-            result.code == IngressCode::kCoalescedPending) {
-          flight.sequence = result.ingress_sequence;
-          if (r.exists && r.id == flight.job_id) r.driving.max_in_flight = 1;
-        } else {
-          flight.input.reset();
-          flight.job_id.value.clear();
-          if (result.code == IngressCode::kAdmissionClosed ||
-              result.code == IngressCode::kServiceFailed)
-            impl_->StopDrivingLocked();
-          else if (result.code != IngressCode::kNormalFull && r.exists && r.id == snapshot.job_id) {
-            r.driving.breached = true;
-            ++r.driving.breaches;
-          }
-        }
-        impl_->cv.notify_all();
-      }
-      if (result.code == IngressCode::kNormalFull) {
-        impl_->SupervisorCheckpoint("after_normal_full");
-        {
-          std::lock_guard lock(impl_->mutex);
-          auto& r = impl_->residents[selected];
-          if (!impl_->supervisor_stop && r.exists && r.id == snapshot.job_id)
-            r.driving.parked = true;
-        }
-        // Checking the level happens at the next loop entry, AFTER the parked bit is visible.
-        impl_->SupervisorCheckpoint("after_park");
-        impl_->SupervisorCheckpoint("after_park_before_wait");
-      }
+      DriveSupervisorJob(selected);
     } catch (...) {
       LatchReadinessFailure();
     }
@@ -3417,7 +3436,7 @@ bool JobOrchestrator::JoinSupervisor(bool wait) noexcept {
     std::unique_lock lock(impl_->mutex);
     if (!impl_->supervisor_exited && impl_->supervisor_id == std::this_thread::get_id())
       return false;
-    if (wait) impl_->cv.wait(lock, [&] { return impl_->supervisor_exited; });
+    if (wait) impl_->cv.wait(lock, [this] { return impl_->supervisor_exited; });
     if (!impl_->supervisor_exited) return false;
   }
   std::lock_guard join_lock(supervisor_join_mutex_);
@@ -3431,7 +3450,7 @@ bool JobOrchestrator::JoinSupervisor(bool wait) noexcept {
 }
 bool JobOrchestrator::WaitForNormalCapacityOrClosure() {
   std::unique_lock lock(impl_->mutex);
-  impl_->cv.wait(lock, [&] {
+  impl_->cv.wait(lock, [this] {
     return impl_->failed || impl_->recovery_closed || impl_->mode != Impl::Mode::kRunning ||
            impl_->normal_count < impl_->config.normal_capacity;
   });
@@ -3463,7 +3482,7 @@ JobOrchestrator::SupervisorState JobOrchestrator::InspectSupervisorForTest(const
 bool JobOrchestrator::WaitForSupervisorIdleForTest() {
   (void)WaitForWriterIdle();
   std::unique_lock lock(impl_->mutex);
-  impl_->cv.wait(lock, [&] {
+  impl_->cv.wait(lock, [this] {
     if (impl_->supervisor_barrier_reached || impl_->config.hold_supervisor_for_test) return true;
     if (impl_->supervisor_stop) return impl_->supervisor_joined;
     if (impl_->supervisor_busy) return false;
@@ -3488,7 +3507,8 @@ bool JobOrchestrator::ArmSupervisorBarrierForTest(std::string_view point, std::s
 }
 bool JobOrchestrator::WaitForSupervisorBarrierForTest() {
   std::unique_lock lock(impl_->mutex);
-  impl_->cv.wait(lock, [&] { return impl_->supervisor_barrier_reached || impl_->supervisor_stop; });
+  impl_->cv.wait(lock,
+                 [this] { return impl_->supervisor_barrier_reached || impl_->supervisor_stop; });
   return impl_->supervisor_barrier_reached;
 }
 bool JobOrchestrator::ReleaseSupervisorBarrierForTest() {
@@ -3513,7 +3533,7 @@ bool JobOrchestrator::ReleaseSupervisorBarrierAndArmForTest(std::string_view poi
 }
 std::uint64_t JobOrchestrator::WaitForSupervisorSubmissionForTest(const Uuid& id) {
   std::unique_lock lock(impl_->mutex);
-  impl_->cv.wait(lock, [&] {
+  impl_->cv.wait(lock, [this, &id] {
     for (const auto& f : impl_->flights)
       if (f.job_id == id && f.sequence != 0) return true;
     return impl_->supervisor_stop;

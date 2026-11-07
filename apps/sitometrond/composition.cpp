@@ -105,7 +105,7 @@ class Phase1SessionRetainer final : public core::SessionRetainerPort {
   }
   std::optional<core::SessionRetainRequest> Take() {
     std::unique_lock lock(mutex_);
-    wake_.wait(lock, [&] {
+    wake_.wait(lock, [this] {
       return stopped_ || overflow_ ||
              std::ranges::any_of(requests_, [](const auto& r) { return r.occupied; });
     });
@@ -127,7 +127,7 @@ class Phase1SessionRetainer final : public core::SessionRetainerPort {
   }
   bool WaitIdle() {
     std::unique_lock lock(mutex_);
-    wake_.wait(lock, [&] {
+    wake_.wait(lock, [this] {
       return stopped_ || overflow_ ||
              (!active_ &&
               std::ranges::none_of(requests_, [](const auto& r) { return r.occupied; }));
@@ -175,36 +175,7 @@ class SessionProducer final {
     writer_ = &writer;
     if (!writer.ready()) return;
     endpoint_ = writer.RetainedCallback();
-    thread_ = std::thread([this] {
-      {
-        std::lock_guard lock(identity_mutex_);
-        thread_id_ = std::this_thread::get_id();
-      }
-      try {
-        while (auto request = mailbox_.Take()) {
-          // Bound UUID strings need no escaping; application versions are escaped in core.
-          const core::RawCandidateEvent event{
-              1, request->job_id, "session_retained",
-              "{\"session_id\":\"" + request->session_id.value + "\"}"};
-          for (;;) {
-            const auto result = endpoint_.Invoke(event);
-            if (result.code == IngressCode::kNormalFull) {
-              if (writer_->WaitForNormalCapacityOrClosure()) continue;
-            } else if (result.code == IngressCode::kAdmitted ||
-                       result.code == IngressCode::kCoalescedPending) {
-              (void)writer_->AwaitCompletion(result.ingress_sequence);
-            }
-            break;
-          }
-          mailbox_.Done();
-        }
-        if (mailbox_.Overflowed()) writer_->LatchReadinessFailure();
-      } catch (...) {
-        writer_->LatchReadinessFailure();
-      }
-      mailbox_.Done();
-      writer_->NotifyProducerExited();
-    });
+    thread_ = std::thread([this] { Run(); });
   }
   void Stop() noexcept { mailbox_.Stop(); }
   bool Join() noexcept {
@@ -225,6 +196,38 @@ class SessionProducer final {
   }
 
  private:
+  void Deliver(const core::RawCandidateEvent& event) {
+    using enum IngressCode;
+    for (;;) {
+      if (const auto result = endpoint_.Invoke(event); result.code == kNormalFull) {
+        if (writer_->WaitForNormalCapacityOrClosure()) continue;
+      } else if (result.code == kAdmitted || result.code == kCoalescedPending) {
+        (void)writer_->AwaitCompletion(result.ingress_sequence);
+      }
+      break;
+    }
+  }
+  void Run() {
+    {
+      std::lock_guard lock(identity_mutex_);
+      thread_id_ = std::this_thread::get_id();
+    }
+    try {
+      while (auto request = mailbox_.Take()) {
+        // Bound UUID strings need no escaping; application versions are escaped in core.
+        const core::RawCandidateEvent event{
+            1, request->job_id, "session_retained",
+            R"({"session_id":")" + request->session_id.value + R"("})"};
+        Deliver(event);
+        mailbox_.Done();
+      }
+      if (mailbox_.Overflowed()) writer_->LatchReadinessFailure();
+    } catch (...) {
+      writer_->LatchReadinessFailure();
+    }
+    mailbox_.Done();
+    writer_->NotifyProducerExited();
+  }
   Phase1SessionRetainer& mailbox_;
   JobOrchestrator* writer_ = nullptr;
   core::internal::CallbackHandle endpoint_;
@@ -433,7 +436,7 @@ std::unique_ptr<http::Backend> MakeJobBackend(JobOrchestrator& orchestrator, std
   std::vector<core::internal::JobLaunchInputs> inputs;
   inputs.reserve(applications.size());
   for (const auto& id : applications)
-    inputs.push_back({core::StableId{id}, "1", core::Digest{std::string(64, 'a')}});
+    inputs.emplace_back(core::StableId{id}, "1", core::Digest{std::string(64, 'a')});
   return std::make_unique<Phase1Backend>(orchestrator, max_jobs, replayed, inputs);
 }
 std::unique_ptr<http::Backend> MakeJobBackend(
@@ -665,8 +668,8 @@ bool Phase1Composition::Start(std::string& error) {
     std::vector<core::internal::JobLaunchInputs> inputs;
     inputs.reserve(impl_->applications.size());
     for (const auto& application : impl_->applications)
-      inputs.push_back({core::StableId{application.application_id}, application.version,
-                        core::Digest{application.bundle_sha256}});
+      inputs.emplace_back(core::StableId{application.application_id}, application.version,
+                          core::Digest{application.bundle_sha256});
     impl_->backend = MakeJobBackend(*impl_->orchestrator, config.max_jobs, replayed.jobs, inputs);
     impl_->server = std::make_unique<http::Server>(impl_->config.http, *impl_->backend);
     if (!impl_->server->Start(error)) {

@@ -452,7 +452,8 @@ struct Fixture {
     const auto snapshot = writer.SnapshotFor(job);
     if (!snapshot) throw std::runtime_error("Job disappeared before cleanup observation");
     const auto json = fixtures::SnapshotJson(snapshot.value());
-    Require(json.at("state") == outcome && json.at("cleanup_status") == "completed" &&
+    Require(json.at("state").get_ref<const std::string&>() == outcome &&
+                json.at("cleanup_status") == "completed" &&
                 json.at("resource_status") != "committed",
             "wrong terminal outcome, cleanup, or resource release");
     const auto events = ports.Journal();
@@ -482,7 +483,7 @@ std::vector<Json> RuntimeVectors(std::string_view check) {
         "job_supervisor_no_writer_reentry"};
     Require(owners.contains(vector.at("check").get<std::string>()),
             "unconsumed ordering-vector owner");
-    if (vector.at("check") == check) result.push_back(vector);
+    if (vector.at("check").get_ref<const std::string&>() == check) result.push_back(vector);
   }
   Require(!result.empty(), "missing ordering vector inventory");
   return result;

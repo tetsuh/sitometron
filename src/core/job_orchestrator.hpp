@@ -329,6 +329,10 @@ class JobOrchestrator final {
   IngressResult CreateWith(std::optional<Uuid>& created,
                            std::optional<JobLaunchInputs> = std::nullopt);
   void RunSupervisor() noexcept;
+  void ReapSupervisorCompletion(std::size_t);
+  void DriveSupervisorJob(std::size_t);
+  IngressResult SubmitSupervisorInput(RawCandidateEvent, std::optional<IngressCode>);
+  void ParkSupervisorJob(std::size_t, const Uuid&);
   bool JoinSupervisor(bool wait) noexcept;
   void RequestMaintenance() noexcept;
   void Run() noexcept;
