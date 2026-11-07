@@ -294,7 +294,10 @@ implements. The adapter includes `<sitometron/core/job_ports.hpp>` and
 Issue extends the core's internal capacity notification to one flag per registered waiter, as
 Section 4 states, without changing a rule of ADR-0012. The composition constructs the port and the
 producer after the core and before any listener opens, with `callback_registration_capacity` sized
-for the `max_jobs + 3` handles of Section 4 and every other producer.
+for the `max_jobs + 3` handles of Section 4 and every other producer, and `completion_capacity`
+raised by `max_jobs + 3`, the most completions the runner can hold untaken at once (one per thread),
+on top of what the other producers can hold, so a critical submission never finds completion storage
+exhausted because of the runner.
 
 `sitometron_process` links no third-party target and adds no manifest port; its only dependencies
 are the standard library and the platform process APIs below, so its allowlist row in the format of
