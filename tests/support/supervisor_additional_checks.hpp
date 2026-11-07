@@ -205,6 +205,67 @@ void CloseInFlight(const Json& vector) {
               state.at("reads_after_sealed") == 0,
           "completion taken twice/lost, join missed, or snapshot read after sealing");
 }
+// The observer owns a producer lock before shutdown starts. Once the stop hook tries that
+// lock, the observer reads ingress state before releasing it. Calling the hook under ingress
+// ownership creates a deterministic lock cycle, not a scheduler-dependent observation race.
+void ProducerStopLockBoundary(std::string_view mode) {
+  struct Probe {
+    std::mutex producer_mutex;
+    std::barrier<> held{2};
+    std::barrier<> entered{2};
+    std::atomic_bool first{true};
+    std::atomic_bool stopped{false};
+    std::atomic_bool joined{false};
+    std::atomic_bool stop_before_join{true};
+    bool closed = false;
+    void Stop() noexcept {
+      if (first.exchange(false)) entered.arrive_and_wait();
+      std::lock_guard lock(producer_mutex);
+      stopped.store(true);
+    }
+    bool Join() noexcept {
+      if (!stopped.load()) stop_before_join.store(false);
+      joined.store(true);
+      return true;
+    }
+  } probe;
+  Ports ports;
+  auto config = Fixture::Configuration(ports);
+  config.hold_supervisor_for_test = true;
+  config.producer_context = &probe;
+  config.stop_producers = [](void* context) noexcept { static_cast<Probe*>(context)->Stop(); };
+  config.join_producers = [](void* context) noexcept {
+    return static_cast<Probe*>(context)->Join();
+  };
+  auto writer = std::make_unique<JobOrchestrator>(config);
+  auto* const ingress = writer.get();
+  std::thread observer([&probe, ingress] {
+    std::lock_guard lock(probe.producer_mutex);
+    probe.held.arrive_and_wait();
+    probe.entered.arrive_and_wait();
+    probe.closed = !ingress->ready() && ingress->InspectSupervisorForTest(Uuid{}).stopped;
+  });
+  probe.held.arrive_and_wait();
+  std::cout << "producer stop hook lock boundary: " << mode << '\n' << std::flush;
+  IngressResult marker;
+  if (mode == "shutdown")
+    marker = writer->SubmitShutdown();
+  else if (mode == "failure")
+    writer->LatchReadinessFailure();
+  else
+    writer.reset();
+  observer.join();
+  Require(probe.closed, "producer stop ran before admission closure/supervisor stop publication");
+  if (mode == "shutdown") {
+    Completed(*writer, marker);
+    Require(writer->FinishShutdown(), "producer lock boundary shutdown did not seal");
+  } else if (mode == "failure") {
+    Require(writer->WaitForWriterIdle() && writer->sealed(),
+            "producer lock boundary failure did not seal");
+  }
+  Require(probe.stopped.load() && probe.joined.load() && probe.stop_before_join.load(),
+          "producer join ran before out-of-lock stop completed");
+}
 std::size_t LiveSupervisors() { return JobOrchestrator::LiveSupervisorThreadsForTest(); }
 void DestructionVector(bool barrier) {
   Ports ports;

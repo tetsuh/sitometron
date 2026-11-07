@@ -379,7 +379,6 @@ struct JobOrchestrator::Impl {
 
   void StopDrivingLocked() noexcept {
     supervisor_stop = true;
-    if (config.stop_producers) config.stop_producers(config.producer_context);
     cv.notify_all();
   }
   void SupervisorCheckpoint(std::string_view point, std::string_view event = {}) {
@@ -2599,6 +2598,7 @@ IngressResult JobOrchestrator::SubmitShutdown() {
     impl_->AppendIngress(sequence);
     result = {IngressCode::kAdmitted, sequence, before};
   }
+  StopProducers();
   return KickIf(this, result);
 }
 std::optional<JobOrchestrator::SourceLease> JobOrchestrator::AcquireSourceLease(
@@ -2732,6 +2732,7 @@ void JobOrchestrator::RetryLatchedFailure() noexcept {
     terminal = impl_->mode == Impl::Mode::kSealed || impl_->mode == Impl::Mode::kStopped;
     if (!terminal) impl_->mode = Impl::Mode::kQuiescing;
   }
+  StopProducers();
   for (const auto& control : impl_->callbacks) {
     std::lock_guard lock(control->mutex);
     control->failed = true;
@@ -3410,6 +3411,7 @@ void JobOrchestrator::RunSupervisor() noexcept {
       LatchReadinessFailure();
     }
   }
+  StopProducers();
   {
     std::lock_guard lock(impl_->mutex);
     impl_->supervisor_busy = false;
@@ -3431,7 +3433,17 @@ void JobOrchestrator::RequestMaintenance() noexcept {
   wake_.notify_one();
 }
 void JobOrchestrator::NotifyProducerExited() noexcept { RequestMaintenance(); }
+void JobOrchestrator::StopProducers() const noexcept {
+  {
+    std::lock_guard lock(impl_->mutex);
+    if (!impl_->supervisor_stop) return;
+  }
+  // Publication stays under ingress ownership; external cancellation never does.
+  if (impl_->config.stop_producers) impl_->config.stop_producers(impl_->config.producer_context);
+}
 bool JobOrchestrator::JoinSupervisor(bool wait) noexcept {
+  // Every producer join is downstream of this out-of-lock stop, including failure retries.
+  StopProducers();
   {
     std::unique_lock lock(impl_->mutex);
     if (!impl_->supervisor_exited && impl_->supervisor_id == std::this_thread::get_id())

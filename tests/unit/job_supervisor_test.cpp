@@ -616,7 +616,11 @@ int JobSupervisorRejectionRederives() {
   return OrderingCheck("job_supervisor_rejection_rederives");
 }
 int JobSupervisorIngressResults() { return OrderingCheck("job_supervisor_ingress_results"); }
-int JobSupervisorNoWriterReentry() { return OrderingCheck("job_supervisor_no_writer_reentry"); }
+int JobSupervisorNoWriterReentry() {
+  for (const std::string_view mode : {"shutdown", "failure", "destruction"})
+    ProducerStopLockBoundary(mode);
+  return OrderingCheck("job_supervisor_no_writer_reentry");
+}
 }  // namespace
 
 int main(int argc, char** argv) {

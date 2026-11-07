@@ -333,6 +333,7 @@ class JobOrchestrator final {
   void DriveSupervisorJob(std::size_t);
   IngressResult SubmitSupervisorInput(RawCandidateEvent, std::optional<IngressCode>);
   void ParkSupervisorJob(std::size_t, const Uuid&);
+  void StopProducers() const noexcept;
   bool JoinSupervisor(bool wait) noexcept;
   void RequestMaintenance() noexcept;
   void Run() noexcept;
