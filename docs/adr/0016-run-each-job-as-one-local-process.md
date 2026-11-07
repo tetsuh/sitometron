@@ -81,15 +81,18 @@ For a launch request, the runner resolves `intent.application_id` to the launch 
 composition built for it at startup from the verified registry entry (ADR-0015 Section 4): the
 `executable`, the `arguments`, and the `bundle_sha256`, copied into values the adapter owns. It
 starts `executable` with `arguments` in order, as separate argument strings and without shell
-interpretation. On Linux they are the `argv` elements. On Windows, where `CreateProcessW` takes one
-command line, the runner serializes them with the convention that `CommandLineToArgvW` and the C
-runtime parse: an argument is quoted when it is empty or contains a space, a tab, or a quotation
-mark; a quotation mark inside it is escaped with a backslash; and backslashes that precede a
-quotation mark or the closing quote are doubled. A child that reads `argv` from the C runtime or
-calls `CommandLineToArgvW` receives the registered strings unchanged; a child that parses its
-command line by another rule is outside this guarantee. The process inherits the daemon's
-environment and runs in the daemon's current working directory. The runner adds these environment
-variables, overriding any inherited value:
+interpretation. The registered `arguments` are the parameters, not the whole vector: the process
+sees the `executable` path as `argv[0]` and the registered strings as `argv[1]` onward, so
+ADR-0015's example `["--mode", "batch"]` arrives as `argv[1]` and `argv[2]`, and an empty
+`arguments` array gives `argv[0]` alone. On Windows, where `CreateProcessW` takes one command line,
+the runner serializes the `executable` path followed by the arguments with the convention that
+`CommandLineToArgvW` and the C runtime parse: an argument is quoted when it is empty or contains a
+space, a tab, or a quotation mark; a quotation mark inside it is escaped with a backslash; and
+backslashes that precede a quotation mark or the closing quote are doubled. A child that reads
+`argv` from the C runtime or calls `CommandLineToArgvW` receives the registered strings unchanged; a
+child that parses its command line by another rule is outside this guarantee. The process inherits
+the daemon's environment and runs in the daemon's current working directory. The runner adds these
+environment variables, overriding any inherited value:
 
 | Variable | Value |
 |---|---|
@@ -374,8 +377,9 @@ test child program that waits on the stop mechanism of its platform and exits wi
 status; no check sleeps, and every ordering is established through the runner's submissions and the
 existing non-sleeping barriers:
 
-- `process_launch_observed_after_start`: a registered executable is started with its `arguments` in
-  order, in the daemon's current working directory, with a sentinel variable of the daemon's
+- `process_launch_observed_after_start`: a registered executable is started with its `arguments` at
+  `argv[1]` onward in order and the `executable` path at `argv[0]`, also with an empty `arguments`
+  array, in the daemon's current working directory, with a sentinel variable of the daemon's
   environment preserved and the three identity variables set even where the daemon's environment
   carried conflicting values; `worker_launch_observed{started}` follows the start, and the child
   reports the arguments, the variables, and its working directory back through an output file; on
