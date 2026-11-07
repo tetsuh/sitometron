@@ -33,6 +33,10 @@ The Phase 0A Job reducer contract is split into reviewable machine-readable arti
 - [`job-reducer-vectors.json`](../schemas/core/v1/job-reducer-vectors.json): one concrete reachable
   fixture per ordered matrix case, concrete invalid-payload fixtures, and chained sequence/race
   fixtures;
+- [`supervisor-decision-contract.schema.json`](../schemas/core/v1/supervisor-decision-contract.schema.json)
+  and [`supervisor-decision-contract.json`](../schemas/core/v1/supervisor-decision-contract.json):
+  ADR-0012 first-match decisions, complete reducer-reachable classes, reconciled 25 seeds,
+  ordering vectors, and individually named producer-undeliverable overtakes, implemented by Issue #133;
 - [`job-state-diagram.dot`](../schemas/core/v1/job-state-diagram.dot): human-readable Graphviz state
   diagram whose edge inventory is checked against the matrix;
 - [`validate_core_contract.py`](../tools/validate_core_contract.py): pinned development-time Draft
@@ -141,20 +145,43 @@ and digest, and cleanup facts are monotonic state-preserving terminal audits. A
 `process_exit_confirmation` timeout may force stop and quarantine resources without changing the
 terminal result.
 
-## 5. Contract checks
+## 5. Lifecycle producer
+
+Issue #133 implements Accepted ADR-0012 as one private core supervisor thread, not reducer
+recursion. After creation, its own completion, or a coalesced post-commit mark, it reads the latest
+committed snapshot and decides at most one in-flight submission per Job. It owns the resource-release
+and cleanup critical sources at their existing registration positions. It holds no lock across
+ingress, runs on neither writer nor handoff stack, and parks on a level-triggered capacity signal
+after `normal_full`. The writer only publishes bounded marks/signals; it does not drive recursively.
+Marks and parking cover all `max_jobs + 1` physical slots and reset on retirement. Untaken old
+completions retain separate identity-tagged ownership so reuse cannot lose them or erase a new mark.
+
+Creation retains the requested Application as owned core identifier, version, and digest values
+until launch intent commits; no registry type crosses into core (ADR-0015 Section 4). Only creations
+admitted by this daemon are enrolled. Replayed nonterminal Jobs stay unresolved with admission closed;
+replay never consults the registry or launches a Worker. Normal-admission closure stops all driving,
+even critical continuations; admitted completions drain once and the supervisor and composition
+producer are joined before `sealed`.
+
+## 6. Contract checks
 
 Run the generic Draft 2020-12 validation and the contract-specific check directly:
 
 ```sh
 uv sync --frozen --only-group schema
-uv run --frozen --only-group schema python tools/validate_core_contract.py
+uv run --frozen --no-build --only-group schema python tools/validate_core_contract.py
+uv run --frozen --no-build --only-group schema python tools/validate_supervisor_contract.py
 cmake \
   -DSITOMETRON_SOURCE_DIR="$PWD" \
   -P cmake/check_core_job_contract.cmake
 ```
 
-The generic validator checks all eight core schemas and the contract and vector documents. It does
+The generic validator checks all nine core schemas and the contract and vector documents. It does
 not interpret Sitometron extension annotations. The dependency-free CMake check owns exact digest,
 UTF-8 byte-limit, cross-field identity, matrix reachability, timer, sequence, and DOT consistency.
 The configured test suite exposes the latter as CTest `core_job_contract`; Linux and Windows CI run
-both checks.
+both checks. CTests `core_supervisor_decision_contract` and `core_supervisor_decision_complete`
+consume the shared ADR-0012 vectors with the real C++ decision and independently derived reducer
+fixed point. The Python vector/completeness halves run beside core-contract validation on both
+platforms as separate `--no-build` CI steps. Empty, truncated, duplicate or incompletely consumed
+inventories fail; reducer-accepted but producer-undeliverable edges are printed separately.

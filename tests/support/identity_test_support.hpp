@@ -204,6 +204,7 @@ class CoreFixture final {
  public:
   CoreFixture(core::IdentitySourcePort& source, core::ClockPort& clock) {
     internal::Config config;
+    config.hold_supervisor_for_test = true;
     config.max_jobs = 4;
     config.normal_capacity = 4;
     config.trace_capacity = 512;

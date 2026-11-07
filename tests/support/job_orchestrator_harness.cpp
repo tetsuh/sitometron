@@ -477,6 +477,7 @@ core::internal::Config Convert(const Config& value, PortBundle& ports) {
                                 {},
                                 {},
                                 {}};
+  result.hold_supervisor_for_test = true;
   result.ports = {&ports.clock,    &ports.journal, &ports.runner,    &ports.session,
                   &ports.identity, &ports,         &SetJournalResult};
   return result;

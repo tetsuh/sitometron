@@ -1646,6 +1646,9 @@ int JobIngressFailClosed() {
   clock_failure.InjectClockReadFailure();
   const auto clock_turn = clock_failure.Create();
   result |= ConsumeCompletion(clock_failure, clock_turn, Completion::Code::kServiceFailed);
+  // Failure disposal completes the source before deferred producer join/sealing.
+  result |= Check(clock_failure.WaitForWriterIdle(),
+                  "Clock failure reaches writer and producer quiescence before seal observation");
   result |= Check(
       clock_failure.failed() && clock_failure.sealed() && clock_failure.total_occupancy() == 0 &&
           clock_failure.journal_attempts() == 0 && clock_failure.effect_count() == 0,
@@ -3978,6 +3981,11 @@ int JobRetirementNotUnderFreeSlot() {
   return result;
 }
 
+bool SupervisorSlotReset(const sitometron::core::internal::JobOrchestrator::SlotState& slot) {
+  return slot.supervisor_mark_empty && slot.supervisor_parked_empty &&
+         slot.supervisor_accounting_empty && slot.launch_inputs_empty;
+}
+
 int JobRetirementResetsSlot() {
   retirement::Plan plan;
   plan.CloseWorker(1);
@@ -4012,7 +4020,9 @@ int JobRetirementResetsSlot() {
                     "second retirement reuses the reset spare without old source state");
     const auto third = retirement::InspectSlot(writer, retirement::Job(3));
     const auto snapshot = writer.SnapshotFor(retirement::Job(3));
-    // ADR-0012's future post-commit mark is N/A: no supervisor or mark exists at this head.
+    result |= Check(reset && SupervisorSlotReset(*reset),
+                    "retirement must reset and expose supervisor mark, parked bit, accounting, "
+                    "and launch inputs for the physical spare slot");
     result |= Check(
         before && third && third->index == before->index && snapshot &&
             snapshot->state == JobState::kAdmitted &&

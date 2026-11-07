@@ -52,7 +52,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Boost CONFIG REQUIRED COMPONENTS uuid hash2)
 find_package(Threads REQUIRED)
 
-add_library(sitometron_core STATIC src/core/version.cpp src/core/job_reducer.cpp src/core/job_orchestrator.cpp)
+add_library(sitometron_core STATIC src/core/version.cpp src/core/job_reducer.cpp src/core/job_orchestrator.cpp src/core/job_supervisor.cpp)
 add_library(sitometron::core ALIAS sitometron_core)
 target_include_directories(
   sitometron_core
@@ -420,6 +420,27 @@ if(SITOMETRON_BUILD_TESTS)
       COMMAND sitometron_job_orchestration_tests ${_job_orchestration_check})
   endforeach()
 
+  add_executable(sitometron_job_supervisor_tests tests/unit/job_supervisor_test.cpp)
+  target_include_directories(sitometron_job_supervisor_tests PRIVATE src/core tests/support)
+  target_link_libraries(sitometron_job_supervisor_tests PRIVATE
+    sitometron::core sitometron::test_support sitometron_reducer_json_support
+    nlohmann_json::nlohmann_json)
+  target_compile_definitions(sitometron_job_supervisor_tests PRIVATE
+    SITOMETRON_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  sitometron_enable_project_warnings(sitometron_job_supervisor_tests)
+  sitometron_enable_sanitizers(sitometron_job_supervisor_tests)
+  foreach(_supervisor_check IN ITEMS
+      core_supervisor_decision_contract
+      core_supervisor_decision_complete
+      job_supervisor_drives_to_cleanup
+      job_supervisor_overtakes
+      job_supervisor_rejection_rederives
+      job_supervisor_ingress_results
+      job_supervisor_no_writer_reentry)
+    add_test(NAME ${_supervisor_check} COMMAND sitometron_job_supervisor_tests ${_supervisor_check})
+    set_tests_properties(${_supervisor_check} PROPERTIES TIMEOUT 300)
+  endforeach()
+
   add_test(
     NAME core_job_contract
     COMMAND
@@ -642,6 +663,7 @@ if(SITOMETRON_BUILD_TESTS)
         registry_startup_refuses_invalid
         registry_bundle_digest_verified
         registry_absent_keeps_empty_set
+        registry_launch_identity_from_entry
         rest_v1_registered_application_creates
         rest_v1_loopback_only
         rest_v1_unknown_route_and_method

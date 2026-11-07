@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "job_supervisor.hpp"
 #include "sitometron/core/job_ports.hpp"
 #include "sitometron/core/job_reducer.hpp"
 
@@ -136,6 +137,11 @@ struct Config {
   std::vector<Snapshot> replayed_jobs;
   std::vector<Uuid> unresolved_jobs;
   std::vector<std::uint64_t> replayed_created_sequences{};
+  // Private deterministic hold for writer-only contract fixtures. Production leaves it false.
+  bool hold_supervisor_for_test = false;
+  void* producer_context = nullptr;
+  void (*stop_producers)(void*) noexcept = nullptr;
+  bool (*join_producers)(void*) noexcept = nullptr;
   constexpr std::size_t critical_reserve() const noexcept {
     constexpr auto m = std::numeric_limits<std::size_t>::max();
     return max_jobs > (m - 1U) / 9U - 1U ? 0U : 9U * (max_jobs + 1U) + 1U;
@@ -160,6 +166,39 @@ class JobOrchestrator final {
   // Create() that also returns the identity it generated, so callers need not serialize creation
   // around LastCreated().
   CreatedJob CreateJob();
+  CreatedJob CreateJob(const JobLaunchInputs&);
+  // Internal producer capacity wait; closure wins over a free normal slot.
+  bool WaitForNormalCapacityOrClosure();
+  void NotifyProducerExited() noexcept;
+
+  struct SupervisorState {
+    std::size_t physical_slots = 0;
+    bool marked = false;
+    bool parked = false;
+    std::size_t in_flight = 0;
+    std::size_t max_in_flight = 0;
+    std::uint64_t decisions = 0;
+    std::uint64_t submissions = 0;
+    std::size_t breaches = 0;
+    bool rejection_history_empty = true;
+    bool stopped = false;
+    bool joined = false;
+    std::size_t writer_reentries = 0;
+    std::size_t handoff_reentries = 0;
+    std::size_t reads_after_sealed = 0;
+    std::thread::id supervisor_thread{};
+    std::thread::id writer_thread{};
+  };
+  SupervisorState InspectSupervisorForTest(const Uuid&) const;
+  bool WaitForSupervisorIdleForTest();
+  bool ArmSupervisorBarrierForTest(std::string_view, std::string_view = {});
+  bool WaitForSupervisorBarrierForTest();
+  bool ReleaseSupervisorBarrierForTest();
+  bool ReleaseSupervisorBarrierAndArmForTest(std::string_view, std::string_view = {});
+  std::uint64_t WaitForSupervisorSubmissionForTest(const Uuid&);
+  bool InjectSupervisorIngressCodeForTest(IngressCode);
+  bool InjectSupervisorRejectionForTest(RejectionReason, unsigned);
+  static std::size_t LiveSupervisorThreadsForTest();
   // Production derives normal/critical class, resident reservation, and source
   // gate solely from the closed command/candidate vocabulary.
   IngressResult SubmitCandidate(const RawCandidateEvent&);
@@ -194,6 +233,10 @@ class JobOrchestrator final {
     bool gates_empty = false;
     bool identities_empty = false;
     bool generated_bindings_empty = false;
+    bool supervisor_mark_empty = false;
+    bool supervisor_parked_empty = false;
+    bool supervisor_accounting_empty = false;
+    bool launch_inputs_empty = false;
   };
   std::optional<SlotState> InspectSlotForTest(const Uuid&) const;
   std::optional<SlotState> InspectSlotForTest(std::size_t) const;
@@ -283,7 +326,16 @@ class JobOrchestrator final {
   friend class CallbackHandle;
   struct Impl;
   struct FailureExit;
-  IngressResult CreateWith(std::optional<Uuid>& created);
+  IngressResult CreateWith(std::optional<Uuid>& created,
+                           std::optional<JobLaunchInputs> = std::nullopt);
+  void RunSupervisor() noexcept;
+  void ReapSupervisorCompletion(std::size_t);
+  void DriveSupervisorJob(std::size_t);
+  IngressResult SubmitSupervisorInput(RawCandidateEvent, std::optional<IngressCode>);
+  void ParkSupervisorJob(std::size_t, const Uuid&);
+  void StopProducers() const noexcept;
+  bool JoinSupervisor(bool wait) noexcept;
+  void RequestMaintenance() noexcept;
   void Run() noexcept;
   void Stop() noexcept;
   void ScheduleAcceptedEntry() noexcept;
@@ -303,6 +355,9 @@ class JobOrchestrator final {
   std::size_t active_ = 0;
   std::thread::id writer_id_{};
   std::thread writer_;
+  std::mutex supervisor_join_mutex_;
+  std::thread supervisor_;
+  bool maintenance_ = false;
 };
 
 // A private lifetime-safe ingress endpoint. It retains only a shared control
