@@ -1,18 +1,7 @@
 // Additional concrete threading/ownership interleavings; included in the test namespace.
-template <typename Slot>
-bool EmptySupervisorSlot(const Slot& slot) {
-  if constexpr (requires {
-                  slot.supervisor_mark_empty;
-                  slot.supervisor_parked_empty;
-                  slot.supervisor_accounting_empty;
-                  slot.launch_inputs_empty;
-                })
-    return slot.supervisor_mark_empty && slot.supervisor_parked_empty &&
-           slot.supervisor_accounting_empty && slot.launch_inputs_empty;
-  else {
-    (void)slot;
-    return false;
-  }
+bool EmptySupervisorSlot(const JobOrchestrator::SlotState& slot) {
+  return slot.supervisor_mark_empty && slot.supervisor_parked_empty &&
+         slot.supervisor_accounting_empty && slot.launch_inputs_empty;
 }
 void MarkVector(const Json&) {
   Fixture fixture;
@@ -85,7 +74,7 @@ void RejectedNoMark() {
           "negative control unexpectedly committed");
   fixture.Idle();
   const auto after = View(fixture.writer, job);
-  Require(after.at("decisions") == before.at("decisions") && after.at("marked") == 0,
+  Require(after.at("decisions") == before.at("decisions") && !after.at("marked").get<bool>(),
           "rejected turn emitted a post-commit mark");
 }
 void ManyJobs() {
@@ -196,7 +185,8 @@ void CloseInFlight(const Json& vector) {
       {"turn_finished", WriterPhase::kTurnFinished}};
   const auto phase = phases.at(vector.at("parameters").at("phase").get<std::string>());
   Require(fixture.writer.ArmBarrier(phase), "writer in-flight barrier unavailable");
-  Require(ReleaseBarrier(fixture.writer), "in-flight decision not released");
+  Require(Advance(fixture.writer, "before_completion_take", "resources_committed"),
+          "in-flight completion ownership was not held through closure");
   const auto sequence = WaitSubmission(fixture.writer, job);
   Require(sequence != 0 && fixture.writer.WaitUntil(sequence, phase),
           "own input missed selected writer phase");
@@ -215,18 +205,29 @@ void CloseInFlight(const Json& vector) {
               state.at("reads_after_sealed") == 0,
           "completion taken twice/lost, join missed, or snapshot read after sealing");
 }
-template <typename Writer>
-std::optional<std::size_t> LiveSupervisors() {
-  if constexpr (requires { Writer::LiveSupervisorThreadsForTest(); })
-    return Writer::LiveSupervisorThreadsForTest();
-  else
-    return std::nullopt;
-}
+std::size_t LiveSupervisors() { return JobOrchestrator::LiveSupervisorThreadsForTest(); }
 void DestructionVector(bool barrier) {
   Ports ports;
-  const auto initial = LiveSupervisors<JobOrchestrator>();
-  Require(initial.has_value(), "supervisor lifetime accounting not implemented");
-  auto writer = std::make_unique<JobOrchestrator>(Fixture::Configuration(ports));
+  const auto initial = LiveSupervisors();
+  struct JoinHold {
+    std::mutex mutex;
+    std::condition_variable wake;
+    bool entered = false;
+    bool released = false;
+    bool Join() noexcept {
+      std::unique_lock lock(mutex);
+      entered = true;
+      wake.notify_all();
+      wake.wait(lock, [&] { return released; });
+      return true;
+    }
+  } hold;
+  auto config = Fixture::Configuration(ports);
+  config.producer_context = &hold;
+  config.join_producers = [](void* context) noexcept {
+    return static_cast<JoinHold*>(context)->Join();
+  };
+  auto writer = std::make_unique<JobOrchestrator>(config);
   if (barrier)
     Require(Arm(*writer, "after_decision", "resources_committed"),
             "destructor barrier unavailable");
@@ -237,12 +238,26 @@ void DestructionVector(bool barrier) {
   else
     Require(Drain(*writer), "destructor fixture did not drain");
   const auto endpoint = writer->RetainedCallback();
-  writer.reset();  // No explicit shutdown; destructor must release hold and join, not detach.
-  Require(LiveSupervisors<JobOrchestrator>() == initial,
-          "destruction leaked a live supervisor thread");
+  std::thread destroyer([&] { writer.reset(); });
+  {
+    std::unique_lock lock(hold.mutex);
+    hold.wake.wait(lock, [&] { return hold.entered; });
+  }
+  // The retained endpoint remains lifetime-safe while destruction joins producers.
+  // Normal admission must already be closed, not left open until scheduler teardown.
+  const auto during = endpoint.Invoke(fixtures::MakeSessionRetained(*created.job_id));
+  {
+    std::lock_guard lock(hold.mutex);
+    hold.released = true;
+    hold.wake.notify_all();
+  }
+  destroyer.join();
+  Require(during.code == IngressCode::kAdmissionClosed,
+          "destruction left normal admission open while joining producers");
+  Require(LiveSupervisors() == initial, "destruction leaked a live supervisor thread");
   Require(endpoint.Invoke(fixtures::MakeSessionRetained(*created.job_id)).code ==
-              IngressCode::kServiceFailed,
-          "lifetime-safe endpoint retained destroyed writer access");
+              IngressCode::kAdmissionClosed,
+          "normal destruction must close lifetime-safe endpoint access");
 }
 void ReplayClosedVector() {
   Ports ports;
@@ -261,19 +276,7 @@ void ReplayClosedVector() {
   Require(View(writer, Uuid{kJob}).at("submissions") == 0,
           "replay consulted launch inputs or submitted a continuation");
 }
-template <typename Writer>
-bool CapacityWait(Writer& writer) {
-  if constexpr (requires { writer.WaitForNormalCapacityOrClosure(); })
-    return writer.WaitForNormalCapacityOrClosure();
-  else {
-    (void)writer;
-    return false;
-  }
-}
-template <typename Writer>
-constexpr bool HasCapacityWait() {
-  return requires(Writer& writer) { writer.WaitForNormalCapacityOrClosure(); };
-}
+bool CapacityWait(JobOrchestrator& writer) { return writer.WaitForNormalCapacityOrClosure(); }
 void ParkedShutdown() {
   Fixture fixture;
   Require(Arm(fixture.writer, "after_decision", "resources_committed"),
@@ -327,8 +330,7 @@ void SessionProducerVector(bool close_at_capacity) {
     ShutdownJoined(fixture.writer, job);
     return;
   }
-  Require(HasCapacityWait<JobOrchestrator>(),
-          "internal level-triggered capacity wait not implemented for Session producer");
+
   Require(fixture.writer.ArmPause(WriterPhase::kBeforeDequeue),
           "Session capacity pause unavailable");
   const auto first = fixture.writer.SubmitCandidate(fixtures::MakeSessionRetained(job));
@@ -380,6 +382,9 @@ void ThreadVector(const Json& vector) {
     ShutdownJoined(fixture.writer, Uuid{});
     return;
   }
+  Require(scenario == "failure_inside_supervisor_ingress" || scenario == "readiness_failure" ||
+              scenario == "separate_thread_no_handoff_reentry",
+          "unconsumed threading vector");
   if (scenario == "failure_inside_supervisor_ingress")
     Require(Arm(fixture.writer, "after_decision", "resources_committed"),
             "failure ingress barrier unavailable");

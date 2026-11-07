@@ -10,10 +10,12 @@ from typing import Any
 from jsonschema.exceptions import ValidationError
 
 from json_schema_validator import LocalDraft202012Schemas
+from validate_supervisor_contract import validate_supervisor_complete, validate_supervisor_vectors
 
 _INSTANCE_PAIRS = (
     ("job-reducer-contract.schema.json", "job-reducer-contract.json"),
     ("job-reducer-vectors.schema.json", "job-reducer-vectors.json"),
+    ("supervisor-decision-contract.schema.json", "supervisor-decision-contract.json"),
 )
 
 
@@ -90,6 +92,8 @@ def validate_core_contract(project_root: Path) -> None:
         schema_root,
         instances["job-reducer-vectors.json"],
     )
+    validate_supervisor_vectors(project_root)
+    validate_supervisor_complete(project_root)
     print(f"Validated {len(schemas.schemas)} Draft 2020-12 core schemas")
 
 

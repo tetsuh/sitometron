@@ -3978,20 +3978,9 @@ int JobRetirementNotUnderFreeSlot() {
   return result;
 }
 
-template <typename Slot>
-bool SupervisorSlotReset(const Slot& slot) {
-  if constexpr (requires {
-                  slot.supervisor_mark_empty;
-                  slot.supervisor_parked_empty;
-                  slot.supervisor_accounting_empty;
-                  slot.launch_inputs_empty;
-                }) {
-    return slot.supervisor_mark_empty && slot.supervisor_parked_empty &&
-           slot.supervisor_accounting_empty && slot.launch_inputs_empty;
-  } else {
-    (void)slot;
-    return false;
-  }
+bool SupervisorSlotReset(const sitometron::core::internal::JobOrchestrator::SlotState& slot) {
+  return slot.supervisor_mark_empty && slot.supervisor_parked_empty &&
+         slot.supervisor_accounting_empty && slot.launch_inputs_empty;
 }
 
 int JobRetirementResetsSlot() {

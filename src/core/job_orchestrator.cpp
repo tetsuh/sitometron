@@ -98,6 +98,8 @@ struct JobOrchestrator::Impl {
     std::size_t victim_index = k_no_resident;
     std::optional<GeneratedIdentityBundle> creation_identities;
     bool authorized = false;
+    bool supervisor_owned = false;
+    std::optional<JobLaunchInputs> launch_inputs;
   };
   struct CompletionSlot {
     bool reserved = false;
@@ -119,6 +121,25 @@ struct JobOrchestrator::Impl {
     ApplicationLaunchRequest launch{};
     ApplicationStopRequest stop{};
     SessionRetainRequest session{};
+  };
+  struct Driving {
+    std::optional<JobLaunchInputs> inputs;
+    std::optional<RawCandidateEvent> last_rejected;
+    std::optional<RejectionReason> last_reason;
+    bool enrolled = false;
+    bool marked = false;
+    bool parked = false;
+    bool breached = false;
+    std::uint64_t decisions = 0;
+    std::uint64_t submissions = 0;
+    std::size_t breaches = 0;
+    std::size_t max_in_flight = 0;
+  };
+  // Separate from the resident: retirement cannot discard an untaken completion.
+  struct Flight {
+    Uuid job_id;
+    std::optional<RawCandidateEvent> input;
+    std::uint64_t sequence = 0;
   };
   struct Resident {
     ::sitometron::core::Uuid id;
@@ -146,6 +167,7 @@ struct JobOrchestrator::Impl {
     // resource-release, and cleanup gates deliberately have no identity slot.
     std::array<GateIdentity, 5> identity_slots{};
     std::array<Gate, static_cast<std::size_t>(GateKind::kCount)> gates{};
+    Driving driving;
   };
 
   // Never construct heap-owning temporaries during reset: debug STL constructors may
@@ -212,7 +234,7 @@ struct JobOrchestrator::Impl {
     auto& [id, banks, prepared_effects, prepared_trace, active, exists, reserved, ticket, claimed,
            created_sequence, claims, worker_pending, worker_sequence, worker_ingress_sequence,
            worker_payload, generated_worker, generated_launch_operation, generated_identities,
-           timer_generation, identity_slots, gates] = resident;
+           timer_generation, identity_slots, gates, driving] = resident;
     ClearForReset(id.value);
     for (auto& bank : banks) ResetApplyInPlace(bank);
     // Keep the original vector objects, including their debug iterator proxies and capacities.
@@ -239,6 +261,19 @@ struct JobOrchestrator::Impl {
     AssignForReset(timer_generation, {});
     AssignForReset(identity_slots, {});
     AssignForReset(gates, {});
+    auto& [inputs, last_rejected, last_reason, enrolled, marked, parked, breached, decisions,
+           submissions, breaches, max_in_flight] = driving;
+    OptionalForReset(inputs);
+    OptionalForReset(last_rejected);
+    OptionalForReset(last_reason);
+    AssignForReset(enrolled, false);
+    AssignForReset(marked, false);
+    AssignForReset(parked, false);
+    AssignForReset(breached, false);
+    AssignForReset(decisions, std::uint64_t{0});
+    AssignForReset(submissions, std::uint64_t{0});
+    AssignForReset(breaches, std::size_t{0});
+    AssignForReset(max_in_flight, std::size_t{0});
   }
 
   explicit Impl(const Config& value) : config(value) {
@@ -256,6 +291,7 @@ struct JobOrchestrator::Impl {
       throw std::bad_variant_access();
     fifo.resize(config.total_capacity());
     residents.resize(config.max_jobs + 1);
+    flights.resize(config.max_jobs + 1);
     spare_index = config.max_jobs;
     completions.resize(config.completion_capacity);
     trace.resize(config.trace_capacity);
@@ -318,6 +354,51 @@ struct JobOrchestrator::Impl {
   std::size_t fifo_tail = 0;
   std::size_t fifo_count = 0;
   std::vector<Resident> residents;
+  std::vector<Flight> flights;
+  bool capacity_signal = false;
+  bool supervisor_stop = false;
+  bool supervisor_started = false;
+  bool supervisor_exited = false;
+  bool supervisor_joined = false;
+  bool supervisor_busy = false;
+  std::size_t next_drive_slot = 0;
+  std::size_t supervisor_writer_reentries = 0;
+  std::size_t supervisor_handoff_reentries = 0;
+  bool handoff_active = false;
+  std::thread::id supervisor_id{};
+  std::string supervisor_barrier;
+  std::string supervisor_barrier_event;
+  bool supervisor_barrier_armed = false;
+  bool supervisor_barrier_reached = false;
+  std::uint64_t supervisor_barrier_epoch = 0;
+  std::optional<IngressCode> injected_supervisor_code;
+  std::optional<RejectionReason> injected_supervisor_rejection;
+  unsigned injected_supervisor_rejection_count = 0;
+  inline static std::mutex live_mutex;
+  inline static std::size_t live_threads = 0;
+
+  void StopDrivingLocked() noexcept {
+    supervisor_stop = true;
+    if (config.stop_producers) config.stop_producers(config.producer_context);
+    cv.notify_all();
+  }
+  void SupervisorCheckpoint(std::string_view point, std::string_view event = {}) {
+    std::unique_lock lock(mutex);
+    if (measured_writer_id == std::this_thread::get_id()) {
+      ++supervisor_writer_reentries;
+      if (handoff_active) ++supervisor_handoff_reentries;
+    }
+    if (supervisor_stop) return;
+    if (supervisor_barrier_armed && supervisor_barrier == point &&
+        (supervisor_barrier_event.empty() || supervisor_barrier_event == event)) {
+      const auto epoch = supervisor_barrier_epoch;
+      supervisor_barrier_reached = true;
+      cv.notify_all();
+      cv.wait(lock, [&] {
+        return supervisor_stop || !supervisor_barrier_armed || epoch != supervisor_barrier_epoch;
+      });
+    }
+  }
   std::size_t spare_index = 0;
   std::uint64_t next_source_lease = 1;
   std::vector<CompletionSlot> completions;
@@ -727,7 +808,11 @@ struct JobOrchestrator::Impl {
   }
   void ReleaseGateLocked(const Entry& entry, bool successful) {
     if (!entry.critical) {
-      if (normal_count != 0) --normal_count;
+      if (normal_count != 0) {
+        --normal_count;
+        capacity_signal = true;
+        cv.notify_all();
+      }
       return;
     }
     if (entry.kind == Entry::Kind::kShutdown) {
@@ -972,7 +1057,10 @@ struct JobOrchestrator::Impl {
   static_assert(noexcept(std::declval<TraceRecord&>() = std::declval<TraceRecord&&>()));
   // Runtime callers continue the failure path only after unlocking: producer boundaries own
   // FailureExit; writer-local failures reach the Run completion retry. Seed rejects startup.
-  void FailLocked() { failed = true; }
+  void FailLocked() {
+    failed = true;
+    StopDrivingLocked();
+  }
   void Fail() {
     std::lock_guard lock(mutex);
     FailLocked();
@@ -992,11 +1080,15 @@ struct JobOrchestrator::Impl {
   }
   IngressResult Candidate(RawCandidateEvent event,
                           std::optional<GeneratedIdentityBundle> identities = std::nullopt,
-                          std::unique_lock<std::mutex>* held_lock = nullptr) {
+                          std::unique_lock<std::mutex>* held_lock = nullptr,
+                          std::optional<JobLaunchInputs> launch_inputs = std::nullopt,
+                          bool supervisor_owned = false) {
     Entry entry;
     entry.kind = Entry::Kind::kCandidate;
     entry.candidate = std::move(event);
     entry.creation_identities = std::move(identities);
+    entry.launch_inputs = std::move(launch_inputs);
+    entry.supervisor_owned = supervisor_owned;
     return Enqueue(std::move(entry), false, false, held_lock);
   }
   IngressResult Enqueue(Entry entry, bool /*ignored_normal*/, bool /*ignored_reserve_job*/ = false,
@@ -1044,6 +1136,8 @@ struct JobOrchestrator::Impl {
     }
     (void)identity_ready;
     if (failed) return ResultLocked(IngressCode::kServiceFailed);
+    if (entry.supervisor_owned && (supervisor_stop || mode != Mode::kRunning))
+      return ResultLocked(IngressCode::kAdmissionClosed);
     if (recovery_closed) return ResultLocked(IngressCode::kAdmissionClosed);
     if (mode == Mode::kSealed || mode == Mode::kStopped)
       return ResultLocked(IngressCode::kAdmissionClosed);
@@ -1136,9 +1230,10 @@ struct JobOrchestrator::Impl {
         ++resident->claims;
       }
       entry.resident_index = IndexOf(resident);
-      if (entry.creation_identities &&
+      if (!resident->exists && entry.creation_identities &&
           entry.creation_identities->job_session == entry.candidate.job_id) {
         resident->generated_identities = std::move(entry.creation_identities);
+        resident->driving.inputs = std::move(entry.launch_inputs);
       }
     }
     const auto sequence = next_ingress;
@@ -1473,6 +1568,7 @@ struct JobOrchestrator::Impl {
       {
         std::lock_guard lock(mutex);
         ++effects;
+        handoff_active = operation.has_launch || operation.has_stop || operation.has_session;
         if (operation.timer_update)
           resident.timer_generation[operation.timer_index] = operation.timer_generation_after;
       }
@@ -1519,6 +1615,10 @@ struct JobOrchestrator::Impl {
           break;
         default:
           break;
+      }
+      if (operation.has_launch || operation.has_stop || operation.has_session) {
+        std::lock_guard lock(mutex);
+        handoff_active = false;
       }
       PublishPrepared(resident, bank, trace_cursor);  // Explicit mapped action.
     }
@@ -1632,6 +1732,13 @@ struct JobOrchestrator::Impl {
       }
       decision = ::sitometron::core::DecideEvent(before, std::get<InternalEvent>(normalized.value));
     }
+    {
+      std::lock_guard lock(mutex);
+      if (entry.supervisor_owned && injected_supervisor_rejection_count != 0) {
+        --injected_supervisor_rejection_count;
+        decision = Decision{Rejection{1, *injected_supervisor_rejection}};
+      }
+    }
     Checkpoint(entry.sequence, WriterPhase::kAfterDecision);
     if (std::holds_alternative<Rejection>(decision.value)) {
       auto rejection = std::get<Rejection>(decision.value);
@@ -1729,6 +1836,7 @@ struct JobOrchestrator::Impl {
       if (event.event_type == EventType::kJobCreated) {
         resident->created_sequence = event.sequence;
         resident->ticket = false;
+        resident->driving.enrolled = resident->generated_identities.has_value();
         if (entry.victim_index != k_no_resident) {
           ResetSlotLocked(residents[entry.victim_index], true);
           spare_index = entry.victim_index;
@@ -1737,6 +1845,9 @@ struct JobOrchestrator::Impl {
       ++apply_total;
       ++prepared_turn_count;
       ActivateSourcesLocked(*resident, source_plan, source_count);
+      if (event.event_type == EventType::kWorkerLaunchIntent) resident->driving.inputs.reset();
+      if (resident->driving.enrolled) resident->driving.marked = true;
+      cv.notify_all();
     }
     PublishPrepared(*resident, inactive, trace_cursor);  // SnapshotActivated.
     Checkpoint(entry.sequence, WriterPhase::kAfterApply);
@@ -1812,6 +1923,11 @@ struct JobOrchestrator::Impl {
         });
     state.generated_bindings_empty =
         !r.generated_worker && !r.generated_launch_operation && !r.generated_identities;
+    state.supervisor_mark_empty = !r.driving.marked;
+    state.supervisor_parked_empty = !r.driving.parked;
+    state.supervisor_accounting_empty = !r.driving.enrolled && !r.driving.last_rejected &&
+                                        flights[index].sequence == 0 && !flights[index].input;
+    state.launch_inputs_empty = !r.driving.inputs;
     return state;
   }
 };
@@ -1824,14 +1940,27 @@ struct JobOrchestrator::FailureExit {
   JobOrchestrator& owner;
 };
 JobOrchestrator::JobOrchestrator(const Config& config) : impl_(std::make_unique<Impl>(config)) {
-  // Callback controls are fully allocated before the writer or any producer is exposed.
   for (auto& control : impl_->callbacks) {
     control = std::make_shared<CallbackHandle::Control>();
     control->target = this;
   }
-  std::lock_guard lock(mutex_);
-  started_ = true;
-  writer_ = std::thread(&JobOrchestrator::Run, this);
+  try {
+    started_ = true;
+    writer_ = std::thread(&JobOrchestrator::Run, this);
+    supervisor_ = std::thread(&JobOrchestrator::RunSupervisor, this);
+    {
+      std::lock_guard lock(impl_->mutex);
+      impl_->supervisor_started = true;
+      impl_->cv.notify_all();
+    }
+  } catch (...) {
+    {
+      std::lock_guard lock(impl_->mutex);
+      impl_->supervisor_exited = true;
+    }
+    Stop();
+    throw;
+  }
 }
 JobOrchestrator::~JobOrchestrator() { Stop(); }
 
@@ -1847,8 +1976,15 @@ void JobOrchestrator::Run() noexcept {
   for (;;) {
     {
       std::unique_lock lock(mutex_);
-      wake_.wait(lock, [this] { return stopping_ || pending_ != 0; });
+      wake_.wait(lock, [this] { return stopping_ || pending_ != 0 || maintenance_; });
       if (stopping_ && pending_ == 0) break;
+      if (pending_ == 0) {
+        maintenance_ = false;
+        lock.unlock();
+        (void)JoinSupervisor(false);
+        RetryDeferredSealing();
+        continue;
+      }
       --pending_;
       ++active_;
     }
@@ -1874,6 +2010,18 @@ void JobOrchestrator::Run() noexcept {
   idle_.notify_all();
 }
 void JobOrchestrator::Stop() noexcept {
+  {
+    std::lock_guard lock(impl_->mutex);
+    if (impl_->mode == Impl::Mode::kRunning) impl_->mode = Impl::Mode::kQuiescing;
+    impl_->StopDrivingLocked();
+    impl_->barrier_armed = false;
+    impl_->pause_before_dequeue = false;
+    impl_->admission_pause = false;
+    impl_->cv.notify_all();
+  }
+  (void)JoinSupervisor(true);
+  if (impl_->config.join_producers)
+    (void)impl_->config.join_producers(impl_->config.producer_context);
   {
     std::lock_guard lock(mutex_);
     if (!started_) return;
@@ -2053,7 +2201,8 @@ static IngressResult KickIf(JobOrchestrator* orchestrator, IngressResult r) noex
   if (r.code == IngressCode::kAdmitted) orchestrator->Notify();
   return r;
 }
-IngressResult JobOrchestrator::CreateWith(std::optional<Uuid>& created) {
+IngressResult JobOrchestrator::CreateWith(std::optional<Uuid>& created,
+                                          std::optional<JobLaunchInputs> launch_inputs) {
   const FailureExit failure_exit{*this};
   // Identity sources are allowed to throw. Reserve one finite creation
   // operation under ingress ownership, then call the port with no ingress lock.
@@ -2101,7 +2250,7 @@ IngressResult JobOrchestrator::CreateWith(std::optional<Uuid>& created) {
   IngressResult result;
   try {
     result = impl_->Candidate({1, id, "job_created", R"({"session_id":")" + id.value + R"("})"},
-                              std::move(identities));
+                              std::move(identities), nullptr, std::move(launch_inputs));
   } catch (...) {
     {
       std::lock_guard lock(impl_->mutex);
@@ -2133,6 +2282,11 @@ IngressResult JobOrchestrator::Create() {
 CreatedJob JobOrchestrator::CreateJob() {
   CreatedJob created;
   created.ingress = CreateWith(created.job_id);
+  return created;
+}
+CreatedJob JobOrchestrator::CreateJob(const JobLaunchInputs& inputs) {
+  CreatedJob created;
+  created.ingress = CreateWith(created.job_id, inputs);
   return created;
 }
 IngressResult JobOrchestrator::SubmitCandidate(const RawCandidateEvent& e) {
@@ -2333,6 +2487,7 @@ IngressResult JobOrchestrator::SubmitShutdown() {
     }
     marker.critical = true;
     impl_->mode = Impl::Mode::kQuiescing;
+    impl_->StopDrivingLocked();
     impl_->shutdown_gate_pending = true;
     impl_->shutdown_gate_permit = true;
     impl_->shutdown_sequence = sequence;
@@ -2496,7 +2651,9 @@ void JobOrchestrator::TrySealFailure(bool allow_one_invocation) noexcept {
     can_seal = impl_->failed && impl_->mode != Impl::Mode::kStopped && impl_->fifo_count == 0 &&
                !impl_->in_flight;
   }
-  if (!can_seal) return;
+  if (!can_seal || !JoinSupervisor(!IsWriterThread())) return;
+  if (impl_->config.join_producers && !impl_->config.join_producers(impl_->config.producer_context))
+    return;
   std::size_t invocations = 0;
   for (const auto& control : impl_->callbacks) {
     std::lock_guard lock(control->mutex);
@@ -2531,8 +2688,19 @@ bool JobOrchestrator::LatchReadinessFailure() {
   return true;
 }
 bool JobOrchestrator::WaitForWriterIdle() {
-  std::unique_lock lock(mutex_);
-  idle_.wait(lock, [this] { return pending_ == 0 && active_ == 0; });
+  {
+    std::unique_lock lock(mutex_);
+    idle_.wait(lock, [this] { return pending_ == 0 && active_ == 0; });
+  }
+  bool closed = false;
+  {
+    std::lock_guard lock(impl_->mutex);
+    closed = impl_->supervisor_stop;
+  }
+  if (closed) {
+    (void)JoinSupervisor(true);
+    RetryLatchedFailure();
+  }
   return true;
 }
 bool JobOrchestrator::BeginShutdown() {
@@ -2546,6 +2714,14 @@ bool JobOrchestrator::BeginShutdown() {
   return FinishShutdown();
 }
 bool JobOrchestrator::FinishShutdown() {
+  {
+    std::lock_guard lock(impl_->mutex);
+    if (!impl_->failed && !impl_->marker_processed) return false;
+    impl_->StopDrivingLocked();
+  }
+  if (!JoinSupervisor(!IsWriterThread())) return false;
+  if (impl_->config.join_producers && !impl_->config.join_producers(impl_->config.producer_context))
+    return false;
   bool failure = false;
   bool accounting_failure = false;
   // Close callback registration first. An invocation which won the control lock before this
@@ -2948,6 +3124,418 @@ void JobOrchestrator::SetNextCommitResult(LogicalCommitResult r) {
 void JobOrchestrator::SetDestinationCapacity(std::size_t n) {
   std::lock_guard lock(impl_->mutex);
   impl_->destination_capacity = n;
+}
+
+namespace {
+RawCandidateEvent MaterializeSupervisor(const Snapshot& s, const SupervisorDecision& decision,
+                                        const std::optional<JobLaunchInputs>& inputs,
+                                        const Uuid& worker, const StableId& operation) {
+  using Json = nlohmann::json;
+  Json payload = Json::object();
+  switch (decision.rule) {
+    case 2:
+      payload = {{"allocation_id", kEmptyAllocationId},
+                 {"allocation_digest", kEmptyAllocationDigest},
+                 {"resolved_allocation",
+                  {{"schema_id", "allocation.v1"}, {"schema_version", 1}, {"payload_utf8", "{}"}}}};
+      break;
+    case 4:
+      if (!inputs || !s.allocation_id || !s.allocation_digest) throw std::bad_variant_access();
+      payload = {{"operation_id", operation.value},
+                 {"worker_id", worker.value},
+                 {"application",
+                  {{"application_id", inputs->application_id.value},
+                   {"version", inputs->application_version},
+                   {"bundle_sha256", inputs->bundle_sha256.value}}},
+                 {"allocation_id", s.allocation_id->value},
+                 {"allocation_digest", s.allocation_digest->value}};
+      break;
+    case 6:
+      payload = {{"session_id", s.session_id.value}};
+      break;
+    case 8:
+      break;
+    case 9: {
+      const auto outcome = s.latched_reason.value_or(TerminalOutcome::kSucceeded);
+      constexpr std::string_view names[]{"succeeded", "failed", "cancelled", "terminated",
+                                         "timed_out"};
+      if (static_cast<std::size_t>(outcome) >= 5 || (!s.latched_reason && !s.completion_candidate))
+        throw std::bad_variant_access();
+      payload = {{"outcome", names[static_cast<std::size_t>(outcome)]}};
+      break;
+    }
+    case 11:
+      if (!s.allocation_id || !s.allocation_digest) throw std::bad_variant_access();
+      payload = {{"allocation_id", s.allocation_id->value},
+                 {"allocation_digest", s.allocation_digest->value}};
+      break;
+    case 12:
+      payload = {{"status", "completed"}};
+      break;
+    default:
+      throw std::bad_variant_access();
+  }
+  return {1, s.job_id, std::string(decision.event), payload.dump()};
+}
+}  // namespace
+
+void JobOrchestrator::RunSupervisor() noexcept {
+  {
+    std::unique_lock lock(impl_->mutex);
+    impl_->cv.wait(lock, [&] { return impl_->supervisor_started; });
+  }
+  {
+    std::lock_guard lock(Impl::live_mutex);
+    ++Impl::live_threads;
+  }
+  {
+    std::lock_guard lock(impl_->mutex);
+    impl_->supervisor_id = std::this_thread::get_id();
+    if (impl_->recovery_closed) impl_->StopDrivingLocked();
+    impl_->cv.notify_all();
+  }
+  for (;;) {
+    try {
+      std::size_t selected = Impl::k_no_resident;
+      bool completion_ready = false;
+      {
+        std::unique_lock lock(impl_->mutex);
+        impl_->supervisor_busy = false;
+        impl_->cv.notify_all();
+        impl_->cv.wait(lock, [&] {
+          for (std::size_t i = 0; i < impl_->flights.size(); ++i) {
+            const auto sequence = impl_->flights[i].sequence;
+            if (sequence != 0)
+              for (const auto& result : impl_->completions)
+                if (result.reserved && result.sequence == sequence && result.completed) return true;
+          }
+          bool flight = false;
+          for (const auto& f : impl_->flights) flight = flight || f.sequence != 0;
+          if (impl_->supervisor_stop) return !flight;
+          if (impl_->config.hold_supervisor_for_test) return false;
+          if (impl_->capacity_signal) return true;
+          for (std::size_t i = 0; i < impl_->residents.size(); ++i) {
+            const auto& d = impl_->residents[i].driving;
+            if (d.enrolled && d.marked && !d.parked && !d.breached &&
+                impl_->flights[i].sequence == 0)
+              return true;
+          }
+          return false;
+        });
+        for (std::size_t i = 0; i < impl_->flights.size(); ++i) {
+          const auto sequence = impl_->flights[i].sequence;
+          if (sequence != 0)
+            for (const auto& result : impl_->completions)
+              if (result.reserved && result.sequence == sequence && result.completed) {
+                selected = i;
+                completion_ready = true;
+                break;
+              }
+          if (completion_ready) break;
+        }
+        if (selected == Impl::k_no_resident && impl_->supervisor_stop) break;
+        if (!completion_ready) {
+          if (impl_->capacity_signal) {
+            impl_->capacity_signal = false;
+            for (auto& r : impl_->residents)
+              if (r.driving.parked && r.driving.enrolled && !r.driving.breached) {
+                r.driving.parked = false;
+                r.driving.marked = true;
+              }
+          }
+          for (std::size_t offset = 0; offset < impl_->residents.size(); ++offset) {
+            const auto i = (impl_->next_drive_slot + offset) % impl_->residents.size();
+            const auto& d = impl_->residents[i].driving;
+            if (d.enrolled && d.marked && !d.parked && !d.breached &&
+                impl_->flights[i].sequence == 0) {
+              selected = i;
+              impl_->next_drive_slot = (i + 1) % impl_->residents.size();
+              break;
+            }
+          }
+          if (selected == Impl::k_no_resident) continue;
+        }
+        impl_->supervisor_busy = true;
+      }
+      if (completion_ready) {
+        auto& flight = impl_->flights[selected];
+        if (!flight.input) {
+          (void)TakeCompletion(flight.sequence);
+          {
+            std::lock_guard lock(impl_->mutex);
+            flight.sequence = 0;
+            flight.job_id.value.clear();
+          }
+          LatchReadinessFailure();
+          continue;
+        }
+        impl_->SupervisorCheckpoint("before_completion_take", flight.input->event_type);
+        const auto completion = TakeCompletion(flight.sequence);
+        bool rejected = false;
+        {
+          std::lock_guard lock(impl_->mutex);
+          auto& r = impl_->residents[selected];
+          if (r.exists && r.id == flight.job_id) {
+            auto& d = r.driving;
+            if (!completion || completion->code == Completion::Code::kServiceFailed)
+              impl_->StopDrivingLocked();
+            else if (completion->code == Completion::Code::kReducerRejection &&
+                     completion->rejection) {
+              rejected = true;
+              const auto reason = completion->rejection->reason;
+              if (d.last_rejected && d.last_reason == reason &&
+                  d.last_rejected->event_type == flight.input->event_type &&
+                  d.last_rejected->payload_json == flight.input->payload_json) {
+                d.breached = true;
+                ++d.breaches;
+              } else {
+                d.last_rejected = std::move(flight.input);
+                d.last_reason = reason;
+              }
+            } else {
+              d.last_rejected.reset();
+              d.last_reason.reset();
+            }
+            if (!d.breached && !impl_->supervisor_stop) d.marked = true;
+          }
+          flight.input.reset();
+          flight.job_id.value.clear();
+          flight.sequence = 0;
+          impl_->cv.notify_all();
+        }
+        if (rejected) impl_->SupervisorCheckpoint("after_rejected_completion");
+        continue;
+      }
+      impl_->SupervisorCheckpoint("before_mark_drain");
+      Snapshot snapshot;
+      std::optional<JobLaunchInputs> inputs;
+      Uuid worker;
+      StableId operation;
+      {
+        std::lock_guard lock(impl_->mutex);
+        auto& r = impl_->residents[selected];
+        if (impl_->supervisor_stop || !r.exists || !r.driving.enrolled || !r.driving.marked ||
+            r.driving.breached)
+          continue;
+        r.driving.marked = false;
+        snapshot = r.banks[r.active].snapshot;
+        inputs = r.driving.inputs;
+        if (r.generated_identities) {
+          worker = r.generated_identities->worker;
+          operation = r.generated_identities->launch_operation;
+        }
+        ++r.driving.decisions;
+      }
+      const auto decision = DecideSupervisor(&snapshot, inputs.has_value());
+      impl_->SupervisorCheckpoint("after_decision", decision.event);
+      if (decision.kind != "Submit") continue;
+      auto input = MaterializeSupervisor(snapshot, decision, inputs, worker, operation);
+      auto submitted = input;
+      std::optional<IngressCode> injected;
+      {
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->supervisor_stop) continue;
+        auto& r = impl_->residents[selected];
+        if (!r.exists || r.id != snapshot.job_id) continue;
+        ++r.driving.submissions;
+        auto& f = impl_->flights[selected];
+        f.job_id = snapshot.job_id;
+        f.input = std::move(input);
+        injected = impl_->injected_supervisor_code;
+        impl_->injected_supervisor_code.reset();
+      }
+      IngressResult result;
+      if (injected && *injected != IngressCode::kAdmitted &&
+          *injected != IngressCode::kCoalescedPending)
+        result = {*injected, 0, 0};
+      else {
+        result = KickIf(this, impl_->Candidate(std::move(submitted), std::nullopt, nullptr,
+                                               std::nullopt, true));
+        if (injected && result.code == IngressCode::kAdmitted) result.code = *injected;
+      }
+      RetryLatchedFailure();
+      {
+        std::lock_guard lock(impl_->mutex);
+        auto& r = impl_->residents[selected];
+        auto& flight = impl_->flights[selected];
+        if (result.code == IngressCode::kAdmitted ||
+            result.code == IngressCode::kCoalescedPending) {
+          flight.sequence = result.ingress_sequence;
+          if (r.exists && r.id == flight.job_id) r.driving.max_in_flight = 1;
+        } else {
+          flight.input.reset();
+          flight.job_id.value.clear();
+          if (result.code == IngressCode::kAdmissionClosed ||
+              result.code == IngressCode::kServiceFailed)
+            impl_->StopDrivingLocked();
+          else if (result.code != IngressCode::kNormalFull && r.exists && r.id == snapshot.job_id) {
+            r.driving.breached = true;
+            ++r.driving.breaches;
+          }
+        }
+        impl_->cv.notify_all();
+      }
+      if (result.code == IngressCode::kNormalFull) {
+        impl_->SupervisorCheckpoint("after_normal_full");
+        {
+          std::lock_guard lock(impl_->mutex);
+          auto& r = impl_->residents[selected];
+          if (!impl_->supervisor_stop && r.exists && r.id == snapshot.job_id)
+            r.driving.parked = true;
+        }
+        // Checking the level happens at the next loop entry, AFTER the parked bit is visible.
+        impl_->SupervisorCheckpoint("after_park");
+        impl_->SupervisorCheckpoint("after_park_before_wait");
+      }
+    } catch (...) {
+      LatchReadinessFailure();
+    }
+  }
+  {
+    std::lock_guard lock(impl_->mutex);
+    impl_->supervisor_busy = false;
+    impl_->supervisor_exited = true;
+    impl_->cv.notify_all();
+  }
+  {
+    std::lock_guard lock(Impl::live_mutex);
+    --Impl::live_threads;
+  }
+  RequestMaintenance();
+}
+
+void JobOrchestrator::RequestMaintenance() noexcept {
+  {
+    std::lock_guard lock(mutex_);
+    maintenance_ = true;
+  }
+  wake_.notify_one();
+}
+void JobOrchestrator::NotifyProducerExited() noexcept { RequestMaintenance(); }
+bool JobOrchestrator::JoinSupervisor(bool wait) noexcept {
+  {
+    std::unique_lock lock(impl_->mutex);
+    if (!impl_->supervisor_exited && impl_->supervisor_id == std::this_thread::get_id())
+      return false;
+    if (wait) impl_->cv.wait(lock, [&] { return impl_->supervisor_exited; });
+    if (!impl_->supervisor_exited) return false;
+  }
+  std::lock_guard join_lock(supervisor_join_mutex_);
+  if (supervisor_.joinable()) supervisor_.join();
+  {
+    std::lock_guard lock(impl_->mutex);
+    impl_->supervisor_joined = true;
+    impl_->cv.notify_all();
+  }
+  return true;
+}
+bool JobOrchestrator::WaitForNormalCapacityOrClosure() {
+  std::unique_lock lock(impl_->mutex);
+  impl_->cv.wait(lock, [&] {
+    return impl_->failed || impl_->recovery_closed || impl_->mode != Impl::Mode::kRunning ||
+           impl_->normal_count < impl_->config.normal_capacity;
+  });
+  return !impl_->failed && !impl_->recovery_closed && impl_->mode == Impl::Mode::kRunning;
+}
+JobOrchestrator::SupervisorState JobOrchestrator::InspectSupervisorForTest(const Uuid& id) const {
+  std::lock_guard lock(impl_->mutex);
+  SupervisorState state;
+  state.physical_slots = impl_->residents.size();
+  state.stopped = impl_->supervisor_stop;
+  state.joined = impl_->supervisor_joined;
+  state.supervisor_thread = impl_->supervisor_id;
+  state.writer_thread = impl_->measured_writer_id;
+  state.writer_reentries = impl_->supervisor_writer_reentries;
+  state.handoff_reentries = impl_->supervisor_handoff_reentries;
+  if (const auto* r = impl_->Find(id)) {
+    const auto& d = r->driving;
+    state.marked = d.marked;
+    state.parked = d.parked;
+    state.in_flight = impl_->flights[impl_->IndexOf(r)].sequence != 0 ? 1 : 0;
+    state.max_in_flight = d.max_in_flight;
+    state.decisions = d.decisions;
+    state.submissions = d.submissions;
+    state.breaches = d.breaches;
+    state.rejection_history_empty = !d.last_rejected;
+  }
+  return state;
+}
+bool JobOrchestrator::WaitForSupervisorIdleForTest() {
+  (void)WaitForWriterIdle();
+  std::unique_lock lock(impl_->mutex);
+  impl_->cv.wait(lock, [&] {
+    if (impl_->supervisor_barrier_reached || impl_->config.hold_supervisor_for_test) return true;
+    if (impl_->supervisor_stop) return impl_->supervisor_joined;
+    if (impl_->supervisor_busy) return false;
+    for (std::size_t i = 0; i < impl_->residents.size(); ++i) {
+      if (impl_->flights[i].sequence != 0) return false;
+      const auto& d = impl_->residents[i].driving;
+      if (d.enrolled && d.marked && !d.parked && !d.breached) return false;
+    }
+    return true;
+  });
+  return true;
+}
+bool JobOrchestrator::ArmSupervisorBarrierForTest(std::string_view point, std::string_view event) {
+  std::lock_guard lock(impl_->mutex);
+  if (impl_->supervisor_barrier_armed) return false;
+  impl_->supervisor_barrier = point;
+  impl_->supervisor_barrier_event = event;
+  impl_->supervisor_barrier_armed = true;
+  impl_->supervisor_barrier_reached = false;
+  ++impl_->supervisor_barrier_epoch;
+  return true;
+}
+bool JobOrchestrator::WaitForSupervisorBarrierForTest() {
+  std::unique_lock lock(impl_->mutex);
+  impl_->cv.wait(lock, [&] { return impl_->supervisor_barrier_reached || impl_->supervisor_stop; });
+  return impl_->supervisor_barrier_reached;
+}
+bool JobOrchestrator::ReleaseSupervisorBarrierForTest() {
+  std::lock_guard lock(impl_->mutex);
+  if (!impl_->supervisor_barrier_armed) return false;
+  impl_->supervisor_barrier_armed = false;
+  impl_->supervisor_barrier_reached = false;
+  ++impl_->supervisor_barrier_epoch;
+  impl_->cv.notify_all();
+  return true;
+}
+bool JobOrchestrator::ReleaseSupervisorBarrierAndArmForTest(std::string_view point,
+                                                            std::string_view event) {
+  std::lock_guard lock(impl_->mutex);
+  if (!impl_->supervisor_barrier_reached) return false;
+  impl_->supervisor_barrier = point;
+  impl_->supervisor_barrier_event = event;
+  impl_->supervisor_barrier_reached = false;
+  ++impl_->supervisor_barrier_epoch;
+  impl_->cv.notify_all();
+  return true;
+}
+std::uint64_t JobOrchestrator::WaitForSupervisorSubmissionForTest(const Uuid& id) {
+  std::unique_lock lock(impl_->mutex);
+  impl_->cv.wait(lock, [&] {
+    for (const auto& f : impl_->flights)
+      if (f.job_id == id && f.sequence != 0) return true;
+    return impl_->supervisor_stop;
+  });
+  for (const auto& f : impl_->flights)
+    if (f.job_id == id) return f.sequence;
+  return 0;
+}
+bool JobOrchestrator::InjectSupervisorIngressCodeForTest(IngressCode code) {
+  std::lock_guard lock(impl_->mutex);
+  impl_->injected_supervisor_code = code;
+  return true;
+}
+bool JobOrchestrator::InjectSupervisorRejectionForTest(RejectionReason reason, unsigned count) {
+  std::lock_guard lock(impl_->mutex);
+  impl_->injected_supervisor_rejection = reason;
+  impl_->injected_supervisor_rejection_count = count;
+  return true;
+}
+std::size_t JobOrchestrator::LiveSupervisorThreadsForTest() {
+  std::lock_guard lock(Impl::live_mutex);
+  return Impl::live_threads;
 }
 
 }  // namespace sitometron::core::internal

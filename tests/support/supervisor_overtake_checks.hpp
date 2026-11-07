@@ -72,9 +72,9 @@ void SubmitExternalOrSetup(Fixture& fixture, const std::string& event, Json payl
   const auto snapshot = fixture.writer.SnapshotFor(job);
   if (fixture.pending_worker_delivery && snapshot &&
       (snapshot->process_exit_confirmed || IsTerminalState(snapshot->state))) {
-    if (!snapshot->process_exit_confirmed)
-      Require(fixture.writer.RetireWorkerAck(*fixture.pending_worker_delivery),
-              "producer could not return its authorized exact Worker delivery identity");
+    const bool returned = fixture.writer.RetireWorkerAck(*fixture.pending_worker_delivery);
+    Require(returned || (snapshot->process_exit_confirmed && event == "process_exit_confirmed"),
+            "producer could not return its authorized exact Worker delivery identity");
     fixture.pending_worker_delivery.reset();
   }
 }

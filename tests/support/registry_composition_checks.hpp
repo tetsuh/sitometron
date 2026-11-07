@@ -445,18 +445,22 @@ int RegisteredApplicationCreates() {
   if (created.status == 202) {
     const auto job = Json::parse(created.body);
     const auto id = job.at("job_id").get<std::string>();
-    result |=
-        Check(created.headers.at("location") == JobPath(id) && job.at("state") == "admitted" &&
-                  !job.at("terminal").get<bool>() && job.at("outcome").is_null(),
-              name, "create did not return its committed admitted resource and Location");
+    result |= Check(created.headers.at("location") == JobPath(id) &&
+                        (job.at("state") == "admitted" || job.at("state") == "preparing") &&
+                        !job.at("terminal").get<bool>() && job.at("outcome").is_null(),
+                    name, "create did not return its committed nonterminal resource and Location");
+    result |= Check(daemon.WaitForSupervisorIdleForTest(), name,
+                    "production supervisor did not reach the runner placeholder wait");
     ++requests;
     result |=
         ExpectStatus(SendToPort(daemon.listen_port(), Request("GET", JobPath(id))), name, 200);
-    result |= Check(daemon.backend().ListJobs().size() == 1 && daemon.identity_reads() == 3 &&
-                        daemon.clock_reads() == 1 && daemon.writer_turn_count() == 1,
-                    name, "production create did not commit exactly one creation with real ports");
-    // ADR-0008 Section 4: cancel_accepted committed -> 202 after the event is applied.
-    // ApplyCancelAccepted moves admitted to finalizing; no new REST rule is introduced.
+    result |= Check(
+        daemon.backend().ListJobs().size() == 1 && daemon.identity_reads() == 3 &&
+            daemon.clock_reads() == 3 && daemon.writer_turn_count() == 3 &&
+            daemon.backend().GetJob(id)->state == "preparing",
+        name, "production did not commit creation, resources and launch intent before waiting");
+    // ADR-0008 Section 4: cancel commits before 202. With intent recorded, presence is
+    // unknown and the unchanged reducer enters stopping, not pre-intent finalizing.
     ++requests;
     result |= ExpectStatus(SendToPort(daemon.listen_port(), Request("POST", JobPath(id, true))),
                            name, 202);
@@ -465,9 +469,10 @@ int RegisteredApplicationCreates() {
     result |= ExpectStatus(cancelled, name, 200);  // ADR-0008 Section 4 read endpoint.
     if (cancelled.status == 200) {
       const auto after = Json::parse(cancelled.body);
-      result |= Check(after.at("state") == "finalizing" && !after.at("terminal").get<bool>() &&
-                          after.at("outcome").is_null(),
-                      name, "accepted cancel did not leave the created Job nonterminal/finalizing");
+      result |=
+          Check(after.at("state") == "stopping" && !after.at("terminal").get<bool>() &&
+                    after.at("outcome").is_null(),
+                name, "post-intent cancel did not leave production waiting for process facts");
     }
   }
   daemon.Stop();
@@ -476,14 +481,8 @@ int RegisteredApplicationCreates() {
 }
 
 // Test observation only; no launch identity is injected into production composition.
-template <typename Composition>
-bool RegistrySupervisorDrained(Composition& daemon) {
-  if constexpr (requires { daemon.WaitForSupervisorIdleForTest(); })
-    return daemon.WaitForSupervisorIdleForTest();
-  else {
-    (void)daemon;
-    return false;
-  }
+bool RegistrySupervisorDrained(sitometron::daemon::Phase1Composition& daemon) {
+  return daemon.WaitForSupervisorIdleForTest();
 }
 
 int RegistryLaunchIdentityFromEntry() {
@@ -491,10 +490,12 @@ int RegistryLaunchIdentityFromEntry() {
   RegistryFixture fixture("issue133-registry-");
   const auto second_bundle = fixture.root / "second-bundle";
   RegistryFixture::Write(second_bundle, "");
+  std::string maximum_version;
+  for (unsigned i = 0; i < 128; ++i) maximum_version.append("\xf0\x9f\x98\x80");
   fixture.document["applications"][0]["version"] = "v\\\"\\\\-あ";
   fixture.document["applications"].push_back(
       Json{{"application_id", "second-worker"},
-           {"version", std::string(128, 'v')},
+           {"version", maximum_version},
            {"executable", RegistryFixture::Text(second_bundle)},
            {"bundle_sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}});
   auto minimum = fixture.document["applications"][0];
@@ -524,6 +525,29 @@ int RegistryLaunchIdentityFromEntry() {
     }
   }
   const bool drained = RegistrySupervisorDrained(daemon);
+  // Exercise the real composition Session producer without inventing a Worker fact.
+  // Hold before allocation, commit cancel, then let ONLY production continuations run.
+  std::string retained_job;
+  const bool held = daemon.ArmSupervisorBarrierForTest("after_decision", "resources_committed");
+  result |= Check(held, name, "could not hold pre-allocation composition decision");
+  if (held) {
+    const auto response =
+        SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody("minimum-worker")));
+    result |= ExpectStatus(response, name, 202);
+    if (response.status == 202) {
+      retained_job = Json::parse(response.body).at("job_id").get<std::string>();
+      result |=
+          Check(daemon.WaitForSupervisorBarrierForTest(), name, "resource decision was not held");
+      result |= ExpectStatus(
+          SendToPort(daemon.listen_port(), Request("POST", JobPath(retained_job, true))), name,
+          202);
+    }
+    result |= Check(daemon.ReleaseSupervisorBarrierForTest() && RegistrySupervisorDrained(daemon),
+                    name, "composition producers did not drain after early cancel");
+    const auto cancelled = daemon.backend().GetJob(retained_job);
+    result |= Check(cancelled && cancelled->terminal && cancelled->outcome == "cancelled", name,
+                    "real Session placeholder did not reach cancelled outcome and cleanup");
+  }
   daemon.Stop();  // Never read Journal files concurrently with the writer.
   // A changed verified entry must not supply launch inputs to an unresolved replayed Job.
   fixture.document["applications"][0]["version"] = "changed-on-restart";
@@ -541,12 +565,29 @@ int RegistryLaunchIdentityFromEntry() {
     restarted.Stop();
   }
   std::map<std::string, Json> observed;
+  const std::array<std::string_view, 5> retention_events{
+      "session_retain_requested", "session_retained", "finalization_completed",
+      "terminal_outcome_committed", "cleanup_status_recorded"};
+  std::array<std::uint64_t, 5> retention_sequences{};
   for (const auto& file : std::filesystem::directory_iterator(config.journal_path)) {
     if (file.path().extension() != ".ndjson") continue;
     std::ifstream input(file.path(), std::ios::binary);
     std::string line;
     while (std::getline(input, line)) {
       const auto record = Json::parse(line);
+      if (!retained_job.empty() && record.at("job_id") == retained_job) {
+        for (std::size_t i = 0; i < retention_events.size(); ++i) {
+          if (record.at("event_type") != retention_events[i]) continue;
+          result |= Check(retention_sequences[i] == 0, name, "duplicate retention continuation");
+          retention_sequences[i] = record.at("sequence").get<std::uint64_t>();
+          if (i <= 1)
+            result |= Check(record.at("payload").at("session_id") == retained_job, name,
+                            "composition retainer changed the bound Session identity");
+          if (i == 4)
+            result |= Check(record.at("payload").at("status") == "completed", name,
+                            "composition did not record completed cleanup");
+        }
+      }
       if (record.at("event_type") != "worker_launch_intent") continue;
       const auto id = record.at("job_id").get<std::string>();
       result |= Check(observed.emplace(id, record.at("payload").at("application")).second, name,
@@ -559,6 +600,12 @@ int RegistryLaunchIdentityFromEntry() {
   for (const auto& [job, application] : observed)
     result |= Check(expected.contains(job) && expected.at(job) == application, name,
                     "launch identity differs from requested verified registry entry");
+  result |= Check(
+      !retained_job.empty() && retention_sequences[0] != 0 &&
+          std::adjacent_find(retention_sequences.begin(), retention_sequences.end(),
+                             [](auto before, auto after) { return before >= after; }) ==
+              retention_sequences.end(),
+      name, "real asynchronous retention/finalization/terminal/cleanup sequence is incomplete");
   result |= Check(drained, name, "production supervisor has no deterministic drain observation");
   std::cout << name << ": verified Jobs=" << expected.size()
             << " launch identities=" << observed.size() << '\n';

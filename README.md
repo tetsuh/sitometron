@@ -104,12 +104,13 @@ empty `applications` array, the registered set is empty and a valid create retur
 `422 job/unknown_application` before ingress, even while admission is closed. Registration changes
 only that lookup: routing, media type, size, JSON, and request-validation errors retain their order.
 
-Interim behavior under Issue #134: no supervisor, application runner, Worker protocol, or timer
-port drives a newly created Job yet. It stays `admitted` unless an accepted cancel moves it to
-`finalizing`. In either state it never reaches a terminal outcome or closes, holds its resident
-slot, and replays unresolved after restart, keeping admission closed (`OPS-004`). Issues
-#133, #126, #127, and #128 and Gate #123 own the subsequent production lifecycle; no-option
-deployments retain Phase 1 behavior.
+After Issue #133, a registered production Job reaches `worker_launch_intent` and waits at
+ADR-0012 rule 5 because the runner placeholder discards the launch handoff. A cancel then follows
+the unchanged reducer: after that intent, process presence is unknown, so cancel enters `stopping`
+and requests cooperative stop. The placeholder supplies no process-exit fact; production does not
+yet run a Worker or guarantee terminal cleanup. The application runner (#126), Worker protocol
+(#127), timer port (#128), and Gate #123 own the end-to-end path. Without `--applications`, the
+registered set remains empty. Unresolved Jobs after restart still close admission (`OPS-004`).
 
 ```sh
 build/dev-linux/sitometrond --journal /path/to/journal \

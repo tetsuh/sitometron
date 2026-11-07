@@ -25,7 +25,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["allocation_id", "schema_id", "schema_version", "payload_utf8", "sha256"],
       "properties": {
-        "allocation_id": {"const": "phase1-empty-allocation"},
+        "allocation_id": {"const": "empty-allocation"},
         "schema_id": {"const": "allocation.v1"}, "schema_version": {"const": 1}, "payload_utf8": {"const": "{}"},
         "sha256": {"const": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}
       }

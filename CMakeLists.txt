@@ -52,7 +52,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Boost CONFIG REQUIRED COMPONENTS uuid hash2)
 find_package(Threads REQUIRED)
 
-add_library(sitometron_core STATIC src/core/version.cpp src/core/job_reducer.cpp src/core/job_orchestrator.cpp)
+add_library(sitometron_core STATIC src/core/version.cpp src/core/job_reducer.cpp src/core/job_orchestrator.cpp src/core/job_supervisor.cpp)
 add_library(sitometron::core ALIAS sitometron_core)
 target_include_directories(
   sitometron_core

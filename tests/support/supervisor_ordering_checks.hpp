@@ -1,47 +1,17 @@
 // Included inside job_supervisor_test.cpp's anonymous namespace, after Fixture.
 // All scenario execution lives in test code. Production hooks only pause, inspect,
 // or inject a single result; they never run a scenario or certify its assertions.
-template <typename Writer>
-bool InjectCode(Writer& writer, IngressCode code) {
-  if constexpr (requires { writer.InjectSupervisorIngressCodeForTest(code); })
-    return writer.InjectSupervisorIngressCodeForTest(code);
-  else {
-    (void)writer;
-    (void)code;
-    return false;
-  }
+bool InjectCode(JobOrchestrator& writer, IngressCode code) {
+  return writer.InjectSupervisorIngressCodeForTest(code);
 }
-template <typename Writer>
-bool InjectRejection(Writer& writer, RejectionReason reason, unsigned count) {
-  if constexpr (requires { writer.InjectSupervisorRejectionForTest(reason, count); })
-    return writer.InjectSupervisorRejectionForTest(reason, count);
-  else {
-    (void)writer;
-    (void)reason;
-    (void)count;
-    return false;
-  }
+bool InjectRejection(JobOrchestrator& writer, RejectionReason reason, unsigned count) {
+  return writer.InjectSupervisorRejectionForTest(reason, count);
 }
-template <typename Writer>
-bool Advance(Writer& writer, std::string_view point, std::string_view event = {}) {
-  if constexpr (requires { writer.ReleaseSupervisorBarrierAndArmForTest(point, event); })
-    return writer.ReleaseSupervisorBarrierAndArmForTest(point, event);
-  else {
-    (void)writer;
-    (void)point;
-    (void)event;
-    return false;
-  }
+bool Advance(JobOrchestrator& writer, std::string_view point, std::string_view event = {}) {
+  return writer.ReleaseSupervisorBarrierAndArmForTest(point, event);
 }
-template <typename Writer>
-std::uint64_t WaitSubmission(Writer& writer, const Uuid& job) {
-  if constexpr (requires { writer.WaitForSupervisorSubmissionForTest(job); })
-    return writer.WaitForSupervisorSubmissionForTest(job);
-  else {
-    (void)writer;
-    (void)job;
-    return 0;
-  }
+std::uint64_t WaitSubmission(JobOrchestrator& writer, const Uuid& job) {
+  return writer.WaitForSupervisorSubmissionForTest(job);
 }
 void SupervisorStateExists(JobOrchestrator& writer, const Uuid& job) {
   Require(View(writer, job).at("supported"),
@@ -84,7 +54,7 @@ void StaleDecision(const Json& vector) {
     Require(ReleaseBarrier(fixture.writer), "terminal barrier not released");
     fixture.Exit(job, request);
     fixture.Closed(job, "timed_out");
-    const auto attempts = fixture.writer.CopyJournalAttempts();
+    const auto attempts = fixture.ports.Journal();
     for (const auto& attempt : attempts)
       if (attempt.job_id == job && attempt.event_type == EventType::kTerminalOutcomeCommitted)
         Require(
@@ -137,15 +107,19 @@ void RejectionHistory(const Json& vector) {
     if (scenario == "same_input_different_code")
       Require(InjectRejection(fixture.writer, RejectionReason::kInvariantViolation, 1),
               "different rejection injection failed");
-    if (scenario == "different_payload_same_code") SubmitControl(fixture.writer, job);
+    if (scenario == "different_payload_same_code") {
+      SubmitControl(fixture.writer, job);
+      Require(InjectRejection(fixture.writer, RejectionReason::kEventNotAllowedInState, 1),
+              "different-input same-code rejection injection failed");
+    }
     Require(ReleaseBarrier(fixture.writer), "rejection checkpoint not released");
     fixture.Idle();
     const auto second = View(fixture.writer, job);
     Require(second.at("breaches") == 0, "nonidentical rejection history caused a breach");
     if (scenario == "success_resets_rejection_history") {
-      // A successful allocation separates two otherwise identical rejection codes.
-      Require(fixture.writer.SnapshotFor(job)->resource_status == ResourceStatus::kCommitted,
-              "intervening successful commit was not reached");
+      Require(fixture.writer.SnapshotFor(job)->resource_status == ResourceStatus::kCommitted &&
+                  second.at("history_empty"),
+              "successful completion did not clear consecutive-rejection history");
     }
   }
 }
@@ -217,7 +191,7 @@ void IngressCodeVector(const Json& vector) {
             "admitted/coalesced own sequence did not drain exactly once");
 }
 #include "supervisor_additional_checks.hpp"
-void OrderingVector(Fixture& fixture, const Json& vector, const Graph& graph) {
+void OrderingVector(const Json& vector) {
   const auto scenario = vector.at("scenario").get<std::string>();
   if (scenario.starts_with("stale_"))
     StaleDecision(vector);
@@ -247,6 +221,4 @@ void OrderingVector(Fixture& fixture, const Json& vector, const Graph& graph) {
     ThreadVector(vector);
   else
     throw std::runtime_error("unconsumed ordering vector: " + scenario);
-  (void)fixture;
-  (void)graph;
 }

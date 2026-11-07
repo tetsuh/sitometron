@@ -1,7 +1,9 @@
 #include "composition.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
+#include <condition_variable>
 #include <cstddef>
 #include <exception>
 #include <limits>
@@ -13,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -32,7 +35,7 @@ using core::internal::JobOrchestrator;
 
 class CountingClock final : public core::ClockPort {
  public:
-  CountingClock(std::unique_ptr<core::ClockPort> port, std::size_t& reads)
+  CountingClock(std::unique_ptr<core::ClockPort> port, std::atomic_size_t& reads)
       : port_(std::move(port)), reads_(reads) {
     if (!port_) throw std::invalid_argument("clock factory returned no port");
   }
@@ -43,12 +46,12 @@ class CountingClock final : public core::ClockPort {
 
  private:
   std::unique_ptr<core::ClockPort> port_;
-  std::size_t& reads_;
+  std::atomic_size_t& reads_;
 };
 
 class CountingIdentitySource final : public core::IdentitySourcePort {
  public:
-  CountingIdentitySource(std::unique_ptr<core::IdentitySourcePort> port, std::size_t& reads)
+  CountingIdentitySource(std::unique_ptr<core::IdentitySourcePort> port, std::atomic_size_t& reads)
       : port_(std::move(port)), reads_(reads) {
     if (!port_) throw std::invalid_argument("identity factory returned no port");
   }
@@ -67,7 +70,7 @@ class CountingIdentitySource final : public core::IdentitySourcePort {
 
  private:
   std::unique_ptr<core::IdentitySourcePort> port_;
-  std::size_t& reads_;
+  std::atomic_size_t& reads_;
 };
 
 class Phase1Runner final : public core::ApplicationRunnerPort {
@@ -77,9 +80,159 @@ class Phase1Runner final : public core::ApplicationRunnerPort {
   void HandoffForcedStop(core::ApplicationStopRequest&&) noexcept override {}
 };
 
+// The port owns storage only. No writer/ingress pointer or result delivery in handoff.
 class Phase1SessionRetainer final : public core::SessionRetainerPort {
+  struct Slot {
+    core::SessionRetainRequest request;
+    bool occupied = false;
+  };
+
  public:
-  void HandoffRetainSameIdentity(core::SessionRetainRequest&&) noexcept override {}
+  explicit Phase1SessionRetainer(std::size_t capacity) : requests_(capacity) {}
+  void HandoffRetainSameIdentity(core::SessionRetainRequest&& request) noexcept override {
+    std::lock_guard lock(mutex_);
+    if (stopped_) return;
+    for (auto& slot : requests_)
+      if (!slot.occupied) {
+        static_assert(noexcept(slot.request = std::move(request)));
+        slot.request = std::move(request);
+        slot.occupied = true;
+        wake_.notify_one();
+        return;
+      }
+    overflow_ = true;
+    wake_.notify_one();
+  }
+  std::optional<core::SessionRetainRequest> Take() {
+    std::unique_lock lock(mutex_);
+    wake_.wait(lock, [&] {
+      return stopped_ || overflow_ ||
+             std::ranges::any_of(requests_, [](const auto& r) { return r.occupied; });
+    });
+    if (stopped_ || overflow_) return std::nullopt;
+    for (auto& slot : requests_)
+      if (slot.occupied) {
+        // Copy on the producer, never construct a request in the writer's handoff.
+        auto request = slot.request;
+        slot.occupied = false;
+        active_ = true;
+        return request;
+      }
+    return std::nullopt;
+  }
+  void Done() noexcept {
+    std::lock_guard lock(mutex_);
+    active_ = false;
+    wake_.notify_all();
+  }
+  bool WaitIdle() {
+    std::unique_lock lock(mutex_);
+    wake_.wait(lock, [&] {
+      return stopped_ || overflow_ ||
+             (!active_ &&
+              std::ranges::none_of(requests_, [](const auto& r) { return r.occupied; }));
+    });
+    return !overflow_;
+  }
+  void Stop() noexcept {
+    std::lock_guard lock(mutex_);
+    stopped_ = true;
+    wake_.notify_all();
+  }
+  void Reset() {
+    std::lock_guard lock(mutex_);
+    stopped_ = false;
+    overflow_ = false;
+    active_ = false;
+    for (auto& r : requests_) {
+      r.occupied = false;
+      r.request.job_id.value.clear();
+      r.request.session_id.value.clear();
+    }
+  }
+  bool Overflowed() {
+    std::lock_guard lock(mutex_);
+    return overflow_;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable wake_;
+  std::vector<Slot> requests_;
+  bool stopped_ = false;
+  bool overflow_ = false;
+  bool active_ = false;
+};
+
+class SessionProducer final {
+ public:
+  explicit SessionProducer(Phase1SessionRetainer& mailbox) : mailbox_(mailbox) {}
+  ~SessionProducer() {
+    Stop();
+    (void)Join();
+  }
+  void Start(JobOrchestrator& writer) {
+    writer_ = &writer;
+    if (!writer.ready()) return;
+    endpoint_ = writer.RetainedCallback();
+    thread_ = std::thread([this] {
+      {
+        std::lock_guard lock(identity_mutex_);
+        thread_id_ = std::this_thread::get_id();
+      }
+      try {
+        while (auto request = mailbox_.Take()) {
+          // Bound UUID strings need no escaping; application versions are escaped in core.
+          const core::RawCandidateEvent event{
+              1, request->job_id, "session_retained",
+              "{\"session_id\":\"" + request->session_id.value + "\"}"};
+          for (;;) {
+            const auto result = endpoint_.Invoke(event);
+            if (result.code == IngressCode::kNormalFull) {
+              if (writer_->WaitForNormalCapacityOrClosure()) continue;
+            } else if (result.code == IngressCode::kAdmitted ||
+                       result.code == IngressCode::kCoalescedPending) {
+              (void)writer_->AwaitCompletion(result.ingress_sequence);
+            }
+            break;
+          }
+          mailbox_.Done();
+        }
+        if (mailbox_.Overflowed()) writer_->LatchReadinessFailure();
+      } catch (...) {
+        writer_->LatchReadinessFailure();
+      }
+      mailbox_.Done();
+      writer_->NotifyProducerExited();
+    });
+  }
+  void Stop() noexcept { mailbox_.Stop(); }
+  bool Join() noexcept {
+    // Check self before the join lock: another thread may hold it while joining us.
+    {
+      std::lock_guard lock(identity_mutex_);
+      if (!joined_ && thread_id_ == std::this_thread::get_id()) return false;
+    }
+    std::lock_guard lock(join_mutex_);
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+    {
+      std::lock_guard identity_lock(identity_mutex_);
+      joined_ = true;
+    }
+    return true;
+  }
+
+ private:
+  Phase1SessionRetainer& mailbox_;
+  JobOrchestrator* writer_ = nullptr;
+  core::internal::CallbackHandle endpoint_;
+  std::mutex identity_mutex_;
+  std::thread::id thread_id_{};
+  bool joined_ = false;
+  std::mutex join_mutex_;
+  std::thread thread_;
 };
 
 bool RegisteredApplicationForm(std::string_view value) {
@@ -114,10 +267,12 @@ class Phase1Backend final : public http::Backend {
  public:
   Phase1Backend(JobOrchestrator& orchestrator, std::size_t max_jobs,
                 const std::vector<core::Snapshot>& replayed,
-                const std::vector<std::string>& applications)
+                const std::vector<core::internal::JobLaunchInputs>& applications)
       : orchestrator_(orchestrator), applications_(applications), order_(max_jobs) {
     if (max_jobs == 0 || replayed.size() > max_jobs ||
-        !std::ranges::all_of(applications_, RegisteredApplicationForm))
+        !std::ranges::all_of(applications_, [](const auto& app) {
+          return RegisteredApplicationForm(app.application_id.value);
+        }))
       throw std::invalid_argument("invalid Backend composition");
     // Reserve every fixed-size UUID string before serving requests. Index publication reuses
     // this storage only after successful completion and confirmation of the committed resource.
@@ -138,12 +293,14 @@ class Phase1Backend final : public http::Backend {
   }
 
   [[nodiscard]] http::JobResult CreateJob(const std::string& application_id) override {
-    if (std::ranges::find(applications_, application_id) == applications_.end())
+    const auto application = std::ranges::find_if(
+        applications_, [&](const auto& app) { return app.application_id.value == application_id; });
+    if (application == applications_.end())
       return {http::JobResultCode::kUnknownApplication, std::nullopt};
     // Serialize generation, admission, the sequence-specific wait, and index publication. Reads
     // use only the separate short-lived index mutex, never this create mutex.
     const std::lock_guard creation(create_mutex_);
-    const auto created = orchestrator_.CreateJob();
+    const auto created = orchestrator_.CreateJob(*application);
     if (created.ingress.code != IngressCode::kAdmitted)
       return {IngressStatus(created.ingress.code), std::nullopt};
     if (!created.job_id) return {};
@@ -226,7 +383,7 @@ class Phase1Backend final : public http::Backend {
 
  private:
   JobOrchestrator& orchestrator_;
-  const std::vector<std::string> applications_;
+  const std::vector<core::internal::JobLaunchInputs> applications_;
   std::mutex create_mutex_;
   std::mutex index_mutex_;
   std::vector<std::string> order_;
@@ -273,6 +430,16 @@ bool VisibleAscii(std::string_view text, std::size_t maximum) {
 std::unique_ptr<http::Backend> MakeJobBackend(JobOrchestrator& orchestrator, std::size_t max_jobs,
                                               const std::vector<core::Snapshot>& replayed,
                                               const std::vector<std::string>& applications) {
+  std::vector<core::internal::JobLaunchInputs> inputs;
+  inputs.reserve(applications.size());
+  for (const auto& id : applications)
+    inputs.push_back({core::StableId{id}, "1", core::Digest{std::string(64, 'a')}});
+  return std::make_unique<Phase1Backend>(orchestrator, max_jobs, replayed, inputs);
+}
+std::unique_ptr<http::Backend> MakeJobBackend(
+    JobOrchestrator& orchestrator, std::size_t max_jobs,
+    const std::vector<core::Snapshot>& replayed,
+    const std::vector<core::internal::JobLaunchInputs>& applications) {
   return std::make_unique<Phase1Backend>(orchestrator, max_jobs, replayed, applications);
 }
 
@@ -404,17 +571,18 @@ ParseResult ParseStartupOptions(const std::vector<std::string>& args) {
 
 struct Phase1Composition::Impl {
   Impl(StartupConfig value, IdentityFactory source_factory)
-      : config(std::move(value)), factory(source_factory) {}
+      : config(std::move(value)), factory(source_factory), session(config.max_jobs + 1) {}
 
   StartupConfig config;
   registry::VerifiedApplications applications;
   IdentityFactory factory;
-  std::size_t clock_read_count = 0;
-  std::size_t identity_read_count = 0;
+  std::atomic_size_t clock_read_count{0};
+  std::atomic_size_t identity_read_count{0};
   std::unique_ptr<CountingClock> clock;
   std::unique_ptr<CountingIdentitySource> identity;
   Phase1Runner runner;
   Phase1SessionRetainer session;
+  std::unique_ptr<SessionProducer> producer;
   std::unique_ptr<journal::SegmentJournal> journal;
   std::unique_ptr<JobOrchestrator> orchestrator;
   std::unique_ptr<http::Backend> backend;
@@ -468,7 +636,17 @@ bool Phase1Composition::Start(std::string& error) {
       Stop();
       return false;
     }
+    impl_->session.Reset();
+    impl_->producer = std::make_unique<SessionProducer>(impl_->session);
     core::internal::Config config;
+    config.hold_supervisor_for_test = impl_->config.hold_supervisor_for_test;
+    config.producer_context = impl_->producer.get();
+    config.stop_producers = [](void* context) noexcept {
+      static_cast<SessionProducer*>(context)->Stop();
+    };
+    config.join_producers = [](void* context) noexcept {
+      return static_cast<SessionProducer*>(context)->Join();
+    };
     config.max_jobs = impl_->config.max_jobs;
     config.normal_capacity = 64;
     config.trace_capacity = config.total_capacity();
@@ -483,12 +661,13 @@ bool Phase1Composition::Start(std::string& error) {
     config.ports = {impl_->clock.get(), impl_->journal.get(), &impl_->runner, &impl_->session,
                     impl_->identity.get()};
     impl_->orchestrator = std::make_unique<JobOrchestrator>(config);
-    std::vector<std::string> identifiers;
-    identifiers.reserve(impl_->applications.size());
+    impl_->producer->Start(*impl_->orchestrator);
+    std::vector<core::internal::JobLaunchInputs> inputs;
+    inputs.reserve(impl_->applications.size());
     for (const auto& application : impl_->applications)
-      identifiers.push_back(application.application_id);
-    impl_->backend =
-        MakeJobBackend(*impl_->orchestrator, config.max_jobs, replayed.jobs, identifiers);
+      inputs.push_back({core::StableId{application.application_id}, application.version,
+                        core::Digest{application.bundle_sha256}});
+    impl_->backend = MakeJobBackend(*impl_->orchestrator, config.max_jobs, replayed.jobs, inputs);
     impl_->server = std::make_unique<http::Server>(impl_->config.http, *impl_->backend);
     if (!impl_->server->Start(error)) {
       Stop();
@@ -521,6 +700,7 @@ void Phase1Composition::Stop() noexcept {
     }
     impl_->orchestrator.reset();
   }
+  impl_->producer.reset();
   impl_->backend.reset();
   impl_->journal.reset();
   impl_->clock.reset();
@@ -529,6 +709,20 @@ void Phase1Composition::Stop() noexcept {
   impl_->started = false;
 }
 
+bool Phase1Composition::WaitForSupervisorIdleForTest() {
+  return impl_->orchestrator && impl_->orchestrator->WaitForSupervisorIdleForTest() &&
+         impl_->session.WaitIdle() && impl_->orchestrator->WaitForSupervisorIdleForTest();
+}
+bool Phase1Composition::ArmSupervisorBarrierForTest(std::string_view point,
+                                                    std::string_view event) {
+  return impl_->orchestrator && impl_->orchestrator->ArmSupervisorBarrierForTest(point, event);
+}
+bool Phase1Composition::WaitForSupervisorBarrierForTest() {
+  return impl_->orchestrator && impl_->orchestrator->WaitForSupervisorBarrierForTest();
+}
+bool Phase1Composition::ReleaseSupervisorBarrierForTest() {
+  return impl_->orchestrator && impl_->orchestrator->ReleaseSupervisorBarrierForTest();
+}
 http::Backend& Phase1Composition::backend() noexcept { return *impl_->backend; }
 
 std::size_t Phase1Composition::clock_reads() const noexcept { return impl_->clock_read_count; }

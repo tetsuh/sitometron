@@ -25,7 +25,11 @@ jobs:
           uv sync --frozen --only-group schema --only-group docs
           uv run --frozen --no-build --only-group schema --only-group docs python -m unittest discover -s tests/tooling -p 'test_*.py' -v
       - name: Validate core contracts
-        run: uv run --frozen --only-group schema python tools/validate_core_contract.py
+        run: uv run --frozen --no-build --only-group schema python tools/validate_core_contract.py
+      - name: Validate supervisor decision vectors
+        run: uv run --frozen --no-build --only-group schema python tools/validate_supervisor_contract.py --check vectors
+      - name: Validate supervisor decision completeness
+        run: uv run --frozen --no-build --only-group schema python tools/validate_supervisor_contract.py --check complete
       - name: Validate Application registry
         run: uv run --frozen --no-build --only-group schema python tools/validate_application_registry.py
       - name: Validate repository-relative links
@@ -168,14 +172,20 @@ jobs:
               registry_schema_vectors registry_startup_refuses_invalid
               registry_bundle_digest_verified registry_absent_keeps_empty_set
               rest_v1_registered_application_creates registry_dependency_allowlist
-              registry_public_api_isolation
+              registry_public_api_isolation registry_launch_identity_from_entry
           '''.split())
-          if len(development) != 161 or len(development) != len(set(development)):
-              raise SystemExit(f"expected 161 unique dev-linux CTests; found {len(development)} total/{len(set(development))} unique")
+          supervisor_checks = set('''
+              core_supervisor_decision_contract core_supervisor_decision_complete
+              job_supervisor_drives_to_cleanup job_supervisor_overtakes
+              job_supervisor_rejection_rederives job_supervisor_ingress_results
+              job_supervisor_no_writer_reentry
+          '''.split())
+          if len(development) != 169 or len(development) != len(set(development)):
+              raise SystemExit(f"expected 169 unique dev-linux CTests; found {len(development)} total/{len(set(development))} unique")
           if len(sanitized) != len(set(sanitized)) or set(development) != set(sanitized):
               raise SystemExit("ASan/UBSan CTest name set differs from dev-linux")
-          if len(http_off) != 91 or len(http_off) != len(set(http_off)):
-              raise SystemExit(f"expected 91 unique HTTP-off CTests; found {len(http_off)} total/{len(set(http_off))} unique")
+          if len(http_off) != 98 or len(http_off) != len(set(http_off)):
+              raise SystemExit(f"expected 98 unique HTTP-off CTests; found {len(http_off)} total/{len(set(http_off))} unique")
           if not identity_checks <= set(development) & set(sanitized) & set(http_off):
               raise SystemExit("an ID-001 check is missing from a configuration")
           if not retirement_checks <= set(development) & set(sanitized) or not {
@@ -184,8 +194,8 @@ jobs:
               raise SystemExit("an OPS-006 check is missing from a configuration")
           if not registry_checks <= set(development) & set(sanitized) or registry_checks & set(http_off):
               raise SystemExit("an APP-001 registry check is missing or incorrectly enabled HTTP-off")
-          if 'registry_launch_identity_from_entry' in set(development) | set(sanitized) | set(http_off):
-              raise SystemExit("launch-identity activation belongs to Issue #133")
+          if not supervisor_checks <= set(development) & set(sanitized) & set(http_off):
+              raise SystemExit("a JOB-009 supervisor check is missing from a configuration")
           if not set(http_off) <= set(development) or any(
               not name.startswith(('rest_v1_', 'http_')) and name not in registry_checks
               for name in set(development) - set(http_off)
@@ -226,7 +236,11 @@ jobs:
           uv sync --frozen --only-group schema --only-group docs
           uv run --frozen --no-build --only-group schema --only-group docs python -m unittest discover -s tests/tooling -p 'test_*.py' -v
       - name: Validate core contracts
-        run: uv run --frozen --only-group schema python tools/validate_core_contract.py
+        run: uv run --frozen --no-build --only-group schema python tools/validate_core_contract.py
+      - name: Validate supervisor decision vectors
+        run: uv run --frozen --no-build --only-group schema python tools/validate_supervisor_contract.py --check vectors
+      - name: Validate supervisor decision completeness
+        run: uv run --frozen --no-build --only-group schema python tools/validate_supervisor_contract.py --check complete
       - name: Validate Application registry
         run: uv run --frozen --no-build --only-group schema python tools/validate_application_registry.py
       - name: Validate repository-relative links
@@ -339,11 +353,12 @@ jobs:
           ctest --test-dir build/http-off -j 4 --output-on-failure
           $development = @((ctest --test-dir build/dev-windows --show-only=json-v1 | ConvertFrom-Json).tests.name)
           $httpOff = @((ctest --test-dir build/http-off --show-only=json-v1 | ConvertFrom-Json).tests.name)
-          if ($development.Count -ne 161 -or @($development | Sort-Object -Unique).Count -ne 161) { throw 'expected 161 unique Windows development CTests' }
-          if ($httpOff.Count -ne 91 -or @($httpOff | Sort-Object -Unique).Count -ne 91) { throw 'expected 91 unique Windows HTTP-off CTests' }
-          $registryChecks = @('registry_schema_vectors', 'registry_startup_refuses_invalid', 'registry_bundle_digest_verified', 'registry_absent_keeps_empty_set', 'rest_v1_registered_application_creates', 'registry_dependency_allowlist', 'registry_public_api_isolation')
+          if ($development.Count -ne 169 -or @($development | Sort-Object -Unique).Count -ne 169) { throw 'expected 169 unique Windows development CTests' }
+          if ($httpOff.Count -ne 98 -or @($httpOff | Sort-Object -Unique).Count -ne 98) { throw 'expected 98 unique Windows HTTP-off CTests' }
+          $registryChecks = @('registry_schema_vectors', 'registry_startup_refuses_invalid', 'registry_bundle_digest_verified', 'registry_absent_keeps_empty_set', 'rest_v1_registered_application_creates', 'registry_dependency_allowlist', 'registry_public_api_isolation', 'registry_launch_identity_from_entry')
           foreach ($check in $registryChecks) { if ($development -notcontains $check -or $httpOff -contains $check) { throw "incorrect Windows registry check: $check" } }
-          if ($development -contains 'registry_launch_identity_from_entry' -or $httpOff -contains 'registry_launch_identity_from_entry') { throw 'launch-identity activation belongs to Issue #133' }
+          $supervisorChecks = @('core_supervisor_decision_contract', 'core_supervisor_decision_complete', 'job_supervisor_drives_to_cleanup', 'job_supervisor_overtakes', 'job_supervisor_rejection_rederives', 'job_supervisor_ingress_results', 'job_supervisor_no_writer_reentry')
+          foreach ($check in $supervisorChecks) { if ($development -notcontains $check -or $httpOff -notcontains $check) { throw "missing Windows supervisor check: $check" } }
           $identityChecks = @('identity_uuidv7_canonical', 'identity_uuidv7_monotonic_burst', 'identity_uuidv4_canonical', 'identity_stable_id_grammar', 'identity_never_repeats_within_instance', 'identity_source_never_exhausted', 'clock_recorded_at_rfc3339', 'clock_monotonic_instant', 'identity_dependency_allowlist', 'identity_public_api_isolation', 'identity_source_reads_no_other_clock_or_entropy', 'identity_seed_failure_refuses_startup', 'sitometrond_composes_production_identity')
           foreach ($check in $identityChecks) { if ($development -notcontains $check -or $httpOff -notcontains $check) { throw "missing Windows identity check: $check" } }
           $retirementChecks = @('job_retirement_oldest_closed_first', 'job_retirement_requires_closed', 'job_retirement_not_under_free_slot', 'job_retirement_resets_slot', 'job_retirement_stale_timer_rejected', 'job_retirement_late_fact_absent', 'job_trace_ring_wraps', 'journal_replay_retires_like_writer', 'journal_replay_capacity_after_retirement')

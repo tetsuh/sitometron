@@ -26,10 +26,13 @@ connection on the listener progresses. Every ingress-admitted cancel still reach
 including unknown and resolved-replay Jobs (one reducer-rejection turn), and a committing create
 now reaches it in production as well. ADR-0015 Section 6 retains this model; the owner decision of
 2026-11-03 assigns its reconsideration to Issue #127, not this implementation.
-Until Issues #133/#126/#127/#128 supply the driving components, no component drives a created
-registered production Job. It stays `admitted` unless an accepted cancel moves it to `finalizing`.
-In either state it never reaches a terminal outcome or closes, holds its resident slot, and replays
-unresolved after restart, keeping admission closed (`OPS-004`). No-option deployments retain Phase 1 behavior.
+After Issue #133, a registered production Job reaches `worker_launch_intent` and waits at
+ADR-0012 rule 5 because the runner placeholder discards the launch handoff. A cancel then follows
+the unchanged reducer: after that intent, process presence is unknown, so cancel enters `stopping`
+and requests cooperative stop. The placeholder supplies no process-exit fact; production does not
+yet run a Worker or guarantee terminal cleanup. The application runner (#126), Worker protocol
+(#127), timer port (#128), and Gate #123 own the end-to-end path. Without `--applications`, the
+registered set remains empty. Unresolved Jobs after restart still close admission (`OPS-004`).
 The other adapter options remain disabled because their dependencies are not in the manifest.
 See [the dependency policy](09_dependency_policy.md).
 
@@ -53,12 +56,12 @@ Phase 0A PR CI requires:
 The Linux clang-tidy step resolves the absolute `clang-tidy-18` application and runs the
 standard-library-only `tools/run_clang_tidy.py` helper against
 `build/dev-linux/compile_commands.json`. The helper intersects tracked `apps/**/*.cpp`,
-`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the enumerated 33-source set (Issue #134) and
+`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the enumerated 35-source set (Issue #133) and
 LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection drift.
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the enumerated 161-test `dev-linux` suite. It runs without suppressions using
+CTest-name parity with the enumerated 169-test `dev-linux` suite. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -141,8 +144,9 @@ Development-time Python checks run with Python 3.12.13 and dependencies frozen b
 
 ```text
 uv sync --frozen --only-group schema --only-group docs
-uv run --frozen --only-group schema --only-group docs python -m unittest discover -s tests/tooling -p 'test_*.py' -v
-uv run --frozen --only-group schema python tools/validate_core_contract.py
+uv run --frozen --no-build --only-group schema --only-group docs python -m unittest discover -s tests/tooling -p 'test_*.py' -v
+uv run --frozen --no-build --only-group schema python tools/validate_core_contract.py
+uv run --frozen --no-build --only-group schema python tools/validate_supervisor_contract.py
 uv run --frozen --no-build --only-group docs python tools/check_relative_links.py
 uv run --frozen --no-build --only-group docs python tools/check_repository_governance.py
 ```
@@ -179,9 +183,9 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `JOB-006` | C++ test `job_late_cleanup_vectors` | Active |
 | `JOB-007` | C++ test `job_ordering_vectors` | Active |
 | `JOB-008` | C++ tests `job_ingress_linearization_order`, `job_ingress_single_writer`, `job_ingress_source_classification`, `job_ingress_capacity_and_reserve`, `job_ingress_coalescing`, `job_ingress_fail_closed`, `job_create_returns_identity`, `job_ingress_completion_await` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13; creation identity and the completion wait active under Issue #80; ADR-0014 retirement/reserve changes active under Issue #120 (`OPS-006`) |
-| `JOB-009` | CTests `core_supervisor_decision_contract`, `core_supervisor_decision_complete`; C++ tests `job_supervisor_drives_to_cleanup`, `job_supervisor_overtakes`, `job_supervisor_rejection_rederives`, `job_supervisor_ingress_results`, `job_supervisor_no_writer_reentry` | Planned under Accepted ADR-0012 under Issue #104; checks activated by the supervisor implementation Issue |
+| `JOB-009` | CTests `core_supervisor_decision_contract`, `core_supervisor_decision_complete`; C++ tests `job_supervisor_drives_to_cleanup`, `job_supervisor_overtakes`, `job_supervisor_rejection_rederives`, `job_supervisor_ingress_results`, `job_supervisor_no_writer_reentry` | Active under Accepted ADR-0012 under Issue #104; implemented and activated by Issue #133 |
 | `ID-001` | CTests `identity_uuidv7_canonical`, `identity_uuidv7_monotonic_burst`, `identity_uuidv4_canonical`, `identity_stable_id_grammar`, `identity_never_repeats_within_instance`, `identity_source_never_exhausted`, `clock_recorded_at_rfc3339`, `clock_monotonic_instant`, `identity_dependency_allowlist`, `identity_public_api_isolation`, `identity_source_reads_no_other_clock_or_entropy`, `identity_seed_failure_refuses_startup`, `sitometrond_composes_production_identity` | Active under Accepted ADR-0013 under Issue #102; implemented and activated by Issue #115 |
-| `APP-001` | CTests `registry_schema_vectors`, `registry_startup_refuses_invalid`, `registry_bundle_digest_verified`, `registry_absent_keeps_empty_set`, `rest_v1_sitometrond_options` (extended with repeated and empty `--applications`), `rest_v1_registered_application_creates`, `registry_launch_identity_from_entry`, `registry_dependency_allowlist`, `registry_public_api_isolation`; the schema half of `registry_schema_vectors` also runs via `tools/validate_application_registry.py` in the Linux and Windows CI step "Validate Application registry" | Active under Accepted ADR-0015, implemented by Issue #134, except `registry_launch_identity_from_entry`, which remains Planned under Issue #133 |
+| `APP-001` | CTests `registry_schema_vectors`, `registry_startup_refuses_invalid`, `registry_bundle_digest_verified`, `registry_absent_keeps_empty_set`, `rest_v1_sitometrond_options` (extended with repeated and empty `--applications`), `rest_v1_registered_application_creates`, `registry_launch_identity_from_entry`, `registry_dependency_allowlist`, `registry_public_api_isolation`; the schema half of `registry_schema_vectors` also runs via `tools/validate_application_registry.py` in the Linux and Windows CI step "Validate Application registry" | Active under Accepted ADR-0015; registry loading and verification implemented by Issue #134, launch identity implemented and activated by Issue #133 |
 | `OPS-006` | C++ tests `job_retirement_oldest_closed_first`, `job_retirement_requires_closed`, `job_retirement_not_under_free_slot`, `job_retirement_resets_slot`, `job_retirement_stale_timer_rejected`, `job_retirement_late_fact_absent`, `job_trace_ring_wraps`; CTests `journal_replay_retires_like_writer`, `journal_replay_capacity_after_retirement`, `rest_v1_retired_job_absent`, `rest_v1_daemon_outlives_max_jobs` | Active under Accepted ADR-0014 under Issue #103; implemented and activated by Issue #120 |
 | `OPS-001` | C++ tests `job_ingress_shutdown_quiescence`, `job_ingress_callback_lifetime`, `job_ingress_readiness_failure` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13 |
 | `JRN-001` | CTests `core_job_contract`, `job_fake_logical_commit_results`; C++ tests `job_journal_envelope_vectors`, `job_logical_sequence_exhaustion_fail_closed` | Contract, logical fake-result, complete writer-envelope construction, and non-wrapping sequence checks active; physical record encoding is active under `JRN-004` (Issue #57) and segment layout under `JRN-005` (Issue #59) |
@@ -209,17 +213,18 @@ Issue #106 activates the remaining 21 frozen API check names and additionally ac
 
 Issue #115 activates all thirteen `ID-001` names in HTTP-enabled and HTTP-off builds. Issue #120
 activates all eleven `OPS-006` names above, including nine non-REST names in HTTP-off builds.
-Issue #134 activates seven new APP-001 names and extends the existing options check; only
-`registry_launch_identity_from_entry` remains Planned under Issue #133. The enumerated current
-totals are 161 unique HTTP-enabled names, 91 unique HTTP-off names, and 161 ASan/UBSan names.
-The development and sanitizer name sets match exactly, all thirteen identity names remain in
-every configuration, and the HTTP-off name set is unchanged from before Issue #134. HTTP-off
-removes only the 70 HTTP/registry-specific checks.
+Issue #134 activates seven APP-001 names and extends the existing options check. Issue #133
+activates the seven JOB-009 CTests and APP-001's `registry_launch_identity_from_entry`.
+The enumerated current totals are 169 unique HTTP-enabled names, 98 unique HTTP-off names,
+and 169 ASan/UBSan names. Development and ASan/UBSan name sets match exactly. All thirteen
+identity names and all seven supervisor names remain in every configuration. HTTP-off removes
+only the 71 enumerated HTTP/registry-specific checks, including launch identity.
 These totals come from each built tree's CTest enumeration, not addition-based predictions.
 The identity generator, clock, and registered test-only Backend fixtures exercise real values.
 Without a registry option, production creates still reach neither identity nor clock. With a
 verified registry, a registered production create reaches all three identity operations and the
-precommit clock. Forwarding counters remain in the daemon composition.
+precommit clock; autonomous resource and launch-intent commits then use that same clock.
+Thread-safe forwarding counters remain in the daemon composition.
 Formatting/arithmetic/collision vectors use injected inputs without real sleeps. The burst check logs its observed rate and conservative per-microsecond occupancy and asserts
 strict increase only when eligible; distinctness is unconditional. The three ID-001 scanner checks use the
 workflow's build-metadata validation exception for RED, with positive and planted-rejection controls.
@@ -311,7 +316,36 @@ Each check asserts its executed ID set equals its file group and reports executi
 Independent startup companions assert schema-fault diagnostics without re-consuming schema IDs.
 The two APP-001 scanners run real-target positive and planted-rejection controls under the
 workflow's build-metadata validation exception. Their negative-control driver introduces no third
-public CTest name. `registry_launch_identity_from_entry` stays Planned under Issue #133.
+public CTest name. Issue #133 activates `registry_launch_identity_from_entry`: production creation
+retains the verified Application identifier, version, and digest in core-owned launch inputs until
+the launch intent commits. Its check compares the committed identity for interleaved entries and
+preserves unresolved-replay refusal after a registry change.
+
+Issue #133 implements the private ADR-0012 supervisor and its shared machine-readable decision
+vectors. Its fixed resource placeholder uses `kEmptyAllocationId = "empty-allocation"`, schema
+`allocation.v1`, version `1`, payload `{}`, and SHA-256
+`44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a`.
+Release and finalization have no operational work and cannot fail. The Session retainer port only
+moves requests into a preallocated `max_jobs + 1` mailbox; a composition-owned producer submits the
+matching `session_retained` after handoff, waits for its own completion, and uses the internal
+level-triggered normal-capacity wait on `normal_full`. Admission closure stops it; admitted work
+drains and the producer is joined before sealing and before destroying its mailbox. It never
+re-enters ingress from handoff. The core supervisor also stops at normal-admission closure,
+including critical continuations, drains its own completions once, and is joined before sealing.
+Per-physical-slot marks, parking and launch ownership reset on retirement, with old completions
+accounted separately until taken. A repeated identical rejection stops only that Job and keeps a
+bounded private diagnostic, without a service-wide failure latch.
+
+The C++ `core_supervisor_decision_contract` and `core_supervisor_decision_complete` checks read the
+same decision vectors as `tools/validate_supervisor_contract.py`. The latter's vector and
+completeness checks run as separate pinned-uv CI steps beside core-contract validation on both
+platforms, with `--no-build`; neither CMake nor runtime starts Python. Completeness derives the
+fixed point from `job_created`, not from the seed list. The reconciled 25 seeds are the 24 accepting
+control branches plus ADR-0012 Context's post-finalization success-timeout example. Producer histories
+track current one-shot timer registrations and pending Worker delivery identities. Reducer-accepted
+but undeliverable overtakes are named individually in the contract and output, never silently
+skipped or submitted with forged sources. All vector IDs and generated deliverable overtakes are
+consumed exactly once by their C++ checks and execution counts are reported.
 
 Owning design Issues add required test names to this table before production implementation. A test
 name may change only with the corresponding Requirement review. A Planned check name is stable even

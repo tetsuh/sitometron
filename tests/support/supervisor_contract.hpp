@@ -23,7 +23,7 @@ inline Json Load(std::string_view relative) {
 }
 inline const std::string kJob = "01890f30-7b54-7cc3-98c4-dc0c0c07398f";
 inline const std::string kWorker = "550e8400-e29b-41d4-a716-446655440000";
-inline const std::string kAllocation = "phase1-empty-allocation";
+inline const std::string kAllocation = "empty-allocation";
 inline const std::string kDigest =
     "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
 inline Json Canon(Json value) {

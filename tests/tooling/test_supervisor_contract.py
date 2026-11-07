@@ -36,14 +36,9 @@ class SupervisorContractTest(unittest.TestCase):
         self.path.write_text(json.dumps(self.document), encoding="utf-8")
 
     def check(self, name):
-        function = getattr(VALIDATOR, name, None)
-        self.assertTrue(callable(function), f"missing ADR-0012 validator check: {name}")
-        return function(self.root)
+        return getattr(VALIDATOR, name)(self.root)
 
     def rejected(self, name):
-        # Missing implementation is RED, never a successful mutation rejection.
-        self.assertTrue(callable(getattr(VALIDATOR, name, None)),
-                        f"missing ADR-0012 validator check: {name}")
         with self.assertRaises((AssertionError, ValueError, ValidationError),
                                msg="mutation was silently accepted"):
             self.check(name)

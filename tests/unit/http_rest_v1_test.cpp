@@ -2456,6 +2456,7 @@ class Scenario final {
   explicit Scenario(const ScenarioOptions& options = {})
       : identity(signal), journal(signal), registry(options.applications) {
     internal::Config config;
+    config.hold_supervisor_for_test = true;
     config.max_jobs = options.max_jobs;
     config.normal_capacity = 2;
     config.trace_capacity = 1024;
