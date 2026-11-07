@@ -108,9 +108,10 @@ After Issue #133, a registered production Job reaches `worker_launch_intent` and
 ADR-0012 rule 5 because the runner placeholder discards the launch handoff. A cancel then follows
 the unchanged reducer: after that intent, process presence is unknown, so cancel enters `stopping`
 and requests cooperative stop. The placeholder supplies no process-exit fact; production does not
-yet run a Worker or guarantee terminal cleanup. The application runner (#126), Worker protocol
-(#127), timer port (#128), and Gate #123 own the end-to-end path. Without `--applications`, the
-registered set remains empty. Unresolved Jobs after restart still close admission (`OPS-004`).
+yet run a Worker or guarantee terminal cleanup. The runner, the Worker protocol, and the timer
+port come from the implementation Issues that follow the designs of #126, #127, and #128;
+Gate #123 owns the end-to-end path. Without `--applications`, the registered set remains empty.
+Unresolved Jobs after restart still close admission (`OPS-004`).
 
 ```sh
 build/dev-linux/sitometrond --journal /path/to/journal \
