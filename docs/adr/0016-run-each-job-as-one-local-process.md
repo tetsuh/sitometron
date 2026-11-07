@@ -286,17 +286,21 @@ producer's stop flag whenever it wakes. The handles, the waiter, and the failure
 Sitometron-owned interfaces the composition builds on the core's internal API; the producer never
 holds the orchestrator.
 
-Stops are delivered under the mailbox lock by whichever thread first finds a stop flag set and a
-process published, the service thread on its wake or the slot thread when it publishes the
-process; each flag is delivered once, and a flag set while the spawn is in progress is therefore
-delivered by the slot thread immediately after publication. The service thread takes the lock,
-checks that the process is published and not marked gone, signals the process identifier (Linux)
-or calls `TerminateProcess` on the handle (Windows), and releases it; the slot thread observes the
-exit without reaping, with `waitid` and `WNOWAIT` on Linux and `WaitForSingleObject` on Windows,
-then takes the lock, marks the process gone, releases it, and only then reaps with `waitpid` or
-closes the handle. So a signal never reaches a reused process identifier, a stop recorded after the
-mark is ignored, and no stop is lost between the check before the spawn and the publication. The
-lock is never held during a wait, a spawn, or a submission.
+Each stop flag has a matching delivered bit in the same atomic word. A stop is delivered under the
+mailbox lock by whichever thread first finds its flag set, its delivered bit clear, and a process
+published: the service thread on its wake or the slot thread when it publishes the process. The
+delivering thread sets the delivered bit under the lock before it calls the operating system, so
+each flag is delivered exactly once even when both threads see it, and a flag set while the spawn is
+in progress is delivered by the slot thread immediately after publication. When both flags are
+pending and undelivered, the cooperative stop is delivered first and the forced stop immediately
+after it. The service thread takes the lock, checks that the process is published and not marked
+gone, signals the process identifier (Linux) or calls `TerminateProcess` on the handle (Windows),
+and releases it; the slot thread observes the exit without reaping, with `waitid` and `WNOWAIT` on
+Linux and `WaitForSingleObject` on Windows, then takes the lock, marks the process gone, releases
+it, and only then reaps with `waitpid` or closes the handle. So a signal never reaches a reused
+process identifier, a stop recorded after the mark is ignored, and no stop is lost between the check
+before the spawn and the publication. The lock is never held during a wait, a spawn, or a
+submission.
 
 ### 5. Shutdown and failures after the start
 
@@ -394,9 +398,10 @@ existing non-sleeping barriers:
   array, in the daemon's current working directory, with a sentinel variable of the daemon's
   environment preserved and the three identity variables set even where the daemon's environment
   carried conflicting values; `worker_launch_observed{started}` follows the start, and the child
-  reports the arguments, the variables, and its working directory back through an output file; on
-  Windows the round trip covers an empty argument, an argument with spaces, one with quotation
-  marks, one ending in a backslash, and one with a backslash before a quotation mark;
+  reports the arguments, the variables, and its working directory back through an output file; the
+  round trip on both platforms covers an empty argument string and an argument with spaces, and on
+  Windows also one with quotation marks, one ending in a backslash, and one with a backslash before
+  a quotation mark;
 - `process_failed_start_reports_failed`: a missing executable and an unreadable executable each
   submit `worker_launch_observed{failed}`, start nothing, and submit no `process_exit_confirmed`; an
   executable replaced after startup with a different file is started, because the runner does not
@@ -434,8 +439,10 @@ existing non-sleeping barriers:
 - `process_exit_reported_after_rejected_observation`: a launch observation whose completion reports
   a rejection because the Job left `preparing` is followed by exactly one `process_exit_confirmed`
   with the mode Section 2 gives, and a process that was live is stopped and reported; a stop handed
-  off while the slot thread waits for the exit reaches the process without waking that thread, and a
-  stop handed off while the spawn is in progress reaches the new process once it is published;
+  off while the slot thread waits for the exit reaches the process without waking that thread, a
+  stop handed off while the spawn is in progress reaches the new process once it is published and is
+  not delivered a second time by the service thread, and a cooperative and a forced stop both
+  pending at publication are delivered in that order, each once;
 - `process_reaped_after_failure`: a process whose `process_exit_confirmed` is answered
   `service_failed` or `admission_closed` is still reaped; a live process whose
   `worker_launch_observed` is answered `service_failed` keeps running until it exits or the runner
@@ -484,26 +491,26 @@ existing non-sleeping barriers:
   does not use.
 - **Stop a live process as soon as the fail-closed latch is set**: rejected on 2026-11-07 because
   the runner would need to learn of the latch through a new notification, and the daemon is already
-  unready and restarted by the operator, who then resolves the Job. - **Submit
-  `process_exit_confirmed` for a failed launch whose observation was never accepted**: rejected on
-  2026-11-07 because the supervisor drives nothing once admission has closed, so the Job would stay
-  unresolved either way, and one shutdown rule is simpler than two. - **A cooperative stop with a
-  grace period at shutdown**: rejected for Phase 2 because a Job open at shutdown is left as
-  committed anyway (ADR-0012), and the grace period would add a duration to a shutdown that ADR-0003
-  keeps count-bounded.
-- **Submit directly into the orchestrator from the slot threads**: rejected because ADR-0005
-  forbids a port to hold the writer or ingress, and ADR-0003 requires a lifetime-safe handle with
-  one active invocation per registration.
+  unready and restarted by the operator, who then resolves the Job.
+- **Submit `process_exit_confirmed` for a failed launch whose observation was never accepted**:
+  rejected on 2026-11-07 because the supervisor drives nothing once admission has closed, so the Job
+  would stay unresolved either way, and one shutdown rule is simpler than two.
+- **A cooperative stop with a grace period at shutdown**: rejected for Phase 2 because a Job open at
+  shutdown is left as committed anyway (ADR-0012), and the grace period would add a duration to a
+  shutdown that ADR-0003 keeps count-bounded.
+- **Submit directly into the orchestrator from the slot threads**: rejected because ADR-0005 forbids
+  a port to hold the writer or ingress, and ADR-0003 requires a lifetime-safe handle with one active
+  invocation per registration.
 - **One submitting thread for every Job**: rejected because a completion wait or a `normal_full`
   park on it would delay every other Job's exit report, which is a critical input; each slot thread
-  submits and waits for its own Job instead, with its own registration. - **One thread created per
-  launch**: rejected because thread creation can fail after the handoff, which needs a failure path
-  with no process, and because a retired Job's thread can outlive its slot's reuse without bound,
-  which defeats every storage and registration proof; a fixed thread per mailbox has neither
-  problem.
-- **Wake the waiting slot thread to deliver a stop**: rejected because the service thread can
-  signal a process identifier or call `TerminateProcess` on a handle while another thread waits for
-  the exit, so no wait needs waking and no second object has to be watched.
+  submits and waits for its own Job instead, with its own registration.
+- **One thread created per launch**: rejected because thread creation can fail after the handoff,
+  which needs a failure path with no process, and because a retired Job's thread can outlive its
+  slot's reuse without bound, which defeats every storage and registration proof; a fixed thread per
+  mailbox has neither problem.
+- **Wake the waiting slot thread to deliver a stop**: rejected because the service thread can signal
+  a process identifier or call `TerminateProcess` on a handle while another thread waits for the
+  exit, so no wait needs waking and no second object has to be watched.
 - **Park a slot thread on the capacity notification**: rejected because a thread parked on capacity
   cannot observe its process exiting, and waiting on the process and a wake object together would
   need a process file descriptor on Linux and a second object on both platforms; a relay thread
