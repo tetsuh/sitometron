@@ -138,7 +138,9 @@ guarantees one exit report for every launch request it did not report `failed` w
 - a `worker_launch_observed{started}` that the reducer rejects for the same reason leaves the
   process live: the runner delivers the stops it holds and reports the exit as for any process.
 
-Every other reducer rejection is final: the runner submits no input twice.
+Every other reducer rejection is final: the runner submits no input twice. The one exception to the
+guarantee is shutdown: a launch that the stop flag of Section 5 cancels before its spawn gets no
+runner fact at all, and its Job stays as committed for the next start.
 
 A Worker may be ready to report before the runner's `worker_launch_observed{started}` is committed,
 for example while that observation is parked by `normal_full`, and the reducer refuses
@@ -400,8 +402,9 @@ existing non-sleeping barriers:
   stop handed off while the spawn is in progress reaches the new process once it is published;
 - `process_reaped_after_failure`: a process whose `process_exit_confirmed` is answered
   `service_failed` or `admission_closed` is still reaped; shutdown with a live process, with a spawn
-  in progress, and with a queued next launch delivers a forced stop to each process that exists,
-  starts nothing new, reaps every process, and joins every thread;
+  in progress, with a launch not yet spawned, and with a queued next launch delivers a forced stop
+  to each process that exists, starts nothing new, submits no fact for a launch cancelled before its
+  spawn, reaps every process, and joins every thread;
 - `process_dependency_allowlist` and `process_public_api_isolation`: the scanners of Section 6, with
   planted violations;
 - `rest_v1_protocol_less_process_fails`: through production `sitometrond` with a verified registry,
