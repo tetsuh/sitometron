@@ -206,8 +206,8 @@ Work happens on the producer's threads:
   ring raise; it drains the mailboxes, creates a process thread per launch, delivers every stop
   (Section 3) to the live process the mailbox names, and submits the `failed` observations of the
   overflow ring and of a launch whose process thread could not be created;
-- one process thread per launch starts the process, submits `worker_launch_observed`, waits for
-  the exit with a plain blocking wait, marks the process gone, reaps it, and submits
+- one process thread per launch starts the process, submits `worker_launch_observed`, waits for the
+  exit without reaping it, marks the process gone under the mailbox lock, reaps it, and submits
   `process_exit_confirmed`;
 - one relay thread waits on the core's normal-capacity notification and resubmits every
   observation that a `normal_full` answer parked, from any thread, until it is answered otherwise
@@ -215,12 +215,14 @@ Work happens on the producer's threads:
   `process_exit_confirmed` is submitted.
 
 Each thread submits through its own lifetime-safe ingress handle, obtained by the composition from
-the core (ADR-0003), so each registration has one invocation at a time and `max_jobs + 3`
-registrations serve the runner. A thread takes the completion of each submission it made, from
-that same thread, through the handle; the completion carries the reducer result that Section 2
-depends on. A `normal_full` answer parks only the observation, in its mailbox, and hands it to the
-relay thread; no thread blocks on capacity except the relay, so no exit report, stop delivery, or
-other Job is delayed by it. `admission_closed` and `service_failed` end the retries.
+the core (ADR-0003), so each registration has one invocation at a time; up to `2 * (max_jobs + 1)`
+process threads can exist at once, because a retired Job's thread may still run beside its slot's
+next occupant, so `2 * (max_jobs + 1) + 2` registrations serve the runner. A thread takes the
+completion of each submission it made, from that same thread, through the handle; the completion
+carries the reducer result that Section 2 depends on. A `normal_full` answer parks only the
+observation, in its mailbox, and hands it to the relay thread; no thread blocks on capacity except
+the relay, so no exit report, stop delivery, or other Job is delayed by it. `admission_closed` and
+`service_failed` end the retries.
 
 The capacity notification is per waiter: the core keeps one level-triggered flag for each
 registered waiter, sets every flag when a writer turn frees a normal slot, and lets each waiter
@@ -229,11 +231,14 @@ placeholder (Issue #133) never consume a notification meant for the relay thread
 the waiter are Sitometron-owned interfaces the composition builds on the core's internal API; the
 producer never holds the orchestrator.
 
-The service thread delivers stops while the process thread waits, so no wait has to be woken: on
-Linux it signals the process identifier the mailbox records while the process thread has not yet
-marked the process gone, and on Windows it calls `TerminateProcess` on the handle the mailbox
-records; the process thread then observes the exit. A stop recorded after the process is marked
-gone is ignored.
+The service thread delivers stops while the process thread waits, so no wait has to be woken. Each
+mailbox has a lock that orders the two threads: the service thread takes it, checks that the process
+is not marked gone, signals the process identifier (Linux) or calls `TerminateProcess` on the handle
+(Windows), and releases it; the process thread observes the exit without reaping, with `waitid` and
+`WNOWAIT` on Linux and `WaitForSingleObject` on Windows, then takes the lock, marks the process
+gone, releases it, and only then reaps with `waitpid` or closes the handle. So a signal never
+reaches a reused process identifier, and a stop recorded after the mark is ignored. The lock is
+never held during a wait, a spawn, or a submission.
 
 ### 5. Shutdown and failures after the start
 
@@ -260,7 +265,7 @@ implements. The adapter includes `<sitometron/core/job_ports.hpp>` and
 Issue extends the core's internal capacity notification to one flag per registered waiter, as
 Section 4 states, without changing a rule of ADR-0012. The composition constructs the port and the
 producer after the core and before any listener opens, with `callback_registration_capacity` sized
-for the `max_jobs + 3` handles of Section 4 and every other producer.
+for the `2 * (max_jobs + 1) + 2` handles of Section 4 and every other producer.
 
 `sitometron_process` links no third-party target and adds no manifest port; its only dependencies
 are the standard library and the platform process APIs below, so its allowlist row in the format of
@@ -279,8 +284,11 @@ is built only when HTTP is enabled, like `sitometrond_composition`, its only con
   the request contents, and the handoff rules are implemented, not altered.
 - [ADR-0012](0012-drive-each-job-with-a-supervisor-in-the-core.md) Section 7: the item "What a
   process without a Worker protocol reports" is decided here (Section 2); Section 1's producer table
-  is unchanged. Section 4's daemon-wide capacity signal that the supervisor drains is unchanged;
-  this ADR adds other waiters, each with its own flag (Section 4).
+  is unchanged. Section 4's sentence "After any turn that frees a normal slot, the writer sets one
+  daemon-wide capacity signal" is supplemented, not replaced: the writer still sets that signal,
+  which only the supervisor drains, and in addition sets one flag per other registered waiter
+  (Section 4). This is the one Accepted-ADR sentence this ADR changes; the supervisor's behavior
+  under it is unchanged.
 - [ADR-0015](0015-register-applications-with-a-verified-registry-file.md) Section 6: the runner's
   inputs are decided here (Section 1), and re-verification at launch is decided against; no sentence
   is superseded.
@@ -393,25 +401,27 @@ existing non-sleeping barriers:
   one active invocation per registration.
 - **One submitting thread for every Job**: rejected because a completion wait or a `normal_full`
   park on it would delay every other Job's exit report, which is a critical input; each process
-  thread submits and waits for its own Job instead, with its own registration. - **Wake the waiting
-  process thread to deliver a stop**: rejected because the service thread can signal a process
-  identifier or call `TerminateProcess` on a handle while another thread waits for the exit, so no
-  wait needs waking and no second object has to be watched. - **Park a process thread on the
-  capacity notification**: rejected because a thread parked on capacity cannot observe its process
-  exiting, and waiting on the process and a wake object together would need a process file
-  descriptor on Linux and a second object on both platforms; a relay thread resubmits parked
-  observations while the process thread keeps its plain exit wait. - **One daemon-wide capacity
-  signal for every waiter**: rejected because the supervisor drains that signal (ADR-0012 Section 4)
-  and another waiter could miss it; one flag per waiter costs one bit each. - **One mailbox per
-  resident slot**: rejected because a retired Job's thread may still hold its mailbox when the
-  slot's next occupant is launched; twice the resident bound gives every launch a free mailbox.
+  thread submits and waits for its own Job instead, with its own registration.
+- **Wake the waiting process thread to deliver a stop**: rejected because the service thread can
+  signal a process identifier or call `TerminateProcess` on a handle while another thread waits for
+  the exit, so no wait needs waking and no second object has to be watched.
+- **Park a process thread on the capacity notification**: rejected because a thread parked on
+  capacity cannot observe its process exiting, and waiting on the process and a wake object together
+  would need a process file descriptor on Linux and a second object on both platforms; a relay
+  thread resubmits parked observations while the process thread keeps its plain exit wait.
+- **One daemon-wide capacity signal for every waiter**: rejected because the supervisor drains that
+  signal (ADR-0012 Section 4) and another waiter could miss it; one flag per waiter costs one bit
+  each.
+- **One mailbox per resident slot**: rejected because a retired Job's thread may still hold its
+  mailbox when the slot's next occupant is launched; twice the resident bound gives every launch a
+  free mailbox.
 - **Retry `normal_full` with a timed backoff**: rejected because the core already offers the
   level-triggered capacity notification that ADR-0012 Section 4 defines, the Session retainer
   placeholder waits on it, and a backoff would add a duration and a poll that the notification makes
   unnecessary.
-- **Let the port object hold the ingress handle**: rejected because ADR-0005 lets a port retain
-  "its own adapter state but never a writer, ingress, ... pointer or reference"; the handle belongs
-  to the producer.
+- **Let the port object hold the ingress handle**: rejected because ADR-0005 lets a port retain "its
+  own adapter state but never a writer, ingress, ... pointer or reference"; the handle belongs to
+  the producer.
 - **Pass the verified registry entries to the runner as registry types**: rejected because one
   adapter would then include another adapter's public header, and the composition already converts
   the entries for the Backend.
