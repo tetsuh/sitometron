@@ -63,7 +63,10 @@ out of scope (see P2-9)".
 
 The owner decided on 2026-11-07, as recorded in Issue #126: on Windows, Phase 2 carries a
 cooperative stop out with `TerminateProcess`; the runner does not verify the executable digest again
-at launch; and at daemon shutdown the runner delivers a forced stop to every live process at once.
+at launch; at daemon shutdown the runner delivers a forced stop to every live process at once; a
+failed-launch observation that closed admission never accepts gets no further runner fact; and a
+live process is supervised until it exits or the runner is stopped, not stopped on the fail-closed
+latch.
 
 ## Decision
 
@@ -138,9 +141,11 @@ guarantees one exit report for every launch request it did not report `failed` w
 - a `worker_launch_observed{started}` that the reducer rejects for the same reason leaves the
   process live: the runner delivers the stops it holds and reports the exit as for any process.
 
-Every other reducer rejection is final: the runner submits no input twice. The one exception to the
-guarantee is shutdown: a launch that the stop flag of Section 5 cancels before its spawn gets no
-runner fact at all, and its Job stays as committed for the next start.
+Every other reducer rejection is final: the runner submits no input twice. The exceptions to the
+guarantee are the two cases in which normal admission has closed under the Job: a launch that the
+stop flag of Section 5 cancels before its spawn, and a `failed` observation whose retries end with
+`admission_closed` or `service_failed` (Section 4). Neither gets a further runner fact; the Job
+stays as committed for the next start, where replay reports it unresolved (ADR-0006).
 
 A Worker may be ready to report before the runner's `worker_launch_observed{started}` is committed,
 for example while that observation is parked by `normal_full`, and the reducer refuses
@@ -291,9 +296,11 @@ before it returns. It delivers no cooperative stop first: a Job open at shutdown
 committed (ADR-0012), so nothing waits for its result.
 
 A slot thread keeps waiting for and reaps its process whatever the writer does. After a fail-closed
-latch or a Journal failure, the submission is answered `service_failed` or `admission_closed`, the
-process is still reaped, and the Job stays unresolved for the next start (ADR-0006). The daemon
-never exits with a process it created still unreaped.
+latch or a Journal failure, a submission is answered `service_failed` or `admission_closed`, the
+runner submits nothing more for that Job, and a live process is supervised as before: it is not
+stopped because of the latch, it receives the stops handed off before the latch and the forced stop
+of the runner's shutdown, and it is reaped when it exits. The Job stays unresolved for the next
+start (ADR-0006). The daemon never exits with a process it created still unreaped.
 
 ### 6. Placement and dependencies
 
@@ -410,10 +417,13 @@ existing non-sleeping barriers:
   off while the slot thread waits for the exit reaches the process without waking that thread, and a
   stop handed off while the spawn is in progress reaches the new process once it is published;
 - `process_reaped_after_failure`: a process whose `process_exit_confirmed` is answered
-  `service_failed` or `admission_closed` is still reaped; shutdown with a live process, with a spawn
-  in progress, with a launch not yet spawned, and with a queued next launch delivers a forced stop
-  to each process that exists, starts nothing new, submits no fact for a launch cancelled before its
-  spawn, reaps every process, and joins every thread;
+  `service_failed` or `admission_closed` is still reaped; a live process whose
+  `worker_launch_observed` is answered `service_failed` keeps running until it exits or the runner
+  is stopped, and is then reaped; a `failed` observation whose retries end with `admission_closed`
+  gets no `process_exit_confirmed` and its Job stays as committed; shutdown with a live process,
+  with a spawn in progress, with a launch not yet spawned, and with a queued next launch delivers a
+  forced stop to each process that exists, starts nothing new, submits no fact for a launch
+  cancelled before its spawn, reaps every process, and joins every thread;
 - `process_dependency_allowlist` and `process_public_api_isolation`: the scanners of Section 6, with
   planted violations;
 - `rest_v1_protocol_less_process_fails`: through production `sitometrond` with a verified registry,
@@ -450,9 +460,15 @@ existing non-sleeping barriers:
 - **Cooperative stop on Windows through an inherited event handle**: rejected on 2026-11-07 because
   it needs an agreement with every Worker and a variable in the environment for a mechanism Phase 2
   does not use.
-- **A cooperative stop with a grace period at shutdown**: rejected for Phase 2 because a Job open at
-  shutdown is left as committed anyway (ADR-0012), and the grace period would add a duration to a
-  shutdown that ADR-0003 keeps count-bounded.
+- **Stop a live process as soon as the fail-closed latch is set**: rejected on 2026-11-07 because
+  the runner would need to learn of the latch through a new notification, and the daemon is already
+  unready and restarted by the operator, who then resolves the Job. - **Submit
+  `process_exit_confirmed` for a failed launch whose observation was never accepted**: rejected on
+  2026-11-07 because the supervisor drives nothing once admission has closed, so the Job would stay
+  unresolved either way, and one shutdown rule is simpler than two. - **A cooperative stop with a
+  grace period at shutdown**: rejected for Phase 2 because a Job open at shutdown is left as
+  committed anyway (ADR-0012), and the grace period would add a duration to a shutdown that ADR-0003
+  keeps count-bounded.
 - **Submit directly into the orchestrator from the slot threads**: rejected because ADR-0005
   forbids a port to hold the writer or ingress, and ADR-0003 requires a lifetime-safe handle with
   one active invocation per registration.
