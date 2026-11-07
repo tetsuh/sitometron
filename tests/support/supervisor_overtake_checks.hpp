@@ -31,6 +31,19 @@ std::vector<const Edge*> ProducerWitness(const Graph& graph, const Edge& target)
   }
   throw std::runtime_error("no deliverable witness for " + target.Name());
 }
+void RetirePendingWorkerDelivery(Fixture& fixture, const std::string& event) {
+  const Uuid job{kJob};
+  const auto snapshot = fixture.writer.SnapshotFor(job);
+  if (fixture.pending_worker_delivery && snapshot &&
+      (snapshot->process_exit_confirmed || IsTerminalState(snapshot->state))) {
+    // Installation exposes terminal state before its ACK effect authorizes retirement.
+    Require(fixture.writer.WaitForWriterIdle(), "Worker ACK retirement waits for effect dispatch");
+    const bool returned = fixture.writer.RetireWorkerAck(*fixture.pending_worker_delivery);
+    Require(returned || (snapshot->process_exit_confirmed && event == "process_exit_confirmed"),
+            "producer could not return its authorized exact Worker delivery identity");
+    fixture.pending_worker_delivery.reset();
+  }
+}
 void SubmitExternalOrSetup(Fixture& fixture, const std::string& event, Json payload) {
   const Uuid job{kJob};
   if (event == "cancel_accepted" || event == "terminate_accepted") {
@@ -69,14 +82,7 @@ void SubmitExternalOrSetup(Fixture& fixture, const std::string& event, Json payl
         fixture.pending_worker_delivery = input;
     }
   }
-  const auto snapshot = fixture.writer.SnapshotFor(job);
-  if (fixture.pending_worker_delivery && snapshot &&
-      (snapshot->process_exit_confirmed || IsTerminalState(snapshot->state))) {
-    const bool returned = fixture.writer.RetireWorkerAck(*fixture.pending_worker_delivery);
-    Require(returned || (snapshot->process_exit_confirmed && event == "process_exit_confirmed"),
-            "producer could not return its authorized exact Worker delivery identity");
-    fixture.pending_worker_delivery.reset();
-  }
+  RetirePendingWorkerDelivery(fixture, event);
 }
 Json MaterializeOracle(const Graph& graph, const Json& snapshot, const std::string& event) {
   for (const auto& payload : graph.payloads.at(event)) {

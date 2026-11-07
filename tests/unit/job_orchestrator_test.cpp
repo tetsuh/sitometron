@@ -1646,6 +1646,9 @@ int JobIngressFailClosed() {
   clock_failure.InjectClockReadFailure();
   const auto clock_turn = clock_failure.Create();
   result |= ConsumeCompletion(clock_failure, clock_turn, Completion::Code::kServiceFailed);
+  // Failure disposal completes the source before deferred producer join/sealing.
+  result |= Check(clock_failure.WaitForWriterIdle(),
+                  "Clock failure reaches writer and producer quiescence before seal observation");
   result |= Check(
       clock_failure.failed() && clock_failure.sealed() && clock_failure.total_occupancy() == 0 &&
           clock_failure.journal_attempts() == 0 && clock_failure.effect_count() == 0,
