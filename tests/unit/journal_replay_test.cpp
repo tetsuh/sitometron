@@ -201,6 +201,7 @@ int ReproducesVectors(const Json& vectors, const Ordered& ordered) {
     SegmentJournal journal(fs);
     result |= Check(journal.Open(k_dir).ok, "orchestrator journal opens");
     core::internal::Config config;
+    config.hold_supervisor_for_test = true;
     config.max_jobs = 4;
     config.normal_capacity = 4;
     config.trace_capacity = config.total_capacity();
@@ -449,6 +450,7 @@ int SequenceContinuation() {
 core::internal::Config SeededConfig(const ReplayResult& replayed, SegmentJournal& journal,
                                     FakePorts& fakes, std::size_t max_jobs) {
   core::internal::Config config;
+  config.hold_supervisor_for_test = true;
   config.max_jobs = max_jobs;
   config.normal_capacity = 4;
   config.trace_capacity = config.total_capacity();

@@ -90,14 +90,7 @@ inline bool Rejected(i::JobOrchestrator& writer, const i::IngressResult& input,
 inline bool CapacityCompletion(i::JobOrchestrator& writer, const i::IngressResult& input) {
   if (input.code != i::IngressCode::kAdmitted) return false;
   const auto result = writer.AwaitCompletion(input.ingress_sequence);
-  // Detect the new completion enumerator without requiring a production edit in the RED commit.
-  return result && []<typename Code>(Code code) {
-    if constexpr (requires { Code::kResidentLimit; }) {
-      return code == Code::kResidentLimit;
-    } else {
-      return false;
-    }
-  }(result->code);
+  return result && result->code == i::Completion::Code::kResidentLimit;
 }
 
 struct Plan {
@@ -257,6 +250,7 @@ class Fixture {
         runner(plan.runner, 1),
         session(plan.session, 1),
         identity(Jobs(), Workers(), Launches()) {
+    config.hold_supervisor_for_test = true;
     config.max_jobs = limits.jobs;
     config.normal_capacity = limits.normal;
     config.trace_capacity = limits.trace;
@@ -288,85 +282,41 @@ class Fixture {
   std::unique_ptr<i::JobOrchestrator> writer;
 };
 
-// RED bridges specify private observation/injection seams without changing production sources.
-// Missing probes never count as successful coverage. All retirement checks first require real
-// pressure admission, so the baseline failure is behavior, not an unavailable test interface.
-struct SlotState {
-  std::size_t index = 0;
-  std::array<std::uint64_t, 4> timer_generation{};
-  bool state_banks_empty = false;
-  bool prepared_banks_empty = false;
-  bool gates_empty = false;
-  bool identities_empty = false;
-  bool generated_bindings_empty = false;
-};
-template <typename Writer, typename Key>
-std::optional<SlotState> InspectSlot(Writer& writer, const Key& key) {
-  if constexpr (requires { writer.InspectSlotForTest(key); }) {
-    const auto value = writer.InspectSlotForTest(key);
-    if (!value) return std::nullopt;
-    return SlotState{value->index,
-                     value->timer_generation,
-                     value->state_banks_empty,
-                     value->prepared_banks_empty,
-                     value->gates_empty,
-                     value->identities_empty,
-                     value->generated_bindings_empty};
-  } else {
-    return std::nullopt;
-  }
+using SlotState = i::JobOrchestrator::SlotState;
+template <typename Key>
+std::optional<SlotState> InspectSlot(i::JobOrchestrator& writer, const Key& key) {
+  return writer.InspectSlotForTest(key);
 }
 template <typename Writer>
 bool InjectGeneration(Writer& writer, const c::Uuid& id, c::TimeoutPhase phase,
                       std::uint64_t value) {
-  if constexpr (requires { writer.SetTimerGenerationForTest(id, phase, value); }) {
-    return writer.SetTimerGenerationForTest(id, phase, value);
-  } else {
-    return false;
-  }
+  return writer.SetTimerGenerationForTest(id, phase, value);
 }
 template <typename Writer>
 bool InjectOrdinal(Writer& writer, std::uint64_t value) {
-  if constexpr (requires { writer.SetNextTraceOrdinalForTest(value); }) {
-    return writer.SetNextTraceOrdinalForTest(value);
-  } else {
-    return false;
-  }
+  return writer.SetNextTraceOrdinalForTest(value);
 }
 template <typename Writer>
 bool AcquireAndReturn(Writer& writer, const c::Uuid& id, c::EventType event,
                       c::TimeoutPhase phase = c::TimeoutPhase::kInvalid) {
-  if constexpr (requires { writer.AcquireSourceLease(id, event, phase); }) {
-    auto lease = writer.AcquireSourceLease(id, event, phase);
-    if (!lease) return false;
-    return writer.ReturnSourceLease(std::move(*lease));
-  } else {
-    return false;
-  }
+  auto lease = writer.AcquireSourceLease(id, event, phase);
+  return lease && writer.ReturnSourceLease(std::move(*lease));
 }
 
 template <typename Phase>
 std::optional<Phase> ClaimedPhase() {
-  if constexpr (requires { Phase::kVictimClaimed; }) {
-    return Phase::kVictimClaimed;
-  } else {
-    return std::nullopt;
-  }
+  return Phase::kVictimClaimed;
 }
 template <typename Writer, typename Action>
 bool WhileLeased(Writer& writer, const c::Uuid& id, c::EventType event, Action action) {
-  if constexpr (requires { writer.AcquireSourceLease(id, event, c::TimeoutPhase::kInvalid); }) {
-    auto lease = writer.AcquireSourceLease(id, event, c::TimeoutPhase::kInvalid);
-    if (!lease) return false;
-    const bool observed = action();
-    const bool returned = writer.ReturnSourceLease(std::move(*lease));
-    return observed && returned;
-  } else {
-    return false;
-  }
+  auto lease = writer.AcquireSourceLease(id, event, c::TimeoutPhase::kInvalid);
+  if (!lease) return false;
+  const bool observed = action();
+  const bool returned = writer.ReturnSourceLease(std::move(*lease));
+  return observed && returned;
 }
 
-// Always release a keyed barrier during unwinding, including the expected RED admission failure.
+// Always release a keyed barrier during unwinding, including failed assertions.
 class Hold {
  public:
   Hold(i::JobOrchestrator& value, i::WriterPhase phase) : writer_(value), phase_(phase) {

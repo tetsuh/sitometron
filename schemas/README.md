@@ -4,11 +4,13 @@ Machine-readable contracts are registered here before implementation.
 
 - `core/v1/`: normative ADR-0002 raw-candidate and internal reducer-input DTOs, Job states,
   commands, Journal events, exhaustive reducer matrix, vectors, and checked state diagram;
+  `supervisor-decision-contract.json` and its schema implement Accepted ADR-0012 under Issue #133,
+  with shared decision vectors, reducer-derived completeness, and named undeliverable overtakes;
 - `openapi/`: External REST contracts; `rest-v1.openapi.json` describes External REST v1 under
   Accepted ADR-0008 and ADR-0009, which remain the authority (Issue #88);
 - `application-registry/v1/`: normative Phase 2 trusted application records under Accepted
   [ADR-0015](../docs/adr/0015-register-applications-with-a-verified-registry-file.md). Issue #134
-  implements the registry-file portion; launch identity remains with Issue #133.
+  implements the registry-file portion; Issue #133 implements the verified launch identity.
   `application-registry.schema.json` states field rules and annotates file-level
   rules; `application-registry-vectors.json` is shared by the offline JSON Schema validator and
   the C++ loader's private stage A (schema rules only). Unique identifiers and native absolute

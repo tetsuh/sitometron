@@ -76,7 +76,8 @@ foreach(FILE_PATH IN LISTS CORE_FILES)
       elseif("${_line}" MATCHES [[^[ 	]*#[ 	]*include[ 	]*"([^"]+)"[ 	]*(//.*)?$]])
         set(HEADER_NAME "${CMAKE_MATCH_1}")
         if(HEADER_NAME MATCHES [[^sitometron/core/[A-Za-z0-9_./-]+$]] OR
-           HEADER_NAME STREQUAL "job_orchestrator.hpp")
+           HEADER_NAME STREQUAL "job_orchestrator.hpp" OR
+           HEADER_NAME STREQUAL "job_supervisor.hpp")
           continue()
         endif()
       else()
