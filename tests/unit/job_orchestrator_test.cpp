@@ -3986,6 +3986,37 @@ bool SupervisorSlotReset(const sitometron::core::internal::JobOrchestrator::Slot
          slot.supervisor_accounting_empty && slot.launch_inputs_empty;
 }
 
+int RetirementResetsUnlaunchedInputs() {
+  int result = 0;
+  for (const bool terminate : {false, true}) {
+    retirement::Plan unlaunched;
+    unlaunched.Close(1, false, terminate);
+    const auto setup = unlaunched.inputs.size();
+    unlaunched.Add(retirement::Create(2));
+    retirement::Fixture held(unlaunched, 1);
+    auto& unlaunched_writer = *held.writer;
+    const auto victim = unlaunched_writer.CreateJob(
+        ri::JobLaunchInputs{{"retirement-test"}, "1", {std::string(64, 'a')}});
+    if (!retirement::Success(unlaunched_writer, victim.ingress) || !held.Run(unlaunched, 1, setup))
+      return Check(false, "pre-intent cancel or terminate closes the launch-input reset victim");
+    const auto closed = unlaunched_writer.SnapshotFor(retirement::Job(1));
+    const auto before = retirement::InspectSlot(unlaunched_writer, retirement::Job(1));
+    if (!closed || closed->worker_launch_status != LaunchStatus::kNotStarted || !before ||
+        before->launch_inputs_empty)
+      return Check(false, "closed pre-intent victim must still own nonempty launch inputs");
+    if (!held.Run(unlaunched, setup, unlaunched.inputs.size()))
+      return Check(false, "replacement creation retires the pre-intent victim");
+    const auto reset = retirement::InspectSlot(unlaunched_writer, before->index);
+    const auto replacement = retirement::InspectSlot(unlaunched_writer, retirement::Job(2));
+    result |= Check(reset && reset->launch_inputs_empty && SupervisorSlotReset(*reset) &&
+                        replacement && replacement->index != before->index &&
+                        !unlaunched_writer.SnapshotFor(retirement::Job(1)) && held.Verify(),
+                    "retirement clears nonempty launch inputs and supervisor state in the old "
+                    "physical slot after pre-intent cancel or terminate");
+  }
+  return result;
+}
+
 int JobRetirementResetsSlot() {
   retirement::Plan plan;
   plan.CloseWorker(1);
@@ -4078,7 +4109,7 @@ int JobRetirementResetsSlot() {
       }
     }
   }
-  return result;
+  return result | RetirementResetsUnlaunchedInputs();
 }
 
 int JobRetirementStaleTimerRejected() {
