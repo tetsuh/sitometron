@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-11-07
+Accepted — 2026-11-07
 
 ## Context
 
@@ -547,7 +547,7 @@ existing non-sleeping barriers:
 ## References
 
 - Issue #126; Gate #123 (P2-3, P2-7, P2-9); Issues #127, #128, #133, #107, #73, #35
-- Requirements: `WRK-001` (Planned)
+- Requirements: `WRK-001` (Normative)
 - Contract Registry: `Application runner and local process lifecycle`
 - Related ADR: ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0010, ADR-0012, ADR-0014,
   ADR-0015
