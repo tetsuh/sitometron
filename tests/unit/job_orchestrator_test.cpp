@@ -2910,6 +2910,65 @@ int JobCreateReturnsIdentity() {
 int JobIngressCompletionAwait() {
   int result = 0;
   const auto ids = Ids();
+  // Owner decision 2026-11-15: the composition-built handle combines CallbackHandle
+  // admission with AwaitCompletion. Prove the existing core returns the exact rejection
+  // for both observation outcomes after each way of leaving preparing.
+  for (const bool started : {false, true}) {
+    for (const std::string_view cause : {"cancel", "terminate", "preparation_timeout"}) {
+      JobOrchestratorHarness harness(PositiveConfig());
+      const auto allocation = EmptyAllocation();
+      result |= ExpectCommitted(harness, harness.Create(), EventType::kJobCreated);
+      result |= ExpectCommitted(
+          harness,
+          harness.SubmitResourcesCommitted(MakeResourcesCommitted(ids.primary_job, allocation)),
+          EventType::kResourcesCommitted);
+      result |= ExpectCommitted(harness, harness.SubmitGeneratedLaunchIntent(allocation),
+                                EventType::kWorkerLaunchIntent);
+      result |= Check(harness.TakeRunnerCandidate().has_value(),
+                      "bridge rejection setup takes the inert launch candidate");
+      if (cause == "preparation_timeout") {
+        const auto timeout =
+            harness.SubmitTimeout({ids.primary_job, TimeoutPhase::kPreparation, 1});
+        result |=
+            Check(!timeout.discarded, "bridge rejection timeout uses the registered generation");
+        result |= ExpectCommitted(harness, timeout.admitted, EventType::kTimeoutExpired);
+      } else {
+        const Command command{1, cause == "cancel" ? CommandType::kCancel : CommandType::kTerminate,
+                              ids.primary_job, "operator"};
+        const auto control =
+            cause == "cancel" ? harness.SubmitCancel(command) : harness.SubmitTerminate(command);
+        result |= ExpectCommitted(
+            harness, control,
+            cause == "cancel" ? EventType::kCancelAccepted : EventType::kTerminateAccepted);
+      }
+      const auto stopped = harness.Snapshot(ids.primary_job);
+      result |= Check(stopped && stopped->state == JobState::kStopping,
+                      "stop before observation must actually leave preparing");
+      const auto exit = harness.TakeRunnerCandidate();
+      result |= Check(exit.has_value(), "stop handoff retains its independent exit fact");
+      auto endpoint = harness.RetainedCallback();
+      const auto admitted =
+          endpoint.Invoke({1, ids.primary_job, "worker_launch_observed",
+                           "{\"operation_id\":\"" + ids.launch_operation.value +
+                               "\",\"outcome\":\"" + (started ? "started" : "failed") + "\"}"});
+      const auto completion = harness.AwaitCompletion(admitted.ingress_sequence);
+      result |= Check(admitted.code == IngressCode::kAdmitted && completion &&
+                          completion->code == Completion::Code::kReducerRejection &&
+                          completion->rejection &&
+                          completion->rejection->reason == RejectionReason::kEventNotAllowedInState,
+                      "composition bridge lost the reducer's post-preparing rejection");
+      result |= Check(!harness.AwaitCompletion(admitted.ingress_sequence),
+                      "composition bridge must take its completion exactly once");
+      if (exit) {
+        const auto confirmed = endpoint.Invoke(*exit);
+        const auto done = harness.AwaitCompletion(confirmed.ingress_sequence);
+        result |= Check(confirmed.code == IngressCode::kAdmitted && done &&
+                            done->code == Completion::Code::kSuccess &&
+                            harness.Snapshot(ids.primary_job)->process_exit_confirmed,
+                        "rejected observation did not leave the process-exit gate usable");
+      }
+    }
+  }
   {
     // The wait returns the completion of its own sequence and takes it exactly once.
     JobOrchestratorHarness harness(PositiveConfig());

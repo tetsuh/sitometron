@@ -61,6 +61,7 @@
 #include "registry_vector_inventory.hpp"
 #include "retirement_test_support.hpp"
 #include "sitometron/http/server.hpp"
+#include "sitometron/journal/replay.hpp"
 #include "sitometron/journal/segment_journal.hpp"
 
 namespace {
@@ -3991,6 +3992,7 @@ int SitometrondEmptyRegistry() {
 }
 
 // Included here to share this translation unit's existing transport/fixture helpers.
+#include "process_composition_checks.hpp"
 #include "registry_composition_checks.hpp"
 
 }  // namespace job_routes
@@ -4172,6 +4174,7 @@ int DaemonOutlivesMaxJobs() {
 }  // namespace job_routes
 
 int Run(std::string_view name, const std::string& sitometrond_path) {
+  if (name == "rest_v1_protocol_less_process_fails") return job_routes::ProtocolLessProcessFails();
   if (name == "registry_startup_refuses_invalid")
     return job_routes::RegistryStartupRefusesInvalid();
   if (name == "registry_bundle_digest_verified") return job_routes::RegistryBundleDigestVerified();

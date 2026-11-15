@@ -615,7 +615,13 @@ int OrderingCheck(std::string_view check) {
 int JobSupervisorRejectionRederives() {
   return OrderingCheck("job_supervisor_rejection_rederives");
 }
-int JobSupervisorIngressResults() { return OrderingCheck("job_supervisor_ingress_results"); }
+int JobSupervisorIngressResults() {
+  {
+    Fixture fixture;
+    IndependentCapacityFlags(fixture.writer);
+  }
+  return OrderingCheck("job_supervisor_ingress_results");
+}
 int JobSupervisorNoWriterReentry() {
   for (const std::string_view mode : {"shutdown", "failure", "destruction"})
     ProducerStopLockBoundary(mode);

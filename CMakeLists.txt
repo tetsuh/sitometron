@@ -615,6 +615,63 @@ if(SITOMETRON_BUILD_TESTS)
         -DHTTP_NEGATIVE_MODE=public
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_negative_isolation.cmake)
 
+    if(WIN32)
+      set(_process_test_platform tests/support/process_child_windows.cpp)
+    else()
+      set(_process_test_platform tests/support/process_child_linux.cpp)
+    endif()
+    add_library(sitometron_process_test_platform STATIC ${_process_test_platform})
+    sitometron_enable_project_warnings(sitometron_process_test_platform)
+    sitometron_enable_sanitizers(sitometron_process_test_platform)
+    add_executable(sitometron_process_test_child tests/support/process_test_child.cpp)
+    target_link_libraries(sitometron_process_test_child PRIVATE
+      sitometron_process_test_platform Boost::asio nlohmann_json::nlohmann_json)
+    sitometron_enable_project_warnings(sitometron_process_test_child)
+    sitometron_enable_sanitizers(sitometron_process_test_child)
+
+    add_executable(sitometron_process_tests
+      tests/unit/process_runner_test.cpp tests/support/process_runner_driver.cpp
+      tests/support/process_handoff_allocation_probe.cpp)
+    target_include_directories(sitometron_process_tests PRIVATE tests/support)
+    target_link_libraries(sitometron_process_tests PRIVATE
+      sitometron::core sitometron_process_test_platform Boost::asio
+      nlohmann_json::nlohmann_json Threads::Threads)
+    # RED builds without a production stub; GREEN binds these same assertions to the adapter.
+    if(TARGET sitometron_process)
+      target_link_libraries(sitometron_process_tests PRIVATE sitometron_process)
+      target_include_directories(sitometron_process_tests PRIVATE src/process)
+      target_compile_definitions(sitometron_process_tests PRIVATE SITOMETRON_TEST_HAS_PROCESS=1)
+    endif()
+    add_dependencies(sitometron_process_tests sitometron_process_test_child)
+    sitometron_enable_project_warnings(sitometron_process_tests)
+    sitometron_enable_sanitizers(sitometron_process_tests)
+    foreach(_process_check IN ITEMS
+        process_launch_observed_after_start
+        process_failed_start_reports_failed
+        process_exit_confirmed_mode
+        process_stop_before_start_skips_launch
+        process_stop_delivery
+        process_handoff_bounded
+        process_normal_full_waits
+        process_exit_reported_after_rejected_observation
+        process_reaped_after_failure)
+      add_test(NAME ${_process_check} COMMAND sitometron_process_tests
+        ${_process_check} $<TARGET_FILE:sitometron_process_test_child>)
+      set_tests_properties(${_process_check} PROPERTIES TIMEOUT 120)
+    endforeach()
+    foreach(_process_scan IN ITEMS allowlist public)
+      if(_process_scan STREQUAL "allowlist")
+        set(_process_scan_name process_dependency_allowlist)
+      else()
+        set(_process_scan_name process_public_api_isolation)
+      endif()
+      add_test(NAME ${_process_scan_name} COMMAND ${CMAKE_COMMAND}
+        -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DSITOMETRON_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -DPROCESS_TEST_MODE=${_process_scan}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/support/process_isolation_test.cmake)
+    endforeach()
+
     add_executable(sitometron_registry_tests tests/unit/registry_test.cpp)
     target_include_directories(sitometron_registry_tests PRIVATE src/registry)
     target_compile_definitions(sitometron_registry_tests PRIVATE
@@ -643,7 +700,9 @@ if(SITOMETRON_BUILD_TESTS)
       PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src/core
         ${CMAKE_CURRENT_SOURCE_DIR}/src/registry)
     target_compile_definitions(
-      sitometron_http_tests PRIVATE SITOMETRON_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+      sitometron_http_tests PRIVATE SITOMETRON_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        SITOMETRON_PROCESS_TEST_CHILD="$<TARGET_FILE:sitometron_process_test_child>")
+    add_dependencies(sitometron_http_tests sitometron_process_test_child)
     target_link_libraries(
       sitometron_http_tests
       PRIVATE
@@ -660,6 +719,7 @@ if(SITOMETRON_BUILD_TESTS)
     sitometron_enable_project_warnings(sitometron_http_tests)
     sitometron_enable_sanitizers(sitometron_http_tests)
     foreach(_rest_v1_check IN ITEMS
+        rest_v1_protocol_less_process_fails
         registry_startup_refuses_invalid
         registry_bundle_digest_verified
         registry_absent_keeps_empty_set
