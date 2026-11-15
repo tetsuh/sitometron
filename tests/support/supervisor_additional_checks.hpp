@@ -175,6 +175,9 @@ void CloseInFlight(const Json& vector) {
           "missing in-flight decision checkpoint");
   const auto job = fixture.New();
   Require(WaitBarrier(fixture.writer), "initial decision not held");
+  // Create's completion precedes its kTurnFinished checkpoint. The supervisor is held,
+  // so drain that earlier turn before arming a phase intended for its next own input.
+  Require(fixture.writer.WaitForWriterIdle(), "creation turn not drained before phase arming");
   const std::map<std::string, WriterPhase> phases{
       {"before_dequeue", WriterPhase::kBeforeDequeue},
       {"before_commit", WriterPhase::kBeforeCommit},
@@ -190,6 +193,9 @@ void CloseInFlight(const Json& vector) {
   const auto sequence = WaitSubmission(fixture.writer, job);
   Require(sequence != 0 && fixture.writer.WaitUntil(sequence, phase),
           "own input missed selected writer phase");
+  if (vector.at("id") == "V056")
+    std::cout << "V056 close_in_flight captured phase=turn_finished own_sequence=" << sequence
+              << std::endl;
   const auto marker = fixture.writer.SubmitShutdown();
   Require(marker.code == IngressCode::kAdmitted, "shutdown marker not ordered after own input");
   Require(fixture.writer.Release(sequence, phase), "in-flight writer barrier not released");
