@@ -381,7 +381,7 @@ struct ProducerState {
     } catch (const std::exception& error) {
       std::cerr << "process start failed: " << error.what() << '\n';
     }
-    const bool started = static_cast<bool>(process);
+    const auto started = static_cast<bool>(process);
     if (started) {
       ++port.processes_created;
       port.Reach("spawn_before_publication");

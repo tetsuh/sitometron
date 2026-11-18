@@ -43,8 +43,8 @@ void PortState::Stop(const core::ApplicationStopRequest& request, std::uint64_t 
         changed = true;
       }
     }
-    if (!changed) return;
-    if (pass == 0) Reach("stop_before_rescan");
+    if (!changed || pass != 0) return;
+    Reach("stop_before_rescan");
   }
 }
 void TestAccess::Install(RunnerPort& port, const TestHooks* hooks) noexcept {

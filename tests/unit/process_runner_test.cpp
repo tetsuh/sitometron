@@ -594,12 +594,35 @@ void HandoffBounded(const std::string& child) {
     Require(view.max_completions_per_thread <= 1, "thread retained two completions");
     ReapedAndJoined(*fixture.driver);
   }
-  for (const bool cancel_queued : {false, true}) {
+  {
     Fixture fixture(Options(child, "before_final_completion"),
-                    "retirement must offer the closing cell's stable partner", "exit");
+                    "a launch after one closing cell must remain queued in its stable partner",
+                    "exit");
+    fixture.driver->Launch(Launch(1));
+    fixture.driver->WaitPoint("before_final_completion");
+    fixture.driver->Launch(Launch(2));
+    const auto queued = fixture.driver->Inspect();
+    Require(queued.closing == 1 && queued.occupied == 2 && queued.processes_created == 1,
+            "closing partner did not retain the next launch behind the held completion");
+    fixture.driver->Forced(Stop(2));
+    fixture.driver->Release();
+    fixture.driver->WaitPoint("cell_released", 2);
+    ExactFacts(*fixture.driver, 1, 2);
+    ReapedAndJoined(*fixture.driver);
+    Require(fixture.driver->Inspect().processes_created == 1,
+            "stopped closing partner spawned instead of cancelling");
+  }
+  for (const bool cancel_queued : {false, true}) {
+    auto options = Options(child, "before_final_completion");
+    options.hold_points = {"before_spawn_check"};
+    Fixture fixture(options, "retirement must offer the closing cell's stable partner", "exit");
     fixture.driver->Launch(Launch(1));
     fixture.driver->Launch(Launch(2));
-    fixture.driver->WaitHeld(2);
+    // Both claims must occur while active, before either fast child can enter
+    // closing and make its same-mailbox partner eligible for the second launch.
+    fixture.driver->WaitPoint("before_spawn_check", 2);
+    fixture.driver->ReleasePoint("before_spawn_check");
+    fixture.driver->WaitPoint("before_final_completion", 2);
     Require(fixture.driver->Inspect().closing == 2, "last fact did not enter closing first");
     fixture.driver->Launch(Launch(3));
     Require(fixture.driver->Inspect().occupied == 3,
@@ -966,13 +989,19 @@ void ReapedAfterFailure(const std::string& child) {
     ReapedAndJoined(*fixture.driver);
   }
   {
-    Fixture fixture(Options(child, "before_final_completion"),
-                    "shutdown must drop a launch still queued behind a closing cell", "exit");
+    auto options = Options(child, "before_final_completion");
+    options.hold_points = {"before_spawn_check"};
+    Fixture fixture(options, "shutdown must drop a launch still queued behind a closing cell",
+                    "exit");
     fixture.driver->Launch(Launch(1));
-    (void)fixture.control.Ready();
     fixture.driver->Launch(Launch(2));
+    // Establish two independent active mailboxes before allowing either child to
+    // exit; otherwise launch 2 may validly queue behind the first closing cell.
+    fixture.driver->WaitPoint("before_spawn_check", 2);
+    fixture.driver->ReleasePoint("before_spawn_check");
     (void)fixture.control.Ready();
-    fixture.driver->WaitHeld(2);
+    (void)fixture.control.Ready();
+    fixture.driver->WaitPoint("before_final_completion", 2);
     fixture.driver->Launch(Launch(3));
     fixture.driver->RequestStop();
     fixture.driver->Release();
