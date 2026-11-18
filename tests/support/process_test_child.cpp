@@ -109,6 +109,7 @@ int RunChild(const std::vector<std::string>& arguments) {
       boost::system::error_code error;
       boost::asio::read(control, boost::asio::buffer(&command, 1), error);
       if (error || command == 'X') break;
+      if (command == 'P') boost::asio::write(control, boost::asio::buffer(&command, 1));
     }
     return status;
   } catch (const std::exception& error) {
@@ -125,6 +126,7 @@ int main(int argc, char** argv) {
 #endif
   try {
     std::vector<std::string> arguments;
+    arguments.reserve(static_cast<std::size_t>(argc));
     for (int index = 0; index < argc; ++index) {
 #ifdef _WIN32
       arguments.push_back(sitometron::test::process::Utf8Argument(argv[index]));
