@@ -80,6 +80,9 @@ class Control final {
   Control(const Control&) = delete;
   Control& operator=(const Control&) = delete;
   std::string port() const;
+  std::string nonce() const;
+  VerifiedDescendant VerifyDescendant(std::size_t index, std::size_t parent,
+                                      const std::filesystem::path& report) const;
   std::size_t Ready();
   std::uint64_t ProcessId(std::size_t index) const;
   void Ping(std::size_t index = 0);

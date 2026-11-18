@@ -6,6 +6,7 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <tlhelp32.h>
 #include <windows.h>
 
 #include <cstdlib>
@@ -70,6 +71,22 @@ std::unique_ptr<ChildProcess> SpawnDescendant(const std::string& executable,
   return std::make_unique<Spawned>(executable, report, port);
 }
 std::uint64_t ProcessId() noexcept { return ::GetCurrentProcessId(); }
+std::uint64_t ParentProcessId() {
+  struct Snapshot {
+    HANDLE handle;
+    ~Snapshot() { (void)::CloseHandle(handle); }
+  } snapshot{::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)};
+  if (snapshot.handle == INVALID_HANDLE_VALUE)
+    throw std::runtime_error("test parent process snapshot unavailable");
+  PROCESSENTRY32W entry{};
+  entry.dwSize = static_cast<DWORD>(sizeof(entry));
+  if (::Process32FirstW(snapshot.handle, &entry)) {
+    do {
+      if (entry.th32ProcessID == ::GetCurrentProcessId()) return entry.th32ParentProcessID;
+    } while (::Process32NextW(snapshot.handle, &entry));
+  }
+  throw std::runtime_error("test parent process identity unavailable");
+}
 std::optional<std::string> EnvironmentValue(const char* name) {
   char* buffer = nullptr;
   std::size_t size = 0;
@@ -113,7 +130,8 @@ struct DescendantOwnership::Impl {
 };
 DescendantOwnership::DescendantOwnership() : impl_(std::make_unique<Impl>()) {}
 DescendantOwnership::~DescendantOwnership() { StopAndClose(impl_->handle); }
-void DescendantOwnership::Adopt(std::uint64_t pid) {
+void DescendantOwnership::Adopt(VerifiedDescendant verified) {
+  const auto pid = verified.pid_;
   if (pid == 0 || pid > std::numeric_limits<DWORD>::max())
     throw std::runtime_error("test descendant identifier invalid");
   impl_->handle = ::OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));

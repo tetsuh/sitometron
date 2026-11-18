@@ -10,6 +10,7 @@
 #include <new>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -55,13 +56,15 @@ struct Fixture {
   test::Environment port;
   test::Environment mode;
   test::Environment status;
+  test::Environment nonce;
   std::unique_ptr<test::Driver> driver;
   explicit Fixture(const test::Options& options, std::string_view missing_reason,
                    std::string child_mode = "wait", int child_status = 0)
       : report("ISSUE141_TEST_REPORT", test::PathText(directory.path() / "report.json")),
         port("ISSUE141_TEST_CONTROL_PORT", control.port()),
         mode("ISSUE141_TEST_MODE", std::move(child_mode)),
-        status("ISSUE141_TEST_STATUS", std::to_string(child_status)) {
+        status("ISSUE141_TEST_STATUS", std::to_string(child_status)),
+        nonce("ISSUE141_TEST_NONCE", control.nonce()) {
     driver = test::MakeDriver(options);
     Require(driver != nullptr,
             std::string(missing_reason) + ": sitometron_process production adapter is absent");
@@ -91,21 +94,35 @@ std::vector<test::Attempt> Facts(test::Driver& driver, std::string_view kind) {
       result.push_back(attempt);
   return result;
 }
+bool NoExitAttempts(test::Driver& driver) {
+  for (const auto& attempt : driver.Attempts())
+    if (attempt.event.event_type == "process_exit_confirmed") return false;
+  return true;
+}
 void ExactFacts(test::Driver& driver, std::size_t observations, std::size_t exits,
                 std::string_view mode = {}) {
-  const auto observed = Facts(driver, "worker_launch_observed");
-  const auto exited = Facts(driver, "process_exit_confirmed");
-  Require(observed.size() == observations && exited.size() == exits,
-          "wrong accepted observation/exit cardinality");
-  for (const auto& fact : exited) {
-    const auto payload = Json::parse(fact.event.payload_json);
-    if (!mode.empty())
-      Require(payload.at("completion_mode") == std::string(mode), "wrong exit mode");
-    const auto requested = Launch(static_cast<unsigned>(
-        std::stoul(fact.event.job_id.value.substr(fact.event.job_id.value.size() - 2))));
-    Require(payload.at("launch_operation_id") == requested.intent.operation_id.value,
-            "exit changed the launch operation identity");
-  }
+  const auto submitted = driver.SubmittedLaunches();
+  const auto compare = [&](std::string_view kind, std::string_view operation, std::size_t count) {
+    const auto facts = Facts(driver, kind);
+    Require(facts.size() == count && count <= submitted.size(),
+            "wrong accepted observation/exit cardinality");
+    std::set<std::pair<std::string, std::string>> expected;
+    std::set<std::pair<std::string, std::string>> actual;
+    for (std::size_t index = 0; index != count; ++index)
+      Require(expected.emplace(submitted[index].job_id, submitted[index].operation_id).second,
+              "fixture submitted duplicate expected Job/operation pairs");
+    for (const auto& fact : facts) {
+      const auto payload = Json::parse(fact.event.payload_json);
+      Require(
+          actual.emplace(fact.event.job_id.value, payload.at(operation).get<std::string>()).second,
+          "duplicate settled Job/operation fact");
+      if (kind == "process_exit_confirmed" && !mode.empty())
+        Require(payload.at("completion_mode") == std::string(mode), "wrong exit mode");
+    }
+    Require(actual == expected, "settled facts have a missing or misrouted Job/operation pair");
+  };
+  compare("worker_launch_observed", "operation_id", observations);
+  compare("process_exit_confirmed", "launch_operation_id", exits);
   for (const auto& attempt : driver.Attempts())
     Require(attempt.event.event_type == "worker_launch_observed" ||
                 attempt.event.event_type == "process_exit_confirmed",
@@ -116,6 +133,8 @@ void ReapedAndJoined(test::Driver& driver) {
   driver.RequestStop();
   driver.Join();
   const auto view = driver.Inspect();
+  Require(view.start_order_breaches == 0,
+          "started observation arrived before process-created state existed at fake ingress");
   Require(view.processes_created == view.processes_reaped, "owned child was not reaped");
   Require(view.threads_created == view.threads_joined, "runner thread outlived join");
   Require(view.registration_breaches == 0, "two producer threads reused one ingress registration");
@@ -128,11 +147,10 @@ void ReapedAndJoined(test::Driver& driver) {
       "this probe does not measure hidden STL/CRT/OS locks");
 }
 
-void LaunchObservedAfterStart(const std::string& child) {
+void LaunchObservedAfterStart(const std::filesystem::path& child) {
   test::Directory copies;
   const auto unicode_path = copies.path() / std::filesystem::path(u8"子 process with spaces.exe");
   std::filesystem::copy_file(child, unicode_path);
-  const auto unicode = test::PathText(unicode_path);
   // These vectors also run against the pure Windows serializer on Linux.
   const std::array quoting = {
       std::pair{std::string("word"), std::string("word")},
@@ -162,7 +180,8 @@ void LaunchObservedAfterStart(const std::string& child) {
   const std::array parent_keys{"SITOMETRON_JOB_ID", "SITOMETRON_WORKER_ID",
                                "SITOMETRON_LAUNCH_OPERATION_ID"};
 #endif
-  for (const auto& executable : std::array{child, unicode}) {
+  for (const auto& native_executable : std::array{child, unicode_path}) {
+    const auto executable = test::PathText(native_executable);
     for (const bool conflicts : {false, true}) {
       for (const auto& parameters : shapes) {
         auto options = Options(executable);
@@ -206,7 +225,7 @@ void LaunchObservedAfterStart(const std::string& child) {
     }
   }
 }
-void FailedStartReportsFailed(const std::string& child) {
+void FailedStartReportsFailed(const std::filesystem::path& child) {
   for (const std::string cause : {"missing", "unreadable", "unknown-application", "os-error"}) {
     test::Directory files;
     const auto executable = files.path() / "unreadable executable.exe";
@@ -218,7 +237,7 @@ void FailedStartReportsFailed(const std::string& child) {
     }
     if (cause == "unknown-application") options.specifications.clear();
     if (cause == "os-error") {
-      options.specifications[0].executable = child;
+      options.specifications[0].executable = test::PathText(child);
       options.fail_before_spawn = true;
     }
     Fixture fixture(options, "failed start must report failed without inventing an exit fact");
@@ -262,6 +281,24 @@ void FailedStartReportsFailed(const std::string& child) {
   ReapedAndJoined(*fixture.driver);
 }
 void ExitConfirmedMode(const std::string& child) {
+#ifndef _WIN32
+  {
+    const auto inherited = test::BlockAndIgnoreTerm();
+    Require(test::TermBlocked() && test::TermIgnored(),
+            "signal inheritance fixture not established");
+    Fixture fixture(Options(child), "handler-less child must not inherit blocked/ignored SIGTERM",
+                    "default-term");
+    fixture.driver->Launch(Launch());
+    (void)fixture.control.Ready();
+    const auto report = test::ReadReport(fixture.directory.path() / "report.json");
+    Require(!report.at("sigterm_blocked").get<bool>() && !report.at("sigterm_ignored").get<bool>(),
+            "child inherited a blocked or ignored SIGTERM");
+    fixture.driver->Cooperative(Stop());
+    fixture.driver->WaitFacts(1, 1);
+    ExactFacts(*fixture.driver, 1, 1, "cooperative");
+    ReapedAndJoined(*fixture.driver);
+  }
+#endif
   for (const std::string order : {"natural", "natural-zero", "cooperative", "forced",
                                   "cooperative-forced", "forced-cooperative"}) {
     const bool natural = order.starts_with("natural");
@@ -399,10 +436,33 @@ void StopDelivery(const std::string& child) {
     family.driver->Launch(Launch());
     (void)family.control.Ready();
     const auto descendant_index = family.control.Ready();
-    guard.ownership.Adopt(family.control.ProcessId(descendant_index));
-    const auto report = test::ReadReport(family.directory.path() / "report.json.desc");
-    Require(report.at("process_id") == family.control.ProcessId(descendant_index),
-            "descendant report differs from its test control identity");
+    const auto report_path = family.directory.path() / "report.json.desc";
+    const auto report = test::ReadReport(report_path);
+    // Bad reports must never create the capability accepted by Adopt(). No
+    // unverified PID is stored or signalled, even when validation throws.
+    for (const std::string field : {"process_id", "parent_process_id", "fixture_nonce"}) {
+      auto invalid = report;
+      if (field == "fixture_nonce")
+        invalid[field] = "not-the-fixture-nonce";
+      else
+        invalid[field] = 0;
+      {
+        std::ofstream output(report_path);
+        output << invalid.dump();
+      }
+      bool refused = false;
+      try {
+        (void)family.control.VerifyDescendant(descendant_index, 0, report_path);
+      } catch (const std::runtime_error&) {
+        refused = true;
+      }
+      {
+        std::ofstream output(report_path);
+        output << report.dump();
+      }
+      Require(refused, "unverified descendant report granted termination authority");
+    }
+    guard.ownership.Adopt(family.control.VerifyDescendant(descendant_index, 0, report_path));
     family.driver->WaitFacts(1, 0);
     if (forced)
       family.driver->Forced(Stop());
@@ -699,6 +759,39 @@ void HandoffBounded(const std::string& child) {
   }
 }
 void NormalFullWaits(const std::string& child) {
+  for (const std::string gap : {"relay_before_wait", "relay_capacity_wait"}) {
+    auto options = Options(child);
+    options.hold_points = {"after_park", gap};
+    options.minimum_observations_for_wait_hold = 2;
+    options.observations = {{test::Admission::kNormalFull},
+                            {test::Admission::kNormalFull},
+                            {test::Admission::kAdmitted}};
+    Fixture fixture(options, "relay must retry its own normal_full after its own capacity wake");
+    fixture.driver->WaitPoint("relay_before_wait");  // Initial empty scan, before any park.
+    fixture.driver->Launch(Launch());
+    (void)fixture.control.Ready();
+    fixture.driver->WaitPoint(
+        "after_park");  // Park's Set is held back, so it cannot mask this wake.
+    fixture.driver->Capacity(2);
+    fixture.driver->WaitPoint(gap, 2);
+    const auto refused = fixture.driver->Attempts();
+    Require(refused.size() == 2 && refused[0].answer.admission == test::Admission::kNormalFull &&
+                refused[1].answer.admission == test::Admission::kNormalFull &&
+                refused[0].thread != refused[1].thread,
+            "relay's own attempt was not refused before the capacity wait");
+    fixture.driver->Capacity(2);
+    fixture.driver->ReleasePoint(gap);
+    fixture.driver->WaitPoint("relay_before_wait",
+                              3);  // Next complete scan, even if a mutant drops it.
+    const auto accepted = Facts(*fixture.driver, "worker_launch_observed");
+    const bool retried = accepted.size() == 1 && fixture.driver->Attempts().size() == 3;
+    fixture.driver->ReleasePoint("after_park");
+    fixture.control.Exit();
+    fixture.driver->WaitPoint("cell_released");
+    ReapedAndJoined(*fixture.driver);
+    Require(retried, "relay did not retry after its own normal_full capacity wake");
+    ExactFacts(*fixture.driver, 1, 1, "process_already_exited");
+  }
   {
     auto options = Options(child, "observation_completion_pending");
     options.observations = {{test::Admission::kNormalFull}, {test::Admission::kAdmitted}};
@@ -1098,8 +1191,7 @@ void ReapedAfterFailure(const std::string& child) {
     fixture.driver->Capacity(0);
     fixture.driver->Release();
     fixture.driver->WaitPoint("cell_released");
-    Require(fixture.driver->Attempts().size() == 2 &&
-                Facts(*fixture.driver, "process_exit_confirmed").empty(),
+    Require(fixture.driver->Attempts().size() == 2 && NoExitAttempts(*fixture.driver),
             "failed observation closure was retried or followed by exit");
     ReapedAndJoined(*fixture.driver);
   }
@@ -1109,8 +1201,8 @@ void ReapedAfterFailure(const std::string& child) {
     Fixture fixture(options, "a closed failed observation owes no further fact");
     fixture.driver->Launch(Launch());
     fixture.driver->WaitPoint("cell_released");
-    Require(Facts(*fixture.driver, "process_exit_confirmed").empty(),
-            "closed failed start submitted another runner fact");
+    Require(NoExitAttempts(*fixture.driver),
+            "closed failed start attempted another runner fact, regardless of admission");
     ReapedAndJoined(*fixture.driver);
   }
   for (const std::string point :
@@ -1143,27 +1235,35 @@ void ReapedAfterFailure(const std::string& child) {
     fixture.driver->CloseAdmission();
     fixture.driver->Release();
     fixture.driver->WaitPoint("cell_released");
-    Require(Facts(*fixture.driver, "process_exit_confirmed").empty() &&
-                fixture.driver->Inspect().threads_joined == 0,
-            "core closure submitted an exit or joined runner threads");
+    Require(NoExitAttempts(*fixture.driver) && fixture.driver->Inspect().threads_joined == 0,
+            "core closure attempted an exit or joined runner threads");
     ReapedAndJoined(*fixture.driver);
   }
 }
 }  // namespace
 
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
   if (argc != 3) {
     std::cerr << "usage: sitometron_process_tests <check> <built-test-child>\n";
     return 2;
   }
+#ifdef _WIN32
+  const std::string name = test::Utf8Argument(argv[1]);
+#else
   const std::string name = argv[1];
+#endif
   try {
-    const std::string child = test::PathText(std::filesystem::absolute(argv[2]));
-    Require(std::filesystem::is_regular_file(child), "built test child missing");
+    const auto child_path = std::filesystem::absolute(argv[2]);
+    Require(std::filesystem::is_regular_file(child_path), "built test child missing");
+    const auto child = test::PathText(child_path);
     if (name == "process_launch_observed_after_start")
-      LaunchObservedAfterStart(child);
+      LaunchObservedAfterStart(child_path);
     else if (name == "process_failed_start_reports_failed")
-      FailedStartReportsFailed(child);
+      FailedStartReportsFailed(child_path);
     else if (name == "process_exit_confirmed_mode")
       ExitConfirmedMode(child);
     else if (name == "process_stop_before_start_skips_launch")

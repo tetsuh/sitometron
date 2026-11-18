@@ -37,6 +37,10 @@ struct Specification {
   std::vector<std::string> arguments;
   std::string bundle_sha256;
 };
+struct LaunchIdentity {
+  std::string job_id;
+  std::string operation_id;
+};
 struct Attempt {
   core::RawCandidateEvent event;
   Answer answer;
@@ -61,6 +65,7 @@ struct Diagnostics {
   std::vector<std::string> delivery_order;
   std::size_t registration_breaches = 0;
   std::uint64_t max_generation = 0;
+  std::size_t start_order_breaches = 0;
 };
 struct Options {
   std::size_t max_jobs = 1;
@@ -75,6 +80,7 @@ struct Options {
   Diagnostics* construction_failure = nullptr;
   std::uint64_t initial_generation = 0;
   std::string stop_on_point;
+  std::size_t minimum_observations_for_wait_hold = 0;
 };
 class Driver {
  public:
@@ -93,6 +99,7 @@ class Driver {
   virtual void Join() noexcept = 0;
   virtual void WaitFacts(std::size_t observations, std::size_t exits) = 0;
   virtual std::vector<Attempt> Attempts() = 0;
+  virtual std::vector<LaunchIdentity> SubmittedLaunches() = 0;
   virtual Diagnostics Inspect() = 0;
 };
 

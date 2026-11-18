@@ -20,7 +20,7 @@
 namespace sitometron::test::process {
 namespace {
 namespace adapter = sitometron::process;
-constexpr std::array<std::string_view, 33> k_points{"before_spawn_check",
+constexpr std::array<std::string_view, 35> k_points{"before_spawn_check",
                                                     "before_spawn",
                                                     "spawn_before_publication",
                                                     "before_observation",
@@ -52,16 +52,20 @@ constexpr std::array<std::string_view, 33> k_points{"before_spawn_check",
                                                     "stop_checked",
                                                     "service_scan_finished",
                                                     "service_exited",
-                                                    "join_before_slot"};
+                                                    "join_before_slot",
+                                                    "service_scan_started",
+                                                    "relay_capacity_wait"};
 class Native final : public Driver {
   class Waiter final : public adapter::CapacityWaiter {
    public:
+    Waiter(Native& owner, std::size_t index) : owner_(owner), index_(index) {}
     void Clear() noexcept override { flag_.store(false, std::memory_order_release); }
     void Set() noexcept override {
       flag_.store(true, std::memory_order_release);
       flag_.notify_all();
     }
     bool Wait() noexcept override {
+      if (index_ == owner_.options_.max_jobs + 1) owner_.Reach("relay_capacity_wait");
       flag_.wait(false, std::memory_order_acquire);
       return !closed_.load(std::memory_order_acquire);
     }
@@ -72,6 +76,8 @@ class Native final : public Driver {
     }
 
    private:
+    Native& owner_;
+    const std::size_t index_;
     std::atomic_bool flag_{false};
     std::atomic_bool closed_{false};
   };
@@ -132,7 +138,7 @@ class Native final : public Driver {
     for (std::size_t index = 0; index != options.max_jobs + 3; ++index)
       endpoints.push_back(std::make_unique<Endpoint>(*this));
     for (std::size_t index = 0; index != options.max_jobs + 2; ++index)
-      waiters_.push_back(std::make_shared<Waiter>());
+      waiters_.push_back(std::make_shared<Waiter>(*this, index));
     std::vector<std::shared_ptr<adapter::CapacityWaiter>> waiter_interfaces(waiters_.begin(),
                                                                             waiters_.end());
     if (options.queued_before_start) Launch(*options.queued_before_start);
@@ -151,6 +157,10 @@ class Native final : public Driver {
     Join();
   }
   void Launch(core::ApplicationLaunchRequest request) override {
+    {
+      std::lock_guard lock(mutex_);
+      launches_.push_back({request.job_id.value, request.intent.operation_id.value});
+    }
     const HandoffAllocationScope probe;
     port_.HandoffLaunch(std::move(request));
   }
@@ -197,7 +207,10 @@ class Native final : public Driver {
     throw std::runtime_error("unknown deterministic test point");
   }
   void Capacity(std::size_t index) override { waiters_.at(index)->Set(); }
-  void WakeService() override { adapter::internal::TestAccess::WakeService(port_); }
+  void WakeService() override {
+    service_scan_armed_.store(true, std::memory_order_release);
+    adapter::internal::TestAccess::WakeService(port_);
+  }
   void CloseAdmission() override {
     closed_.store(true, std::memory_order_release);
     for (auto& waiter : waiters_) waiter->Close();
@@ -225,6 +238,10 @@ class Native final : public Driver {
     std::lock_guard lock(mutex_);
     return attempts_;
   }
+  std::vector<LaunchIdentity> SubmittedLaunches() override {
+    std::lock_guard lock(mutex_);
+    return launches_;
+  }
   Diagnostics Inspect() override {
     const auto view = adapter::internal::TestAccess::Inspect(port_);
     return {view.occupied,
@@ -244,19 +261,26 @@ class Native final : public Driver {
             failures_.load(),
             view.delivery_order,
             registration_breaches_.load(),
-            view.max_generation};
+            view.max_generation,
+            start_order_breaches_.load()};
   }
 
  private:
   void Reach(std::string_view point) noexcept {
-    // Ignore construction's empty scan. The shutdown regression holds only a scan
-    // that follows an admitted started observation and therefore a published child.
-    if (point == "service_scan_finished" && counts_[5].load(std::memory_order_acquire) == 0) return;
+    // Only the service thread accesses this per-scan snapshot. WakeService arms it
+    // after the fixture has observed publication; an earlier in-progress scan cannot qualify.
+    if (point == "service_scan_started")
+      service_scan_eligible_ = service_scan_armed_.load(std::memory_order_acquire);
+    if (point == "service_scan_finished" && !service_scan_eligible_) return;
     const auto found = std::find(k_points.begin(), k_points.end(), point);
     if (found == k_points.end()) return;
     const auto index = static_cast<std::size_t>(found - k_points.begin());
     counts_[index].fetch_add(1, std::memory_order_acq_rel);
     counts_[index].notify_all();
+    if ((point == "relay_before_wait" || point == "relay_capacity_wait") &&
+        observation_attempts_.load(std::memory_order_acquire) <
+            options_.minimum_observations_for_wait_hold)
+      return;
     if (point == options_.stop_on_point) {
       producer_->RequestStop();
       producer_->Join();  // Must be a nonblocking self-join refusal, followed by external join.
@@ -273,6 +297,12 @@ class Native final : public Driver {
     adapter::internal::RecordCoreEntry();
     try {
       const bool observation = event.event_type == "worker_launch_observed";
+      // Snapshot at receipt, not after Ready(): a later child start must not make
+      // an earlier started observation pass. Defer reporting until owned cleanup.
+      if (observation && event.payload_json.find("\"outcome\":\"started\"") != std::string::npos &&
+          adapter::internal::TestAccess::Inspect(port_).processes_created == 0)
+        ++start_order_breaches_;
+      if (observation) observation_attempts_.fetch_add(1, std::memory_order_release);
       Answer answer;
       {
         std::lock_guard lock(mutex_);
@@ -339,12 +369,17 @@ class Native final : public Driver {
   std::mutex mutex_;
   std::condition_variable wake_;
   std::vector<Attempt> attempts_;
+  std::vector<LaunchIdentity> launches_;
+  std::atomic_size_t observation_attempts_{0};
+  std::atomic_size_t start_order_breaches_{0};
   std::size_t next_observation_ = 0;
   std::size_t next_exit_ = 0;
   std::array<std::atomic_size_t, k_points.size()> counts_{};
   std::atomic_size_t held_{0};
   std::array<std::atomic_bool, k_points.size()> released_{};
   std::atomic_bool closed_{false};
+  std::atomic_bool service_scan_armed_{false};
+  bool service_scan_eligible_ = false;
   std::atomic_size_t failures_{0};
   std::atomic_size_t registration_breaches_{0};
   std::vector<std::shared_ptr<Waiter>> waiters_;

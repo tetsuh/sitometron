@@ -66,6 +66,12 @@ int RunChild(const std::vector<std::string>& arguments) {
     const auto cwd = std::filesystem::current_path().u8string();
     const nlohmann::json observation{
         {"process_id", sitometron::test::process::ProcessId()},
+        {"parent_process_id", sitometron::test::process::ParentProcessId()},
+        {"fixture_nonce", Environment("ISSUE141_TEST_NONCE")},
+#ifndef _WIN32
+        {"sigterm_blocked", sitometron::test::process::TermBlocked()},
+        {"sigterm_ignored", sitometron::test::process::TermIgnored()},
+#endif
         {"argv", arguments},
         {"cwd", std::string(cwd.begin(), cwd.end())},
         {"sentinel", Environment("ISSUE141_TEST_SENTINEL")},
@@ -91,7 +97,7 @@ int RunChild(const std::vector<std::string>& arguments) {
     control_descriptor = control.native_handle();
     ignore_cooperative = mode == "ignore-term" ? 1 : 0;
     requested_status = status;
-    if (std::signal(SIGTERM, Cooperative) == SIG_ERR)
+    if (mode != "default-term" && std::signal(SIGTERM, Cooperative) == SIG_ERR)
       throw std::runtime_error("test signal registration failed");
 #endif
     const char ready = 'R';

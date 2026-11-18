@@ -47,6 +47,52 @@ std::unique_ptr<ChildProcess> SpawnDescendant(const std::string& executable,
   return std::make_unique<Spawned>(executable, report, port);
 }
 std::uint64_t ProcessId() noexcept { return static_cast<std::uint64_t>(::getpid()); }
+std::uint64_t ParentProcessId() { return static_cast<std::uint64_t>(::getppid()); }
+namespace {
+class InheritedTerm final : public SignalInheritance {
+ public:
+  InheritedTerm() {
+    if (::sigaction(SIGTERM, nullptr, &prior_action_) != 0 ||
+        ::pthread_sigmask(SIG_SETMASK, nullptr, &prior_mask_) != 0)
+      throw std::runtime_error("cannot save inherited signal state");
+    sigset_t term;
+    (void)::sigemptyset(&term);
+    (void)::sigaddset(&term, SIGTERM);
+    if (::pthread_sigmask(SIG_BLOCK, &term, nullptr) != 0)
+      throw std::runtime_error("cannot block inherited SIGTERM");
+    struct sigaction ignored {};
+    ignored.sa_handler = SIG_IGN;
+    (void)::sigemptyset(&ignored.sa_mask);
+    if (::sigaction(SIGTERM, &ignored, nullptr) != 0) {
+      (void)::pthread_sigmask(SIG_SETMASK, &prior_mask_, nullptr);
+      throw std::runtime_error("cannot ignore inherited SIGTERM");
+    }
+  }
+  ~InheritedTerm() override {
+    (void)::sigaction(SIGTERM, &prior_action_, nullptr);
+    (void)::pthread_sigmask(SIG_SETMASK, &prior_mask_, nullptr);
+  }
+
+ private:
+  struct sigaction prior_action_ {};
+  sigset_t prior_mask_{};
+};
+}  // namespace
+std::unique_ptr<SignalInheritance> BlockAndIgnoreTerm() {
+  return std::make_unique<InheritedTerm>();
+}
+bool TermBlocked() {
+  sigset_t mask;
+  if (::pthread_sigmask(SIG_SETMASK, nullptr, &mask) != 0)
+    throw std::runtime_error("cannot read test signal mask");
+  return ::sigismember(&mask, SIGTERM) == 1;
+}
+bool TermIgnored() {
+  struct sigaction action {};
+  if (::sigaction(SIGTERM, nullptr, &action) != 0)
+    throw std::runtime_error("cannot read test signal disposition");
+  return action.sa_handler == SIG_IGN;
+}
 std::optional<std::string> EnvironmentValue(const char* name) {
   if (const char* value = std::getenv(name)) return std::string(value);
   return std::nullopt;
@@ -84,7 +130,8 @@ DescendantOwnership::~DescendantOwnership() {
   StopAndReap(impl_->pid);
   (void)::prctl(PR_SET_CHILD_SUBREAPER, impl_->prior);
 }
-void DescendantOwnership::Adopt(std::uint64_t pid) {
+void DescendantOwnership::Adopt(VerifiedDescendant verified) {
+  const auto pid = verified.pid_;
   if (pid == 0 || pid > static_cast<std::uint64_t>(std::numeric_limits<pid_t>::max()))
     throw std::runtime_error("test descendant identifier invalid");
   impl_->pid = static_cast<pid_t>(pid);

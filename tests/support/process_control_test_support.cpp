@@ -14,6 +14,7 @@
 #include <cerrno>
 #endif
 #include <exception>
+#include <random>
 #include <thread>
 
 namespace sitometron::test::process {
@@ -37,7 +38,13 @@ struct Control::Impl {
 #endif
   std::vector<std::unique_ptr<Peer>> peers;
   std::vector<std::uint64_t> process_ids;
+  std::string fixture_nonce;
   Impl() {
+    std::random_device entropy;
+    for (unsigned index = 0; index != 4; ++index) {
+      fixture_nonce += std::to_string(entropy());
+      fixture_nonce.push_back('-');
+    }
 #ifndef _WIN32
     acceptor.descriptor = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     Require(acceptor.descriptor != -1, "cannot create test control listener");
@@ -120,6 +127,22 @@ Control::~Control() = default;
 std::string Control::port() const {
   impl_->CheckThread();
   return impl_->Port();
+}
+std::string Control::nonce() const {
+  impl_->CheckThread();
+  return impl_->fixture_nonce;
+}
+VerifiedDescendant Control::VerifyDescendant(std::size_t index, std::size_t parent,
+                                             const std::filesystem::path& path) const {
+  impl_->CheckThread();
+  const auto report = ReadReport(path);
+  const auto pid = impl_->process_ids.at(index);
+  Require(index != parent && pid != impl_->process_ids.at(parent) &&
+              report.at("process_id") == pid &&
+              report.at("parent_process_id") == impl_->process_ids.at(parent) &&
+              report.at("fixture_nonce") == impl_->fixture_nonce,
+          "unverified descendant PID, parent, or fixture nonce; termination authority refused");
+  return VerifiedDescendant(pid);
 }
 std::size_t Control::Ready() {
   impl_->CheckThread();
