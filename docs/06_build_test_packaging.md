@@ -26,14 +26,16 @@ connection on the listener progresses. Every ingress-admitted cancel still reach
 including unknown and resolved-replay Jobs (one reducer-rejection turn), and a committing create
 now reaches it in production as well. ADR-0015 Section 6 retains this model; the owner decision of
 2026-11-03 assigns its reconsideration to Issue #127, not this implementation.
-After Issue #133, a registered production Job reaches `worker_launch_intent` and waits at
-ADR-0012 rule 5 because the runner placeholder discards the launch handoff. A cancel then follows
-the unchanged reducer: after that intent, process presence is unknown, so cancel enters `stopping`
-and requests cooperative stop. The placeholder supplies no process-exit fact; production does not
-yet run a Worker or guarantee terminal cleanup. The runner, the Worker protocol, and the timer
-port come from the implementation Issues that follow the designs of #126, #127, and #128;
-Gate #123 owns the end-to-end path. Without `--applications`, the registered set remains empty.
-Unresolved Jobs after restart still close admission (`OPS-004`).
+Issue #141 starts the registered executable as one local process under ADR-0016. The Worker
+protocol (#127) and timer port (#128) do not exist yet. A process that exits ends its Job `failed`,
+with its exit confirmed and cleanup status recorded, because nothing reports `worker_running`.
+A process that does not exit stays in `preparing` until cancel; no preparation timeout fires.
+On Linux, a process that ignores SIGTERM after cancel stays in `stopping` until daemon shutdown
+force-stops it, leaving the Job unresolved on the next start. External REST v1 has no terminate
+route. No Job can succeed before #127. Gate #123 owns the end-to-end path. Without
+`--applications`, the registered set remains empty. Unresolved Jobs after restart still close
+admission (`OPS-004`). Executable digests are verified only at startup, not again at launch;
+stops target only the created process, never its descendants.
 The other adapter options remain disabled because their dependencies are not in the manifest.
 See [the dependency policy](09_dependency_policy.md).
 
@@ -57,12 +59,12 @@ Phase 0A PR CI requires:
 The Linux clang-tidy step resolves the absolute `clang-tidy-18` application and runs the
 standard-library-only `tools/run_clang_tidy.py` helper against
 `build/dev-linux/compile_commands.json`. The helper intersects tracked `apps/**/*.cpp`,
-`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the enumerated 35-source set (Issue #133) and
+`src/**/*.cpp`, and `tests/**/*.cpp` files with that database, requires the enumerated 45-source set (Issue #141) and
 LLVM 18.1.3, and fails on diagnostics, tool errors, missing inputs, or selection drift.
 
 The sanitizer step reuses the separately provisioned x64-linux dependency installation, configures
 the existing `asan-ubsan` preset with manifest and applocal acquisition disabled, and requires exact
-CTest-name parity with the enumerated 169-test `dev-linux` suite. It runs without suppressions using
+CTest-name parity with the enumerated 181-test `dev-linux` suite. It runs without suppressions using
 `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
@@ -187,7 +189,7 @@ may iterate internal machine-readable vectors without creating a second stable f
 | `JOB-009` | CTests `core_supervisor_decision_contract`, `core_supervisor_decision_complete`; C++ tests `job_supervisor_drives_to_cleanup`, `job_supervisor_overtakes`, `job_supervisor_rejection_rederives`, `job_supervisor_ingress_results`, `job_supervisor_no_writer_reentry` | Active under Accepted ADR-0012 under Issue #104; implemented and activated by Issue #133 |
 | `ID-001` | CTests `identity_uuidv7_canonical`, `identity_uuidv7_monotonic_burst`, `identity_uuidv4_canonical`, `identity_stable_id_grammar`, `identity_never_repeats_within_instance`, `identity_source_never_exhausted`, `clock_recorded_at_rfc3339`, `clock_monotonic_instant`, `identity_dependency_allowlist`, `identity_public_api_isolation`, `identity_source_reads_no_other_clock_or_entropy`, `identity_seed_failure_refuses_startup`, `sitometrond_composes_production_identity` | Active under Accepted ADR-0013 under Issue #102; implemented and activated by Issue #115 |
 | `APP-001` | CTests `registry_schema_vectors`, `registry_startup_refuses_invalid`, `registry_bundle_digest_verified`, `registry_absent_keeps_empty_set`, `rest_v1_sitometrond_options` (extended with repeated and empty `--applications`), `rest_v1_registered_application_creates`, `registry_launch_identity_from_entry`, `registry_dependency_allowlist`, `registry_public_api_isolation`; the schema half of `registry_schema_vectors` also runs via `tools/validate_application_registry.py` in the Linux and Windows CI step "Validate Application registry" | Active under Accepted ADR-0015; registry loading and verification implemented by Issue #134, launch identity implemented and activated by Issue #133 |
-| `WRK-001` | CTests `process_launch_observed_after_start`, `process_failed_start_reports_failed`, `process_exit_confirmed_mode`, `process_stop_before_start_skips_launch`, `process_stop_delivery`, `process_handoff_bounded`, `process_normal_full_waits`, `process_exit_reported_after_rejected_observation`, `process_reaped_after_failure`, `process_dependency_allowlist`, `process_public_api_isolation`, `rest_v1_protocol_less_process_fails` | Planned under Accepted ADR-0016 under Issue #126; checks activated by the runner implementation Issue, which merges after Issue #133 |
+| `WRK-001` | CTests `process_launch_observed_after_start`, `process_failed_start_reports_failed`, `process_exit_confirmed_mode`, `process_stop_before_start_skips_launch`, `process_stop_delivery`, `process_handoff_bounded`, `process_normal_full_waits`, `process_exit_reported_after_rejected_observation`, `process_reaped_after_failure`, `process_dependency_allowlist`, `process_public_api_isolation`, `rest_v1_protocol_less_process_fails` | Active under Issue #141, implementing Accepted ADR-0016 under Issue #126 after Issue #133 |
 | `OPS-006` | C++ tests `job_retirement_oldest_closed_first`, `job_retirement_requires_closed`, `job_retirement_not_under_free_slot`, `job_retirement_resets_slot`, `job_retirement_stale_timer_rejected`, `job_retirement_late_fact_absent`, `job_trace_ring_wraps`; CTests `journal_replay_retires_like_writer`, `journal_replay_capacity_after_retirement`, `rest_v1_retired_job_absent`, `rest_v1_daemon_outlives_max_jobs` | Active under Accepted ADR-0014 under Issue #103; implemented and activated by Issue #120 |
 | `OPS-001` | C++ tests `job_ingress_shutdown_quiescence`, `job_ingress_callback_lifetime`, `job_ingress_readiness_failure` | Normative under Accepted ADR-0003; implementation checks active under Issue #12 and deterministic adverse/race qualification active under Issue #13 |
 | `JRN-001` | CTests `core_job_contract`, `job_fake_logical_commit_results`; C++ tests `job_journal_envelope_vectors`, `job_logical_sequence_exhaustion_fail_closed` | Contract, logical fake-result, complete writer-envelope construction, and non-wrapping sequence checks active; physical record encoding is active under `JRN-004` (Issue #57) and segment layout under `JRN-005` (Issue #59) |
@@ -217,10 +219,13 @@ Issue #115 activates all thirteen `ID-001` names in HTTP-enabled and HTTP-off bu
 activates all eleven `OPS-006` names above, including nine non-REST names in HTTP-off builds.
 Issue #134 activates seven APP-001 names and extends the existing options check. Issue #133
 activates the seven JOB-009 CTests and APP-001's `registry_launch_identity_from_entry`.
-The enumerated current totals are 169 unique HTTP-enabled names, 98 unique HTTP-off names,
-and 169 ASan/UBSan names. Development and ASan/UBSan name sets match exactly. All thirteen
-identity names and all seven supervisor names remain in every configuration. HTTP-off removes
-only the 71 enumerated HTTP/registry-specific checks, including launch identity.
+Issue #141 activates all twelve WRK-001 names, including both process boundary scanners and the
+production protocol-less-process check. The enumerated current totals are 181 unique HTTP-enabled
+names, 98 unique HTTP-off names, and 181 ASan/UBSan names. Development and ASan/UBSan name sets match
+exactly, including all twelve WRK-001 names. All thirteen identity names and all seven supervisor
+names remain in every configuration. HTTP-off removes only the 83 enumerated HTTP/registry/process
+checks, including launch identity; it builds no process target or helper. Local TSan runs the
+process runtime selectors and the touched orchestrator/supervisor checks.
 These totals come from each built tree's CTest enumeration, not addition-based predictions.
 The identity generator, clock, and registered test-only Backend fixtures exercise real values.
 Without a registry option, production creates still reach neither identity nor clock. With a

@@ -180,8 +180,16 @@ jobs:
               job_supervisor_rejection_rederives job_supervisor_ingress_results
               job_supervisor_no_writer_reentry
           '''.split())
-          if len(development) != 169 or len(development) != len(set(development)):
-              raise SystemExit(f"expected 169 unique dev-linux CTests; found {len(development)} total/{len(set(development))} unique")
+          process_checks = set('''
+              process_launch_observed_after_start process_failed_start_reports_failed
+              process_exit_confirmed_mode process_stop_before_start_skips_launch
+              process_stop_delivery process_handoff_bounded process_normal_full_waits
+              process_exit_reported_after_rejected_observation process_reaped_after_failure
+              process_dependency_allowlist process_public_api_isolation
+              rest_v1_protocol_less_process_fails
+          '''.split())
+          if len(development) != 181 or len(development) != len(set(development)):
+              raise SystemExit(f"expected 181 unique dev-linux CTests; found {len(development)} total/{len(set(development))} unique")
           if len(sanitized) != len(set(sanitized)) or set(development) != set(sanitized):
               raise SystemExit("ASan/UBSan CTest name set differs from dev-linux")
           if len(http_off) != 98 or len(http_off) != len(set(http_off)):
@@ -194,10 +202,12 @@ jobs:
               raise SystemExit("an OPS-006 check is missing from a configuration")
           if not registry_checks <= set(development) & set(sanitized) or registry_checks & set(http_off):
               raise SystemExit("an APP-001 registry check is missing or incorrectly enabled HTTP-off")
+          if not process_checks <= set(development) & set(sanitized) or process_checks & set(http_off):
+              raise SystemExit("a WRK-001 process check is missing or incorrectly enabled HTTP-off")
           if not supervisor_checks <= set(development) & set(sanitized) & set(http_off):
               raise SystemExit("a JOB-009 supervisor check is missing from a configuration")
           if not set(http_off) <= set(development) or any(
-              not name.startswith(('rest_v1_', 'http_')) and name not in registry_checks
+              not name.startswith(('rest_v1_', 'http_')) and name not in registry_checks and name not in process_checks
               for name in set(development) - set(http_off)
           ):
               raise SystemExit("HTTP-off differs by more than the HTTP-only checks")
@@ -353,10 +363,12 @@ jobs:
           ctest --test-dir build/http-off -j 4 --output-on-failure
           $development = @((ctest --test-dir build/dev-windows --show-only=json-v1 | ConvertFrom-Json).tests.name)
           $httpOff = @((ctest --test-dir build/http-off --show-only=json-v1 | ConvertFrom-Json).tests.name)
-          if ($development.Count -ne 169 -or @($development | Sort-Object -Unique).Count -ne 169) { throw 'expected 169 unique Windows development CTests' }
+          if ($development.Count -ne 181 -or @($development | Sort-Object -Unique).Count -ne 181) { throw 'expected 181 unique Windows development CTests' }
           if ($httpOff.Count -ne 98 -or @($httpOff | Sort-Object -Unique).Count -ne 98) { throw 'expected 98 unique Windows HTTP-off CTests' }
           $registryChecks = @('registry_schema_vectors', 'registry_startup_refuses_invalid', 'registry_bundle_digest_verified', 'registry_absent_keeps_empty_set', 'rest_v1_registered_application_creates', 'registry_dependency_allowlist', 'registry_public_api_isolation', 'registry_launch_identity_from_entry')
           foreach ($check in $registryChecks) { if ($development -notcontains $check -or $httpOff -contains $check) { throw "incorrect Windows registry check: $check" } }
+          $processChecks = @('process_launch_observed_after_start', 'process_failed_start_reports_failed', 'process_exit_confirmed_mode', 'process_stop_before_start_skips_launch', 'process_stop_delivery', 'process_handoff_bounded', 'process_normal_full_waits', 'process_exit_reported_after_rejected_observation', 'process_reaped_after_failure', 'process_dependency_allowlist', 'process_public_api_isolation', 'rest_v1_protocol_less_process_fails')
+          foreach ($check in $processChecks) { if ($development -notcontains $check -or $httpOff -contains $check) { throw "incorrect Windows process check: $check" } }
           $supervisorChecks = @('core_supervisor_decision_contract', 'core_supervisor_decision_complete', 'job_supervisor_drives_to_cleanup', 'job_supervisor_overtakes', 'job_supervisor_rejection_rederives', 'job_supervisor_ingress_results', 'job_supervisor_no_writer_reentry')
           foreach ($check in $supervisorChecks) { if ($development -notcontains $check -or $httpOff -notcontains $check) { throw "missing Windows supervisor check: $check" } }
           $identityChecks = @('identity_uuidv7_canonical', 'identity_uuidv7_monotonic_burst', 'identity_uuidv4_canonical', 'identity_stable_id_grammar', 'identity_never_repeats_within_instance', 'identity_source_never_exhausted', 'clock_recorded_at_rfc3339', 'clock_monotonic_instant', 'identity_dependency_allowlist', 'identity_public_api_isolation', 'identity_source_reads_no_other_clock_or_entropy', 'identity_seed_failure_refuses_startup', 'sitometrond_composes_production_identity')

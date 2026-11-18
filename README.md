@@ -104,14 +104,16 @@ empty `applications` array, the registered set is empty and a valid create retur
 `422 job/unknown_application` before ingress, even while admission is closed. Registration changes
 only that lookup: routing, media type, size, JSON, and request-validation errors retain their order.
 
-After Issue #133, a registered production Job reaches `worker_launch_intent` and waits at
-ADR-0012 rule 5 because the runner placeholder discards the launch handoff. A cancel then follows
-the unchanged reducer: after that intent, process presence is unknown, so cancel enters `stopping`
-and requests cooperative stop. The placeholder supplies no process-exit fact; production does not
-yet run a Worker or guarantee terminal cleanup. The runner, the Worker protocol, and the timer
-port come from the implementation Issues that follow the designs of #126, #127, and #128;
-Gate #123 owns the end-to-end path. Without `--applications`, the registered set remains empty.
-Unresolved Jobs after restart still close admission (`OPS-004`).
+Issue #141 starts the registered executable as one local process under ADR-0016. The Worker
+protocol (#127) and timer port (#128) do not exist yet. A process that exits ends its Job `failed`,
+with its exit confirmed and cleanup status recorded, because nothing reports `worker_running`.
+A process that does not exit stays in `preparing` until cancel; no preparation timeout fires.
+On Linux, a process that ignores SIGTERM after cancel stays in `stopping` until daemon shutdown
+force-stops it, leaving the Job unresolved on the next start. External REST v1 has no terminate
+route. No Job can succeed before #127. Gate #123 owns the end-to-end path. Without
+`--applications`, the registered set remains empty. Unresolved Jobs after restart still close
+admission (`OPS-004`). Executable digests are verified only at startup, not again at launch;
+stops target only the created process, never its descendants.
 
 ```sh
 build/dev-linux/sitometrond --journal /path/to/journal \
