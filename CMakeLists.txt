@@ -415,6 +415,8 @@ if(SITOMETRON_BUILD_TESTS)
     sitometron_job_orchestration_tests
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/process
+      ${CMAKE_CURRENT_SOURCE_DIR}/apps/sitometrond
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/support)
   target_link_libraries(
     sitometron_job_orchestration_tests
