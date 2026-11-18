@@ -1,5 +1,6 @@
 #include <cassert>
 #include <condition_variable>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -50,6 +51,16 @@ void Closing(Cell& cell) noexcept {
   (void)cell.word.fetch_or(k_closing ^ k_active, std::memory_order_acq_rel);
 }
 void Release(PortState& port, Cell& cell) noexcept {
+  // RunCell swaps every string with a default slot-local string, transferring its
+  // buffers (not merely leaving unspecified moved-from strings). That local is
+  // destroyed, also on exception unwind, before this slot-thread release exchange.
+  const auto& request = cell.request;
+  const auto& intent = request.intent;
+  if (!request.job_id.value.empty() || !intent.operation_id.value.empty() ||
+      !intent.application_id.value.empty() || !intent.application_version.empty() ||
+      !intent.bundle_sha256.value.empty() || !intent.allocation_id.value.empty() ||
+      !intent.allocation_digest.value.empty() || !intent.worker_id.value.empty())
+    ++port.undrained_requests;
   const auto word = cell.word.load(std::memory_order_acquire);
   const auto generation = word / k_generation_step;
   // 57-bit generations cover practical daemon lifetimes. Exhaustion is a debug precondition;
@@ -58,7 +69,7 @@ void Release(PortState& port, Cell& cell) noexcept {
   (void)cell.word.exchange((generation + 1) * k_generation_step, std::memory_order_acq_rel);
   port.Reach("cell_released");
 }
-enum class Answer { kAccepted, kFull, kClosed, kRejected };
+enum class Answer : std::uint8_t { kAccepted, kFull, kClosed, kRejected };
 struct Parked {
   std::mutex mutex;
   std::condition_variable wake;
@@ -100,25 +111,33 @@ struct ProducerState {
       if (!waiter) throw std::invalid_argument("runner capacity waiter missing");
     slots.reserve(port.count);
   }
+  void ConstructionCheckpoint() const {
+    if (port.hooks != nullptr && port.hooks->fail_thread_after == port.threads_created.load())
+      throw std::runtime_error("injected runner thread construction failure");
+  }
   void Start() {
     try {
+      ConstructionCheckpoint();
       for (std::size_t index = 0; index != port.count; ++index) {
         slots.emplace_back([this, index] {
           start_gate.wait(false, std::memory_order_acquire);
           Slot(index);
         });
         ++port.threads_created;
+        ConstructionCheckpoint();
       }
       service = std::thread([this] {
         start_gate.wait(false, std::memory_order_acquire);
         Service();
       });
       ++port.threads_created;
+      ConstructionCheckpoint();
       relay = std::thread([this] {
         start_gate.wait(false, std::memory_order_acquire);
         Relay();
       });
       ++port.threads_created;
+      ConstructionCheckpoint();
       start_gate.store(true, std::memory_order_release);
       start_gate.notify_all();
     } catch (...) {
@@ -140,7 +159,7 @@ struct ProducerState {
   void Join() noexcept {
     // A producer may request stop, but physical joining belongs to the external coordinator.
     if (OwnThread()) return;
-    std::lock_guard lock(join_mutex);
+    std::lock_guard lock(ProbeMutex(join_mutex));
     for (auto& slot : slots)
       if (slot.joinable()) {
         slot.join();
@@ -179,7 +198,7 @@ struct ProducerState {
     else
       ++port.cooperative_deliveries;
     if (port.hooks != nullptr) {
-      std::lock_guard lock(port.diagnostics_mutex);
+      std::lock_guard lock(ProbeMutex(port.diagnostics_mutex));
       if (port.delivery_order.size() < port.delivery_order.capacity())
         port.delivery_order.emplace_back(forced ? "forced" : "cooperative");
     }
@@ -216,8 +235,9 @@ struct ProducerState {
           const auto word = cell.word.load(std::memory_order_acquire);
           if ((word & (k_cooperative | k_forced)) == 0 && !port.stopping.load()) continue;
           port.Reach("before_stop_delivery");
-          std::lock_guard lock(mailbox.mutex);
+          std::lock_guard lock(ProbeMutex(mailbox.mutex));
           DeliverLocked(cell);
+          port.Reach("stop_checked");
         }
       }
       if (port.stopping.load(std::memory_order_acquire)) return;
@@ -229,7 +249,7 @@ struct ProducerState {
     auto candidate = Observation(request, true);
     {
       auto& entry = parking[index];
-      std::lock_guard lock(entry.mutex);
+      std::lock_guard lock(ProbeMutex(entry.mutex));
       entry.observation = std::move(candidate);
       entry.parked = true;
     }
@@ -239,7 +259,7 @@ struct ProducerState {
   void CloseParking() noexcept {
     for (std::size_t index = 0; index != port.count; ++index) {
       auto& entry = parking[index];
-      std::lock_guard lock(entry.mutex);
+      std::lock_guard lock(ProbeMutex(entry.mutex));
       entry.closed = true;
       entry.parked = false;
       entry.wake.notify_all();
@@ -255,21 +275,21 @@ struct ProducerState {
         for (std::size_t index = 0; index != port.count; ++index) {
           auto& entry = parking[index];
           {
-            std::lock_guard lock(entry.mutex);
+            std::lock_guard lock(ProbeMutex(entry.mutex));
             if (!entry.parked || entry.exited || entry.closed) continue;
           }
           // No claim yet: an exit observed while this hook is held must suppress the retry.
           port.Reach("relay_before_submit");
           core::RawCandidateEvent event;
           {
-            std::lock_guard lock(entry.mutex);
+            std::lock_guard lock(ProbeMutex(entry.mutex));
             if (!entry.parked || entry.exited || entry.closed || port.stopping.load()) continue;
             event = entry.observation;
             entry.in_flight = true;
           }
           const auto answer = Submit(port.count + 1, std::move(event));
           {
-            std::lock_guard lock(entry.mutex);
+            std::lock_guard lock(ProbeMutex(entry.mutex));
             entry.in_flight = false;
             if (answer != Answer::kFull) entry.parked = false;
             if (answer == Answer::kClosed) entry.closed = true;
@@ -290,13 +310,13 @@ struct ProducerState {
     cell.process.Wait();
     auto& entry = parking[index];
     {
-      std::lock_guard lock(entry.mutex);
+      std::lock_guard lock(ProbeMutex(entry.mutex));
       entry.exited = true;
       entry.parked = false;
     }
     std::uint64_t word = 0;
     {
-      std::lock_guard lock(port.mailboxes[index].mutex);
+      std::lock_guard lock(ProbeMutex(port.mailboxes[index].mutex));
       cell.gone = true;
       word = cell.word.load(std::memory_order_acquire);
     }
@@ -304,15 +324,26 @@ struct ProducerState {
     port.Reach("before_reap");
     cell.process.Reap();
     ++port.processes_reaped;
-    std::unique_lock lock(entry.mutex);
+    std::unique_lock lock(ProbeMutex(entry.mutex));
     entry.wake.wait(lock, [&entry] { return !entry.in_flight; });
     return Mode(word);
   }
   void RunCell(std::size_t index, Cell& cell) {
-    auto request = std::move(cell.request);
+    // Keep the cell's strings default-empty before publishing its next generation.
+    // A moved-from string is only valid-but-unspecified; swapping explicitly moves
+    // every owned buffer onto this slot thread so the next handoff frees none.
+    core::ApplicationLaunchRequest request;
+    request.job_id.value.swap(cell.request.job_id.value);
+    request.intent.operation_id.value.swap(cell.request.intent.operation_id.value);
+    request.intent.application_id.value.swap(cell.request.intent.application_id.value);
+    request.intent.application_version.swap(cell.request.intent.application_version);
+    request.intent.bundle_sha256.value.swap(cell.request.intent.bundle_sha256.value);
+    request.intent.allocation_id.value.swap(cell.request.intent.allocation_id.value);
+    request.intent.allocation_digest.value.swap(cell.request.intent.allocation_digest.value);
+    request.intent.worker_id.value.swap(cell.request.intent.worker_id.value);
     auto& entry = parking[index];
     {
-      std::lock_guard lock(entry.mutex);
+      std::lock_guard lock(ProbeMutex(entry.mutex));
       entry.exited = false;
       entry.parked = false;
       entry.closed = false;
@@ -320,7 +351,7 @@ struct ProducerState {
     port.Reach("before_spawn_check");
     bool skip = false;
     {
-      std::lock_guard lock(port.mailboxes[index].mutex);
+      std::lock_guard lock(ProbeMutex(port.mailboxes[index].mutex));
       port.Reach("mailbox_lock_held");
       if (port.stopping.load(std::memory_order_acquire)) return;
       skip = (cell.word.load(std::memory_order_acquire) & (k_cooperative | k_forced)) != 0;
@@ -340,7 +371,9 @@ struct ProducerState {
         }
       port.Reach("before_spawn");
       if (port.stopping.load(std::memory_order_acquire)) return;
-      if (specification != nullptr)
+      if (port.hooks != nullptr && port.hooks->fail_before_spawn)
+        std::cerr << "injected operating-system creation failure\n";
+      else if (specification != nullptr)
         process = Process::Spawn(*specification, request);
       else
         std::cerr << "runner has no specification for committed application\n";
@@ -353,7 +386,7 @@ struct ProducerState {
       port.Reach("spawn_before_publication");
       // A pending stop must not wait for the service thread to rediscover this publication.
       {
-        std::lock_guard lock(port.mailboxes[index].mutex);
+        std::lock_guard lock(ProbeMutex(port.mailboxes[index].mutex));
         cell.process = std::move(process);
         cell.gone = false;
         DeliverLocked(cell);
@@ -387,7 +420,7 @@ struct ProducerState {
     const auto mode = Reap(index, cell);
     bool closed = answer == Answer::kClosed;
     {
-      std::lock_guard lock(entry.mutex);
+      std::lock_guard lock(ProbeMutex(entry.mutex));
       closed = closed || entry.closed;
     }
     Closing(cell);

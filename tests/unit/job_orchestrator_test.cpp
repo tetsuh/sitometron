@@ -2962,9 +2962,10 @@ int JobIngressCompletionAwait() {
       if (exit) {
         const auto confirmed = endpoint.Invoke(*exit);
         const auto done = harness.AwaitCompletion(confirmed.ingress_sequence);
+        const auto snapshot = harness.Snapshot(ids.primary_job);
         result |= Check(confirmed.code == IngressCode::kAdmitted && done &&
-                            done->code == Completion::Code::kSuccess &&
-                            harness.Snapshot(ids.primary_job)->process_exit_confirmed,
+                            done->code == Completion::Code::kSuccess && snapshot &&
+                            snapshot->process_exit_confirmed,
                         "rejected observation did not leave the process-exit gate usable");
       }
     }

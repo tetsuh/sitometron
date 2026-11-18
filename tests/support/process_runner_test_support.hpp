@@ -52,11 +52,15 @@ struct Diagnostics {
   std::size_t cooperative_deliveries = 0;
   std::size_t forced_deliveries = 0;
   std::size_t handoff_allocations = 0;
+  std::size_t handoff_deallocations = 0;
+  std::size_t undrained_requests = 0;
   std::size_t handoff_locks = 0;
   std::size_t handoff_ingress = 0;
   std::size_t max_completions_per_thread = 0;
   std::size_t invariant_failures = 0;
   std::vector<std::string> delivery_order;
+  std::size_t registration_breaches = 0;
+  std::uint64_t max_generation = 0;
 };
 struct Options {
   std::size_t max_jobs = 1;
@@ -64,6 +68,13 @@ struct Options {
   std::vector<Answer> observations;
   std::vector<Answer> exits;
   std::string hold_at;
+  std::vector<std::string> hold_points;
+  bool fail_before_spawn = false;
+  std::optional<std::size_t> fail_thread_after;
+  std::optional<core::ApplicationLaunchRequest> queued_before_start;
+  Diagnostics* construction_failure = nullptr;
+  std::uint64_t initial_generation = 0;
+  std::string stop_on_point;
 };
 class Driver {
  public:
@@ -73,6 +84,7 @@ class Driver {
   virtual void Forced(core::ApplicationStopRequest) = 0;
   virtual void WaitHeld(std::size_t count = 1) = 0;
   virtual void Release() noexcept = 0;
+  virtual void ReleasePoint(std::string_view point) = 0;
   virtual void WaitPoint(std::string_view point, std::size_t count = 1) = 0;
   virtual void Capacity(std::size_t waiter) = 0;
   virtual void CloseAdmission() = 0;
@@ -85,6 +97,8 @@ class Driver {
 
 std::unique_ptr<Driver> MakeDriver(const Options&);
 std::string QuoteWindowsArgument(std::string_view);
+void VerifyCellPhaseMatrix(const core::ApplicationLaunchRequest&);
+void VerifyOwnedLockProbe();
 
 }  // namespace sitometron::test::process
 #endif

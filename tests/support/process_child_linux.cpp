@@ -29,6 +29,7 @@ class Spawned final : public ChildProcess {
     std::vector<std::string> arguments{executable, "--mode",         "wait", "--report",
                                        report,     "--control-port", port};
     std::vector<char*> pointers;
+    pointers.reserve(arguments.size() + 1);
     for (auto& argument : arguments) pointers.push_back(argument.data());
     pointers.push_back(nullptr);
     if (::posix_spawn(&pid_, executable.c_str(), nullptr, nullptr, pointers.data(), environ) != 0)

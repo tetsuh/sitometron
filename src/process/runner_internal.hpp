@@ -7,10 +7,12 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "handoff_probe.hpp"
 #include "platform.hpp"
 #include "sitometron/process/runner.hpp"
 
@@ -18,6 +20,9 @@ namespace sitometron::process::internal {
 struct TestHooks {
   void* context = nullptr;
   void (*reach)(void*, std::string_view) noexcept = nullptr;
+  bool fail_before_spawn = false;
+  std::optional<std::size_t> fail_thread_after;
+  std::uint64_t initial_generation = 0;
 };
 struct Diagnostics {
   std::size_t occupied = 0;
@@ -28,10 +33,12 @@ struct Diagnostics {
   std::size_t processes_reaped = 0;
   std::size_t cooperative_deliveries = 0;
   std::size_t forced_deliveries = 0;
+  std::size_t undrained_requests = 0;
   std::size_t handoff_locks = 0;
   std::size_t handoff_ingress = 0;
   std::size_t max_completions_per_thread = 0;
   std::vector<std::string> delivery_order;
+  std::uint64_t max_generation = 0;
 };
 inline constexpr std::uint64_t k_occupied = 1;
 inline constexpr std::uint64_t k_claiming = 2;
@@ -84,6 +91,7 @@ struct PortState {
   std::atomic_size_t cooperative_deliveries{0};
   std::atomic_size_t forced_deliveries{0};
   std::atomic_size_t max_completions{0};
+  std::atomic_size_t undrained_requests{0};
   std::mutex diagnostics_mutex;
   std::vector<std::string> delivery_order;  // Test-only, bounded/reserved at construction.
   void Reach(std::string_view point) const noexcept {
@@ -94,6 +102,11 @@ struct PortState {
 struct TestAccess {
   static void Install(RunnerPort&, const TestHooks*) noexcept;
   static Diagnostics Inspect(RunnerPort&);
+  // Static state probes only, before any producer exists.
+  static void SeedPhases(RunnerPort&, std::uint64_t first, std::uint64_t second) noexcept;
+  static bool Contains(const RunnerPort&, const core::Uuid&) noexcept;
+  static bool FaultRecorded(const RunnerPort&) noexcept;
+  static void ExerciseMutex(RunnerPort&);
 };
 }  // namespace sitometron::process::internal
 #endif  // SITOMETRON_PROCESS_RUNNER_INTERNAL_HPP_

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cassert>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
@@ -46,6 +47,36 @@ void PortState::Stop(const core::ApplicationStopRequest& request, std::uint64_t 
 }
 void TestAccess::Install(RunnerPort& port, const TestHooks* hooks) noexcept {
   port.state_->hooks = hooks;
+  if (hooks != nullptr && hooks->initial_generation != 0) {
+    assert(hooks->initial_generation <=
+           std::numeric_limits<std::uint64_t>::max() / k_generation_step);
+    for (std::size_t index = 0; index != port.state_->count; ++index)
+      for (auto& cell : port.state_->mailboxes[index].cells)
+        cell.word.store(hooks->initial_generation * k_generation_step, std::memory_order_relaxed);
+  }
+}
+void TestAccess::SeedPhases(RunnerPort& port, std::uint64_t first, std::uint64_t second) noexcept {
+  auto& state = *port.state_;
+  state.mailboxes[0].cells[0].word.store(first == 0 ? 0 : first | k_occupied);
+  state.mailboxes[0].cells[1].word.store(second == 0 ? 0 : second | k_occupied);
+  // The remaining mailbox offers no place: its empty cell has an active partner.
+  state.mailboxes[1].cells[0].word.store(k_occupied | k_active);
+}
+bool TestAccess::Contains(const RunnerPort& port, const core::Uuid& job) noexcept {
+  for (std::size_t index = 0; index != port.state_->count; ++index)
+    for (const auto& cell : port.state_->mailboxes[index].cells) {
+      const auto word = cell.word.load(std::memory_order_acquire);
+      if ((word & k_occupied) != 0 && (word & k_phase_mask) != k_claiming &&
+          std::string_view(cell.job.data(), cell.job_size) == job.value)
+        return true;
+    }
+  return false;
+}
+bool TestAccess::FaultRecorded(const RunnerPort& port) noexcept {
+  return port.state_->fault.load(std::memory_order_acquire);
+}
+void TestAccess::ExerciseMutex(RunnerPort& port) {
+  std::lock_guard lock(ProbeMutex(port.state_->mailboxes[0].mutex));
 }
 Diagnostics TestAccess::Inspect(RunnerPort& port) {
   auto& state = *port.state_;
@@ -53,6 +84,7 @@ Diagnostics TestAccess::Inspect(RunnerPort& port) {
   for (std::size_t index = 0; index != state.count; ++index)
     for (const auto& cell : state.mailboxes[index].cells) {
       const auto word = cell.word.load(std::memory_order_acquire);
+      result.max_generation = std::max(result.max_generation, word / k_generation_step);
       if ((word & k_occupied) != 0) ++result.occupied;
       if ((word & k_occupied) != 0 && (word & k_phase_mask) == k_closing) ++result.closing;
     }
@@ -63,7 +95,10 @@ Diagnostics TestAccess::Inspect(RunnerPort& port) {
   result.cooperative_deliveries = state.cooperative_deliveries.load();
   result.forced_deliveries = state.forced_deliveries.load();
   result.max_completions_per_thread = state.max_completions.load();
-  std::lock_guard lock(state.diagnostics_mutex);
+  result.undrained_requests = state.undrained_requests.load();
+  result.handoff_locks = HandoffMutexEntries();
+  result.handoff_ingress = HandoffCoreEntries();
+  std::lock_guard lock(ProbeMutex(state.diagnostics_mutex));
   result.delivery_order = state.delivery_order;
   return result;
 }
@@ -75,6 +110,7 @@ RunnerPort::RunnerPort(std::size_t max_jobs)
 RunnerPort::~RunnerPort() = default;
 void RunnerPort::HandoffLaunch(core::ApplicationLaunchRequest&& request) noexcept {
   using namespace internal;
+  const HandoffProbeScope probe(state_->hooks != nullptr);
   static_assert(std::is_nothrow_move_assignable_v<core::ApplicationLaunchRequest>);
   for (std::size_t index = 0; index != state_->count; ++index) {
     auto& mailbox = state_->mailboxes[index];
@@ -96,6 +132,10 @@ void RunnerPort::HandoffLaunch(core::ApplicationLaunchRequest&& request) noexcep
       }
       cell.job_size = request.job_id.value.size();
       std::copy(request.job_id.value.begin(), request.job_id.value.end(), cell.job.begin());
+      // Owner decision (2026-11-18): no Sitometron-owned mutex and no core entry.
+      // Internal STL/OS locks in this ADR-0005 move (including Windows Debug
+      // iterator bookkeeping) are outside that rule; build settings stay unchanged.
+      // The slot swapped out all prior buffers before its release exchange.
       cell.request = std::move(request);
       cell.word.store(word | k_occupied | k_active, std::memory_order_release);
       mailbox.wake.Set();
@@ -106,9 +146,11 @@ void RunnerPort::HandoffLaunch(core::ApplicationLaunchRequest&& request) noexcep
   state_->service_wake.Set();
 }
 void RunnerPort::HandoffCooperativeStop(core::ApplicationStopRequest&& request) noexcept {
+  const internal::HandoffProbeScope probe(state_->hooks != nullptr);
   state_->Stop(request, internal::k_cooperative);
 }
 void RunnerPort::HandoffForcedStop(core::ApplicationStopRequest&& request) noexcept {
+  const internal::HandoffProbeScope probe(state_->hooks != nullptr);
   state_->Stop(request, internal::k_forced);
 }
 }  // namespace sitometron::process

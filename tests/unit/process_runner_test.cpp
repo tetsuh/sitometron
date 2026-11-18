@@ -1,8 +1,10 @@
 #include <array>
+#include <barrier>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <new>
 #include <nlohmann/json.hpp>
@@ -25,7 +27,7 @@ namespace core = sitometron::core;
 using Json = nlohmann::json;
 using test::Require;
 
-constexpr std::string_view kDigest =
+constexpr std::string_view k_digest =
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 core::ApplicationLaunchRequest Launch(unsigned number = 1) {
   const auto suffix = std::to_string(number);
@@ -33,8 +35,8 @@ core::ApplicationLaunchRequest Launch(unsigned number = 1) {
       core::Uuid{"01890f30-7b54-7cc3-98c4-" + std::string(12 - suffix.size(), '0') + suffix},
       core::WorkerLaunchIntentPayload{
           core::StableId{"launch-op-" + suffix}, core::StableId{"test-child"}, "1",
-          core::Digest{std::string(kDigest)}, core::StableId{"allocation-1"},
-          core::Digest{std::string(kDigest)},
+          core::Digest{std::string(k_digest)}, core::StableId{"allocation-1"},
+          core::Digest{std::string(k_digest)},
           core::Uuid{"550e8400-e29b-41d4-a716-" + std::string(12 - suffix.size(), '0') + suffix}}};
 }
 std::string MissingExecutable() {
@@ -53,7 +55,7 @@ struct Fixture {
   test::Environment mode;
   test::Environment status;
   std::unique_ptr<test::Driver> driver;
-  explicit Fixture(test::Options options, std::string_view missing_reason,
+  explicit Fixture(const test::Options& options, std::string_view missing_reason,
                    std::string child_mode = "wait", int child_status = 0)
       : report("ISSUE141_TEST_REPORT", test::PathText(directory.path() / "report.json")),
         port("ISSUE141_TEST_CONTROL_PORT", control.port()),
@@ -77,7 +79,7 @@ struct Fixture {
 test::Options Options(std::string_view executable, std::string hold = {}) {
   test::Options options;
   options.specifications.push_back(
-      {"test-child", std::string(executable), {}, std::string(kDigest)});
+      {"test-child", std::string(executable), {}, std::string(k_digest)});
   options.hold_at = std::move(hold);
   return options;
 }
@@ -115,9 +117,21 @@ void ReapedAndJoined(test::Driver& driver) {
   const auto view = driver.Inspect();
   Require(view.processes_created == view.processes_reaped, "owned child was not reaped");
   Require(view.threads_created == view.threads_joined, "runner thread outlived join");
+  Require(view.registration_breaches == 0, "two producer threads reused one ingress registration");
+  Require(view.undrained_requests == 0,
+          "slot released a cell before moving out all request strings");
+  Require(
+      view.handoff_allocations == 0 && view.handoff_deallocations == 0 && view.handoff_locks == 0 &&
+          view.handoff_ingress == 0,
+      "handoff used C++ new/delete, a Sitometron-owned adapter/composition mutex, or a core entry; "
+      "this probe does not measure hidden STL/CRT/OS locks");
 }
 
 void LaunchObservedAfterStart(const std::string& child) {
+  test::Directory copies;
+  const auto unicode_path = copies.path() / std::filesystem::path(u8"子 process with spaces.exe");
+  std::filesystem::copy_file(child, unicode_path);
+  const auto unicode = test::PathText(unicode_path);
   // These vectors also run against the pure Windows serializer on Linux.
   const std::array quoting = {
       std::pair{std::string("word"), std::string("word")},
@@ -127,46 +141,72 @@ void LaunchObservedAfterStart(const std::string& child) {
       std::pair{std::string("a\"b"), std::string("\"a\\\"b\"")},
       std::pair{std::string("tail\\"), std::string("tail\\")},
       std::pair{std::string("space tail\\"), std::string("\"space tail\\\\\"")},
-      std::pair{std::string("a\\\"b"), std::string("\"a\\\\\\\"b\"")}};
+      std::pair{std::string("a\\\"b"), std::string("\"a\\\\\\\"b\"")},
+      std::pair{std::string("a") + std::string(3, '\\') + "\"b",
+                std::string("\"a") + std::string(7, '\\') + "\"b\""},
+      std::pair{std::string("space ") + std::string(3, '\\'),
+                std::string("\"space ") + std::string(6, '\\') + "\""}};
   const std::vector<std::vector<std::string>> shapes{
       {},
+      {"word"},
       {"--plain", "batch"},
       {"", "two words", "tab\tvalue", "a\"b", "tail\\", "a\\\"b"},
       {"; literal", "$(literal)", "a|b", "*", "あ"}};
-  for (const auto& parameters : shapes) {
-    auto options = Options(child);
-    options.specifications[0].arguments = parameters;
-    test::Environment sentinel("ISSUE141_TEST_SENTINEL", "preserved-value");
-    test::Environment conflicting_job("SITOMETRON_JOB_ID", "wrong-parent-job");
-    test::Environment conflicting_worker("SITOMETRON_WORKER_ID", "wrong-parent-worker");
-    test::Environment conflicting_operation("SITOMETRON_LAUNCH_OPERATION_ID", "wrong-parent-op");
-    Fixture fixture(options, "launch must start the executable before reporting started");
-    fixture.driver->Launch(Launch());
-    (void)fixture.control.Ready();
-    fixture.driver->WaitFacts(1, 0);
-    const auto report = test::ReadReport(fixture.directory.path() / "report.json");
-    auto expected = parameters;
-    expected.insert(expected.begin(), child);
-    Require(report.at("argv") == expected, "registered parameters changed argv boundaries/order");
-    Require(report.at("cwd") == test::PathText(std::filesystem::current_path()), "CWD changed");
-    Require(report.at("sentinel") == "preserved-value", "inherited environment was discarded");
-    Require(report.at("job_id") == Launch().job_id.value &&
-                report.at("worker_id") == Launch().intent.worker_id.value &&
-                report.at("operation_id") == Launch().intent.operation_id.value,
-            "identity environment did not override inherited values");
-    const auto facts = Facts(*fixture.driver, "worker_launch_observed");
-    Require(Json::parse(facts.at(0).event.payload_json).at("outcome") == "started",
-            "OS-created child was not observed started");
-    fixture.control.Exit();
-    fixture.driver->WaitFacts(1, 1);
-    ExactFacts(*fixture.driver, 1, 1, "process_already_exited");
-    ReapedAndJoined(*fixture.driver);
-    for (const auto& [input, expected_text] : quoting)
-      Require(test::QuoteWindowsArgument(input) == expected_text, "Windows quoting vector differs");
+#ifdef _WIN32
+  // Windows treats environment keys case-insensitively: the inherited spelling
+  // deliberately differs from the canonical keys the child reports.
+  const std::array parent_keys{"sitometron_job_id", "sitometron_worker_id",
+                               "sitometron_launch_operation_id"};
+#else
+  const std::array parent_keys{"SITOMETRON_JOB_ID", "SITOMETRON_WORKER_ID",
+                               "SITOMETRON_LAUNCH_OPERATION_ID"};
+#endif
+  for (const auto& executable : std::array{child, unicode}) {
+    for (const bool conflicts : {false, true}) {
+      for (const auto& parameters : shapes) {
+        auto options = Options(executable);
+        options.specifications[0].arguments = parameters;
+        test::Environment sentinel("ISSUE141_TEST_SENTINEL", "preserved-value");
+        test::Environment conflicting_job(
+            parent_keys[0],
+            conflicts ? std::optional<std::string>("wrong-parent-job") : std::nullopt);
+        test::Environment conflicting_worker(
+            parent_keys[1],
+            conflicts ? std::optional<std::string>("wrong-parent-worker") : std::nullopt);
+        test::Environment conflicting_operation(
+            parent_keys[2],
+            conflicts ? std::optional<std::string>("wrong-parent-op") : std::nullopt);
+        Fixture fixture(options, "launch must start the executable before reporting started");
+        fixture.driver->Launch(Launch());
+        (void)fixture.control.Ready();
+        fixture.driver->WaitFacts(1, 0);
+        const auto report = test::ReadReport(fixture.directory.path() / "report.json");
+        auto expected = parameters;
+        expected.insert(expected.begin(), executable);
+        Require(report.at("argv") == expected,
+                "registered parameters changed argv boundaries/order");
+        Require(report.at("cwd") == test::PathText(std::filesystem::current_path()), "CWD changed");
+        Require(report.at("sentinel") == "preserved-value", "inherited environment was discarded");
+        Require(report.at("job_id") == Launch().job_id.value &&
+                    report.at("worker_id") == Launch().intent.worker_id.value &&
+                    report.at("operation_id") == Launch().intent.operation_id.value,
+                "identity environment did not override inherited values");
+        const auto facts = Facts(*fixture.driver, "worker_launch_observed");
+        Require(Json::parse(facts.at(0).event.payload_json).at("outcome") == "started",
+                "OS-created child was not observed started");
+        fixture.control.Exit();
+        fixture.driver->WaitFacts(1, 1);
+        ExactFacts(*fixture.driver, 1, 1, "process_already_exited");
+        ReapedAndJoined(*fixture.driver);
+        for (const auto& [input, expected_text] : quoting)
+          Require(test::QuoteWindowsArgument(input) == expected_text,
+                  "Windows quoting vector differs");
+      }
+    }
   }
 }
 void FailedStartReportsFailed(const std::string& child) {
-  for (const std::string cause : {"missing", "unreadable", "unknown-application"}) {
+  for (const std::string cause : {"missing", "unreadable", "unknown-application", "os-error"}) {
     test::Directory files;
     const auto executable = files.path() / "unreadable executable.exe";
     auto options = Options(test::PathText(executable));
@@ -176,6 +216,10 @@ void FailedStartReportsFailed(const std::string& child) {
       unreadable = test::DenyExecutableRead(test::PathText(executable));
     }
     if (cause == "unknown-application") options.specifications.clear();
+    if (cause == "os-error") {
+      options.specifications[0].executable = child;
+      options.fail_before_spawn = true;
+    }
     Fixture fixture(options, "failed start must report failed without inventing an exit fact");
     fixture.driver->Launch(Launch());
     fixture.driver->WaitFacts(1, 0);
@@ -202,6 +246,12 @@ void FailedStartReportsFailed(const std::string& child) {
   fixture.driver->WaitHeld();
   std::filesystem::remove(executable);
   std::filesystem::copy_file(child, executable);
+  {
+    std::ofstream different(executable, std::ios::binary | std::ios::app);
+    different.put('\0');  // A different valid ELF/PE image, not the original verified bytes.
+    different.close();
+    Require(static_cast<bool>(different), "replacement executable write failed");
+  }
   fixture.driver->Release();
   (void)fixture.control.Ready();
   fixture.driver->WaitFacts(1, 0);
@@ -211,15 +261,16 @@ void FailedStartReportsFailed(const std::string& child) {
   ReapedAndJoined(*fixture.driver);
 }
 void ExitConfirmedMode(const std::string& child) {
-  for (const std::string order :
-       {"natural", "cooperative", "forced", "cooperative-forced", "forced-cooperative"}) {
-    auto options = Options(child, order == "natural" ? "" : "before_stop_delivery");
+  for (const std::string order : {"natural", "natural-zero", "cooperative", "forced",
+                                  "cooperative-forced", "forced-cooperative"}) {
+    const bool natural = order.starts_with("natural");
+    auto options = Options(child, natural ? "" : "before_stop_delivery");
     Fixture fixture(options, "process exit must report the strongest requested stop mode",
-                    "ignore-term", 23);
+                    "ignore-term", order == "natural-zero" ? 0 : 23);
     fixture.driver->Launch(Launch());
     (void)fixture.control.Ready();
     fixture.driver->WaitFacts(1, 0);
-    if (order == "natural") {
+    if (natural) {
       fixture.control.Exit();
     } else {
       if (order == "forced" || order == "forced-cooperative") fixture.driver->Forced(Stop());
@@ -235,7 +286,7 @@ void ExitConfirmedMode(const std::string& child) {
 #endif
     }
     fixture.driver->WaitFacts(1, 1);
-    const auto mode = order == "natural"       ? "process_already_exited"
+    const auto mode = natural                  ? "process_already_exited"
                       : order == "cooperative" ? "cooperative"
                                                : "forced";
     ExactFacts(*fixture.driver, 1, 1, mode);
@@ -285,6 +336,48 @@ void StopDelivery(const std::string& child) {
   fixture.driver->Forced(Stop(99));
   ReapedAndJoined(*fixture.driver);
   const auto after = fixture.driver->Inspect();
+  {
+    Fixture successive(Options(child, "slot_waiting_for_exit"),
+                       "forced stop after cooperative delivery must not redeliver either kind",
+                       "ignore-term");
+    successive.driver->Launch(Launch());
+    (void)successive.control.Ready();
+    successive.driver->WaitHeld();
+    successive.driver->Cooperative(Stop());
+    successive.driver->WaitPoint("stop_delivered");
+    successive.driver->Cooperative(Stop());
+    successive.driver->Forced(Stop());
+    successive.driver->WaitPoint("stop_delivered", 2);
+    successive.driver->Forced(Stop());
+    successive.driver->Release();
+    successive.driver->WaitFacts(1, 1);
+    ExactFacts(*successive.driver, 1, 1, "forced");
+    ReapedAndJoined(*successive.driver);
+    const auto deliveries = successive.driver->Inspect();
+    Require(deliveries.cooperative_deliveries == 1 && deliveries.forced_deliveries == 1 &&
+                deliveries.delivery_order == std::vector<std::string>{"cooperative", "forced"},
+            "successive stop delivery duplicated or reordered a kind");
+  }
+  for (const bool forced : {false, true}) {
+    Fixture gone(Options(child, "process_gone"),
+                 "stops after gone must not signal an unreaped PID");
+    gone.driver->Launch(Launch());
+    (void)gone.control.Ready();
+    gone.control.Exit();
+    gone.driver->WaitHeld();
+    if (forced)
+      gone.driver->Forced(Stop());
+    else
+      gone.driver->Cooperative(Stop());
+    gone.driver->WaitPoint("stop_checked");
+    Require(gone.driver->Inspect().cooperative_deliveries == 0 &&
+                gone.driver->Inspect().forced_deliveries == 0,
+            "gone process received an OS stop");
+    gone.driver->Release();
+    gone.driver->WaitFacts(1, 1);
+    ExactFacts(*gone.driver, 1, 1, "process_already_exited");
+    ReapedAndJoined(*gone.driver);
+  }
   Require(after.cooperative_deliveries == before.cooperative_deliveries &&
               after.forced_deliveries == before.forced_deliveries,
           "released/reaped/unknown Job received an OS stop");
@@ -321,14 +414,150 @@ void StopDelivery(const std::string& child) {
   }
 }
 void HandoffBounded(const std::string& child) {
+  // Lock means every explicit Sitometron-owned mutex acquisition in the adapter
+  // and composition bridges; core entries are tracked at their owned boundaries.
+  // Owner decision (2026-11-18) excludes STL/OS-internal locks in ADR-0005
+  // operations such as the request move. Hidden STL/CRT/OS locks are NOT measured.
+  // The separate heap probe counts C++ new/delete, including sized/aligned forms.
+  test::VerifyOwnedLockProbe();
+  test::VerifyCellPhaseMatrix(Launch());
+  {
+    Fixture fixture(Options(MissingExecutable()),
+                    "reused cell must transfer every heap-owned request buffer on its slot thread");
+    for (unsigned number = 1; number <= 8; ++number) {
+      auto request = Launch(number);
+      // All eight strings own heap storage, including both UUIDs and both digests.
+      // The unknown specification takes the failed-start path without creating a child.
+      request.intent.operation_id.value = std::string(100, 'o');
+      request.intent.application_id.value = std::string(100, 'a');
+      request.intent.application_version = std::string(100, 'v');
+      request.intent.allocation_id.value = std::string(100, 'r');
+      fixture.driver->Launch(std::move(request));
+      fixture.driver->WaitPoint("cell_released", number);
+    }
+    ExactFacts(*fixture.driver, 8, 0);
+    ReapedAndJoined(*fixture.driver);
+  }
+  {
+    Fixture fixture(Options(child, "stop_between_scan_reads"),
+                    "an unrelated release between reads must not hide a still-live target");
+    fixture.driver->Launch(Launch(1));
+    (void)fixture.control.Ready();
+    fixture.driver->Launch(Launch(2));
+    (void)fixture.control.Ready();
+    fixture.driver->WaitFacts(2, 0);
+    struct Stopper {
+      test::Driver& driver;
+      std::thread thread;
+      explicit Stopper(test::Driver& value)
+          : driver(value), thread([&value] { value.Cooperative(Stop(2)); }) {}
+      ~Stopper() {
+        driver.Release();
+        if (thread.joinable()) thread.join();
+      }
+    } stopper(*fixture.driver);
+    fixture.driver->WaitHeld();
+    fixture.control.Exit(0);
+    fixture.driver->WaitPoint("cell_released");
+    fixture.driver->Release();
+    stopper.thread.join();
+    fixture.driver->WaitFacts(2, 2);
+    fixture.driver->WaitPoint("cell_released", 2);
+    Require(fixture.driver->Inspect().cooperative_deliveries == 1,
+            "scan missed its target after the unrelated release");
+    fixture.driver->Launch(Launch(3));
+    const auto replacement = fixture.control.Ready();
+    fixture.control.Exit(replacement);
+    fixture.driver->WaitFacts(3, 3);
+    ExactFacts(*fixture.driver, 3, 3);
+    for (const auto& attempt : Facts(*fixture.driver, "process_exit_confirmed"))
+      if (attempt.event.job_id == Launch(3).job_id)
+        Require(Json::parse(attempt.event.payload_json).at("completion_mode") ==
+                    "process_already_exited",
+                "stop reached a reused non-target cell");
+    ReapedAndJoined(*fixture.driver);
+  }
+  {
+    auto options = Options(MissingExecutable());
+    options.hold_points = {"before_spawn", "stop_before_cas", "before_observation"};
+    options.observations = {{test::Admission::kAdmitted, test::Completion::kRejected}};
+    Fixture fixture(options, "a phase-only failed CAS must rescan before the last submission");
+    fixture.driver->Launch(Launch());
+    fixture.driver->WaitPoint("before_spawn");
+    struct Stopper {
+      test::Driver& driver;
+      std::thread thread;
+      explicit Stopper(test::Driver& value)
+          : driver(value), thread([&value] { value.Cooperative(Stop()); }) {}
+      ~Stopper() {
+        driver.Release();
+        if (thread.joinable()) thread.join();
+      }
+    } stopper(*fixture.driver);
+    fixture.driver->WaitPoint("stop_before_cas");
+    fixture.driver->ReleasePoint("before_spawn");
+    fixture.driver->WaitPoint("before_observation");
+    Require(fixture.driver->Inspect().closing == 1,
+            "failed observation was not closing before submit");
+    fixture.driver->ReleasePoint("stop_before_cas");
+    stopper.thread.join();
+    fixture.driver->WaitPoint("stop_before_rescan");
+    fixture.driver->Release();
+    fixture.driver->WaitFacts(1, 1);
+    ExactFacts(*fixture.driver, 1, 1, "cooperative");
+    ReapedAndJoined(*fixture.driver);
+  }
+  {
+    auto options = Options(child, "before_spawn_check");
+    options.initial_generation = (std::numeric_limits<std::uint64_t>::max() / 128) - 2;
+    Fixture fixture(options, "generation increments must retain all 57 bits without wrapping");
+    for (unsigned number = 1; number <= 2; ++number) {
+      fixture.driver->Launch(Launch(number));
+      fixture.driver->WaitHeld(number);
+      fixture.driver->Forced(Stop(number));
+      fixture.driver->Release();
+      fixture.driver->WaitPoint("cell_released", number);
+    }
+    Require(fixture.driver->Inspect().max_generation == options.initial_generation + 2,
+            "generation exchange lost its high bits or failed to advance");
+    ReapedAndJoined(*fixture.driver);
+  }
+  {
+    auto options = Options(child);
+    options.max_jobs = 3;
+    Fixture fixture(options, "the mailbox inventory must scale to max_jobs+1 live slots");
+    for (unsigned number = 1; number <= 4; ++number) fixture.driver->Launch(Launch(number));
+    for (unsigned number = 1; number <= 4; ++number) (void)fixture.control.Ready();
+    fixture.driver->WaitFacts(4, 0);
+    for (unsigned number = 1; number <= 4; ++number) fixture.driver->Forced(Stop(number));
+    fixture.driver->WaitFacts(4, 4);
+    fixture.driver->WaitPoint("cell_released", 4);
+    ExactFacts(*fixture.driver, 4, 4, "forced");
+    Require(fixture.driver->Inspect().threads_created == 6, "scaled thread inventory changed");
+    ReapedAndJoined(*fixture.driver);
+  }
   const auto allocation_before = test::HandoffAllocationCount();
+  const auto deallocation_before = test::HandoffDeallocationCount();
   {
     const test::HandoffAllocationScope probe;
     void* memory = ::operator new(1);
     ::operator delete(memory);
   }
-  Require(test::HandoffAllocationCount() == allocation_before + 1,
-          "handoff allocation probe did not detect its planted allocation");
+  Require(test::HandoffAllocationCount() == allocation_before + 1 &&
+              test::HandoffDeallocationCount() == deallocation_before + 1,
+          "handoff C++ new/delete probe missed its planted allocation or deallocation");
+  {
+    const auto before_new = test::HandoffAllocationCount();
+    const auto before_delete = test::HandoffDeallocationCount();
+    {
+      const test::HandoffAllocationScope probe;
+      void* memory = ::operator new[](64, std::align_val_t{64});
+      ::operator delete[](memory, std::size_t{64}, std::align_val_t{64});
+    }
+    Require(test::HandoffAllocationCount() == before_new + 1 &&
+                test::HandoffDeallocationCount() == before_delete + 1,
+            "handoff heap probe missed sized/aligned array new/delete");
+  }
   {
     Fixture fixture(Options(child, "mailbox_lock_held"),
                     "handoffs must return while the producer holds its mailbox lock");
@@ -358,12 +587,14 @@ void HandoffBounded(const std::string& child) {
     const auto view = fixture.driver->Inspect();
     Require(view.threads_created == initial.threads_created && view.threads_created == 4,
             "launch created a thread or omitted a fixed producer thread");
-    Require(view.handoff_allocations == 0 && view.handoff_locks == 0 && view.handoff_ingress == 0,
-            "handoff allocated, locked or re-entered ingress");
+    Require(view.handoff_allocations == 0 && view.handoff_deallocations == 0 &&
+                view.handoff_locks == 0 && view.handoff_ingress == 0,
+            "handoff used C++ new/delete, a Sitometron-owned adapter/composition mutex, or core "
+            "entry; hidden STL/CRT/OS locks are not measured");
     Require(view.max_completions_per_thread <= 1, "thread retained two completions");
     ReapedAndJoined(*fixture.driver);
   }
-  {
+  for (const bool cancel_queued : {false, true}) {
     Fixture fixture(Options(child, "before_final_completion"),
                     "retirement must offer the closing cell's stable partner", "exit");
     fixture.driver->Launch(Launch(1));
@@ -373,10 +604,18 @@ void HandoffBounded(const std::string& child) {
     fixture.driver->Launch(Launch(3));
     Require(fixture.driver->Inspect().occupied == 3,
             "three-Job max_jobs=1 interleaving lost the third launch");
-    fixture.driver->Cooperative(Stop(3));
+    if (cancel_queued) fixture.driver->Cooperative(Stop(3));
     fixture.driver->Release();
     fixture.driver->WaitPoint("cell_released", 3);
+    ExactFacts(*fixture.driver, cancel_queued ? 2 : 3, 3);
+    for (const auto& attempt : Facts(*fixture.driver, "process_exit_confirmed"))
+      if (attempt.event.job_id == Launch(3).job_id)
+        Require(Json::parse(attempt.event.payload_json).at("completion_mode") ==
+                    (cancel_queued ? "cooperative" : "process_already_exited"),
+                "queued partner lost its stop mode or started despite cancellation");
     ReapedAndJoined(*fixture.driver);
+    Require(fixture.driver->Inspect().processes_created == (cancel_queued ? 2U : 3U),
+            "queued partner failed to start after drain or spawned despite its stop");
   }
   for (const std::string point : {"stop_before_cas", "stop_between_scan_reads"}) {
     Fixture fixture(Options(child, point),
@@ -437,6 +676,22 @@ void HandoffBounded(const std::string& child) {
 }
 void NormalFullWaits(const std::string& child) {
   {
+    auto options = Options(child, "observation_completion_pending");
+    options.observations = {{test::Admission::kNormalFull}, {test::Admission::kAdmitted}};
+    Fixture fixture(options, "exit must settle the relay's admitted completion before release");
+    fixture.driver->Launch(Launch());
+    (void)fixture.control.Ready();
+    fixture.driver->WaitHeld();
+    fixture.control.Exit();
+    fixture.driver->WaitPoint("process_gone");
+    Require(Facts(*fixture.driver, "process_exit_confirmed").empty(),
+            "slot released its exit while relay still owned an admitted completion");
+    fixture.driver->Release();
+    fixture.driver->WaitFacts(1, 1);
+    ExactFacts(*fixture.driver, 1, 1, "process_already_exited");
+    ReapedAndJoined(*fixture.driver);
+  }
+  {
     auto options = Options(child, "after_park");
     options.observations = {{test::Admission::kNormalFull}};
     Fixture fixture(options,
@@ -495,48 +750,62 @@ void NormalFullWaits(const std::string& child) {
     ExactFacts(*fixture.driver, 0, 1, "process_already_exited");
     ReapedAndJoined(*fixture.driver);
   }
-  {
+  for (const bool rejected : {false, true}) {
     auto options = Options(MissingExecutable(), "failed_before_capacity_wait");
-    options.observations = {{test::Admission::kNormalFull}, {test::Admission::kAdmitted}};
+    options.observations = {{test::Admission::kNormalFull},
+                            {test::Admission::kAdmitted,
+                             rejected ? test::Completion::kRejected : test::Completion::kSuccess}};
     Fixture fixture(options,
                     "failed normal_full must retain its cell and retry on the slot thread");
     fixture.driver->Launch(Launch());
     fixture.driver->WaitHeld();
     Require(fixture.driver->Inspect().occupied == 1, "failed retry released its obligation");
+    if (rejected) fixture.driver->Forced(Stop());
     fixture.driver->Capacity(0);
     fixture.driver->Release();
     fixture.driver->WaitFacts(1, 0);
     fixture.driver->WaitPoint("cell_released");
     const auto attempts = fixture.driver->Attempts();
-    Require(attempts.size() == 2 && attempts[0].thread == attempts[1].thread,
-            "failed observation was retried by another thread");
-    ExactFacts(*fixture.driver, 1, 0);
+    Require(attempts.size() == (rejected ? 3U : 2U) && attempts[0].thread == attempts[1].thread &&
+                (!rejected || attempts[2].thread == attempts[0].thread),
+            "failed observation or its rejection-derived exit used another thread");
+    ExactFacts(*fixture.driver, 1, rejected ? 1 : 0, rejected ? "forced" : "");
     ReapedAndJoined(*fixture.driver);
   }
 }
 void ExitReportedAfterRejectedObservation(const std::string& child) {
   for (const bool started : {false, true}) {
-    for (const std::string stop : {"cooperative", "forced", "both"}) {
-      auto options = Options(started ? child : MissingExecutable(), "before_observation");
-      options.observations = {{test::Admission::kAdmitted, test::Completion::kRejected}};
-      Fixture fixture(options,
-                      "rejected launch observation still owes one exit after leaving preparing",
-                      "ignore-term");
-      fixture.driver->Launch(Launch());
-      if (started) (void)fixture.control.Ready();
-      fixture.driver->WaitHeld();
-      if (stop != "forced") fixture.driver->Cooperative(Stop());
-      if (stop != "cooperative") fixture.driver->Forced(Stop());
-      fixture.driver->Release();
+    for (const auto reason : {core::RejectionReason::kEventNotAllowedInState,
+                              core::RejectionReason::kInvalidEventPayload,
+                              core::RejectionReason::kInvariantViolation}) {
+      for (const std::string stop : {"none", "cooperative", "forced", "both"}) {
+        auto options = Options(started ? child : MissingExecutable(), "before_observation");
+        options.observations = {{test::Admission::kAdmitted, test::Completion::kRejected, reason}};
+        Fixture fixture(options,
+                        "rejected launch observation still owes one exit after leaving preparing",
+                        "ignore-term");
+        fixture.driver->Launch(Launch());
+        if (started) (void)fixture.control.Ready();
+        fixture.driver->WaitHeld();
+        if (stop == "cooperative" || stop == "both") fixture.driver->Cooperative(Stop());
+        if (stop == "forced" || stop == "both") fixture.driver->Forced(Stop());
+        fixture.driver->Release();
 #ifndef _WIN32
-      if (started && stop == "cooperative") {
-        fixture.control.TermObserved();
-        fixture.control.Exit();
-      }
+        if (started && stop == "cooperative") {
+          fixture.control.TermObserved();
+          fixture.control.Exit();
+        }
 #endif
-      fixture.driver->WaitFacts(1, 1);
-      ExactFacts(*fixture.driver, 1, 1, stop == "cooperative" ? "cooperative" : "forced");
-      ReapedAndJoined(*fixture.driver);
+        if (started && stop == "none") fixture.control.Exit();
+        fixture.driver->WaitFacts(1, 1);
+        ExactFacts(*fixture.driver, 1, 1,
+                   stop == "none"          ? "process_already_exited"
+                   : stop == "cooperative" ? "cooperative"
+                                           : "forced");
+        ReapedAndJoined(*fixture.driver);
+        Require(fixture.driver->Inspect().invariant_failures == 0,
+                "a reducer rejection was converted to a service-wide failure");
+      }
     }
   }
   for (const std::string landing : {"spawn_before_publication", "slot_waiting_for_exit"}) {
@@ -558,6 +827,55 @@ void ExitReportedAfterRejectedObservation(const std::string& child) {
   }
 }
 void ReapedAfterFailure(const std::string& child) {
+  {
+    Fixture fixture(Options(child), "concurrent repeated stop/join must retain ownership");
+    fixture.driver->Launch(Launch());
+    (void)fixture.control.Ready();
+    fixture.driver->WaitFacts(1, 0);
+    std::barrier simultaneous(2);
+    const auto operation = [&] {
+      simultaneous.arrive_and_wait();
+      fixture.driver->RequestStop();
+      fixture.driver->Join();
+    };
+    std::jthread first;
+    try {
+      first = std::jthread(operation);
+      std::jthread second(operation);
+      first.join();
+      second.join();
+    } catch (...) {
+      simultaneous.arrive_and_drop();
+      if (first.joinable()) first.join();
+      throw;
+    }
+    ReapedAndJoined(*fixture.driver);
+  }
+  for (std::size_t count = 0; count <= 4; ++count) {
+    auto options = Options(child);
+    test::Diagnostics witness;
+    options.fail_thread_after = count;
+    options.queued_before_start = Launch();
+    options.construction_failure = &witness;
+    bool failed = false;
+    try {
+      Fixture fixture(options, "partial construction must join all threads without spawning");
+    } catch (const std::runtime_error& error) {
+      failed = std::string_view(error.what()) == "injected runner thread construction failure";
+    }
+    Require(failed && witness.threads_created == count && witness.threads_joined == count &&
+                witness.processes_created == 0 && witness.processes_reaped == 0,
+            "partial thread construction escaped without complete unwind");
+  }
+  {
+    auto options = Options(child);
+    options.stop_on_point = "before_spawn_check";
+    Fixture fixture(options, "producer-thread stop must refuse self-join and allow external join");
+    fixture.driver->Launch(Launch());
+    fixture.driver->WaitPoint("slot_exited");
+    ReapedAndJoined(*fixture.driver);
+    Require(fixture.driver->Attempts().empty(), "self-stop before spawn submitted a fact");
+  }
   {
     auto options = Options(child);
     options.observations = {{test::Admission::kAdmitted, test::Completion::kMissing}};
@@ -596,10 +914,37 @@ void ReapedAfterFailure(const std::string& child) {
                 "closed observation was followed by another fact");
     }
   }
+  for (const auto& answer : failures) {
+    auto options = Options(child);
+    options.observations = {answer};
+    Fixture fixture(options, "a closed started observation must keep its child live until stop");
+    fixture.driver->Launch(Launch());
+    (void)fixture.control.Ready();
+    fixture.driver->WaitPoint("observation_answered");
+    fixture.control.Ping();
+    Require(fixture.driver->Inspect().forced_deliveries == 0,
+            "a closed started observation forced the still-live child");
+    ReapedAndJoined(*fixture.driver);
+    Require(Facts(*fixture.driver, "process_exit_confirmed").empty(),
+            "runner stop after closed observation submitted another fact");
+  }
+  {
+    auto options = Options(child, "after_park");
+    options.observations = {{test::Admission::kNormalFull}};
+    Fixture fixture(options, "shutdown must drop a parked started retry and reap its child");
+    fixture.driver->Launch(Launch());
+    (void)fixture.control.Ready();
+    fixture.driver->WaitHeld();
+    fixture.driver->RequestStop();
+    ReapedAndJoined(*fixture.driver);
+    Require(Facts(*fixture.driver, "worker_launch_observed").empty() &&
+                Facts(*fixture.driver, "process_exit_confirmed").empty(),
+            "shutdown resubmitted a parked observation or invented a final fact");
+  }
   {
     auto options = Options(child, "failed_before_capacity_wait");
     options.specifications.push_back(
-        {"missing-child", MissingExecutable(), {}, std::string(kDigest)});
+        {"missing-child", MissingExecutable(), {}, std::string(k_digest)});
     options.observations = {{test::Admission::kAdmitted}, {test::Admission::kNormalFull}};
     Fixture fixture(options, "core closure must wake all retries without stopping a live process");
     fixture.driver->Launch(Launch(1));
@@ -658,27 +1003,54 @@ void ReapedAfterFailure(const std::string& child) {
   for (const auto answer : unexpected) {
     for (const bool observation : {false, true}) {
       if (observation && answer == test::Admission::kNormalFull) continue;
-      auto options = Options(child);
-      if (observation)
-        options.observations = {{answer}};
-      else
-        options.exits = {{answer}};
-      Fixture fixture(options, "unexpected ingress answers must not duplicate runner facts");
-      fixture.driver->Launch(Launch());
-      (void)fixture.control.Ready();
-      fixture.driver->WaitPoint("observation_answered");
-      fixture.control.Exit();
-      fixture.driver->WaitPoint("cell_released");
-      std::size_t observations = 0;
-      std::size_t exits = 0;
-      for (const auto& attempt : fixture.driver->Attempts()) {
-        if (attempt.event.event_type == "worker_launch_observed") ++observations;
-        if (attempt.event.event_type == "process_exit_confirmed") ++exits;
+      for (const bool started : {false, true}) {
+        if (!started && !observation) continue;
+        auto options = Options(started ? child : MissingExecutable());
+        if (observation)
+          options.observations = {{answer}};
+        else
+          options.exits = {{answer}};
+        Fixture fixture(options, "unexpected ingress answers must not duplicate runner facts");
+        fixture.driver->Launch(Launch());
+        if (started) (void)fixture.control.Ready();
+        fixture.driver->WaitPoint("observation_answered");
+        if (started) fixture.control.Exit();
+        fixture.driver->WaitPoint("cell_released");
+        std::size_t observations = 0;
+        std::size_t exits = 0;
+        for (const auto& attempt : fixture.driver->Attempts()) {
+          if (attempt.event.event_type == "worker_launch_observed") ++observations;
+          if (attempt.event.event_type == "process_exit_confirmed") ++exits;
+        }
+        Require(observations == 1 && exits == 1,
+                "non-retryable ingress answer lost or duplicated an observation or critical exit");
+        ReapedAndJoined(*fixture.driver);
       }
-      Require(observations == 1 && exits <= 1,
-              "non-retryable ingress answer retried an observation or critical exit");
-      ReapedAndJoined(*fixture.driver);
     }
+  }
+  for (const auto answer : {test::Admission::kAdmissionClosed, test::Admission::kServiceFailed}) {
+    auto options = Options(MissingExecutable(), "failed_before_capacity_wait");
+    options.observations = {{test::Admission::kNormalFull}, {answer}};
+    Fixture fixture(options, "each closure answer must end a failed normal_full retry");
+    fixture.driver->Launch(Launch());
+    fixture.driver->WaitHeld();
+    fixture.driver->Capacity(0);
+    fixture.driver->Release();
+    fixture.driver->WaitPoint("cell_released");
+    Require(fixture.driver->Attempts().size() == 2 &&
+                Facts(*fixture.driver, "process_exit_confirmed").empty(),
+            "failed observation closure was retried or followed by exit");
+    ReapedAndJoined(*fixture.driver);
+  }
+  for (const auto& answer : failures) {
+    auto options = Options(MissingExecutable());
+    options.observations = {answer};
+    Fixture fixture(options, "a closed failed observation owes no further fact");
+    fixture.driver->Launch(Launch());
+    fixture.driver->WaitPoint("cell_released");
+    Require(Facts(*fixture.driver, "process_exit_confirmed").empty(),
+            "closed failed start submitted another runner fact");
+    ReapedAndJoined(*fixture.driver);
   }
   for (const std::string point :
        {"before_spawn_check", "spawn_before_publication", "slot_waiting_for_exit",
