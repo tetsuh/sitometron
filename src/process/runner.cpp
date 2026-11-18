@@ -226,6 +226,8 @@ struct ProducerState {
     port.Reach("service_started");
     for (;;) {
       port.service_wake.Clear();
+      const bool shutdown_scan = port.stopping.load(std::memory_order_acquire);
+      port.Reach("service_scan_started");
       if (port.fault.exchange(false, std::memory_order_acq_rel)) {
         std::cerr << "runner mailbox invariant violated\n";
         failure.Latch("runner mailbox invariant violated");
@@ -234,7 +236,7 @@ struct ProducerState {
         auto& mailbox = port.mailboxes[index];
         for (auto& cell : mailbox.cells) {
           if (const auto word = cell.word.load(std::memory_order_acquire);
-              (word & (k_cooperative | k_forced)) == 0 && !port.stopping.load())
+              (word & (k_cooperative | k_forced)) == 0 && !shutdown_scan)
             continue;
           port.Reach("before_stop_delivery");
           std::lock_guard lock(ProbeMutex(mailbox.mutex));
@@ -243,7 +245,9 @@ struct ProducerState {
         }
       }
       port.Reach("service_scan_finished");
-      if (port.stopping.load(std::memory_order_acquire)) {
+      // Only a scan selected in shutdown mode discharges the force-stop duty.
+      // A stop arriving during a normal scan leaves service_wake set for another pass.
+      if (shutdown_scan) {
         port.Reach("service_exited");
         return;
       }
