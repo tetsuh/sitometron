@@ -2,8 +2,10 @@
 #include <spawn.h>
 #include <sys/wait.h>
 
+#include <array>
 #include <cerrno>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -14,6 +16,41 @@
 extern char** environ;
 
 namespace sitometron::process::internal {
+namespace {
+class SpawnAttributes final {
+ public:
+  SpawnAttributes() {
+    if (::posix_spawnattr_init(&value_) != 0)
+      throw std::runtime_error("cannot initialize process spawn attributes");
+  }
+  ~SpawnAttributes() { (void)::posix_spawnattr_destroy(&value_); }
+  SpawnAttributes(const SpawnAttributes&) = delete;
+  SpawnAttributes& operator=(const SpawnAttributes&) = delete;
+  void ConfigureSignals() {
+    sigset_t mask;
+    sigset_t defaults;
+    if (::sigemptyset(&mask) != 0 || ::sigemptyset(&defaults) != 0)
+      throw std::runtime_error("cannot initialize child signal sets");
+    // A handler-less executable must not inherit daemon-specific ignore policy for
+    // termination, pipeline, resource-limit or job-control signals. SIGCHLD policy
+    // in the daemon remains an owner decision; do not alter that disposition here.
+    constexpr std::array signals{SIGTERM, SIGINT,  SIGHUP,  SIGQUIT, SIGPIPE, SIGALRM, SIGUSR1,
+                                 SIGUSR2, SIGXCPU, SIGXFSZ, SIGTSTP, SIGTTIN, SIGTTOU};
+    for (const int signal : signals)
+      if (::sigaddset(&defaults, signal) != 0)
+        throw std::runtime_error("cannot configure child default signals");
+    if (::posix_spawnattr_setsigmask(&value_, &mask) != 0 ||
+        ::posix_spawnattr_setsigdefault(&value_, &defaults) != 0 ||
+        ::posix_spawnattr_setflags(
+            &value_, static_cast<short>(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)) != 0)
+      throw std::runtime_error("cannot configure child signal attributes");
+  }
+  const posix_spawnattr_t* get() const noexcept { return &value_; }
+
+ private:
+  posix_spawnattr_t value_{};
+};
+}  // namespace
 struct NativeProcess {
   pid_t pid = -1;
 };
@@ -60,9 +97,11 @@ Process Process::Spawn(const LaunchSpecification& specification,
   envp.reserve(environment.size() + 1);
   for (auto& entry : environment) envp.push_back(entry.data());
   envp.push_back(nullptr);
+  SpawnAttributes attributes;
+  attributes.ConfigureSignals();
   // No shell, path search, working-directory action, or digest verification.
-  const int error = ::posix_spawn(&native->pid, specification.executable.c_str(), nullptr, nullptr,
-                                  argv.data(), envp.data());
+  const int error = ::posix_spawn(&native->pid, specification.executable.c_str(), nullptr,
+                                  attributes.get(), argv.data(), envp.data());
   Process result;
   if (error == 0)
     result.state_ = std::move(native);
