@@ -163,6 +163,8 @@ class CapacityWaiter final {
   void Set() noexcept;
   bool Wait();
   bool Closed() const noexcept;
+  // Private test seam, invoked with the flag mutex held immediately before CV wait.
+  void SetWaitEntryHookForTest(void* context, void (*hook)(void*) noexcept);
 
  private:
   void Close() noexcept;
@@ -170,6 +172,8 @@ class CapacityWaiter final {
   std::condition_variable wake_;
   bool level_ = false;
   bool closed_ = false;
+  void* wait_context_ = nullptr;
+  void (*wait_entry_)(void*) noexcept = nullptr;
   friend class JobOrchestrator;
 };
 

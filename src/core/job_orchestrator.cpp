@@ -3492,8 +3492,14 @@ bool CapacityWaiter::Closed() const noexcept {
   std::lock_guard lock(mutex_);
   return closed_;
 }
+void CapacityWaiter::SetWaitEntryHookForTest(void* context, void (*hook)(void*) noexcept) {
+  std::lock_guard lock(mutex_);
+  wait_context_ = context;
+  wait_entry_ = hook;
+}
 bool CapacityWaiter::Wait() {
   std::unique_lock lock(mutex_);
+  if (wait_entry_) wait_entry_(wait_context_);
   wake_.wait(lock, [this] { return closed_ || level_; });
   return !closed_;
 }

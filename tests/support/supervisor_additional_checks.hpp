@@ -357,9 +357,27 @@ void IndependentCapacityFlags(Writer& writer) {
     Require(first->Wait(), "supervisor consumed another producer's capacity signal");
     first->Clear();
     Require(second->Wait(), "clearing one waiter consumed another waiter's level");
+    Require(writer.WaitForWriterIdle(), "capacity wait-entry setup did not finish prior turns");
+    first->Clear();
     second->Clear();
-    Require(writer.LatchReadinessFailure(), "capacity closure fixture did not latch");
-    Require(!first->Wait() && !second->Wait(), "failure did not wake every independent waiter");
+    std::barrier waiting(3);
+    const auto entry = [](void* context) noexcept {
+      static_cast<std::barrier<>*>(context)->arrive_and_wait();
+    };
+    first->SetWaitEntryHookForTest(&waiting, entry);
+    second->SetWaitEntryHookForTest(&waiting, entry);
+    bool first_open = true;
+    bool second_open = true;
+    std::thread first_thread([&] { first_open = first->Wait(); });
+    std::thread second_thread([&] { second_open = second->Wait(); });
+    waiting.arrive_and_wait();  // Both hold their flag mutex at CV wait entry.
+    const bool latched = writer.LatchReadinessFailure();
+    first_thread.join();
+    second_thread.join();
+    first->SetWaitEntryHookForTest(nullptr, nullptr);
+    second->SetWaitEntryHookForTest(nullptr, nullptr);
+    Require(latched, "capacity closure fixture did not latch");
+    Require(!first_open && !second_open, "blocked Wait did not return closed for every waiter");
     Require(writer.WaitForWriterIdle(), "capacity closure did not finish its writer work");
   } else {
     Require(false, "core has no registered per-waiter capacity flags; supervisor drain is shared");
