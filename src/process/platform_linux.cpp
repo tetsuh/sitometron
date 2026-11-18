@@ -45,7 +45,7 @@ class SpawnAttributes final {
             &value_, static_cast<short>(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)) != 0)
       throw std::runtime_error("cannot configure child signal attributes");
   }
-  const posix_spawnattr_t* get() const noexcept { return &value_; }
+  const posix_spawnattr_t* Get() const noexcept { return &value_; }
 
  private:
   posix_spawnattr_t value_{};
@@ -101,7 +101,7 @@ Process Process::Spawn(const LaunchSpecification& specification,
   attributes.ConfigureSignals();
   // No shell, path search, working-directory action, or digest verification.
   const int error = ::posix_spawn(&native->pid, specification.executable.c_str(), nullptr,
-                                  attributes.get(), argv.data(), envp.data());
+                                  attributes.Get(), argv.data(), envp.data());
   Process result;
   if (error == 0)
     result.state_ = std::move(native);
