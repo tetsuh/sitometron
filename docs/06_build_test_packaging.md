@@ -27,8 +27,10 @@ including unknown and resolved-replay Jobs (one reducer-rejection turn), and a c
 now reaches it in production as well. ADR-0015 Section 6 retains this model; the owner decision of
 2026-11-03 assigns its reconsideration to Issue #127, not this implementation.
 Issue #141 starts the registered executable as one local process under ADR-0016. The Worker
-protocol (#127) and timer port (#128) do not exist yet. A process that exits ends its Job `failed`,
-with its exit confirmed and cleanup status recorded, because nothing reports `worker_running`.
+protocol (#127) and timer port (#128) do not exist yet. A process that exits on its own while
+its Job is still `preparing` ends the Job `failed`, with its exit confirmed and cleanup status
+recorded, because nothing reports `worker_running`. A process that exits after a cancel keeps
+the outcome the cancel latched (`cancelled`).
 A process that does not exit stays in `preparing` until cancel; no preparation timeout fires.
 On Linux, a process that ignores SIGTERM after cancel stays in `stopping` until daemon shutdown
 force-stops it, leaving the Job unresolved on the next start. External REST v1 has no terminate
