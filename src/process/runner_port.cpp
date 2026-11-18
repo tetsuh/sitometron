@@ -78,6 +78,7 @@ bool TestAccess::Contains(const RunnerPort& port, const core::Uuid& job) noexcep
 bool TestAccess::FaultRecorded(const RunnerPort& port) noexcept {
   return port.state_->fault.load(std::memory_order_acquire);
 }
+void TestAccess::WakeService(const RunnerPort& port) noexcept { port.state_->service_wake.Set(); }
 void TestAccess::ExerciseMutex(const RunnerPort& port) {
   std::lock_guard lock(ProbeMutex(port.state_->mailboxes[0].mutex));
 }

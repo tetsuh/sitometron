@@ -87,6 +87,7 @@ class Driver {
   virtual void ReleasePoint(std::string_view point) = 0;
   virtual void WaitPoint(std::string_view point, std::size_t count = 1) = 0;
   virtual void Capacity(std::size_t waiter) = 0;
+  virtual void WakeService() = 0;
   virtual void CloseAdmission() = 0;
   virtual void RequestStop() noexcept = 0;
   virtual void Join() noexcept = 0;

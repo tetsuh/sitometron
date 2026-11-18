@@ -1,4 +1,5 @@
 #include <array>
+#include <atomic>
 #include <barrier>
 #include <cstddef>
 #include <filesystem>
@@ -850,6 +851,37 @@ void ExitReportedAfterRejectedObservation(const std::string& child) {
   }
 }
 void ReapedAfterFailure(const std::string& child) {
+  {
+    Fixture fixture(Options(child, "service_scan_finished"),
+                    "shutdown needs one complete shutdown-mode service scan");
+    fixture.driver->Launch(Launch());
+    (void)fixture.control.Ready();
+    fixture.driver->WaitPoint("slot_waiting_for_exit");
+    fixture.driver->WakeService();
+    fixture.driver->WaitPoint("service_scan_finished");
+    fixture.driver->RequestStop();
+    fixture.driver->ReleasePoint("service_scan_finished");
+    fixture.driver->WaitPoint("service_exited");
+    std::atomic_bool joined{false};
+    std::jthread joiner([&] {
+      fixture.driver->Join();
+      joined.store(true, std::memory_order_release);
+      joined.notify_all();
+    });
+    fixture.driver->WaitPoint("join_before_slot");
+    const bool missed = fixture.driver->Inspect().forced_deliveries == 0;
+    bool blocked = false;
+    if (missed) {
+      fixture.control.Ping();  // The controlled child cannot exit until the rescue below.
+      blocked = !joined.load(std::memory_order_acquire);
+      fixture.control.ExitAll();  // Rescue the RED without a timeout or leaked child.
+    }
+    joined.wait(false, std::memory_order_acquire);
+    joiner.join();
+    ReapedAndJoined(*fixture.driver);
+    Require(!missed && !blocked,
+            "shutdown service exited after a normal scan; join needed external child rescue");
+  }
   {
     Fixture fixture(Options(child), "concurrent repeated stop/join must retain ownership");
     fixture.driver->Launch(Launch());

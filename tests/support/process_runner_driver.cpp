@@ -20,7 +20,7 @@
 namespace sitometron::test::process {
 namespace {
 namespace adapter = sitometron::process;
-constexpr std::array<std::string_view, 30> k_points{"before_spawn_check",
+constexpr std::array<std::string_view, 33> k_points{"before_spawn_check",
                                                     "before_spawn",
                                                     "spawn_before_publication",
                                                     "before_observation",
@@ -49,7 +49,10 @@ constexpr std::array<std::string_view, 30> k_points{"before_spawn_check",
                                                     "mailbox_lock_held",
                                                     "before_reap",
                                                     "observation_completion_pending",
-                                                    "stop_checked"};
+                                                    "stop_checked",
+                                                    "service_scan_finished",
+                                                    "service_exited",
+                                                    "join_before_slot"};
 class Native final : public Driver {
   class Waiter final : public adapter::CapacityWaiter {
    public:
@@ -194,6 +197,7 @@ class Native final : public Driver {
     throw std::runtime_error("unknown deterministic test point");
   }
   void Capacity(std::size_t index) override { waiters_.at(index)->Set(); }
+  void WakeService() override { adapter::internal::TestAccess::WakeService(port_); }
   void CloseAdmission() override {
     closed_.store(true, std::memory_order_release);
     for (auto& waiter : waiters_) waiter->Close();
@@ -245,6 +249,9 @@ class Native final : public Driver {
 
  private:
   void Reach(std::string_view point) noexcept {
+    // Ignore construction's empty scan. The shutdown regression holds only a scan
+    // that follows an admitted started observation and therefore a published child.
+    if (point == "service_scan_finished" && counts_[5].load(std::memory_order_acquire) == 0) return;
     const auto found = std::find(k_points.begin(), k_points.end(), point);
     if (found == k_points.end()) return;
     const auto index = static_cast<std::size_t>(found - k_points.begin());

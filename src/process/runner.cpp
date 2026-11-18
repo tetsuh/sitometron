@@ -162,6 +162,7 @@ struct ProducerState {
     std::lock_guard lock(ProbeMutex(join_mutex));
     for (auto& slot : slots)
       if (slot.joinable()) {
+        port.Reach("join_before_slot");
         slot.join();
         ++port.threads_joined;
       }
@@ -241,7 +242,11 @@ struct ProducerState {
           port.Reach("stop_checked");
         }
       }
-      if (port.stopping.load(std::memory_order_acquire)) return;
+      port.Reach("service_scan_finished");
+      if (port.stopping.load(std::memory_order_acquire)) {
+        port.Reach("service_exited");
+        return;
+      }
       port.service_wake.Wait();
     }
   }

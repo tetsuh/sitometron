@@ -107,6 +107,7 @@ struct TestAccess {
   static bool Contains(const RunnerPort&, const core::Uuid&) noexcept;
   static bool FaultRecorded(const RunnerPort&) noexcept;
   static void ExerciseMutex(const RunnerPort&);
+  static void WakeService(const RunnerPort&) noexcept;
 };
 }  // namespace sitometron::process::internal
 #endif  // SITOMETRON_PROCESS_RUNNER_INTERNAL_HPP_
