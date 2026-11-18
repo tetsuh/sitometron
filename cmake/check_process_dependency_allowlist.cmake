@@ -38,6 +38,7 @@ set(_process_standard_headers algorithm array atomic cassert cerrno condition_va
 set(_process_owned_headers handoff_probe.hpp platform.hpp runner_internal.hpp windows_command_line.hpp
   sitometron/core/job_ports.hpp sitometron/core/job_reducer.hpp sitometron/process/runner.hpp)
 function(process_check_include _file _number _line)
+  string(REPLACE "%:" "#" _line "${_line}")
   if(NOT "${_line}" MATCHES [[^[ 	]*#[ 	]*include]])
     if("${_line}" MATCHES [[#.*include]])
       message(FATAL_ERROR "ProcessDependencyAllowlist unparseable include: ${_file}:${_number}: ${_line}")

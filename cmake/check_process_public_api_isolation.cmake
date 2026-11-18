@@ -9,6 +9,7 @@ endif()
 set(_process_public_headers array cstddef memory optional string string_view vector
   sitometron/core/job_ports.hpp sitometron/core/job_reducer.hpp sitometron/process/runner.hpp)
 function(process_check_public _file _number _line)
+  string(REPLACE "%:" "#" _line "${_line}")
   if("${_line}" MATCHES [[^[ 	]*#[ 	]*include]])
     registry_parse_include(ProcessPublicApiIsolation "${_file}" "${_number}" "${_line}")
     if(NOT REGISTRY_HEADER IN_LIST _process_public_headers)
