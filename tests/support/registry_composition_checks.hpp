@@ -567,13 +567,19 @@ int RegistryLaunchIdentityFromEntry() {
       const auto id = Json::parse(response.body).at("job_id").get<std::string>();
       const auto parameters = entry.at("arguments").get<std::vector<std::string>>();
       const auto& report_text = parameters.at(7);
-      const auto report = sitometron::test::process::ReadReport(
-          std::filesystem::path(std::u8string(report_text.begin(), report_text.end())));
-      auto argv = parameters;
-      argv.insert(argv.begin(), entry.at("executable").get<std::string>());
-      result |= Check(report.at("argv") == argv && report.at("job_id") == id &&
-                          report.at("process_id") == control.ProcessId(peer),
-                      name, "interleaved registry launch ran the wrong entry or stale child");
+      const auto report_path =
+          std::filesystem::path(std::u8string(report_text.begin(), report_text.end()));
+      const bool report_exists = std::filesystem::is_regular_file(report_path);
+      result |= Check(report_exists, name,
+                      "interleaved registry launch did not write its entry-specific report");
+      if (report_exists) {
+        const auto report = sitometron::test::process::ReadReport(report_path);
+        auto argv = parameters;
+        argv.insert(argv.begin(), entry.at("executable").get<std::string>());
+        result |= Check(report.at("argv") == argv && report.at("job_id") == id &&
+                            report.at("process_id") == control.ProcessId(peer),
+                        name, "interleaved registry launch ran the wrong entry or stale child");
+      }
       expected[id] = Json{{"application_id", entry.at("application_id")},
                           {"version", entry.at("version")},
                           {"bundle_sha256", entry.at("bundle_sha256")}};

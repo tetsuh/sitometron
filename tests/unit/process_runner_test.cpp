@@ -102,7 +102,9 @@ bool NoExitAttempts(test::Driver& driver) {
 void ExactFacts(test::Driver& driver, std::size_t observations, std::size_t exits,
                 std::string_view mode = {}) {
   const auto submitted = driver.SubmittedLaunches();
-  const auto compare = [&](std::string_view kind, std::string_view operation, std::size_t count) {
+  const auto compare = [&driver, &submitted, mode](std::string_view kind, std::size_t count) {
+    const auto operation =
+        kind == "process_exit_confirmed" ? "launch_operation_id" : "operation_id";
     const auto facts = Facts(driver, kind);
     Require(facts.size() == count && count <= submitted.size(),
             "wrong accepted observation/exit cardinality");
@@ -121,8 +123,8 @@ void ExactFacts(test::Driver& driver, std::size_t observations, std::size_t exit
     }
     Require(actual == expected, "settled facts have a missing or misrouted Job/operation pair");
   };
-  compare("worker_launch_observed", "operation_id", observations);
-  compare("process_exit_confirmed", "launch_operation_id", exits);
+  compare("worker_launch_observed", observations);
+  compare("process_exit_confirmed", exits);
   for (const auto& attempt : driver.Attempts())
     Require(attempt.event.event_type == "worker_launch_observed" ||
                 attempt.event.event_type == "process_exit_confirmed",
@@ -297,6 +299,7 @@ void ExitConfirmedMode(const std::string& child) {
     fixture.driver->WaitFacts(1, 1);
     ExactFacts(*fixture.driver, 1, 1, "cooperative");
     ReapedAndJoined(*fixture.driver);
+    Require(test::TermBlocked() && test::TermIgnored(), "spawn changed the daemon signal state");
   }
 #endif
   for (const std::string order : {"natural", "natural-zero", "cooperative", "forced",
@@ -925,6 +928,24 @@ void ExitReportedAfterRejectedObservation(const std::string& child) {
       }
     }
   }
+  {
+    Fixture fixture(Options(child, "before_spawn"),
+                    "a Job stop after the locked check belongs to the spawn interval");
+    fixture.driver->Launch(Launch());
+    fixture.driver->WaitHeld();
+    Require(fixture.driver->Inspect().processes_created == 0,
+            "pre-spawn interval vector already created its child");
+    fixture.driver->Cooperative(Stop());
+    fixture.driver->Forced(Stop());
+    fixture.driver->Release();
+    fixture.driver->WaitPoint("cell_released");
+    ExactFacts(*fixture.driver, 1, 1, "forced");
+    ReapedAndJoined(*fixture.driver);
+    const auto view = fixture.driver->Inspect();
+    Require(view.processes_created == 1 && view.cooperative_deliveries == 1 &&
+                view.forced_deliveries == 1,
+            "post-check flags cancelled spawn or were not delivered at publication");
+  }
   for (const std::string landing : {"spawn_before_publication", "slot_waiting_for_exit"}) {
     Fixture fixture(Options(child, landing),
                     "stops during spawn or exit wait must be delivered without slot re-entry",
@@ -1033,7 +1054,7 @@ void ReapedAfterFailure(const std::string& child) {
     (void)fixture.control.Ready();
     fixture.driver->WaitPoint("missing_completion_reported");
     ReapedAndJoined(*fixture.driver);
-    Require(Facts(*fixture.driver, "process_exit_confirmed").empty(),
+    Require(NoExitAttempts(*fixture.driver),
             "missing completion was silently treated as an accepted start");
   }
   const std::array failures = {
@@ -1058,8 +1079,8 @@ void ReapedAfterFailure(const std::string& child) {
       fixture.driver->WaitPoint("cell_released");
       ReapedAndJoined(*fixture.driver);
       if (during_observation)
-        Require(Facts(*fixture.driver, "process_exit_confirmed").empty(),
-                "closed observation was followed by another fact");
+        Require(NoExitAttempts(*fixture.driver),
+                "closed observation was followed by another attempted fact");
     }
   }
   for (const auto& answer : failures) {
@@ -1073,8 +1094,8 @@ void ReapedAfterFailure(const std::string& child) {
     Require(fixture.driver->Inspect().forced_deliveries == 0,
             "a closed started observation forced the still-live child");
     ReapedAndJoined(*fixture.driver);
-    Require(Facts(*fixture.driver, "process_exit_confirmed").empty(),
-            "runner stop after closed observation submitted another fact");
+    Require(NoExitAttempts(*fixture.driver),
+            "runner stop after closed observation attempted another fact");
   }
   {
     auto options = Options(child, "after_park");
@@ -1106,9 +1127,9 @@ void ReapedAfterFailure(const std::string& child) {
     fixture.driver->Release();
     fixture.driver->WaitPoint("cell_released");
     const auto closed = fixture.driver->Inspect();
-    Require(
-        closed.forced_deliveries == 0 && closed.threads_joined == 0 && closed.processes_reaped == 0,
-        "admission closure alone forced/stopped/joined the live child");
+    Require(NoExitAttempts(*fixture.driver) && closed.forced_deliveries == 0 &&
+                closed.threads_joined == 0 && closed.processes_reaped == 0,
+            "admission closure attempted an exit or forced/stopped/joined the live child");
     fixture.control.Exit();
     fixture.driver->WaitPoint("cell_released", 2);
     ReapedAndJoined(*fixture.driver);
