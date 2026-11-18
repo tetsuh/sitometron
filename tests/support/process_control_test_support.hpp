@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include "process_child_platform.hpp"
+
 namespace sitometron::test::process {
 inline void Require(bool condition, std::string_view message) {
   if (!condition) throw std::runtime_error(std::string(message));
@@ -50,7 +52,7 @@ class Directory final {
 class Environment final {
  public:
   Environment(std::string name, std::optional<std::string> value) : name_(std::move(name)) {
-    if (const char* inherited = std::getenv(name_.c_str())) previous_ = inherited;
+    previous_ = EnvironmentValue(name_.c_str());
     Set(value ? value->c_str() : nullptr);
   }
   ~Environment() { Set(previous_ ? previous_->c_str() : nullptr); }

@@ -8,6 +8,7 @@
 #endif
 #include <windows.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -69,6 +70,15 @@ std::unique_ptr<ChildProcess> SpawnDescendant(const std::string& executable,
   return std::make_unique<Spawned>(executable, report, port);
 }
 std::uint64_t ProcessId() noexcept { return ::GetCurrentProcessId(); }
+std::optional<std::string> EnvironmentValue(const char* name) {
+  char* buffer = nullptr;
+  std::size_t size = 0;
+  if (::_dupenv_s(&buffer, &size, name) != 0)
+    throw std::runtime_error("cannot read test environment variable");
+  const std::unique_ptr<char, decltype(&std::free)> value(buffer, &std::free);
+  if (!value) return std::nullopt;
+  return std::string(value.get());
+}
 std::string Utf8Argument(const wchar_t* value) {
   const int required =
       ::WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, nullptr, 0, nullptr, nullptr);

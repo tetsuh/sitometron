@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace sitometron::test::process {
@@ -14,6 +15,7 @@ std::unique_ptr<ChildProcess> SpawnDescendant(const std::string& executable,
                                               const std::string& report,
                                               const std::string& control_port);
 std::uint64_t ProcessId() noexcept;
+std::optional<std::string> EnvironmentValue(const char* name);
 #ifdef _WIN32
 std::string Utf8Argument(const wchar_t*);
 #endif

@@ -5,6 +5,7 @@
 
 #include <cerrno>
 #include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -46,6 +47,10 @@ std::unique_ptr<ChildProcess> SpawnDescendant(const std::string& executable,
   return std::make_unique<Spawned>(executable, report, port);
 }
 std::uint64_t ProcessId() noexcept { return static_cast<std::uint64_t>(::getpid()); }
+std::optional<std::string> EnvironmentValue(const char* name) {
+  if (const char* value = std::getenv(name)) return std::string(value);
+  return std::nullopt;
+}
 namespace {
 class Denied final : public FileReadBlock {
  public:

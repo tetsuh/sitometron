@@ -55,8 +55,8 @@ void Release(PortState& port, Cell& cell) noexcept {
   // buffers (not merely leaving unspecified moved-from strings). That local is
   // destroyed, also on exception unwind, before this slot-thread release exchange.
   const auto& request = cell.request;
-  const auto& intent = request.intent;
-  if (!request.job_id.value.empty() || !intent.operation_id.value.empty() ||
+  if (const auto& intent = request.intent;
+      !request.job_id.value.empty() || !intent.operation_id.value.empty() ||
       !intent.application_id.value.empty() || !intent.application_version.empty() ||
       !intent.bundle_sha256.value.empty() || !intent.allocation_id.value.empty() ||
       !intent.allocation_digest.value.empty() || !intent.worker_id.value.empty())
@@ -232,8 +232,9 @@ struct ProducerState {
       for (std::size_t index = 0; index != port.count; ++index) {
         auto& mailbox = port.mailboxes[index];
         for (auto& cell : mailbox.cells) {
-          const auto word = cell.word.load(std::memory_order_acquire);
-          if ((word & (k_cooperative | k_forced)) == 0 && !port.stopping.load()) continue;
+          if (const auto word = cell.word.load(std::memory_order_acquire);
+              (word & (k_cooperative | k_forced)) == 0 && !port.stopping.load())
+            continue;
           port.Reach("before_stop_delivery");
           std::lock_guard lock(ProbeMutex(mailbox.mutex));
           DeliverLocked(cell);
@@ -256,7 +257,7 @@ struct ProducerState {
     port.Reach("after_park");
     waiters.back()->Set();
   }
-  void CloseParking() noexcept {
+  void CloseParking() const noexcept {
     for (std::size_t index = 0; index != port.count; ++index) {
       auto& entry = parking[index];
       std::lock_guard lock(ProbeMutex(entry.mutex));
@@ -328,6 +329,11 @@ struct ProducerState {
     entry.wake.wait(lock, [&entry] { return !entry.in_flight; });
     return Mode(word);
   }
+  const LaunchSpecification* SpecificationFor(const core::StableId& application) const noexcept {
+    for (const auto& candidate : specifications)
+      if (candidate.application_id == application.value) return &candidate;
+    return nullptr;
+  }
   void RunCell(std::size_t index, Cell& cell) {
     // Keep the cell's strings default-empty before publishing its next generation.
     // A moved-from string is only valid-but-unspecified; swapping explicitly moves
@@ -361,14 +367,9 @@ struct ProducerState {
       (void)Submit(index, Exit(request, Mode(cell.word.load(std::memory_order_acquire))));
       return;
     }
-    Process process;
+    auto process = Process{};
     try {
-      const LaunchSpecification* specification = nullptr;
-      for (const auto& candidate : specifications)
-        if (candidate.application_id == request.intent.application_id.value) {
-          specification = &candidate;
-          break;
-        }
+      const auto* specification = SpecificationFor(request.intent.application_id);
       port.Reach("before_spawn");
       if (port.stopping.load(std::memory_order_acquire)) return;
       if (port.hooks != nullptr && port.hooks->fail_before_spawn)

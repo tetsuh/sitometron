@@ -14,6 +14,10 @@ std::size_t MailboxCount(std::size_t max_jobs) {
     throw std::invalid_argument("invalid runner mailbox inventory");
   return max_jobs + 1;
 }
+bool Matches(const Cell& cell, std::uint64_t word, const core::Uuid& job) noexcept {
+  return (word & k_occupied) != 0 && (word & k_phase_mask) != k_claiming &&
+         std::string_view(cell.job.data(), cell.job_size) == job.value;
+}
 }  // namespace
 PortState::PortState(std::size_t max_jobs)
     : count(MailboxCount(max_jobs)), mailboxes(std::make_unique<Mailbox[]>(count)) {
@@ -28,9 +32,7 @@ void PortState::Stop(const core::ApplicationStopRequest& request, std::uint64_t 
         if (cell_index == 1) Reach("stop_between_scan_reads");
         auto& cell = mailbox.cells[cell_index];
         auto word = cell.word.load(std::memory_order_acquire);
-        if ((word & k_occupied) == 0 || (word & k_phase_mask) == k_claiming ||
-            std::string_view(cell.job.data(), cell.job_size) != request.job_id.value)
-          continue;
+        if (!Matches(cell, word, request.job_id)) continue;
         if ((word & flag) != 0) return;
         Reach("stop_before_cas");
         if (cell.word.compare_exchange_strong(word, word | flag, std::memory_order_acq_rel,
@@ -55,8 +57,9 @@ void TestAccess::Install(RunnerPort& port, const TestHooks* hooks) noexcept {
         cell.word.store(hooks->initial_generation * k_generation_step, std::memory_order_relaxed);
   }
 }
-void TestAccess::SeedPhases(RunnerPort& port, std::uint64_t first, std::uint64_t second) noexcept {
-  auto& state = *port.state_;
+void TestAccess::SeedPhases(const RunnerPort& port, std::uint64_t first,
+                            std::uint64_t second) noexcept {
+  const auto& state = *port.state_;
   state.mailboxes[0].cells[0].word.store(first == 0 ? 0 : first | k_occupied);
   state.mailboxes[0].cells[1].word.store(second == 0 ? 0 : second | k_occupied);
   // The remaining mailbox offers no place: its empty cell has an active partner.
@@ -75,7 +78,7 @@ bool TestAccess::Contains(const RunnerPort& port, const core::Uuid& job) noexcep
 bool TestAccess::FaultRecorded(const RunnerPort& port) noexcept {
   return port.state_->fault.load(std::memory_order_acquire);
 }
-void TestAccess::ExerciseMutex(RunnerPort& port) {
+void TestAccess::ExerciseMutex(const RunnerPort& port) {
   std::lock_guard lock(ProbeMutex(port.state_->mailboxes[0].mutex));
 }
 Diagnostics TestAccess::Inspect(RunnerPort& port) {
@@ -118,8 +121,9 @@ void RunnerPort::HandoffLaunch(core::ApplicationLaunchRequest&& request) noexcep
       auto& cell = mailbox.cells[cell_index];
       auto word = cell.word.load(std::memory_order_acquire);
       if ((word & k_occupied) != 0) continue;
-      const auto partner = mailbox.cells[1 - cell_index].word.load(std::memory_order_acquire);
-      if ((partner & k_occupied) != 0 && (partner & k_phase_mask) != k_closing) continue;
+      if (const auto partner = mailbox.cells[1 - cell_index].word.load(std::memory_order_acquire);
+          (partner & k_occupied) != 0 && (partner & k_phase_mask) != k_closing)
+        continue;
       if (!cell.word.compare_exchange_strong(word, word | k_occupied | k_claiming,
                                              std::memory_order_acq_rel, std::memory_order_acquire))
         continue;

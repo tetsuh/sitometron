@@ -103,10 +103,10 @@ struct TestAccess {
   static void Install(RunnerPort&, const TestHooks*) noexcept;
   static Diagnostics Inspect(RunnerPort&);
   // Static state probes only, before any producer exists.
-  static void SeedPhases(RunnerPort&, std::uint64_t first, std::uint64_t second) noexcept;
+  static void SeedPhases(const RunnerPort&, std::uint64_t first, std::uint64_t second) noexcept;
   static bool Contains(const RunnerPort&, const core::Uuid&) noexcept;
   static bool FaultRecorded(const RunnerPort&) noexcept;
-  static void ExerciseMutex(RunnerPort&);
+  static void ExerciseMutex(const RunnerPort&);
 };
 }  // namespace sitometron::process::internal
 #endif  // SITOMETRON_PROCESS_RUNNER_INTERNAL_HPP_

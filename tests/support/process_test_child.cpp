@@ -24,8 +24,7 @@
 
 namespace {
 std::string Environment(const char* name) {
-  const char* value = std::getenv(name);
-  return value == nullptr ? std::string{} : std::string(value);
+  return sitometron::test::process::EnvironmentValue(name).value_or(std::string{});
 }
 #ifndef _WIN32
 volatile std::sig_atomic_t control_descriptor = -1;

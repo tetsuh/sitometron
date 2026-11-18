@@ -141,13 +141,13 @@ class RunnerIngress final : public process::IngressHandle {
  public:
   RunnerIngress(JobOrchestrator& writer, RunnerObservationGate& gate, RunnerProgress& progress)
       : writer_(writer),
-        endpoint_(ProbeCore([&] { return writer.RetainedCallback(); })),
+        endpoint_(ProbeCore([&writer] { return writer.RetainedCallback(); })),
         gate_(gate),
         progress_(progress) {}
   process::SubmissionResult Submit(core::RawCandidateEvent event) noexcept override {
     if (event.event_type == "worker_launch_observed") gate_.Reach();
     const bool exit = event.event_type == "process_exit_confirmed";
-    const auto admitted = ProbeCore([&] { return endpoint_.Invoke(std::move(event)); });
+    const auto admitted = ProbeCore([this, &event] { return endpoint_.Invoke(std::move(event)); });
     process::SubmissionResult result;
     switch (admitted.code) {
       case IngressCode::kAdmitted:
@@ -173,10 +173,10 @@ class RunnerIngress final : public process::IngressHandle {
         return result;
     }
     const auto completion =
-        ProbeCore([&] { return writer_.AwaitCompletion(admitted.ingress_sequence); });
+        ProbeCore([this, &admitted] { return writer_.AwaitCompletion(admitted.ingress_sequence); });
     if (!completion) {
       // Every admitted sequence completes once. Missing is an invariant breach, never success.
-      (void)ProbeCore([&] { return writer_.LatchReadinessFailure(); });
+      (void)ProbeCore([this] { return writer_.LatchReadinessFailure(); });
       return result;
     }
     process::CompletionResult value;
@@ -209,20 +209,20 @@ class RunnerIngress final : public process::IngressHandle {
 class RunnerCapacity final : public process::CapacityWaiter {
  public:
   explicit RunnerCapacity(JobOrchestrator& writer)
-      : waiter_(ProbeCore([&] { return writer.RegisterCapacityWaiter(); })) {
+      : waiter_(ProbeCore([&writer] { return writer.RegisterCapacityWaiter(); })) {
     if (!waiter_) throw std::invalid_argument("runner capacity registration exhausted");
   }
   void Clear() noexcept override {
-    ProbeCore([&] { waiter_->Clear(); });
+    ProbeCore([this] { waiter_->Clear(); });
   }
   void Set() noexcept override {
-    ProbeCore([&] { waiter_->Set(); });
+    ProbeCore([this] { waiter_->Set(); });
   }
   bool Wait() noexcept override {
-    return ProbeCore([&] { return waiter_->Wait(); });
+    return ProbeCore([this] { return waiter_->Wait(); });
   }
   bool Closed() const noexcept override {
-    return ProbeCore([&] { return waiter_->Closed(); });
+    return ProbeCore([this] { return waiter_->Closed(); });
   }
 
  private:
@@ -232,7 +232,7 @@ class RunnerFailure final : public process::FailureLatch {
  public:
   explicit RunnerFailure(JobOrchestrator& writer) : writer_(writer) {}
   void Latch(std::string_view) noexcept override {
-    (void)ProbeCore([&] { return writer_.LatchReadinessFailure(); });
+    (void)ProbeCore([this] { return writer_.LatchReadinessFailure(); });
   }
 
  private:
@@ -332,17 +332,17 @@ class SessionProducer final {
   }
   void Start(JobOrchestrator& writer) {
     writer_ = &writer;
-    capacity_ = ProbeCore([&] { return writer.RegisterCapacityWaiter(); });
+    capacity_ = ProbeCore([&writer] { return writer.RegisterCapacityWaiter(); });
     if (!capacity_) throw std::invalid_argument("Session capacity registration exhausted");
-    if (!ProbeCore([&] { return writer.ready(); })) return;
-    endpoint_ = ProbeCore([&] { return writer.RetainedCallback(); });
+    if (!ProbeCore([&writer] { return writer.ready(); })) return;
+    endpoint_ = ProbeCore([&writer] { return writer.RetainedCallback(); });
     physically_joined_.store(false, std::memory_order_release);
     thread_ = std::thread([this] { Run(); });
   }
   void Stop() noexcept {
     stopping_.store(true, std::memory_order_release);
     mailbox_.Stop();
-    if (capacity_) ProbeCore([&] { capacity_->Set(); });
+    if (capacity_) ProbeCore([this] { capacity_->Set(); });
   }
   bool Joined() const noexcept { return physically_joined_.load(std::memory_order_acquire); }
   bool Join() noexcept {
@@ -368,12 +368,13 @@ class SessionProducer final {
     using enum IngressCode;
     for (;;) {
       if (stopping_.load(std::memory_order_acquire)) return;
-      ProbeCore([&] { capacity_->Clear(); });
-      if (const auto result = ProbeCore([&] { return endpoint_.Invoke(event); });
+      ProbeCore([this] { capacity_->Clear(); });
+      if (const auto result = ProbeCore([this, &event] { return endpoint_.Invoke(event); });
           result.code == kNormalFull) {
-        if (ProbeCore([&] { return capacity_->Wait(); })) continue;
+        if (ProbeCore([this] { return capacity_->Wait(); })) continue;
       } else if (result.code == kAdmitted || result.code == kCoalescedPending) {
-        (void)ProbeCore([&] { return writer_->AwaitCompletion(result.ingress_sequence); });
+        (void)ProbeCore(
+            [this, &result] { return writer_->AwaitCompletion(result.ingress_sequence); });
       }
       break;
     }
@@ -392,12 +393,12 @@ class SessionProducer final {
         Deliver(event);
         mailbox_.Done();
       }
-      if (mailbox_.Overflowed()) ProbeCore([&] { return writer_->LatchReadinessFailure(); });
+      if (mailbox_.Overflowed()) ProbeCore([this] { return writer_->LatchReadinessFailure(); });
     } catch (...) {
-      ProbeCore([&] { return writer_->LatchReadinessFailure(); });
+      ProbeCore([this] { return writer_->LatchReadinessFailure(); });
     }
     mailbox_.Done();
-    ProbeCore([&] { writer_->NotifyProducerExited(); });
+    ProbeCore([this] { writer_->NotifyProducerExited(); });
   }
   Phase1SessionRetainer& mailbox_;
   JobOrchestrator* writer_ = nullptr;
@@ -870,8 +871,8 @@ bool Phase1Composition::Start(std::string& error) {
     impl_->producer->Start(*impl_->orchestrator);
     std::vector<process::LaunchSpecification> specifications;
     for (const auto& application : impl_->applications)
-      specifications.push_back({application.application_id, application.executable,
-                                application.arguments, application.bundle_sha256});
+      specifications.emplace_back(application.application_id, application.executable,
+                                  application.arguments, application.bundle_sha256);
     std::vector<std::unique_ptr<process::IngressHandle>> handles;
     handles.reserve(runner_handles);
     for (std::size_t index = 0; index != runner_handles; ++index)
@@ -975,7 +976,7 @@ bool Phase1Composition::FillOtherCompletionBudgetForTest() {
   // without changing the preparing Job, free normal permits, but keep their completion slots.
   for (std::size_t index = 0; index != impl_->other_completion_budget; ++index) {
     const auto result = impl_->orchestrator->SubmitCandidate(
-        {1, *created, "session_retained", "{\"session_id\":\"" + created->value + "\"}"});
+        {1, *created, "session_retained", R"({"session_id":")" + created->value + R"("})"});
     if (result.code != IngressCode::kAdmitted || !impl_->orchestrator->WaitForWriterIdle())
       return false;
   }

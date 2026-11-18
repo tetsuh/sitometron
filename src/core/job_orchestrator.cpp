@@ -358,7 +358,7 @@ struct JobOrchestrator::Impl {
   std::vector<Flight> flights;
   bool capacity_signal = false;
   std::vector<std::shared_ptr<CapacityWaiter>> capacity_waiters;
-  void SignalCapacityLocked(bool close = false) noexcept {
+  void SignalCapacityLocked(bool close = false) const noexcept {
     for (const auto& waiter : capacity_waiters) {
       if (!waiter) continue;
       if (close)

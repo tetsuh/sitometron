@@ -121,8 +121,7 @@ void Process::Wait() const noexcept {
 void Process::Reap() noexcept {
   if (!state_) return;
   Wait();
-  DWORD status = 0;
-  if (::GetExitCodeProcess(state_->handle, &status) != FALSE)
+  if (DWORD status = 0; ::GetExitCodeProcess(state_->handle, &status) != FALSE)
     std::cerr << "process exit status: " << status << '\n';
   (void)::CloseHandle(state_->handle);
   state_.reset();
