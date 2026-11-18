@@ -413,10 +413,35 @@ int RegistryAbsentKeepsEmptySet() {
   return result;
 }
 
+std::string CopyRegisteredProcessHelper(const std::filesystem::path& executable) {
+  std::filesystem::copy_file(std::filesystem::path(SITOMETRON_PROCESS_TEST_CHILD), executable);
+  boost::hash2::sha2_256 hasher;
+  std::ifstream input(executable, std::ios::binary);
+  std::array<char, 65536> buffer{};
+  while (input) {
+    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    if (input.gcount() > 0) hasher.update(buffer.data(), static_cast<std::size_t>(input.gcount()));
+  }
+  if (!input.eof() || input.bad()) throw std::runtime_error("cannot hash registered test helper");
+  return boost::hash2::to_string(hasher.result());
+}
+Json RegisteredProcessArguments(const RegistryFixture& fixture, const std::string& port) {
+  return Json::array({"--mode", "wait", "--status", "0", "--control-port", port, "--report",
+                      RegistryFixture::Text(fixture.root / "registered process report.json")});
+}
+
 int RegisteredApplicationCreates() {
   constexpr std::string_view name = "rest_v1_registered_application_creates";
   RegistryFixture fixture;
+  sitometron::test::process::Control control;
+  fixture.bundle = fixture.root / "registered helper.exe";
+  auto& application = fixture.document["applications"][0];
+  application["executable"] = RegistryFixture::Text(fixture.bundle);
+  application["bundle_sha256"] = CopyRegisteredProcessHelper(fixture.bundle);
+  application["arguments"] = RegisteredProcessArguments(fixture, control.port());
+  fixture.Save();
   auto config = fixture.Config();
+  config.hold_runner_observations_for_test = true;
   SetRegistryPath(config, fixture.file);
   sitometron::daemon::Phase1Composition daemon(config);
   std::string error;
@@ -445,6 +470,8 @@ int RegisteredApplicationCreates() {
   if (created.status == 202) {
     const auto job = Json::parse(created.body);
     const auto id = job.at("job_id").get<std::string>();
+    daemon.WaitForRunnerObservationForTest();
+    (void)control.Ready();  // Real child initialized; its observation remains held before ingress.
     result |= Check(created.headers.at("location") == JobPath(id) &&
                         (job.at("state") == "admitted" || job.at("state") == "preparing") &&
                         !job.at("terminal").get<bool>() && job.at("outcome").is_null(),
@@ -474,6 +501,14 @@ int RegisteredApplicationCreates() {
                     after.at("outcome").is_null(),
                 name, "post-intent cancel did not leave production waiting for process facts");
     }
+    // Preserve every original before-release assertion above, then exercise the
+    // real adapter/bridge rejection after cancel has moved this Job out of preparing.
+    daemon.ReleaseRunnerObservationForTest();
+    result |= Check(daemon.WaitForRunnerExitForTest() && daemon.WaitForSupervisorIdleForTest(),
+                    name, "rejected real launch observation lost its exit/cleanup obligation");
+    const auto completed = daemon.backend().GetJob(id);
+    result |= Check(completed && completed->state == "cancelled" && completed->terminal, name,
+                    "cancelled real process did not reach its terminal cleanup");
   }
   daemon.Stop();
   std::cout << name << ": request vectors=" << requests << '\n';
@@ -488,8 +523,15 @@ bool RegistrySupervisorDrained(sitometron::daemon::Phase1Composition& daemon) {
 int RegistryLaunchIdentityFromEntry() {
   constexpr std::string_view name = "registry_launch_identity_from_entry";
   RegistryFixture fixture("issue133-registry-");
-  const auto second_bundle = fixture.root / "second-bundle";
-  RegistryFixture::Write(second_bundle, "");
+  sitometron::test::process::Control control;
+  fixture.bundle = fixture.root / "registered helper.exe";
+  fixture.document["applications"][0]["executable"] = RegistryFixture::Text(fixture.bundle);
+  fixture.document["applications"][0]["bundle_sha256"] =
+      CopyRegisteredProcessHelper(fixture.bundle);
+  fixture.document["applications"][0]["arguments"] =
+      RegisteredProcessArguments(fixture, control.port());
+  const auto second_bundle = fixture.root / "second-helper.exe";
+  const auto second_digest = CopyRegisteredProcessHelper(second_bundle);
   std::string maximum_version;
   for (unsigned i = 0; i < 128; ++i) maximum_version.append("\xf0\x9f\x98\x80");
   fixture.document["applications"][0]["version"] = "v\\\"\\\\-あ";
@@ -497,7 +539,8 @@ int RegistryLaunchIdentityFromEntry() {
       Json{{"application_id", "second-worker"},
            {"version", maximum_version},
            {"executable", RegistryFixture::Text(second_bundle)},
-           {"bundle_sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}});
+           {"bundle_sha256", second_digest},
+           {"arguments", RegisteredProcessArguments(fixture, control.port())}});
   auto minimum = fixture.document["applications"][0];
   minimum["application_id"] = "minimum-worker";
   minimum["version"] = "1";
@@ -518,6 +561,7 @@ int RegistryLaunchIdentityFromEntry() {
         Request("POST", "/v1/jobs", CreateBody(entry.at("application_id").get<std::string>())));
     result |= ExpectStatus(response, name, 202);
     if (response.status == 202) {
+      (void)control.Ready();  // Keep every real registered child alive until daemon shutdown.
       const auto id = Json::parse(response.body).at("job_id").get<std::string>();
       expected[id] = Json{{"application_id", entry.at("application_id")},
                           {"version", entry.at("version")},

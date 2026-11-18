@@ -38,6 +38,7 @@ struct StartupConfig {
   std::size_t max_jobs = 32;
   http::Options http;
   bool hold_supervisor_for_test = false;
+  bool hold_runner_observations_for_test = false;
 };
 
 struct ParseResult {
@@ -64,6 +65,13 @@ class Phase1Composition final {
   [[nodiscard]] std::size_t identity_reads() const noexcept;
   [[nodiscard]] std::size_t writer_turn_count() const noexcept;
   [[nodiscard]] std::uint16_t listen_port() const noexcept;
+  bool HandoffProbeSelfTestForTest();
+  bool LatchFailureForTest();
+  bool FailureSealedForTest() const noexcept;
+  bool FillOtherCompletionBudgetForTest();
+  bool WaitForRunnerExitForTest(std::size_t count = 1);
+  void WaitForRunnerObservationForTest() const noexcept;
+  void ReleaseRunnerObservationForTest() noexcept;
   bool WaitForSupervisorIdleForTest();
   bool ArmSupervisorBarrierForTest(std::string_view, std::string_view = {});
   bool WaitForSupervisorBarrierForTest();

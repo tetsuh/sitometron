@@ -56,6 +56,7 @@
 #include "core_fakes.hpp"
 #include "job_orchestrator.hpp"
 #include "journal_test_events.hpp"
+#include "process_control_test_support.hpp"
 #include "reducer_snapshot_json.hpp"
 #include "registry_validation.hpp"
 #include "registry_vector_inventory.hpp"

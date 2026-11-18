@@ -7,10 +7,101 @@
 // The optional deterministic drain is test observation only, not a production state API.
 template <typename Composition>
 bool ProcessCompositionDrained(Composition& daemon) {
-  if constexpr (requires { daemon.WaitForProcessIdleForTest(); })
-    return daemon.WaitForProcessIdleForTest() && daemon.WaitForSupervisorIdleForTest();
+  if constexpr (requires { daemon.WaitForRunnerExitForTest(); })
+    return daemon.WaitForRunnerExitForTest() && daemon.WaitForSupervisorIdleForTest();
   else
     return daemon.WaitForSupervisorIdleForTest();
+}
+
+int ProductionRunnerFailureSealing() {
+  constexpr std::string_view name = "rest_v1_protocol_less_process_fails";
+  RegistryFixture fixture("issue141-failure-sealing-");
+  sitometron::test::process::Control control;
+  fixture.bundle = fixture.root / "live helper.exe";
+  auto& application = fixture.document["applications"][0];
+  application["executable"] = RegistryFixture::Text(fixture.bundle);
+  application["bundle_sha256"] = CopyRegisteredProcessHelper(fixture.bundle);
+  application["arguments"] = RegisteredProcessArguments(fixture, control.port());
+  fixture.Save();
+  auto config = fixture.Config();
+  config.hold_runner_observations_for_test = true;
+  SetRegistryPath(config, fixture.file);
+  sitometron::daemon::Phase1Composition daemon(config);
+  std::string error;
+  if (!daemon.Start(error)) return Check(false, name, "failure-sealing startup refused: " + error);
+  if (!daemon.HandoffProbeSelfTestForTest())
+    return Check(false, name, "owned composition mutex/core-entry probe missed planted accesses");
+  const auto created =
+      SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody("demo-worker")));
+  int result = ExpectStatus(created, name, 202);
+  if (created.status != 202) return result;
+  daemon.WaitForRunnerObservationForTest();
+  (void)control.Ready();
+  result |= Check(daemon.LatchFailureForTest() && !daemon.backend().GetReadiness().ready, name,
+                  "production readiness did not become false at the fail-closed latch");
+  result |= Check(daemon.WaitForSupervisorIdleForTest() && !daemon.FailureSealedForTest(), name,
+                  "failure sealed before the composition joined the live runner");
+  control.Ping();  // Deterministic live-process witness: closure must neither force nor join it.
+  daemon.Stop();
+  result |=
+      Check(daemon.FailureSealedForTest(), name,
+            "external join did not re-drive deferred failure sealing before core destruction");
+  const auto replayed = sitometron::journal::ReplayJournal(
+      sitometron::journal::SystemFileSystem(), config.journal_path,
+      sitometron::journal::ReplayOptions{config.max_jobs});
+  result |= Check(replayed.status == sitometron::journal::ReplayStatus::kReplayed &&
+                      replayed.jobs.size() == 1 && replayed.unresolved.size() == 1 &&
+                      replayed.jobs[0].state == core::JobState::kPreparing &&
+                      !replayed.jobs[0].process_exit_confirmed,
+                  name, "failure/shutdown manufactured a process result or resolved the Job");
+  return result;
+}
+
+int ProductionRunnerCompletionBudget() {
+  constexpr std::string_view name = "rest_v1_protocol_less_process_fails";
+  RegistryFixture fixture("issue141-completion-budget-");
+  sitometron::test::process::Control control;
+  fixture.bundle = fixture.root / "budget helper.exe";
+  auto& application = fixture.document["applications"][0];
+  application["executable"] = RegistryFixture::Text(fixture.bundle);
+  application["bundle_sha256"] = CopyRegisteredProcessHelper(fixture.bundle);
+  application["arguments"] = RegisteredProcessArguments(fixture, control.port());
+  fixture.Save();
+  auto config = fixture.Config();
+  config.max_jobs = 1;
+  config.hold_runner_observations_for_test = true;
+  SetRegistryPath(config, fixture.file);
+  sitometron::daemon::Phase1Composition daemon(config);
+  std::string error;
+  if (!daemon.Start(error))
+    return Check(false, name, "completion-budget startup refused: " + error);
+  {
+    // Real verified-registry window: preserve the recorded startup digest, change the image
+    // before its first launch, and require the current valid ELF/PE bytes to start unchanged.
+    std::ofstream different(fixture.bundle, std::ios::binary | std::ios::app);
+    different.put('\0');
+    different.close();
+    if (!different) return Check(false, name, "cannot replace verified helper after startup");
+  }
+  const auto created =
+      SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody("demo-worker")));
+  int result = ExpectStatus(created, name, 202);
+  if (created.status != 202) return result;
+  daemon.WaitForRunnerObservationForTest();
+  (void)control.Ready();
+  result |= Check(daemon.FillOtherCompletionBudgetForTest(), name,
+                  "could not retain the full pre-runner completion budget");
+  daemon.ReleaseRunnerObservationForTest();
+  control.Exit();
+  result |= Check(daemon.WaitForRunnerExitForTest() && daemon.WaitForSupervisorIdleForTest(), name,
+                  "runner exit exhausted completion storage held by other producers");
+  const auto id = Json::parse(created.body).at("job_id").get<std::string>();
+  const auto job = daemon.backend().GetJob(id);
+  result |=
+      Check(job && job->state == "failed" && job->terminal && daemon.backend().GetReadiness().ready,
+            name, "completion budget pressure latched failure or lost terminal cleanup");
+  daemon.Stop();
+  return result;
 }
 
 int ProtocolLessProcessFails() {
@@ -98,6 +189,8 @@ int ProtocolLessProcessFails() {
   }
   result |= Check(std::filesystem::is_regular_file(report), name,
                   "registered executable never wrote its process report");
+  result |= ProductionRunnerFailureSealing();
+  result |= ProductionRunnerCompletionBudget();
   return result;
 }
 
