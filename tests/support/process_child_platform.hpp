@@ -22,6 +22,8 @@ class SignalInheritance {
   virtual ~SignalInheritance() = default;
 };
 std::unique_ptr<SignalInheritance> BlockAndIgnoreTerm();
+enum class ChildDisposition { kDefault, kIgnored, kNoChildWait };
+std::unique_ptr<SignalInheritance> SetChildDisposition(ChildDisposition);
 bool TermBlocked();
 bool TermIgnored();
 #endif

@@ -49,6 +49,23 @@ std::unique_ptr<ChildProcess> SpawnDescendant(const std::string& executable,
 std::uint64_t ProcessId() noexcept { return static_cast<std::uint64_t>(::getpid()); }
 std::uint64_t ParentProcessId() { return static_cast<std::uint64_t>(::getppid()); }
 namespace {
+class InheritedChild final : public SignalInheritance {
+ public:
+  explicit InheritedChild(ChildDisposition disposition) {
+    if (::sigaction(SIGCHLD, nullptr, &prior_) != 0)
+      throw std::runtime_error("cannot save SIGCHLD disposition");
+    struct sigaction action {};
+    action.sa_handler = disposition == ChildDisposition::kIgnored ? SIG_IGN : SIG_DFL;
+    if (disposition == ChildDisposition::kNoChildWait) action.sa_flags = SA_NOCLDWAIT;
+    (void)::sigemptyset(&action.sa_mask);
+    if (::sigaction(SIGCHLD, &action, nullptr) != 0)
+      throw std::runtime_error("cannot set test SIGCHLD disposition");
+  }
+  ~InheritedChild() override { (void)::sigaction(SIGCHLD, &prior_, nullptr); }
+
+ private:
+  struct sigaction prior_ {};
+};
 class InheritedTerm final : public SignalInheritance {
  public:
   InheritedTerm() {
@@ -80,6 +97,9 @@ class InheritedTerm final : public SignalInheritance {
 }  // namespace
 std::unique_ptr<SignalInheritance> BlockAndIgnoreTerm() {
   return std::make_unique<InheritedTerm>();
+}
+std::unique_ptr<SignalInheritance> SetChildDisposition(ChildDisposition disposition) {
+  return std::make_unique<InheritedChild>(disposition);
 }
 bool TermBlocked() {
   sigset_t mask;

@@ -965,6 +965,47 @@ void ExitReportedAfterRejectedObservation(const std::string& child) {
   }
 }
 void ReapedAfterFailure(const std::string& child) {
+#ifndef _WIN32
+  bool disposition_refusals = true;
+  for (const auto disposition :
+       {test::ChildDisposition::kIgnored, test::ChildDisposition::kNoChildWait}) {
+    const auto signal_guard = test::SetChildDisposition(disposition);
+    auto options = Options(child);
+    test::Diagnostics witness;
+    options.queued_before_start = Launch();
+    // The old implementation must fail safely before creating a thread or a child:
+    // reaching this injected checkpoint proves the required disposition refusal is absent.
+    options.fail_thread_after = 0;
+    options.construction_failure = &witness;
+    bool refused = false;
+    try {
+      Fixture fixture(options, "unsafe SIGCHLD disposition must refuse construction");
+    } catch (const std::runtime_error& error) {
+      refused =
+          std::string_view(error.what()).find("runner requires waitable children: SIGCHLD") == 0;
+    }
+    const bool safe = refused && witness.threads_created == 0 && witness.threads_joined == 0 &&
+                      witness.processes_created == 0 && witness.processes_reaped == 0;
+    if (!safe)
+      std::cerr << "SIGCHLD refusal missing for "
+                << (disposition == test::ChildDisposition::kIgnored ? "SIG_IGN" : "SA_NOCLDWAIT")
+                << '\n';
+    disposition_refusals = disposition_refusals && safe;
+  }
+  Require(disposition_refusals, "SIGCHLD policy did not refuse before thread creation or launch");
+  {
+    const auto signal_guard = test::SetChildDisposition(test::ChildDisposition::kDefault);
+    Fixture fixture(Options(child), "default SIGCHLD disposition must allow construction");
+    fixture.driver->Launch(Launch());
+    (void)fixture.control.Ready();
+    fixture.driver->WaitFacts(1, 0);
+    fixture.control.Exit();
+    fixture.driver->WaitFacts(1, 1);
+    ReapedAndJoined(*fixture.driver);
+    Require(fixture.driver->Inspect().processes_created == 1,
+            "default SIGCHLD disposition did not start the child");
+  }
+#endif
   {
     Fixture fixture(Options(child, "service_scan_finished"),
                     "shutdown needs one complete shutdown-mode service scan");

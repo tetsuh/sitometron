@@ -94,7 +94,7 @@ int RegistryRefused(RegistryFixture& fixture, std::string_view name, std::string
     std::string error;
     const bool started = daemon.Start(error);
     result |= Check(!started && daemon.listen_port() == 0, name,
-                    "invalid registry did not refuse before listening");
+                    "startup did not refuse before listening");
     if (started) {
       daemon.Stop();
       return result;  // Do not enter the executable's serve loop after an unexpected acceptance.
@@ -158,6 +158,22 @@ int RegistryStartupRefusesInvalid() {
   RegistryFixture fixture;
   std::filesystem::remove(fixture.file);
   int result = RegistryRefused(fixture, name, "registry");
+#ifndef _WIN32
+  {
+    namespace process_test = sitometron::test::process;
+    RegistryFixture signals("issue141-sigchld-");
+    signals.document["applications"] = Json::array();
+    signals.Save();
+    for (const auto disposition :
+         {process_test::ChildDisposition::kIgnored, process_test::ChildDisposition::kNoChildWait}) {
+      const auto signal_guard = process_test::SetChildDisposition(disposition);
+      result |= RegistryRefused(signals, name, "runner requires waitable children: SIGCHLD");
+    }
+    const auto signal_guard =
+        process_test::SetChildDisposition(process_test::ChildDisposition::kDefault);
+    result |= RegistryStarted(signals, name);
+  }
+#endif
   sitometron::test::registry_vectors::Inventory vectors(
       std::string(SITOMETRON_TEST_SOURCE_DIR) +
           "/schemas/application-registry/v1/application-registry-vectors.json",
