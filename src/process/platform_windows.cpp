@@ -112,8 +112,13 @@ Process Process::Spawn(const LaunchSpecification& specification,
 }
 void Process::Signal(bool forced) const noexcept {
   (void)forced;  // Both request kinds use TerminateProcess in Phase 2; mode stays request-defined.
-  if (state_ && ::TerminateProcess(state_->handle, 1) == FALSE)
-    std::cerr << "process stop failed: " << ::GetLastError() << '\n';
+  if (state_ && ::TerminateProcess(state_->handle, 1) == FALSE) {
+    const auto error = ::GetLastError();
+    // An exit racing the stop is harmless, just as Linux tolerates ESRCH.
+    // Check only after the attempted stop; access denied alone is not proof of exit.
+    if (::WaitForSingleObject(state_->handle, 0) != WAIT_OBJECT_0)
+      std::cerr << "process stop failed: " << error << '\n';
+  }
 }
 void Process::Wait() const noexcept {
   if (state_ && ::WaitForSingleObject(state_->handle, INFINITE) != WAIT_OBJECT_0)
