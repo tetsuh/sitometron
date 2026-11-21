@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace sitometron::test::process {
 class ChildProcess {
@@ -26,6 +27,13 @@ enum class ChildDisposition { kDefault, kIgnored, kNoChildWait };
 std::unique_ptr<SignalInheritance> SetChildDisposition(ChildDisposition);
 bool TermBlocked();
 bool TermIgnored();
+class DescriptorInheritance {
+ public:
+  virtual ~DescriptorInheritance() = default;
+};
+std::unique_ptr<DescriptorInheritance> OpenInheritableDescriptors();
+std::vector<int> OpenDescriptors();
+void ReapExitedChild(std::uint64_t pid);
 #endif
 std::optional<std::string> EnvironmentValue(const char* name);
 #ifdef _WIN32

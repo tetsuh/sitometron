@@ -1,5 +1,8 @@
+#include <fcntl.h>
+#include <netinet/in.h>
 #include <spawn.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -112,6 +115,72 @@ bool TermIgnored() {
   if (::sigaction(SIGTERM, nullptr, &action) != 0)
     throw std::runtime_error("cannot read test signal disposition");
   return action.sa_handler == SIG_IGN;
+}
+namespace {
+int InheritableDescriptor(int descriptor) {
+  if (descriptor < 0) throw std::runtime_error("cannot open descriptor inheritance fixture");
+  const int duplicated = ::fcntl(descriptor, F_DUPFD, 3);
+  (void)::close(descriptor);
+  if (duplicated < 3) throw std::runtime_error("cannot duplicate inheritable test descriptor");
+  return duplicated;
+}
+class InheritedDescriptors final : public DescriptorInheritance {
+ public:
+  InheritedDescriptors() {
+    try {
+      file_ = InheritableDescriptor(::open("/dev/null", O_RDONLY));
+      listener_ = InheritableDescriptor(::socket(AF_INET, SOCK_STREAM, 0));
+      sockaddr_in address{};
+      address.sin_family = AF_INET;
+      address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      if (::bind(listener_, reinterpret_cast<const sockaddr*>(&address),
+                 static_cast<socklen_t>(sizeof(address))) != 0 ||
+          ::listen(listener_, 1) != 0)
+        throw std::runtime_error("cannot bind ephemeral descriptor-inheritance listener");
+      for (const int descriptor : {file_, listener_}) {
+        const int flags = ::fcntl(descriptor, F_GETFD);
+        if (flags < 0 || (flags & FD_CLOEXEC) != 0)
+          throw std::runtime_error("descriptor inheritance fixture is not inheritable");
+      }
+    } catch (...) {
+      Close();
+      throw;
+    }
+  }
+  ~InheritedDescriptors() override { Close(); }
+
+ private:
+  void Close() noexcept {
+    if (file_ >= 0) (void)::close(file_);
+    if (listener_ >= 0) (void)::close(listener_);
+  }
+  int file_ = -1;
+  int listener_ = -1;
+};
+}  // namespace
+std::unique_ptr<DescriptorInheritance> OpenInheritableDescriptors() {
+  return std::make_unique<InheritedDescriptors>();
+}
+std::vector<int> OpenDescriptors() {
+  std::vector<int> descriptors;
+  const auto enumeration = "/proc/" + std::to_string(ProcessId()) + "/fd";
+  for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+    // The iterator opened this directory itself; do not mistake it for an inherited FD.
+    if (std::filesystem::read_symlink(entry.path()) == enumeration) continue;
+    descriptors.push_back(std::stoi(entry.path().filename().string()));
+  }
+  return descriptors;
+}
+void ReapExitedChild(std::uint64_t pid) {
+  if (pid == 0 || pid > static_cast<std::uint64_t>(std::numeric_limits<pid_t>::max()))
+    throw std::runtime_error("invalid owned child identifier for external test reap");
+  const auto native = static_cast<pid_t>(pid);
+  int status = 0;
+  pid_t result = -1;
+  do {
+    result = ::waitpid(native, &status, 0);
+  } while (result == -1 && errno == EINTR);
+  if (result != native) throw std::runtime_error("cannot externally reap owned exited child");
 }
 std::optional<std::string> EnvironmentValue(const char* name) {
   if (const char* value = std::getenv(name)) return std::string(value);

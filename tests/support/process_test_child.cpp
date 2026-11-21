@@ -64,20 +64,23 @@ int RunChild(const std::vector<std::string>& arguments) {
     }
     if (report.empty()) throw std::runtime_error("test report path missing");
     const auto cwd = std::filesystem::current_path().u8string();
-    const nlohmann::json observation{
-        {"process_id", sitometron::test::process::ProcessId()},
-        {"parent_process_id", sitometron::test::process::ParentProcessId()},
-        {"fixture_nonce", Environment("ISSUE141_TEST_NONCE")},
+    nlohmann::json observation{{"process_id", sitometron::test::process::ProcessId()},
+                               {"parent_process_id", sitometron::test::process::ParentProcessId()},
+                               {"fixture_nonce", Environment("ISSUE141_TEST_NONCE")},
 #ifndef _WIN32
-        {"sigterm_blocked", sitometron::test::process::TermBlocked()},
-        {"sigterm_ignored", sitometron::test::process::TermIgnored()},
+                               {"sigterm_blocked", sitometron::test::process::TermBlocked()},
+                               {"sigterm_ignored", sitometron::test::process::TermIgnored()},
 #endif
-        {"argv", arguments},
-        {"cwd", std::string(cwd.begin(), cwd.end())},
-        {"sentinel", Environment("ISSUE141_TEST_SENTINEL")},
-        {"job_id", Environment("SITOMETRON_JOB_ID")},
-        {"worker_id", Environment("SITOMETRON_WORKER_ID")},
-        {"operation_id", Environment("SITOMETRON_LAUNCH_OPERATION_ID")}};
+                               {"argv", arguments},
+                               {"cwd", std::string(cwd.begin(), cwd.end())},
+                               {"sentinel", Environment("ISSUE141_TEST_SENTINEL")},
+                               {"job_id", Environment("SITOMETRON_JOB_ID")},
+                               {"worker_id", Environment("SITOMETRON_WORKER_ID")},
+                               {"operation_id", Environment("SITOMETRON_LAUNCH_OPERATION_ID")}};
+#ifndef _WIN32
+    if (mode == "descriptor-report")
+      observation["open_descriptors"] = sitometron::test::process::OpenDescriptors();
+#endif
     {
       const std::u8string native(report.begin(), report.end());
       std::ofstream output(std::filesystem::path(native), std::ios::binary);

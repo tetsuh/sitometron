@@ -20,13 +20,14 @@
 namespace sitometron::test::process {
 namespace {
 namespace adapter = sitometron::process;
-constexpr std::array<std::string_view, 36> k_points{"before_spawn_check",
+constexpr std::array<std::string_view, 38> k_points{"before_spawn_check",
                                                     "before_spawn",
                                                     "spawn_before_publication",
                                                     "before_observation",
                                                     "observation_answered",
                                                     "slot_waiting_for_exit",
                                                     "process_wait_returned",
+                                                    "exit_mode_cut",
                                                     "process_gone",
                                                     "cell_released",
                                                     "before_final_completion",
@@ -55,7 +56,8 @@ constexpr std::array<std::string_view, 36> k_points{"before_spawn_check",
                                                     "service_exited",
                                                     "join_before_slot",
                                                     "service_scan_started",
-                                                    "relay_capacity_wait"};
+                                                    "relay_capacity_wait",
+                                                    "slot_capacity_wait"};
 class Native final : public Driver {
   class Waiter final : public adapter::CapacityWaiter {
    public:
@@ -66,7 +68,8 @@ class Native final : public Driver {
       flag_.notify_all();
     }
     bool Wait() noexcept override {
-      if (index_ == owner_.options_.max_jobs + 1) owner_.Reach("relay_capacity_wait");
+      owner_.Reach(index_ == owner_.options_.max_jobs + 1 ? "relay_capacity_wait"
+                                                          : "slot_capacity_wait");
       flag_.wait(false, std::memory_order_acquire);
       return !closed_.load(std::memory_order_acquire);
     }

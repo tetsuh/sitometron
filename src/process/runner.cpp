@@ -332,6 +332,7 @@ struct ProducerState {
       // Issue #141's 2026-11-21 owner decision keeps this cut: a stop after
       // native exit but before this mark still counts and names the exit mode.
       cell.gone = true;
+      port.Reach("exit_mode_cut");
       word = cell.word.load(std::memory_order_acquire);
     }
     port.Reach("process_gone");

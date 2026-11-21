@@ -150,6 +150,25 @@ void ReapedAndJoined(test::Driver& driver) {
 }
 
 void LaunchObservedAfterStart(const std::filesystem::path& child) {
+#ifndef _WIN32
+  {
+    const auto inherited = test::OpenInheritableDescriptors();
+    Fixture fixture(Options(test::PathText(child)), "spawn must inherit only standard descriptors",
+                    "descriptor-report");
+    fixture.driver->Launch(Launch());
+    (void)fixture.control.Ready();
+    fixture.driver->WaitFacts(1, 0);
+    const auto report = test::ReadReport(fixture.directory.path() / "report.json");
+    bool clean = true;
+    for (const int descriptor : report.at("open_descriptors").get<std::vector<int>>())
+      if (descriptor > 2) clean = false;
+    fixture.control.Exit();
+    fixture.driver->WaitFacts(1, 1);
+    ReapedAndJoined(*fixture.driver);
+    Require(clean,
+            "child inherited non-standard descriptors: " + report.at("open_descriptors").dump());
+  }
+#endif
   test::Directory copies;
   const auto unicode_path = copies.path() / std::filesystem::path(u8"子 process with spaces.exe");
   std::filesystem::copy_file(child, unicode_path);
@@ -467,6 +486,27 @@ void StopDelivery(const std::string& child) {
                 settled.cooperative_deliveries == deliveries.cooperative_deliveries &&
                 settled.forced_deliveries == deliveries.forced_deliveries,
             "gone-cut vector failed to release/reap or delivered a later stop");
+  }
+  for (const bool forced : {false, true}) {
+    Fixture cut(Options(child, "exit_mode_cut"),
+                "snapshot must be the atomic stop/mode cut, before gone is published");
+    cut.driver->Launch(Launch());
+    (void)cut.control.Ready();
+    cut.driver->WaitFacts(1, 0);
+    cut.control.Exit();
+    cut.driver->WaitPoint("exit_mode_cut");
+    if (forced)
+      cut.driver->Forced(Stop());
+    else
+      cut.driver->Cooperative(Stop());
+    cut.driver->ReleasePoint("exit_mode_cut");
+    cut.driver->WaitFacts(1, 1);
+    cut.driver->WaitPoint("cell_released");
+    ReapedAndJoined(*cut.driver);
+    const auto settled = cut.driver->Inspect();
+    Require(settled.cooperative_deliveries == 0 && settled.forced_deliveries == 0,
+            "a stop after the mode snapshot was delivered before gone");
+    ExactFacts(*cut.driver, 1, 1, "process_already_exited");
   }
   Require(after.cooperative_deliveries == before.cooperative_deliveries &&
               after.forced_deliveries == before.forced_deliveries,
@@ -811,6 +851,21 @@ void HandoffBounded(const std::string& child) {
   }
 }
 void NormalFullWaits(const std::string& child) {
+  {
+    auto options = Options(MissingExecutable(), "slot_capacity_wait");
+    options.observations = {{test::Admission::kNormalFull}, {test::Admission::kAdmitted}};
+    Fixture stopped(options, "a capacity wake after stop must not retry a failed observation");
+    stopped.driver->Launch(Launch());
+    stopped.driver->WaitPoint("slot_capacity_wait");
+    const auto before = stopped.driver->Attempts();
+    Require(before.size() == 1 && before[0].answer.admission == test::Admission::kNormalFull,
+            "stop-at-Wait fixture did not block after its refused first attempt");
+    stopped.driver->RequestStop();
+    stopped.driver->ReleasePoint("slot_capacity_wait");
+    ReapedAndJoined(*stopped.driver);
+    Require(stopped.driver->Attempts().size() == 1,
+            "stopping during a capacity Wait permitted another ingress attempt");
+  }
   for (const std::string gap : {"relay_before_wait", "relay_capacity_wait"}) {
     auto options = Options(child);
     options.hold_points = {"after_park", gap};
@@ -1053,6 +1108,29 @@ void ReapedAfterFailure(const std::string& child) {
     ReapedAndJoined(*fixture.driver);
     Require(fixture.driver->Inspect().processes_created == 1,
             "default SIGCHLD disposition did not start the child");
+  }
+  {
+    Fixture reaped(Options(child, "before_reap"),
+                   "ECHILD must not count a native reap success or lose the exit report");
+    reaped.driver->Launch(Launch());
+    const auto index = reaped.control.Ready();
+    reaped.driver->WaitFacts(1, 0);
+    reaped.control.Exit();
+    reaped.driver->WaitPoint("before_reap");  // Gone is already set: no later stop can signal PID.
+    test::ReapExitedChild(reaped.control.ProcessId(index));
+    reaped.driver->ReleasePoint("before_reap");
+    reaped.driver->WaitFacts(1, 1);
+    reaped.driver->WaitPoint("cell_released");
+    reaped.driver->RequestStop();
+    reaped.driver->Join();
+    ExactFacts(*reaped.driver, 1, 1, "process_already_exited");
+    const auto view = reaped.driver->Inspect();
+    Require(view.processes_created == 1 && view.processes_reaped == 0,
+            "failed native reap counted as a runner success");
+    Require(view.occupied == 0 && view.threads_created == view.threads_joined,
+            "externally reaped test child retained a cell or producer thread");
+    // This new vector owns the successful external reap above; all existing
+    // normal-path ReapedAndJoined assertions remain unchanged.
   }
 #endif
   {
