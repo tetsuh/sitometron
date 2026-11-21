@@ -80,10 +80,16 @@ these direct includes, with positive and planted-rejection controls. A process-o
 lexer strips a leading BOM, handles CRLF, and rejects line splices before inspecting comments or
 literals. It refuses block comments on directive-introducer lines (including spanning comments),
 comments before a directive name, alternate include directives, macro/unparseable includes, and
-module/header-unit imports. Token pasting and escapes outside literals are refused rather than
-guessing macro-generated keywords or escaped-identifier boundaries. Strings, character literals
-and raw strings are masked for recognition;
+module/header-unit imports and every module declaration (including implementation/partition units
+and global/private fragments). The process adapter is not a module under these scanners.
+Contextual control tokens are distinguished from ordinary identifiers named `module` or `import`.
+Token pasting, function-like macro definitions, control-keyword macro definitions, pragmas
+(including `_Pragma`/`__pragma`), assembler entry points, unsupported directives and escapes outside
+literals are refused rather than guessing preprocessing effects. Strings, character literals and raw strings are masked;
 guarded includes are checked even in inactive branches. Diagnostics name the physical source line.
+These checks do not resolve headers or audit arbitrary compiler options: reviewed include search
+paths, forced inputs, precompiled inputs and toolchain macros are build-file/toolchain authority.
+The exact link-target allowlist is not an allowlist of compiler flags.
 The older adapter scanners are unchanged. Public headers
 expose only owned values/interfaces, not platform or third-party types. The adapter implements
 `core::ApplicationRunnerPort`; the ingress, capacity-waiter and failure-latch bridges belong to

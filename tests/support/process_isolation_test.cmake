@@ -176,6 +176,43 @@ foreach(_ending IN ITEMS lf crlf)
           "${_prefix}// first${_eol}${_intro}if 0${_eol}${_intro}include ${_header}${_eol}${_intro}endif${_eol}" 3 1)
       endforeach()
     endforeach()
+    foreach(_declaration IN ITEMS implementation interface partition exported_partition global
+        private split keyword_macro name_macro function_macro empty_macro paste_keyword paste_name)
+      set(_line 2)
+      if(_declaration STREQUAL "implementation")
+        set(_text "module process_scan_module;")
+      elseif(_declaration STREQUAL "interface")
+        set(_text "export module process_scan_interface;")
+      elseif(_declaration STREQUAL "partition")
+        set(_text "module process_scan_module:part;")
+      elseif(_declaration STREQUAL "exported_partition")
+        set(_text "export module process_scan_module:part;")
+      elseif(_declaration STREQUAL "global")
+        set(_text "module;${_eol}export module process_scan_global;")
+      elseif(_declaration STREQUAL "private")
+        # A private fragment is legal only after its primary interface declaration.
+        # The first forbidden declaration is therefore physical line 2, not 3.
+        set(_text "export module process_scan_private;${_eol}module :private;")
+      elseif(_declaration STREQUAL "split")
+        set(_text "module${_eol}process_scan_module;")
+      elseif(_declaration STREQUAL "keyword_macro")
+        set(_text "#define MOD module${_eol}MOD process_scan_module;")
+      elseif(_declaration STREQUAL "name_macro")
+        set(_text "#define NAME process_scan_module${_eol}module NAME;")
+        set(_line 3)
+      elseif(_declaration STREQUAL "function_macro")
+        set(_text "#define ID(x) x${_eol}ID(module) process_scan_module;")
+      elseif(_declaration STREQUAL "empty_macro")
+        set(_text "#define EMPTY${_eol}EMPTY module process_scan_module;")
+        set(_line 3)
+      elseif(_declaration STREQUAL "paste_keyword")
+        set(_text "#define MOD mo##dule${_eol}MOD process_scan_module;")
+      else()
+        set(_text "#define NAME process_scan_##module${_eol}module NAME;")
+      endif()
+      family_case("${_ending}-${_encoding}-decl-${_declaration}"
+        "${_prefix}// first${_eol}${_text}${_eol}" ${_line} 1)
+    endforeach()
     foreach(_module IN ITEMS angle approved_angle quoted named exported same_line
         macro_keyword macro_paste macro_digraph)
       if(_module STREQUAL "angle")
@@ -245,6 +282,58 @@ constexpr auto last = ")";
       endforeach()
       family_case("${_ending}-${_encoding}-${_space}-splice"
         "${_prefix}// first${_eol}#\\${_gap}${_eol}include <map>${_eol}" 2 1)
+    endforeach()
+    family_case("${_ending}-${_encoding}-line-remap"
+      "${_prefix}// first${_eol}#line 800 \"platform_linux.cpp\"${_eol}#include <map>${_eol}" 3 1)
+    family_case("${_ending}-${_encoding}-has-include-next"
+      "${_prefix}// first${_eol}#if __has_include_next(<map>)${_eol}#include_next <map>${_eol}#endif${_eol}" 3 1)
+    family_case("${_ending}-${_encoding}-inactive-brace-import"
+      "${_prefix}// first${_eol}#if 0${_eol}void hidden() {${_eol}#endif${_eol}import <map>;${_eol}" 5 1)
+    set(_identifiers [=[int module = 1;
+int import = 2;
+int émodule = 3;
+int importé = 4;
+struct Fields { int module = 3; int import = 4; };
+namespace names { struct module final {}; namespace import { int module = 5; } }
+template<class T> int import_value(T value) { return value; }
+int identifiers() {
+  int module = 1, import = 2;
+  Fields fields; Fields* pointer = &fields;
+  module; import;
+  import < 3;
+#if 1
+  module; import;
+#else
+  module; import;
+#endif
+  ++module; import += 1;
+  fields.module += pointer->import;
+  return module + import + ::module + ::import + names::import::module;
+}
+constexpr auto words = "module process_scan_module; import <map>; _Pragma __pragma #pragma #embed";
+]=])
+    string(REPLACE "\n" "${_eol}" _identifiers "${_identifiers}")
+    family_case("${_ending}-${_encoding}-ordinary-identifiers" "${_prefix}${_identifiers}" 1 0)
+    foreach(_asm IN ITEMS asm __asm __asm__)
+      family_case("${_ending}-${_encoding}-asm-${_asm}"
+        "${_prefix}// first${_eol}${_asm}(\".include \\\"process-scan.s\\\"\");${_eol}" 2 1)
+    endforeach()
+    foreach(_pragma IN ITEMS alias pch once intrinsic msvc_intrinsic macro_intrinsic)
+      if(_pragma STREQUAL "alias")
+        set(_text "#pragma include_alias(<string>, <map>)")
+      elseif(_pragma STREQUAL "pch")
+        set(_text "#pragma clang module import process_scan_module")
+      elseif(_pragma STREQUAL "once")
+        set(_text "#pragma once")
+      elseif(_pragma STREQUAL "intrinsic")
+        set(_text "_Pragma(\"once\")")
+      elseif(_pragma STREQUAL "msvc_intrinsic")
+        set(_text "__pragma(include_alias(<string>, <map>))")
+      else()
+        set(_text "#define P _Pragma${_eol}P(\"once\")")
+      endif()
+      family_case("${_ending}-${_encoding}-pragma-${_pragma}"
+        "${_prefix}// first${_eol}${_text}${_eol}" 2 1)
     endforeach()
     family_case("${_ending}-${_encoding}-approved-guard"
       "${_prefix}#if __has_include(<string>)${_eol}#include <string> // allowed${_eol}#endif${_eol}" 2 0)
