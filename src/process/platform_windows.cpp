@@ -63,6 +63,7 @@ std::vector<wchar_t> Environment(const core::ApplicationLaunchRequest& request) 
   return result;
 }
 }  // namespace
+void CheckChildWaitPolicy() {}  // Windows retains process handles; no SIGCHLD policy exists.
 struct NativeProcess {
   HANDLE handle = nullptr;
 };

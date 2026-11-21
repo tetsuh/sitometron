@@ -481,6 +481,7 @@ RunnerProducer::RunnerProducer(RunnerPort& port, std::vector<LaunchSpecification
     : state_(std::make_unique<internal::ProducerState>(*port.state_, std::move(specifications),
                                                        std::move(handles), std::move(waiters),
                                                        failure)) {
+  internal::CheckChildWaitPolicy();
   state_->Start();
 }
 RunnerProducer::~RunnerProducer() {

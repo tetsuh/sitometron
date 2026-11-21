@@ -38,6 +38,8 @@ route. No Job can succeed before #127. Gate #123 owns the end-to-end path. Witho
 `--applications`, the registered set remains empty. Unresolved Jobs after restart still close
 admission (`OPS-004`). Executable digests are verified only at startup, not again at launch;
 stops target only the created process, never its descendants.
+On Linux, `sitometrond` refuses startup before listening if `SIGCHLD` is ignored or
+`SA_NOCLDWAIT` is set, without changing any process-wide signal disposition (Issue #141).
 The other adapter options remain disabled because their dependencies are not in the manifest.
 See [the dependency policy](09_dependency_policy.md).
 

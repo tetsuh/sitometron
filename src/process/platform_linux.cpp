@@ -32,8 +32,8 @@ class SpawnAttributes final {
     if (::sigemptyset(&mask) != 0 || ::sigemptyset(&defaults) != 0)
       throw std::runtime_error("cannot initialize child signal sets");
     // A handler-less executable must not inherit daemon-specific ignore policy for
-    // termination, pipeline, resource-limit or job-control signals. SIGCHLD policy
-    // in the daemon remains an owner decision; do not alter that disposition here.
+    // termination, pipeline, resource-limit or job-control signals. The producer
+    // validates the daemon's SIGCHLD policy without altering that disposition.
     constexpr std::array signals{SIGTERM, SIGINT,  SIGHUP,  SIGQUIT, SIGPIPE, SIGALRM, SIGUSR1,
                                  SIGUSR2, SIGXCPU, SIGXFSZ, SIGTSTP, SIGTTIN, SIGTTOU};
     for (const int signal : signals)
@@ -51,6 +51,14 @@ class SpawnAttributes final {
   posix_spawnattr_t value_{};
 };
 }  // namespace
+void CheckChildWaitPolicy() {
+  struct sigaction action {};
+  if (::sigaction(SIGCHLD, nullptr, &action) != 0)
+    throw std::runtime_error("cannot query SIGCHLD disposition");
+  if (action.sa_handler == SIG_IGN || (action.sa_flags & SA_NOCLDWAIT) != 0)
+    throw std::runtime_error(
+        "runner requires waitable children: SIGCHLD must not be ignored or use SA_NOCLDWAIT");
+}
 struct NativeProcess {
   pid_t pid = -1;
 };
@@ -115,6 +123,11 @@ void Process::Signal(bool forced) const noexcept {
 }
 void Process::Wait() const noexcept {
   if (!state_) return;
+  // Construction refuses SIG_IGN/SA_NOCLDWAIT, preserving the WNOWAIT ownership
+  // premise unless another component changes SIGCHLD policy after startup. Such
+  // a change can let the kernel auto-reap a child and reuse its PID before gone,
+  // making a later stop unsafe. ECHILD still logs and returns here; it is not
+  // proof of an unreaped exit. Reap also logs ECHILD and releases state below.
   siginfo_t information{};
   int result = 0;
   do {

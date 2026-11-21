@@ -5,6 +5,8 @@
 #include "sitometron/process/runner.hpp"
 namespace sitometron::process::internal {
 struct NativeProcess;
+// Refuse a platform policy that would reap children without the runner's participation.
+void CheckChildWaitPolicy();
 // Only the slot owns/reaps this object. Service may signal it under its mailbox mutex until gone.
 class Process final {
  public:
