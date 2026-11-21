@@ -74,6 +74,8 @@ std::unique_ptr<ChildProcess> SpawnDescendant(const std::string& executable,
 }
 std::uint64_t ProcessId() noexcept { return ::GetCurrentProcessId(); }
 std::uint64_t ParentProcessId() {
+  if (EnvironmentValue("ISSUE141_TEST_FAIL_PARENT_LOOKUP").value_or(std::string{}) == "1")
+    throw std::runtime_error("injected parent process lookup failure");
   struct Snapshot {
     HANDLE handle;
     ~Snapshot() { (void)::CloseHandle(handle); }

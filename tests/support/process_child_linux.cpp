@@ -50,7 +50,11 @@ std::unique_ptr<ChildProcess> SpawnDescendant(const std::string& executable,
   return std::make_unique<Spawned>(executable, report, port);
 }
 std::uint64_t ProcessId() noexcept { return static_cast<std::uint64_t>(::getpid()); }
-std::uint64_t ParentProcessId() { return static_cast<std::uint64_t>(::getppid()); }
+std::uint64_t ParentProcessId() {
+  if (EnvironmentValue("ISSUE141_TEST_FAIL_PARENT_LOOKUP").value_or(std::string{}) == "1")
+    throw std::runtime_error("injected parent process lookup failure");
+  return static_cast<std::uint64_t>(::getppid());
+}
 namespace {
 class InheritedChild final : public SignalInheritance {
  public:

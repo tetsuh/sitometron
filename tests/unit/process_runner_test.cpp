@@ -150,6 +150,19 @@ void ReapedAndJoined(test::Driver& driver) {
 }
 
 void LaunchObservedAfterStart(const std::filesystem::path& child) {
+  {
+    const test::Environment failed_lookup("ISSUE141_TEST_FAIL_PARENT_LOOKUP", "1");
+    Fixture ordinary(Options(test::PathText(child)),
+                     "ordinary launch must not query the descendant's parent identity", "exit");
+    ordinary.driver->Launch(Launch());
+    ordinary.driver->WaitFacts(1, 1);
+    ReapedAndJoined(*ordinary.driver);
+    const auto report = ordinary.directory.path() / "report.json";
+    Require(std::filesystem::is_regular_file(report),
+            "unrelated child launch depended on parent PID lookup");
+    Require(!test::ReadReport(report).contains("parent_process_id"),
+            "ordinary child unnecessarily reported a descendant-only identity");
+  }
 #ifndef _WIN32
   {
     const auto inherited = test::OpenInheritableDescriptors();
