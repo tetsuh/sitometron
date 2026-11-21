@@ -156,7 +156,10 @@ Accepted [ADR-0015](adr/0015-register-applications-with-a-verified-registry-file
 | `APP-001` | MUST | Register Applications only through the registry file that `--applications` names, verify every entry's `executable` against its `bundle_sha256` at startup and refuse to start on any invalid entry, keep the registered set empty when no file is named, and take each launch's Application identity from the verified entry. | Accepted [ADR-0015](adr/0015-register-applications-with-a-verified-registry-file.md) under [Issue #125](https://github.com/tetsuh/sitometron/issues/125) |
 
 Accepted [ADR-0016](adr/0016-run-each-job-as-one-local-process.md) under
-[Issue #126](https://github.com/tetsuh/sitometron/issues/126) adds `WRK-001`, binding on implementation in the same way.
+[Issue #126](https://github.com/tetsuh/sitometron/issues/126) adds `WRK-001`, implemented by
+[Issue #141](https://github.com/tetsuh/sitometron/issues/141) after the supervisor in Issue #133.
+Its twelve named checks are active in HTTP-enabled builds; HTTP-off includes neither the adapter
+nor its process checks.
 
 | ID | Level | Requirement | Authority |
 |---|---|---|---|

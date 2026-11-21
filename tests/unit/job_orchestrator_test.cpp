@@ -22,6 +22,7 @@
 
 #include "job_orchestrator_harness.hpp"
 #include "retirement_test_support.hpp"
+#include "session_producer.hpp"
 
 namespace {
 using namespace sitometron::core;
@@ -2907,9 +2908,183 @@ int JobCreateReturnsIdentity() {
   return result;
 }
 
-int JobIngressCompletionAwait() {
+int SessionCapacityPublication() {
+  namespace composition = sitometron::daemon::internal;
+  struct State {
+    std::barrier<> publish_and_stop{2};
+    std::atomic_bool at_publish{false};
+    std::atomic_bool stop_seen{false};
+    composition::SessionProducer* producer = nullptr;
+  };
   int result = 0;
+  for (unsigned iteration = 0; iteration != 8; ++iteration) {
+    State state;
+    const composition::SessionTestHooks hooks{
+        &state, [](void* context, std::string_view point) noexcept {
+          if (point != "before_capacity_publish") return;
+          auto& value = *static_cast<State*>(context);
+          value.at_publish.store(true, std::memory_order_release);
+          value.at_publish.notify_all();
+          value.publish_and_stop.arrive_and_wait();
+        }};
+    composition::Phase1SessionRetainer mailbox(1);
+    composition::SessionProducer producer(mailbox, &hooks);
+    state.producer = &producer;
+    const retirement::Plan empty;
+    retirement::Fixture fixture(empty);
+    fixture.writer.reset();
+    fixture.config.producer_context = &state;
+    fixture.config.stop_producers = [](void* context) noexcept {
+      auto& value = *static_cast<State*>(context);
+      if (!value.stop_seen.exchange(true)) value.publish_and_stop.arrive_and_wait();
+      value.producer->Stop();
+    };
+    fixture.config.join_producers = [](void* context) noexcept {
+      return static_cast<State*>(context)->producer->Joined();
+    };
+    fixture.writer = std::make_unique<sitometron::core::internal::JobOrchestrator>(fixture.config);
+    std::thread starter([&producer, &fixture] { producer.Start(*fixture.writer); });
+    state.at_publish.wait(false, std::memory_order_acquire);
+    result |= Check(fixture.writer->LatchReadinessFailure(), "Session publication latch refused");
+    starter.join();
+    producer.Stop();
+    result |= Check(producer.Join() && producer.Joined(), "Session start/stop did not join");
+    fixture.writer->NotifyProducerExited();
+    result |=
+        Check(fixture.writer->WaitForWriterIdle(), "Session publication closure did not idle");
+    fixture.writer.reset();  // Stop hooks and registered flags die before the producer.
+  }
+  return result;
+}
+
+int SessionStopBeforeCapacityClear() {
+  namespace composition = sitometron::daemon::internal;
+  struct State {
+    std::atomic_bool at_clear{false};
+    std::atomic_bool release_clear{false};
+    std::atomic_bool release_wait{false};
+    std::atomic_int stage{0};
+  } state;
+  const composition::SessionTestHooks hooks{
+      &state, [](void* context, std::string_view point) noexcept {
+        auto& value = *static_cast<State*>(context);
+        if (point == "before_capacity_clear") {
+          value.at_clear.store(true, std::memory_order_release);
+          value.at_clear.notify_all();
+          value.release_clear.wait(false, std::memory_order_acquire);
+        } else if (point == "before_capacity_wait" || point == "after_delivery") {
+          int empty = 0;
+          (void)value.stage.compare_exchange_strong(empty, point == "after_delivery" ? 2 : 1);
+          value.stage.notify_all();
+          if (point == "before_capacity_wait")
+            value.release_wait.wait(false, std::memory_order_acquire);
+        }
+      }};
+  composition::Phase1SessionRetainer mailbox(1);
+  composition::SessionProducer producer(mailbox, &hooks);
+  const retirement::Plan empty;
+  retirement::Fixture fixture(empty);
+  fixture.writer.reset();
+  fixture.config.normal_capacity = 1;
+  fixture.writer = std::make_unique<sitometron::core::internal::JobOrchestrator>(fixture.config);
+  using Phase = sitometron::core::internal::WriterPhase;
+  int result = Check(fixture.writer->ArmPause(Phase::kBeforeDequeue), "Session pause refused");
+  const auto queued = fixture.writer->SubmitCandidate(retirement::Event(
+      1, "session_retained", "{\"session_id\":\"" + retirement::Job(1).value + "\"}"));
+  result |= Check(queued.code == sitometron::core::internal::IngressCode::kAdmitted &&
+                      fixture.writer->WaitUntil(queued.ingress_sequence, Phase::kBeforeDequeue),
+                  "Session FIFO saturation barrier not reached");
+  producer.Start(*fixture.writer);
+  mailbox.HandoffRetainSameIdentity({retirement::Job(1), retirement::Job(1)});
+  state.at_clear.wait(false, std::memory_order_acquire);
+  producer.Stop();  // Its wake precedes Clear: a second stopping check must avoid Wait.
+  state.release_clear.store(true, std::memory_order_release);
+  state.release_clear.notify_all();
+  auto stage = state.stage.load(std::memory_order_acquire);
+  while (stage == 0) {
+    state.stage.wait(0, std::memory_order_acquire);
+    stage = state.stage.load(std::memory_order_acquire);
+  }
+  if (stage == 1) {
+    (void)fixture.writer->LatchReadinessFailure();  // Deterministic rescue, not a timed wait.
+    state.release_wait.store(true, std::memory_order_release);
+    state.release_wait.notify_all();
+  }
+  result |= Check(producer.Join(), "Session lost-wake cleanup failed to join");
+  (void)fixture.writer->Release(queued.ingress_sequence, Phase::kBeforeDequeue);
+  result |= Check(fixture.writer->AwaitCompletion(queued.ingress_sequence).has_value(),
+                  "Session queued completion missing at cleanup");
+  fixture.writer->NotifyProducerExited();
+  result |= Check(fixture.writer->WaitForWriterIdle(), "Session lost-wake writer did not idle");
+  fixture.writer.reset();
+  return result |
+         Check(stage == 2, "Session stop before Clear reached a capacity Wait; rescue needed");
+}
+
+int JobIngressCompletionAwait() {
+  int result = SessionCapacityPublication();
+  result |= SessionStopBeforeCapacityClear();
   const auto ids = Ids();
+  // Owner decision 2026-11-15: the composition-built handle combines CallbackHandle
+  // admission with AwaitCompletion. Prove the existing core returns the exact rejection
+  // for both observation outcomes after each way of leaving preparing.
+  for (const bool started : {false, true}) {
+    for (const std::string_view cause : {"cancel", "terminate", "preparation_timeout"}) {
+      JobOrchestratorHarness harness(PositiveConfig());
+      const auto allocation = EmptyAllocation();
+      result |= ExpectCommitted(harness, harness.Create(), EventType::kJobCreated);
+      result |= ExpectCommitted(
+          harness,
+          harness.SubmitResourcesCommitted(MakeResourcesCommitted(ids.primary_job, allocation)),
+          EventType::kResourcesCommitted);
+      result |= ExpectCommitted(harness, harness.SubmitGeneratedLaunchIntent(allocation),
+                                EventType::kWorkerLaunchIntent);
+      result |= Check(harness.TakeRunnerCandidate().has_value(),
+                      "bridge rejection setup takes the inert launch candidate");
+      if (cause == "preparation_timeout") {
+        const auto timeout =
+            harness.SubmitTimeout({ids.primary_job, TimeoutPhase::kPreparation, 1});
+        result |=
+            Check(!timeout.discarded, "bridge rejection timeout uses the registered generation");
+        result |= ExpectCommitted(harness, timeout.admitted, EventType::kTimeoutExpired);
+      } else {
+        const Command command{1, cause == "cancel" ? CommandType::kCancel : CommandType::kTerminate,
+                              ids.primary_job, "operator"};
+        const auto control =
+            cause == "cancel" ? harness.SubmitCancel(command) : harness.SubmitTerminate(command);
+        result |= ExpectCommitted(
+            harness, control,
+            cause == "cancel" ? EventType::kCancelAccepted : EventType::kTerminateAccepted);
+      }
+      const auto stopped = harness.Snapshot(ids.primary_job);
+      result |= Check(stopped && stopped->state == JobState::kStopping,
+                      "stop before observation must actually leave preparing");
+      const auto exit = harness.TakeRunnerCandidate();
+      result |= Check(exit.has_value(), "stop handoff retains its independent exit fact");
+      auto endpoint = harness.RetainedCallback();
+      const auto admitted =
+          endpoint.Invoke({1, ids.primary_job, "worker_launch_observed",
+                           "{\"operation_id\":\"" + ids.launch_operation.value +
+                               "\",\"outcome\":\"" + (started ? "started" : "failed") + "\"}"});
+      const auto completion = harness.AwaitCompletion(admitted.ingress_sequence);
+      result |= Check(admitted.code == IngressCode::kAdmitted && completion &&
+                          completion->code == Completion::Code::kReducerRejection &&
+                          completion->rejection &&
+                          completion->rejection->reason == RejectionReason::kEventNotAllowedInState,
+                      "composition bridge lost the reducer's post-preparing rejection");
+      result |= Check(!harness.AwaitCompletion(admitted.ingress_sequence),
+                      "composition bridge must take its completion exactly once");
+      if (exit) {
+        const auto confirmed = endpoint.Invoke(*exit);
+        const auto done = harness.AwaitCompletion(confirmed.ingress_sequence);
+        const auto snapshot = harness.Snapshot(ids.primary_job);
+        result |= Check(confirmed.code == IngressCode::kAdmitted && done &&
+                            done->code == Completion::Code::kSuccess && snapshot &&
+                            snapshot->process_exit_confirmed,
+                        "rejected observation did not leave the process-exit gate usable");
+      }
+    }
+  }
   {
     // The wait returns the completion of its own sequence and takes it exactly once.
     JobOrchestratorHarness harness(PositiveConfig());

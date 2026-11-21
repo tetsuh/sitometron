@@ -56,12 +56,44 @@ links the adapter without linking either dependency directly. No manifest port, 
 or core dependency authorization is added.
 
 Accepted [ADR-0016](adr/0016-run-each-job-as-one-local-process.md) under Issue #126 authorizes the
-separate `sitometron_process` adapter, built only with HTTP enabled. It links no third-party target
-and adds no manifest port: its only dependencies are the standard library and the platform process
-APIs (`<spawn.h>`, `<signal.h>`, and `<sys/wait.h>` on Linux; `<windows.h>` on Windows), listed in
-its allowlist by the implementation Issue, with dedicated allowlist and public-boundary scanners.
-The adapter exposes only owned types and implements `core::ApplicationRunnerPort`. No core
-dependency authorization is added.
+separate `sitometron_process` adapter, implemented by Issue #141 and built only with HTTP enabled.
+Its third-party allowlist is empty in the ADR-0010 Section 1 format:
+
+| Manifest port | Pinned-baseline version | Direct CMake target | Authorized headers |
+|---|---:|---|---|
+| None | N/A | None | None |
+
+The only link target is PRIVATE `Threads::Threads`, the standard-thread implementation target,
+not a third-party dependency or public concurrency type. No manifest port is added. The reviewed
+direct standard headers are `<algorithm>`, `<array>`, `<atomic>`, `<cassert>`, `<cerrno>`,
+`<condition_variable>`, `<cstddef>`, `<cstdint>`, `<iostream>`, `<limits>`, `<memory>`, `<mutex>`,
+`<optional>`, `<stdexcept>`, `<string>`, `<string_view>`, `<thread>`, `<type_traits>`, `<utility>`,
+and `<vector>`. Platform includes are confined to `platform_linux.cpp` (`<spawn.h>`, `<signal.h>`,
+`<sys/wait.h>`) and `platform_windows.cpp` (`<windows.h>`). Its only core includes are
+`<sitometron/core/job_ports.hpp>` and `<sitometron/core/job_reducer.hpp>`; it includes neither
+`src/core` nor another adapter. Its private owned headers are `platform.hpp`,
+`runner_internal.hpp`, `handoff_probe.hpp`, and `windows_command_line.hpp`; its owned public header is
+`<sitometron/process/runner.hpp>`.
+
+Dedicated dependency-allowlist and public-boundary scanners enforce exact private linkage and
+these direct includes, with positive and planted-rejection controls. A process-only conservative
+lexer strips a leading BOM, handles CRLF, and rejects line splices before inspecting comments or
+literals. It refuses block comments on directive-introducer lines (including spanning comments),
+comments before a directive name, alternate include directives, macro/unparseable includes, and
+module/header-unit imports and every module declaration (including implementation/partition units
+and global/private fragments). The process adapter is not a module under these scanners.
+Contextual control tokens are distinguished from ordinary identifiers named `module` or `import`.
+Token pasting, function-like macro definitions, control-keyword macro definitions, pragmas
+(including `_Pragma`/`__pragma`), assembler entry points, unsupported directives and escapes outside
+literals are refused rather than guessing preprocessing effects. Strings, character literals and raw strings are masked;
+guarded includes are checked even in inactive branches. Diagnostics name the physical source line.
+These checks do not resolve headers or audit arbitrary compiler options: reviewed include search
+paths, forced inputs, precompiled inputs and toolchain macros are build-file/toolchain authority.
+The exact link-target allowlist is not an allowlist of compiler flags.
+The older adapter scanners are unchanged. Public headers
+expose only owned values/interfaces, not platform or third-party types. The adapter implements
+`core::ApplicationRunnerPort`; the ingress, capacity-waiter and failure-latch bridges belong to
+composition. No core dependency authorization is added.
 
 Issue #17 implemented the allowlist and activated all five stable `NFR-005` checks on Linux and
 Windows. Accepted ADR-0003 and Issue #12 later authorized only the private synchronization headers

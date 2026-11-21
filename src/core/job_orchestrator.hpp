@@ -155,6 +155,28 @@ struct Config {
   }
 };
 
+// Each producer owns an independent level. The shared object remains safe after core closure;
+// it contains no writer pointer. Only the core closes it; producers may clear/set their own level.
+class CapacityWaiter final {
+ public:
+  void Clear() noexcept;
+  void Set() noexcept;
+  bool Wait();
+  bool Closed() const noexcept;
+  // Private test seam, invoked with the flag mutex held immediately before CV wait.
+  void SetWaitEntryHookForTest(void* context, void (*hook)(void*) noexcept);
+
+ private:
+  void Close() noexcept;
+  mutable std::mutex mutex_;
+  std::condition_variable wake_;
+  bool level_ = false;
+  bool closed_ = false;
+  void* wait_context_ = nullptr;
+  void (*wait_entry_)(void*) noexcept = nullptr;
+  friend class JobOrchestrator;
+};
+
 class JobOrchestrator final {
  public:
   explicit JobOrchestrator(const Config& config);
@@ -169,6 +191,8 @@ class JobOrchestrator final {
   CreatedJob CreateJob(const JobLaunchInputs&);
   // Internal producer capacity wait; closure wins over a free normal slot.
   bool WaitForNormalCapacityOrClosure();
+  // Bounded by the existing callback inventory, registered before the listener opens.
+  std::shared_ptr<CapacityWaiter> RegisterCapacityWaiter();
   void NotifyProducerExited() noexcept;
 
   struct SupervisorState {

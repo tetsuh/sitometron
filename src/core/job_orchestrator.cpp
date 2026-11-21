@@ -298,6 +298,7 @@ struct JobOrchestrator::Impl {
     ingress.resize(config.trace_capacity);
     ack_observations.resize(config.ack_capacity);
     callbacks.resize(config.callback_registration_capacity);
+    capacity_waiters.resize(config.callback_registration_capacity);
     for (auto& resident : residents) {
       for (std::size_t bank = 0; bank != 2; ++bank) {
         resident.prepared_effects[bank].reserve(k_max_prepared_effects);
@@ -356,6 +357,16 @@ struct JobOrchestrator::Impl {
   std::vector<Resident> residents;
   std::vector<Flight> flights;
   bool capacity_signal = false;
+  std::vector<std::shared_ptr<CapacityWaiter>> capacity_waiters;
+  void SignalCapacityLocked(bool close = false) const noexcept {
+    for (const auto& waiter : capacity_waiters) {
+      if (!waiter) continue;
+      if (close)
+        waiter->Close();
+      else
+        waiter->Set();
+    }
+  }
   bool supervisor_stop = false;
   bool supervisor_started = false;
   bool supervisor_exited = false;
@@ -379,6 +390,7 @@ struct JobOrchestrator::Impl {
 
   void StopDrivingLocked() noexcept {
     supervisor_stop = true;
+    if (failed || recovery_closed || mode != Mode::kRunning) SignalCapacityLocked(true);
     cv.notify_all();
   }
   void SupervisorCheckpoint(std::string_view point, std::string_view event = {}) {
@@ -909,6 +921,7 @@ struct JobOrchestrator::Impl {
       if (normal_count != 0) {
         --normal_count;
         capacity_signal = true;
+        SignalCapacityLocked();
         cv.notify_all();
       }
       return;
@@ -3459,6 +3472,47 @@ bool JobOrchestrator::JoinSupervisor(bool wait) noexcept {
     impl_->cv.notify_all();
   }
   return true;
+}
+void CapacityWaiter::Clear() noexcept {
+  std::lock_guard lock(mutex_);
+  level_ = false;
+}
+void CapacityWaiter::Set() noexcept {
+  std::lock_guard lock(mutex_);
+  level_ = true;
+  wake_.notify_all();
+}
+void CapacityWaiter::Close() noexcept {
+  std::lock_guard lock(mutex_);
+  closed_ = true;
+  level_ = true;
+  wake_.notify_all();
+}
+bool CapacityWaiter::Closed() const noexcept {
+  std::lock_guard lock(mutex_);
+  return closed_;
+}
+void CapacityWaiter::SetWaitEntryHookForTest(void* context, void (*hook)(void*) noexcept) {
+  std::lock_guard lock(mutex_);
+  wait_context_ = context;
+  wait_entry_ = hook;
+}
+bool CapacityWaiter::Wait() {
+  std::unique_lock lock(mutex_);
+  if (wait_entry_) wait_entry_(wait_context_);
+  wake_.wait(lock, [this] { return closed_ || level_; });
+  return !closed_;
+}
+std::shared_ptr<CapacityWaiter> JobOrchestrator::RegisterCapacityWaiter() {
+  std::lock_guard lock(impl_->mutex);
+  for (auto& slot : impl_->capacity_waiters) {
+    if (slot) continue;
+    slot = std::make_shared<CapacityWaiter>();
+    if (impl_->failed || impl_->recovery_closed || impl_->mode != Impl::Mode::kRunning)
+      slot->Close();
+    return slot;
+  }
+  return {};
 }
 bool JobOrchestrator::WaitForNormalCapacityOrClosure() {
   std::unique_lock lock(impl_->mutex);
