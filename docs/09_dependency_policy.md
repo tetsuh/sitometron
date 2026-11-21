@@ -76,8 +76,15 @@ and `<vector>`. Platform includes are confined to `platform_linux.cpp` (`<spawn.
 `<sitometron/process/runner.hpp>`.
 
 Dedicated dependency-allowlist and public-boundary scanners enforce exact private linkage and
-these direct includes, with positive and planted-rejection controls. They reuse the existing
-physical-line scanner, rejecting line splices and macro/unparseable includes. Public headers
+these direct includes, with positive and planted-rejection controls. A process-only conservative
+lexer strips a leading BOM, handles CRLF, and rejects line splices before inspecting comments or
+literals. It refuses block comments on directive-introducer lines (including spanning comments),
+comments before a directive name, alternate include directives, macro/unparseable includes, and
+module/header-unit imports. Token pasting and escapes outside literals are refused rather than
+guessing macro-generated keywords or escaped-identifier boundaries. Strings, character literals
+and raw strings are masked for recognition;
+guarded includes are checked even in inactive branches. Diagnostics name the physical source line.
+The older adapter scanners are unchanged. Public headers
 expose only owned values/interfaces, not platform or third-party types. The adapter implements
 `core::ApplicationRunnerPort`; the ingress, capacity-waiter and failure-latch bridges belong to
 composition. No core dependency authorization is added.
