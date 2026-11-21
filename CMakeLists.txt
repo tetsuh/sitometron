@@ -132,6 +132,12 @@ if(SITOMETRON_ENABLE_HTTP)
   target_link_libraries(sitometron_process PRIVATE Threads::Threads)
   if(WIN32)
     target_compile_definitions(sitometron_process PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  else()
+    include(CheckCXXSymbolExists)
+    check_cxx_symbol_exists(posix_spawn_file_actions_addclosefrom_np "spawn.h"
+      SITOMETRON_PROCESS_HAVE_CLOSEFROM)
+    target_compile_definitions(sitometron_process PRIVATE
+      SITOMETRON_PROCESS_HAVE_CLOSEFROM=$<BOOL:${SITOMETRON_PROCESS_HAVE_CLOSEFROM}>)
   endif()
   sitometron_enable_project_warnings(sitometron_process)
   sitometron_enable_sanitizers(sitometron_process)

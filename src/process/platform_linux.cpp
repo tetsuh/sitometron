@@ -17,6 +17,29 @@ extern char** environ;
 
 namespace sitometron::process::internal {
 namespace {
+class SpawnFileActions final {
+ public:
+  SpawnFileActions() {
+    if (::posix_spawn_file_actions_init(&value_) != 0)
+      throw std::runtime_error("cannot initialize process spawn file actions");
+  }
+  ~SpawnFileActions() { (void)::posix_spawn_file_actions_destroy(&value_); }
+  SpawnFileActions(const SpawnFileActions&) = delete;
+  SpawnFileActions& operator=(const SpawnFileActions&) = delete;
+  void CloseInheritedDescriptors() {
+#if SITOMETRON_PROCESS_HAVE_CLOSEFROM
+    // Executed in the child's private descriptor table, not a racing parent FD scan.
+    if (::posix_spawn_file_actions_addclosefrom_np(&value_, 3) != 0)
+      throw std::runtime_error("cannot configure child descriptor isolation");
+#else
+    throw std::runtime_error("runner requires posix_spawn closefrom file actions");
+#endif
+  }
+  const posix_spawn_file_actions_t* Get() const noexcept { return &value_; }
+
+ private:
+  posix_spawn_file_actions_t value_{};
+};
 class SpawnAttributes final {
  public:
   SpawnAttributes() {
@@ -58,6 +81,10 @@ void CheckChildWaitPolicy() {
   if (action.sa_handler == SIG_IGN || (action.sa_flags & SA_NOCLDWAIT) != 0)
     throw std::runtime_error(
         "runner requires waitable children: SIGCHLD must not be ignored or use SA_NOCLDWAIT");
+#if !SITOMETRON_PROCESS_HAVE_CLOSEFROM
+  // Fail closed before any runner thread: never enumerate parent FDs or leak them.
+  throw std::runtime_error("runner requires posix_spawn closefrom file actions");
+#endif
 }
 struct NativeProcess {
   pid_t pid = -1;
@@ -107,8 +134,10 @@ Process Process::Spawn(const LaunchSpecification& specification,
   envp.push_back(nullptr);
   SpawnAttributes attributes;
   attributes.ConfigureSignals();
+  SpawnFileActions actions;
+  actions.CloseInheritedDescriptors();
   // No shell, path search, working-directory action, or digest verification.
-  const int error = ::posix_spawn(&native->pid, specification.executable.c_str(), nullptr,
+  const int error = ::posix_spawn(&native->pid, specification.executable.c_str(), actions.Get(),
                                   attributes.Get(), argv.data(), envp.data());
   Process result;
   if (error == 0)
@@ -121,8 +150,8 @@ void Process::Signal(bool forced) const noexcept {
   if (state_ && ::kill(state_->pid, forced ? SIGKILL : SIGTERM) != 0 && errno != ESRCH)
     std::cerr << "process stop failed: " << errno << '\n';
 }
-void Process::Wait() const noexcept {
-  if (!state_) return;
+bool Process::Wait() const noexcept {
+  if (!state_) return false;
   // Construction refuses SIG_IGN/SA_NOCLDWAIT, preserving the WNOWAIT ownership
   // premise unless another component changes SIGCHLD policy after startup. Such
   // a change can let the kernel auto-reap a child and reuse its PID before gone,
@@ -134,9 +163,10 @@ void Process::Wait() const noexcept {
     result = ::waitid(P_PID, static_cast<id_t>(state_->pid), &information, WEXITED | WNOWAIT);
   } while (result != 0 && errno == EINTR);
   if (result != 0) std::cerr << "process exit observation failed: " << errno << '\n';
+  return result == 0;
 }
-void Process::Reap() noexcept {
-  if (!state_) return;
+bool Process::Reap() noexcept {
+  if (!state_) return false;
   int status = 0;
   pid_t result = -1;
   do {
@@ -147,5 +177,6 @@ void Process::Reap() noexcept {
   else
     std::cerr << "process exit status: " << status << '\n';
   state_.reset();
+  return result != -1;
 }
 }  // namespace sitometron::process::internal

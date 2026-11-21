@@ -40,6 +40,9 @@ admission (`OPS-004`). Executable digests are verified only at startup, not agai
 stops target only the created process, never its descendants.
 On Linux, `sitometrond` refuses startup before listening if `SIGCHLD` is ignored or
 `SA_NOCLDWAIT` is set, without changing any process-wide signal disposition (Issue #141).
+Linux children inherit only descriptors 0, 1 and 2: spawn file actions close descriptors from 3
+upward in the child; a libc without `posix_spawn_file_actions_addclosefrom_np` refuses runner
+startup rather than enumerating descriptors in the multithreaded parent.
 The other adapter options remain disabled because their dependencies are not in the manifest.
 See [the dependency policy](09_dependency_policy.md).
 

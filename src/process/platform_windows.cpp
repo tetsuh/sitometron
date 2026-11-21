@@ -120,16 +120,19 @@ void Process::Signal(bool forced) const noexcept {
       std::cerr << "process stop failed: " << error << '\n';
   }
 }
-void Process::Wait() const noexcept {
-  if (state_ && ::WaitForSingleObject(state_->handle, INFINITE) != WAIT_OBJECT_0)
-    std::cerr << "process exit observation failed: " << ::GetLastError() << '\n';
+bool Process::Wait() const noexcept {
+  if (!state_) return false;
+  const auto observed = ::WaitForSingleObject(state_->handle, INFINITE) == WAIT_OBJECT_0;
+  if (!observed) std::cerr << "process exit observation failed: " << ::GetLastError() << '\n';
+  return observed;
 }
-void Process::Reap() noexcept {
-  if (!state_) return;
-  Wait();
+bool Process::Reap() noexcept {
+  if (!state_) return false;
+  const auto observed = Wait();
   if (DWORD status = 0; ::GetExitCodeProcess(state_->handle, &status) != FALSE)
     std::cerr << "process exit status: " << status << '\n';
-  (void)::CloseHandle(state_->handle);
+  const auto closed = ::CloseHandle(state_->handle) != FALSE;
   state_.reset();
+  return observed && closed;
 }
 }  // namespace sitometron::process::internal

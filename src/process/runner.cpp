@@ -317,7 +317,7 @@ struct ProducerState {
     port.Reach("relay_exited");
   }
   std::string_view Reap(std::size_t index, Cell& cell) noexcept {
-    cell.process.Wait();
+    const auto observed_exit = cell.process.Wait();
     port.Reach("process_wait_returned");
     auto& entry = parking[index];
     {
@@ -329,16 +329,18 @@ struct ProducerState {
     {
       std::lock_guard lock(ProbeMutex(port.mailboxes[index].mutex));
       // ADR-0016 Section 4: "a stop recorded after the mark is ignored".
-      // Issue #141's 2026-11-21 owner decision keeps this cut: a stop after
-      // native exit but before this mark still counts and names the exit mode.
-      cell.gone = true;
-      port.Reach("exit_mode_cut");
+      // The atomic word snapshot is that mark's linearization cut (Issue #141).
+      // A flag recorded before this load names the mode, delivered or not. A
+      // later flag is absent from the mode and cannot be delivered: service
+      // needs this mutex and finds gone set after the snapshot/hook/store.
       word = cell.word.load(std::memory_order_acquire);
+      port.Reach("exit_mode_cut");
+      cell.gone = true;
     }
     port.Reach("process_gone");
     port.Reach("before_reap");
-    cell.process.Reap();
-    ++port.processes_reaped;
+    const auto reaped = cell.process.Reap();
+    if (observed_exit && reaped) ++port.processes_reaped;
     std::unique_lock lock(ProbeMutex(entry.mutex));
     entry.wake.wait(lock, [&entry] { return !entry.in_flight; });
     return Mode(word);
@@ -421,7 +423,8 @@ struct ProducerState {
         break;
       }
       port.Reach("failed_before_capacity_wait");
-      if (port.stopping.load(std::memory_order_acquire) || !waiters[index]->Wait()) {
+      if (port.stopping.load(std::memory_order_acquire) || !waiters[index]->Wait() ||
+          port.stopping.load(std::memory_order_acquire)) {
         answer = Answer::kClosed;
         break;
       }

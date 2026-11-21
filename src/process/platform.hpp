@@ -5,7 +5,7 @@
 #include "sitometron/process/runner.hpp"
 namespace sitometron::process::internal {
 struct NativeProcess;
-// Refuse a platform policy that would reap children without the runner's participation.
+// Refuse unsafe child-wait policy or unavailable descriptor-isolation support.
 void CheckChildWaitPolicy();
 // Only the slot owns/reaps this object. Service may signal it under its mailbox mutex until gone.
 class Process final {
@@ -19,8 +19,8 @@ class Process final {
   static Process Spawn(const LaunchSpecification&, const core::ApplicationLaunchRequest&);
   explicit operator bool() const noexcept;
   void Signal(bool forced) const noexcept;
-  void Wait() const noexcept;
-  void Reap() noexcept;
+  bool Wait() const noexcept;
+  bool Reap() noexcept;
 
  private:
   std::unique_ptr<NativeProcess> state_;
