@@ -318,6 +318,7 @@ struct ProducerState {
   }
   std::string_view Reap(std::size_t index, Cell& cell) noexcept {
     cell.process.Wait();
+    port.Reach("process_wait_returned");
     auto& entry = parking[index];
     {
       std::lock_guard lock(ProbeMutex(entry.mutex));
@@ -327,6 +328,9 @@ struct ProducerState {
     std::uint64_t word = 0;
     {
       std::lock_guard lock(ProbeMutex(port.mailboxes[index].mutex));
+      // ADR-0016 Section 4: "a stop recorded after the mark is ignored".
+      // Issue #141's 2026-11-21 owner decision keeps this cut: a stop after
+      // native exit but before this mark still counts and names the exit mode.
       cell.gone = true;
       word = cell.word.load(std::memory_order_acquire);
     }

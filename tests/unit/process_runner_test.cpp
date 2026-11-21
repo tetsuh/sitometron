@@ -419,6 +419,55 @@ void StopDelivery(const std::string& child) {
     ExactFacts(*gone.driver, 1, 1, "process_already_exited");
     ReapedAndJoined(*gone.driver);
   }
+  for (const bool forced : {false, true}) {
+    auto options = Options(child);
+    options.hold_points = {"process_wait_returned", "process_gone", "service_scan_finished"};
+    Fixture exited(options, "the gone mark must be the stop/mode cut after native exit");
+    exited.driver->Launch(Launch());
+    (void)exited.control.Ready();
+    exited.driver->WaitFacts(1, 0);
+    exited.control.Exit();
+    exited.driver->WaitPoint("process_wait_returned");
+    Require(exited.driver->Inspect().processes_reaped == 0,
+            "native exit was reaped before the pre-gone barrier");
+    for (unsigned duplicate = 0; duplicate != 2; ++duplicate) {
+      if (forced)
+        exited.driver->Forced(Stop());
+      else
+        exited.driver->Cooperative(Stop());
+    }
+    exited.driver->WaitPoint("stop_delivered");
+    exited.driver->ReleasePoint("process_wait_returned");
+    exited.driver->WaitPoint("process_gone");
+    // Ask for the other kind after the mark, while the native object is still retained.
+    // In the cooperative case this would change the mode if the cut moved past the mark.
+    if (forced)
+      exited.driver->Cooperative(Stop());
+    else
+      exited.driver->Forced(Stop());
+    exited.driver->WakeService();
+    // Only a complete scan armed after the post-mark handoff can satisfy this hook.
+    exited.driver->WaitPoint("service_scan_finished");
+    const auto deliveries = exited.driver->Inspect();
+    Require(deliveries.cooperative_deliveries == (forced ? 0U : 1U) &&
+                deliveries.forced_deliveries == (forced ? 1U : 0U) &&
+                deliveries.delivery_order ==
+                    std::vector<std::string>{forced ? "forced" : "cooperative"} &&
+                deliveries.processes_reaped == 0,
+            "post-exit stop was duplicated, ignored before gone, or delivered after gone");
+    exited.driver->ReleasePoint("service_scan_finished");
+    exited.driver->ReleasePoint("process_gone");
+    exited.driver->WaitFacts(1, 1);
+    exited.driver->WaitPoint("cell_released");
+    ExactFacts(*exited.driver, 1, 1, forced ? "forced" : "cooperative");
+    ReapedAndJoined(*exited.driver);
+    const auto settled = exited.driver->Inspect();
+    Require(settled.occupied == 0 && settled.processes_created == 1 &&
+                settled.processes_reaped == 1 &&
+                settled.cooperative_deliveries == deliveries.cooperative_deliveries &&
+                settled.forced_deliveries == deliveries.forced_deliveries,
+            "gone-cut vector failed to release/reap or delivered a later stop");
+  }
   Require(after.cooperative_deliveries == before.cooperative_deliveries &&
               after.forced_deliveries == before.forced_deliveries,
           "released/reaped/unknown Job received an OS stop");

@@ -20,12 +20,13 @@
 namespace sitometron::test::process {
 namespace {
 namespace adapter = sitometron::process;
-constexpr std::array<std::string_view, 35> k_points{"before_spawn_check",
+constexpr std::array<std::string_view, 36> k_points{"before_spawn_check",
                                                     "before_spawn",
                                                     "spawn_before_publication",
                                                     "before_observation",
                                                     "observation_answered",
                                                     "slot_waiting_for_exit",
+                                                    "process_wait_returned",
                                                     "process_gone",
                                                     "cell_released",
                                                     "before_final_completion",
