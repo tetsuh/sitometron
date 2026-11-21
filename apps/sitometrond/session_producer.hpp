@@ -147,7 +147,7 @@ class SessionProducer final {
       std::lock_guard lock(ProbeMutex(identity_mutex_));
       if (!joined_ && thread_id_ == std::this_thread::get_id()) return false;
     }
-    std::lock_guard lock(ProbeMutex(join_mutex_));
+    std::lock_guard join_lock(ProbeMutex(join_mutex_));
     if (thread_.joinable()) thread_.join();
     {
       std::lock_guard lock(ProbeMutex(identity_mutex_));
