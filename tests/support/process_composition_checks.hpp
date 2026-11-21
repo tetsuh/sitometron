@@ -13,6 +13,17 @@ bool ProcessCompositionDrained(Composition& daemon) {
     return daemon.WaitForSupervisorIdleForTest();
 }
 
+auto RunnerCommittedFields(const core::Snapshot& value) {
+  return std::tie(value.schema_version, value.job_id, value.session_id, value.entity_exists,
+                  value.state, value.latched_reason, value.completion_candidate,
+                  value.completion_mode, value.resource_status, value.allocation_id,
+                  value.allocation_digest, value.worker_launch_status, value.launch_operation_id,
+                  value.worker_id, value.process_presence, value.process_exit_confirmed,
+                  value.session_retention_status, value.finalization_status, value.cleanup_status,
+                  value.pending_worker_event_ack, value.pending_worker_id,
+                  value.pending_worker_event_sequence);
+}
+
 int ProductionRunnerFailureSealing() {
   constexpr std::string_view name = "rest_v1_protocol_less_process_fails";
   RegistryFixture fixture("issue141-failure-sealing-");
@@ -25,6 +36,8 @@ int ProductionRunnerFailureSealing() {
   fixture.Save();
   auto config = fixture.Config();
   config.hold_runner_observations_for_test = true;
+  config.runner_overflow_for_test = true;
+  config.max_jobs = 3;  // Leave capacity: a healthy core must accept the admission probe.
   SetRegistryPath(config, fixture.file);
   sitometron::daemon::Phase1Composition daemon(config);
   std::string error;
@@ -37,8 +50,34 @@ int ProductionRunnerFailureSealing() {
   if (created.status != 202) return result;
   daemon.WaitForRunnerObservationForTest();
   (void)control.Ready();
-  result |= Check(daemon.LatchFailureForTest() && !daemon.backend().GetReadiness().ready, name,
-                  "production readiness did not become false at the fail-closed latch");
+  const auto first_id = Json::parse(created.body).at("job_id").get<std::string>();
+  daemon.ExhaustRunnerLaunchInventoryForTest();
+  // Publish the override through the writer's mutex before the next HTTP command.
+  result |= Check(daemon.WaitForSupervisorIdleForTest(), name,
+                  "could not arm the private overflow inventory");
+  const auto affected =
+      SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody("demo-worker")));
+  result |= ExpectStatus(affected, name, 202);
+  if (affected.status != 202) return result;
+  const auto affected_id = Json::parse(affected.body).at("job_id").get<std::string>();
+  const std::vector<std::string> ids{first_id, affected_id};
+  daemon.WaitForRunnerOverflowForTest();  // Real handoff recorded fault; service consumed it.
+  result |= Check(daemon.WaitForSupervisorIdleForTest() && daemon.backend().GetReadiness().ready,
+                  name, "overflow fixture failed before the service's latch boundary");
+  const auto before = daemon.SnapshotJobsForTest(ids);
+  result |= Check(before.size() == ids.size(), name, "overflow baseline lost an open Job");
+  daemon.CompleteRunnerOverflowForTest();  // Release service; wait even if either link is mutated.
+  result |= Check(!daemon.backend().GetReadiness().ready, name,
+                  "real overflow service/bridge did not make readiness false");
+  result |= RestError(
+      SendToPort(daemon.listen_port(), Request("POST", "/v1/jobs", CreateBody("demo-worker"))),
+      name, 503, "service", "service_failed");
+  const auto after = daemon.SnapshotJobsForTest(ids);
+  result |= Check(after.size() == before.size(), name, "overflow removed a committed Job");
+  if (after.size() == before.size())
+    for (std::size_t index = 0; index != before.size(); ++index)
+      result |= Check(RunnerCommittedFields(after[index]) == RunnerCommittedFields(before[index]),
+                      name, "overflow changed an open Job's committed snapshot");
   result |= Check(daemon.WaitForSupervisorIdleForTest() && !daemon.FailureSealedForTest(), name,
                   "failure sealed before the composition joined the live runner");
   control.Ping();  // Deterministic live-process witness: closure must neither force nor join it.
@@ -49,11 +88,43 @@ int ProductionRunnerFailureSealing() {
   const auto replayed = sitometron::journal::ReplayJournal(
       sitometron::journal::SystemFileSystem(), config.journal_path,
       sitometron::journal::ReplayOptions{config.max_jobs});
-  result |= Check(replayed.status == sitometron::journal::ReplayStatus::kReplayed &&
-                      replayed.jobs.size() == 1 && replayed.unresolved.size() == 1 &&
-                      replayed.jobs[0].state == core::JobState::kPreparing &&
-                      !replayed.jobs[0].process_exit_confirmed,
-                  name, "failure/shutdown manufactured a process result or resolved the Job");
+  result |=
+      Check(replayed.status == sitometron::journal::ReplayStatus::kReplayed &&
+                replayed.jobs.size() == ids.size() && replayed.unresolved.size() == ids.size(),
+            name, "overflow replay did not leave every open Job unresolved");
+  std::set<std::string> unresolved;
+  for (const auto& id : replayed.unresolved) unresolved.insert(id.value);
+  result |= Check(unresolved == std::set<std::string>(ids.begin(), ids.end()), name,
+                  "overflow replay reported the wrong unresolved identities");
+  if (replayed.jobs.size() == before.size())
+    for (std::size_t index = 0; index != before.size(); ++index)
+      result |=
+          Check(RunnerCommittedFields(replayed.jobs[index]) == RunnerCommittedFields(before[index]),
+                name, "overflow/shutdown replay changed a committed snapshot");
+  // Inspect only after Stop: never race the live Journal writer or its lock.
+  std::map<std::uint64_t, Json> records;
+  for (const auto& file : std::filesystem::directory_iterator(config.journal_path)) {
+    if (file.path().extension() != ".ndjson") continue;
+    std::ifstream input(file.path(), std::ios::binary);
+    std::string line;
+    while (std::getline(input, line)) {
+      const auto record = Json::parse(line);
+      records.emplace(record.at("sequence").get<std::uint64_t>(), record);
+    }
+    result |= Check(input.eof() && !input.bad(), name, "overflow Journal could not be read");
+  }
+  std::map<std::string, std::vector<std::string>> kinds;
+  for (const auto& [sequence, record] : records) {
+    (void)sequence;
+    kinds[record.at("job_id").get<std::string>()].push_back(
+        record.at("event_type").get<std::string>());
+  }
+  result |= Check(kinds.size() == ids.size() && records.size() == 6 && replayed.records == 6, name,
+                  "overflow appended a violation fact or an uncommitted extra Job");
+  for (const auto& id : ids)
+    result |= Check(kinds[id] == std::vector<std::string>{"job_created", "resources_committed",
+                                                          "worker_launch_intent"},
+                    name, "overflow committed a runner fact or another violation record");
   return result;
 }
 

@@ -880,15 +880,35 @@ void HandoffBounded(const std::string& child) {
             "stale stop reached a reused cell or corrupted the table");
   }
   {
-    Fixture fixture(Options(child, "before_spawn_check"),
-                    "mailbox exhaustion must latch failure outside the handoff");
+    Fixture fixture(Options(child), "overflow must preserve every open Job's attempted facts");
     fixture.driver->Launch(Launch(1));
+    (void)fixture.control.Ready();
     fixture.driver->Launch(Launch(2));
-    fixture.driver->WaitHeld(2);
+    (void)fixture.control.Ready();
+    fixture.driver->WaitFacts(2, 0);
+    const auto attempts_before = fixture.driver->Attempts();
+    Require(attempts_before.size() == 2, "overflow fixture has unexpected prior attempts");
     fixture.driver->Launch(Launch(3));  // Deliberately violate the resident-bound premise.
     fixture.driver->WaitPoint("failure_latched");
     Require(fixture.driver->Inspect().invariant_failures == 1, "overflow was silently discarded");
+    fixture.control.Ping(0);
+    fixture.control.Ping(1);
+    fixture.driver->RequestStop();
     ReapedAndJoined(*fixture.driver);
+    const auto after = fixture.driver->Attempts();
+    Require(after.size() == attempts_before.size(),
+            "overflow attempted a fact beyond the open Jobs' prior submissions");
+    for (std::size_t index = 0; index != after.size(); ++index) {
+      const auto& attempt = after[index];  // Inspect all answers, not accepted facts alone.
+      Require(attempt.event.job_id != Launch(3).job_id,
+              "runner attempted a fact for the launch that found no place");
+      Require(attempt.event.job_id == attempts_before[index].event.job_id &&
+                  attempt.event.event_type == attempts_before[index].event.event_type &&
+                  attempt.event.payload_json == attempts_before[index].event.payload_json &&
+                  attempt.answer.admission == attempts_before[index].answer.admission,
+              "overflow changed another open Job's attempted facts");
+    }
+    ExactFacts(*fixture.driver, 2, 0);
   }
 }
 void NormalFullWaits(const std::string& child) {

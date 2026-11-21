@@ -22,6 +22,7 @@
 
 #include "handoff_probe.hpp"
 #include "job_orchestrator.hpp"
+#include "runner_internal.hpp"
 #include "session_producer.hpp"
 #include "sitometron/core/job_ports.hpp"
 #include "sitometron/identity/system_clock.hpp"
@@ -595,6 +596,15 @@ struct Phase1Composition::Impl {
   std::unique_ptr<RunnerFailure> runner_failure;
   RunnerObservationGate runner_gate;
   RunnerProgress runner_progress;
+  process::internal::TestHooks runner_hooks;
+  std::atomic_bool overflow_reached{false};
+  std::atomic_bool overflow_released{false};
+  std::atomic_bool overflow_processed{false};
+
+  void ReleaseOverflow() noexcept {
+    overflow_released.store(true, std::memory_order_release);
+    overflow_released.notify_all();
+  }
   std::atomic_bool runner_joined{true};
   std::atomic_bool last_stop_sealed{true};
   std::size_t other_completion_budget = 0;
@@ -603,6 +613,7 @@ struct Phase1Composition::Impl {
     // Admission closure is not runner shutdown. No force, join, or writer wait here.
     runner_progress.Close();
     runner_gate.Release();
+    if (config.runner_overflow_for_test) ReleaseOverflow();
     if (producer) producer->Stop();
   }
   bool ProducersJoined() const noexcept {
@@ -665,6 +676,25 @@ bool Phase1Composition::Start(std::string& error) {
     impl_->runner_gate.Reset(impl_->config.hold_runner_observations_for_test);
     impl_->runner_progress.Reset();
     impl_->runner = std::make_unique<process::RunnerPort>(impl_->config.max_jobs);
+    if (impl_->config.runner_overflow_for_test) {
+      impl_->overflow_reached.store(false);
+      impl_->overflow_released.store(false);
+      impl_->overflow_processed.store(false);
+      impl_->runner_hooks.exhaust_launch_inventory.store(false);
+      impl_->runner_hooks.context = impl_.get();
+      impl_->runner_hooks.reach = [](void* context, std::string_view point) noexcept {
+        auto& state = *static_cast<Impl*>(context);
+        if (point == "before_failure_latch") {
+          state.overflow_reached.store(true, std::memory_order_release);
+          state.overflow_reached.notify_all();
+          state.overflow_released.wait(false, std::memory_order_acquire);
+        } else if (point == "failure_processed") {
+          state.overflow_processed.store(true, std::memory_order_release);
+          state.overflow_processed.notify_all();
+        }
+      };
+      process::internal::TestAccess::Install(*impl_->runner, &impl_->runner_hooks);
+    }
     impl_->runner_joined.store(false, std::memory_order_release);
     impl_->last_stop_sealed.store(false, std::memory_order_release);
     impl_->producer = std::make_unique<SessionProducer>(impl_->session);
@@ -794,6 +824,24 @@ bool Phase1Composition::HandoffProbeSelfTestForTest() {
 }
 bool Phase1Composition::LatchFailureForTest() {
   return impl_->orchestrator && impl_->orchestrator->LatchReadinessFailure();
+}
+void Phase1Composition::ExhaustRunnerLaunchInventoryForTest() noexcept {
+  impl_->runner_hooks.exhaust_launch_inventory.store(true, std::memory_order_release);
+}
+void Phase1Composition::WaitForRunnerOverflowForTest() const noexcept {
+  impl_->overflow_reached.wait(false, std::memory_order_acquire);
+}
+void Phase1Composition::CompleteRunnerOverflowForTest() noexcept {
+  impl_->ReleaseOverflow();
+  impl_->overflow_processed.wait(false, std::memory_order_acquire);
+}
+std::vector<core::Snapshot> Phase1Composition::SnapshotJobsForTest(
+    const std::vector<std::string>& ids) const {
+  std::vector<core::Snapshot> snapshots;
+  for (const auto& id : ids)
+    if (const auto value = impl_->orchestrator->SnapshotFor(core::Uuid{id}))
+      snapshots.push_back(*value);
+  return snapshots;
 }
 bool Phase1Composition::FailureSealedForTest() const noexcept {
   return impl_->orchestrator ? impl_->orchestrator->sealed() : impl_->last_stop_sealed.load();

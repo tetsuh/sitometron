@@ -117,6 +117,10 @@ void RunnerPort::HandoffLaunch(core::ApplicationLaunchRequest&& request) noexcep
   const HandoffProbeScope probe(state_->hooks != nullptr);
   static_assert(std::is_nothrow_move_assignable_v<core::ApplicationLaunchRequest>);
   for (std::size_t index = 0; index != state_->count; ++index) {
+    // Private inventory fault injection; production leaves hooks unset.
+    if (state_->hooks != nullptr &&
+        state_->hooks->exhaust_launch_inventory.load(std::memory_order_acquire))
+      break;
     auto& mailbox = state_->mailboxes[index];
     for (std::size_t cell_index = 0; cell_index != 2; ++cell_index) {
       auto& cell = mailbox.cells[cell_index];

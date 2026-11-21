@@ -23,6 +23,7 @@ struct TestHooks {
   bool fail_before_spawn = false;
   std::optional<std::size_t> fail_thread_after;
   std::uint64_t initial_generation = 0;
+  std::atomic_bool exhaust_launch_inventory{false};  // Opt-in private overflow fixture.
 };
 struct Diagnostics {
   std::size_t occupied = 0;

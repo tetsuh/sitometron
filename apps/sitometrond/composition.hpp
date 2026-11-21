@@ -39,6 +39,7 @@ struct StartupConfig {
   http::Options http;
   bool hold_supervisor_for_test = false;
   bool hold_runner_observations_for_test = false;
+  bool runner_overflow_for_test = false;
 };
 
 struct ParseResult {
@@ -67,6 +68,10 @@ class Phase1Composition final {
   [[nodiscard]] std::uint16_t listen_port() const noexcept;
   bool HandoffProbeSelfTestForTest();
   bool LatchFailureForTest();
+  void ExhaustRunnerLaunchInventoryForTest() noexcept;
+  void WaitForRunnerOverflowForTest() const noexcept;
+  void CompleteRunnerOverflowForTest() noexcept;
+  std::vector<core::Snapshot> SnapshotJobsForTest(const std::vector<std::string>&) const;
   bool FailureSealedForTest() const noexcept;
   bool FillOtherCompletionBudgetForTest();
   bool WaitForRunnerExitForTest(std::size_t count = 1);

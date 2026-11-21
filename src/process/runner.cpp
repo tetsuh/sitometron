@@ -230,7 +230,9 @@ struct ProducerState {
       port.Reach("service_scan_started");
       if (port.fault.exchange(false, std::memory_order_acq_rel)) {
         std::cerr << "runner mailbox invariant violated\n";
+        port.Reach("before_failure_latch");
         failure.Latch("runner mailbox invariant violated");
+        port.Reach("failure_processed");
       }
       for (std::size_t index = 0; index != port.count; ++index) {
         auto& mailbox = port.mailboxes[index];
