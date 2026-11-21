@@ -501,6 +501,32 @@ void StopDelivery(const std::string& child) {
             "gone-cut vector failed to release/reap or delivered a later stop");
   }
   for (const bool forced : {false, true}) {
+    auto options = Options(child);
+    options.hold_points = {"process_wait_returned", "before_stop_delivery", "process_gone"};
+    Fixture pending(options, "a flag before the snapshot counts even if not delivered");
+    pending.driver->Launch(Launch());
+    (void)pending.control.Ready();
+    pending.driver->WaitFacts(1, 0);
+    pending.control.Exit();
+    pending.driver->WaitPoint("process_wait_returned");
+    if (forced)
+      pending.driver->Forced(Stop());
+    else
+      pending.driver->Cooperative(Stop());
+    pending.driver->WaitPoint("before_stop_delivery");
+    pending.driver->ReleasePoint("process_wait_returned");
+    pending.driver->WaitPoint("process_gone");
+    pending.driver->ReleasePoint("before_stop_delivery");
+    pending.driver->WaitPoint("stop_checked");
+    const auto pending_view = pending.driver->Inspect();
+    Require(pending_view.cooperative_deliveries == 0 && pending_view.forced_deliveries == 0,
+            "a service stop held until gone was delivered anyway");
+    pending.driver->ReleasePoint("process_gone");
+    pending.driver->WaitFacts(1, 1);
+    ReapedAndJoined(*pending.driver);
+    ExactFacts(*pending.driver, 1, 1, forced ? "forced" : "cooperative");
+  }
+  for (const bool forced : {false, true}) {
     Fixture cut(Options(child, "exit_mode_cut"),
                 "snapshot must be the atomic stop/mode cut, before gone is published");
     cut.driver->Launch(Launch());
@@ -543,6 +569,9 @@ void StopDelivery(const std::string& child) {
     const auto descendant_index = family.control.Ready();
     const auto report_path = family.directory.path() / "report.json.desc";
     const auto report = test::ReadReport(report_path);
+    // Arm cleanup from the original verified report before any negative assertion.
+    // A failed planted-report assertion must not leave the descendant orphaned.
+    guard.ownership.Adopt(family.control.VerifyDescendant(descendant_index, 0, report_path));
     // Bad reports must never create the capability accepted by Adopt(). No
     // unverified PID is stored or signalled, even when validation throws.
     for (const std::string field : {"process_id", "parent_process_id", "fixture_nonce"}) {
@@ -567,7 +596,6 @@ void StopDelivery(const std::string& child) {
       }
       Require(refused, "unverified descendant report granted termination authority");
     }
-    guard.ownership.Adopt(family.control.VerifyDescendant(descendant_index, 0, report_path));
     family.driver->WaitFacts(1, 0);
     if (forced)
       family.driver->Forced(Stop());

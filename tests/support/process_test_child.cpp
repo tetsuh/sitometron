@@ -65,7 +65,6 @@ int RunChild(const std::vector<std::string>& arguments) {
     if (report.empty()) throw std::runtime_error("test report path missing");
     const auto cwd = std::filesystem::current_path().u8string();
     nlohmann::json observation{{"process_id", sitometron::test::process::ProcessId()},
-                               {"parent_process_id", sitometron::test::process::ParentProcessId()},
                                {"fixture_nonce", Environment("ISSUE141_TEST_NONCE")},
 #ifndef _WIN32
                                {"sigterm_blocked", sitometron::test::process::TermBlocked()},
@@ -77,6 +76,8 @@ int RunChild(const std::vector<std::string>& arguments) {
                                {"job_id", Environment("SITOMETRON_JOB_ID")},
                                {"worker_id", Environment("SITOMETRON_WORKER_ID")},
                                {"operation_id", Environment("SITOMETRON_LAUNCH_OPERATION_ID")}};
+    if (mode == "descendant")
+      observation["parent_process_id"] = sitometron::test::process::ParentProcessId();
 #ifndef _WIN32
     if (mode == "descriptor-report")
       observation["open_descriptors"] = sitometron::test::process::OpenDescriptors();

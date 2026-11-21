@@ -49,7 +49,7 @@ class Spawned final : public ChildProcess {
  public:
   Spawned(const std::string& executable, const std::string& report, const std::string& port) {
     const auto native_executable = Native(executable);
-    const auto command = Quote(native_executable) + L" --mode wait --report " +
+    const auto command = Quote(native_executable) + L" --mode descendant --report " +
                          Quote(Native(report)) + L" --control-port " + Quote(Native(port));
     std::vector<wchar_t> mutable_command(command.begin(), command.end());
     mutable_command.push_back(L'\0');

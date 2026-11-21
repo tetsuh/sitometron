@@ -30,7 +30,7 @@ void StopAndReap(pid_t pid) noexcept {
 class Spawned final : public ChildProcess {
  public:
   Spawned(const std::string& executable, const std::string& report, const std::string& port) {
-    std::vector<std::string> arguments{executable, "--mode",         "wait", "--report",
+    std::vector<std::string> arguments{executable, "--mode",         "descendant", "--report",
                                        report,     "--control-port", port};
     std::vector<char*> pointers;
     pointers.reserve(arguments.size() + 1);
