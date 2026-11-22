@@ -100,7 +100,7 @@ the runner adds one variable, overriding any inherited value:
 
 | Variable | Value |
 |---|---|
-| `SITOMETRON_WORKER_ENDPOINT` | `http://ADDRESS:PORT`, the address and the bound port of the Worker listener, with no path and no trailing slash |
+| `SITOMETRON_WORKER_ENDPOINT` | `http://ADDRESS:PORT`, the address and the bound port of the Worker listener, with no path and no trailing slash; an IPv6 address is written in brackets, as a URI authority requires (`http://[::1]:PORT`) |
 
 A Worker forms a request URL by appending a path of Section 3 to that value. When the daemon has no
 Worker listener the runner adds nothing: the process inherits the daemon's environment as ADR-0016
@@ -149,9 +149,7 @@ acknowledgment is not yet authorized.
    that report has been authorized and `202` otherwise.
 4. The daemon keeps the report retained, and keeps answering its repetitions, until the Job's
    process exit is confirmed. It does not release the report when it writes a `200`: a response
-   that was written may not have arrived, and the next repetition must get the same answer. A
-   report recorded after the exit is already confirmed (Section 7) stays retained until the Job is
-   retired.
+   that was written may not have arrived, and the next repetition must get the same answer.
 
 This is ADR-0002's "the Phase 2 adapter sends that idempotent ACK and retries until delivery or
 confirmed process exit" for a protocol in which the Worker is the client: the adapter sends the
@@ -231,9 +229,9 @@ conditions of this protocol are:
   of a repeated `running`; then the answer of the writer (Section 8).
 - A `503` means "send the same request again". A `404` or a `409` is not a request to repeat: the
   same request gets another answer only after the Job's state has changed.
-- Validation, routing, `job_not_found`, `worker_mismatch`, `launch_not_observed`, and
-  `running_not_reported` are decided before anything is submitted to the writer, so they create no
-  Journal record.
+- An answer decided from the request or from the committed snapshot submits nothing to the writer.
+  A submission that the writer refuses or the reducer rejects is not appended (ADR-0002). So no
+  answer of `400` or above creates a Journal record.
 
 ### 7. Late reports, reports after the exit, and retired Jobs
 
@@ -243,11 +241,15 @@ conditions of this protocol are:
   that acknowledgment with the record itself.
 - After the Job's process exit is confirmed, the retained report is released (ADR-0003). A terminal
   report that still arrives for a resident Job, for example from a descendant process, is such a
-  late report. It is retained in turn, until the Job is retired: its repetitions are answered
-  `200` and a different report `409` `report_conflict`. ADR-0014 Section 1 already says that this
-  acknowledgment does not keep the Job resident.
-- A report for a Job that is not resident is answered `404` `job_not_found` and reaches the writer
-  in no form, as ADR-0014 Section 2 requires of a Worker fact for a retired Job.
+  late report: it is recorded and answered `200` `{"acknowledged": true}`. ADR-0014 Section 1 calls
+  this "a single best-effort attempt with no retry obligation" and it does not keep the Job
+  resident. v1 promises nothing about a further terminal report after that one: it changes no
+  outcome, and whether it is recorded as another late event or refused as `report_conflict` is not
+  part of this contract.
+- A report for a Job that is not resident is answered `404` `job_not_found`. A terminal report for
+  such a Job reaches the writer in no form, as ADR-0014 Section 2 requires of a Worker fact for a
+  retired Job; a `running` report that was submitted because the snapshot still showed the Job can
+  reach the reducer, which rejects it (Section 5).
 - A `running` report in any state but `preparing` and `running` is rejected by the reducer and
   answered `409` with its reason.
 
@@ -377,8 +379,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   listener answers the other's paths `404` `route_not_found`; no connection to the Worker listener
   is accepted before the runner is built;
 - `worker_v1_endpoint_in_environment`: with a Worker listener, a started process has
-  `SITOMETRON_WORKER_ENDPOINT` with the bound address and port, also for port 0 and also when the
-  daemon's environment carried another value;
+  `SITOMETRON_WORKER_ENDPOINT` with the bound address and port, also for port 0, for an IPv6
+  loopback address written in brackets, and when the daemon's environment carried another value;
 - `worker_v1_running_after_launch_observed`: `running` before the launch observation is committed
   is answered `503` `launch_not_observed` and submits nothing; after it, `204` and the Job is
   `running`; a repeated `running` is answered `204` and adds no Journal record, also after
@@ -398,9 +400,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   answered `409` `worker_mismatch` and submit nothing;
 - `worker_v1_late_report_acknowledged`: a terminal report for a Job already `finalizing` or
   terminal, with no report retained, is recorded as `late_worker_event`, changes no outcome, and is
-  answered `200` at once; so is a report after the process exit is confirmed, whose repetition is
-  answered `200` without another record and after which a different report is answered `409`
-  `report_conflict`;
+  answered `200` at once; so is the first report after the process exit is confirmed, which does
+  not keep the Job from being retired;
 - `worker_v1_job_not_resident`: a report for an unknown Job and for a retired Job is answered `404`
   `job_not_found`, with no ingress result, no Journal record, and no failure latch, also when the
   retirement happens between two reports; a terminal report for a Job that a retirement has claimed
@@ -419,6 +420,11 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - `worker_v1_request_rules`: the message-syntax, limit, media-type, strict-JSON, and field rules of
   ADR-0008 and ADR-0009 hold on the Worker listener, with the `event_sequence` and `outcome` ranges
   of Section 3;
+- `worker_v1_error_envelope_and_codes`: every response of `400` or above on the Worker listener
+  carries the error object of ADR-0008 Section 5 with the `domain` and `code` of Section 6, for one
+  request error, each protocol condition, and each service condition, and no `message` or `details`
+  contains a file-system path, a raw operating-system or library error, a Journal record, or a
+  secret;
 - `worker_v1_openapi_contract`: the OpenAPI document matches Sections 3 and 6;
 - `rest_v1_worker_job_succeeds`: through production `sitometrond` with a verified registry and a
   Worker listener, a test Worker that reports `running` and `completed`, repeats until
