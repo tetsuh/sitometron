@@ -451,9 +451,9 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   `completed` and for `failed`; no request stays open in between; when the process exit is
   confirmed after the report's turn and before the adapter reads the snapshot again (held at a
   deterministic barrier), the answer is `409` `process_exited`;
-- `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered from the
-  committed binding, reach no ingress, and add no ingress sequence, reducer turn, or Journal
-  record, before and after the terminal outcome is committed; a repetition is still answered `200`
+- `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered
+  from the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or
+  Journal record, before and after the terminal outcome is committed; a repetition is still answered `200`
   after an earlier `200` was written, and after the daemon is restarted with the Worker's exit
   unconfirmed; a repetition with the other `outcome` under the same `event_sequence` is answered as
   the same report;
