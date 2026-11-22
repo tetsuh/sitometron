@@ -190,6 +190,12 @@ applies.
 The adapter holds no request until the launch is observed and arms no timer; the Worker's
 repetition is the only retry.
 
+A `running` report is a normal input without a gate (ADR-0003), so no lease protects a submitted
+one. If the Job is retired between the snapshot and the submission, the input is admitted as for an
+unknown Job and the reducer rejects it as `job_not_found` under ADR-0002's absent-entity rule, as
+ADR-0014 Section 2 says of a terminate for a retired Job. Nothing is recorded, no failure is
+latched, and the answer is `404` `job_not_found`.
+
 A terminal report needs one rule of the same kind. The reducer accepts `completed` only after
 `running`, so a `completed` report for a Job that is still `preparing` is answered from the
 committed snapshot and not submitted: `503` `launch_not_observed` while the launch is not observed,
@@ -206,7 +212,7 @@ conditions of this protocol are:
 
 | Condition | Status | `domain` | `code` |
 |---|---|---|---|
-| The Job is not resident: unknown, never created, or retired (ADR-0014) | `404` | `job` | `job_not_found` |
+| The Job is not resident: unknown, never created, or retired (ADR-0014), found from the snapshot, from a refused lease (Section 8), or by the reducer for a submitted `running` (Section 5) | `404` | `job` | `job_not_found` |
 | `worker_id` is not the Worker bound to the Job, or the Job has no Worker yet | `409` | `worker` | `worker_mismatch` |
 | A different terminal report is retained for the Job (Section 4) | `409` | `worker` | `report_conflict` |
 | The reducer rejects the report | `409` | `job` | the ADR-0002 rejection reason |
@@ -356,9 +362,9 @@ No sentence of an Accepted ADR is superseded.
 This ADR adds `WRK-002` (MUST): answer Worker HTTP v1 reports exactly as Sections 3 to 8 state, on
 a loopback listener and I/O thread of its own when `--worker-listen` is given and on no listener
 without it; give each process the endpoint of Section 2 when there is a listener; and never open a
-connection to a Worker, hold a request open for an acknowledgment, or let a report for a Job that
-is not resident reach the writer. The sections are the rules; this sentence restates none of
-their conditions.
+connection to a Worker, hold a request open for an acknowledgment, or let a terminal report for a
+Job that is not resident reach the writer. The sections are the rules; this sentence restates
+none of their conditions.
 
 Its named checks, Planned until the implementation Issue activates them. No check sleeps or reads a
 host clock; orderings come from the adapter's submissions and the existing non-sleeping barriers:
@@ -396,7 +402,10 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - `worker_v1_job_not_resident`: a report for an unknown Job and for a retired Job is answered `404`
   `job_not_found`, with no ingress result, no Journal record, and no failure latch, also when the
   retirement happens between two reports; a terminal report for a Job that a retirement has claimed
-  and not yet committed is answered `503` `busy`, and `404` once the retirement is committed;
+  and not yet committed is answered `503` `busy`, and `404` once the retirement is committed; a
+  `running` report whose Job is retired after the snapshot was read and before the submission
+  (held at a deterministic barrier) is rejected by the reducer as `job_not_found`, is answered
+  `404`, and adds no Journal record and no failure latch;
 - `worker_v1_not_ready_and_busy`: a report the writer refuses with `admission_closed` is answered
   `503` `not_ready`, for a daemon started with unresolved Jobs and for one that is shutting down;
   after a fail-closed latch the answer is `503` `service_failed`; a `running` that meets
