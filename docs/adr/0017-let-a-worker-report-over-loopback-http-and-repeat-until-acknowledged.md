@@ -353,13 +353,12 @@ No sentence of an Accepted ADR is superseded.
 
 ## Requirements and checks
 
-This ADR adds `WRK-002` (MUST): when `--worker-listen` is given, serve Worker HTTP v1 on its own
-loopback listener and I/O thread as Sections 1 to 3 state and give each process the endpoint of
-Section 2; without it, open no Worker listener and add no endpoint variable; answer a terminal
-report `202` until its acknowledgment is authorized and `200` afterwards for as long as the Worker
-repeats it, never open a connection to a Worker or hold a request open for an acknowledgment,
-answer from the committed snapshot, without a submission, exactly the reports Section 5 decides
-that way, and submit a terminal report only through a Worker source lease of its Job.
+This ADR adds `WRK-002` (MUST): answer Worker HTTP v1 reports exactly as Sections 3 to 8 state, on
+a loopback listener and I/O thread of its own when `--worker-listen` is given and on no listener
+without it; give each process the endpoint of Section 2 when there is a listener; and never open a
+connection to a Worker, hold a request open for an acknowledgment, or let a report for a Job that
+is not resident reach the writer. The sections are the rules; this sentence restates none of
+their conditions.
 
 Its named checks, Planned until the implementation Issue activates them. No check sleeps or reads a
 host clock; orderings come from the adapter's submissions and the existing non-sleeping barriers:
