@@ -191,10 +191,12 @@ The adapter holds no request until the launch is observed and arms no timer; the
 repetition is the only retry.
 
 A `running` report is a normal input without a gate (ADR-0003), so no lease protects a submitted
-one. If the Job is retired between the snapshot and the submission, the input is admitted as for an
-unknown Job and the reducer rejects it as `job_not_found` under ADR-0002's absent-entity rule, as
-ADR-0014 Section 2 says of a terminate for a retired Job. Nothing is recorded, no failure is
-latched, and the answer is `404` `job_not_found`.
+one. If the Job is retired between the snapshot and the submission, the input goes through normal
+admission as for an unknown Job, and the writer's answer applies as for any `running`
+(Section 6): when it is admitted, the reducer rejects it as `job_not_found` under ADR-0002's
+absent-entity rule, as ADR-0014 Section 2 says of a terminate for a retired Job, and the answer is
+`404` `job_not_found`; when admission refuses it, the answer is the `503` of that refusal. In
+neither case is anything recorded or a failure latched.
 
 A terminal report needs one rule of the same kind. The reducer accepts `completed` only after
 `running`, so a `completed` report for a Job that is still `preparing` is answered from the
@@ -404,8 +406,9 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   retirement happens between two reports; a terminal report for a Job that a retirement has claimed
   and not yet committed is answered `503` `busy`, and `404` once the retirement is committed; a
   `running` report whose Job is retired after the snapshot was read and before the submission
-  (held at a deterministic barrier) is rejected by the reducer as `job_not_found`, is answered
-  `404`, and adds no Journal record and no failure latch;
+  (held at a deterministic barrier) is rejected by the reducer as `job_not_found` and answered
+  `404` when it is admitted, is answered `503` `busy` when it meets `normal_full` instead, and in
+  both cases adds no Journal record and no failure latch;
 - `worker_v1_not_ready_and_busy`: a report the writer refuses with `admission_closed` is answered
   `503` `not_ready`, for a daemon started with unresolved Jobs and for one that is shutting down;
   after a fail-closed latch the answer is `503` `service_failed`; a `running` that meets
