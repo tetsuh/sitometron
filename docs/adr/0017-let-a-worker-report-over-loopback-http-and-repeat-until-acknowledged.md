@@ -182,9 +182,10 @@ report from the committed snapshot before it submits anything:
 - any other state: the adapter submits the report and the reducer's rejection decides the answer
   (Section 6).
 
-These answers come from the committed snapshot alone, so they do not depend on whether admission is
-open: a repeated `running` for a Job that is `running` is answered `204` also after admission has
-closed.
+The first two answers submit nothing and come from the committed snapshot alone, so they do not
+depend on whether admission is open: a repeated `running` for a Job that is `running` is answered
+`204` also after admission has closed. The other two submit the report, and the writer's answer
+applies.
 
 The adapter holds no request until the launch is observed and arms no timer; the Worker's
 repetition is the only retry.
@@ -357,8 +358,8 @@ loopback listener and I/O thread as Sections 1 to 3 state and give each process 
 Section 2; without it, open no Worker listener and add no endpoint variable; answer a terminal
 report `202` until its acknowledgment is authorized and `200` afterwards for as long as the Worker
 repeats it, never open a connection to a Worker or hold a request open for an acknowledgment,
-decide the reports of Section 5 from the committed snapshot without submitting them, and submit a
-terminal report only through a Worker source lease of its Job.
+answer from the committed snapshot, without a submission, exactly the reports Section 5 decides
+that way, and submit a terminal report only through a Worker source lease of its Job.
 
 Its named checks, Planned until the implementation Issue activates them. No check sleeps or reads a
 host clock; orderings come from the adapter's submissions and the existing non-sleeping barriers:
