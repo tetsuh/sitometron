@@ -175,6 +175,9 @@ void CloseInFlight(const Json& vector) {
           "missing in-flight decision checkpoint");
   const auto job = fixture.New();
   Require(WaitBarrier(fixture.writer), "initial decision not held");
+  // Create's completion precedes its kTurnFinished checkpoint. The supervisor is held,
+  // so drain that earlier turn before arming a phase intended for its next own input.
+  Require(fixture.writer.WaitForWriterIdle(), "creation turn not drained before phase arming");
   const std::map<std::string, WriterPhase> phases{
       {"before_dequeue", WriterPhase::kBeforeDequeue},
       {"before_commit", WriterPhase::kBeforeCommit},
@@ -190,6 +193,9 @@ void CloseInFlight(const Json& vector) {
   const auto sequence = WaitSubmission(fixture.writer, job);
   Require(sequence != 0 && fixture.writer.WaitUntil(sequence, phase),
           "own input missed selected writer phase");
+  if (vector.at("id") == "V056")
+    std::cout << "V056 close_in_flight captured phase=turn_finished own_sequence=" << sequence
+              << std::endl;
   const auto marker = fixture.writer.SubmitShutdown();
   Require(marker.code == IngressCode::kAdmitted, "shutdown marker not ordered after own input");
   Require(fixture.writer.Release(sequence, phase), "in-flight writer barrier not released");
@@ -337,7 +343,57 @@ void ReplayClosedVector() {
   Require(View(writer, Uuid{kJob}).at("submissions") == 0,
           "replay consulted launch inputs or submitted a continuation");
 }
-bool CapacityWait(JobOrchestrator& writer) { return writer.WaitForNormalCapacityOrClosure(); }
+template <typename Writer>
+void IndependentCapacityFlags(Writer& writer) {
+  if constexpr (requires { writer.RegisterCapacityWaiter(); }) {
+    const auto first = writer.RegisterCapacityWaiter();
+    const auto second = writer.RegisterCapacityWaiter();
+    Require(first && second, "per-waiter registration unavailable within configured inventory");
+    first->Clear();
+    second->Clear();
+    const auto created = Create(writer);
+    Completed(writer, created.ingress);
+    Require(Drain(writer), "supervisor did not drain its own capacity signal");
+    Require(first->Wait(), "supervisor consumed another producer's capacity signal");
+    first->Clear();
+    Require(second->Wait(), "clearing one waiter consumed another waiter's level");
+    Require(writer.WaitForWriterIdle(), "capacity wait-entry setup did not finish prior turns");
+    first->Clear();
+    second->Clear();
+    std::barrier waiting(3);
+    const auto entry = [](void* context) noexcept {
+      static_cast<std::barrier<>*>(context)->arrive_and_wait();
+    };
+    first->SetWaitEntryHookForTest(&waiting, entry);
+    second->SetWaitEntryHookForTest(&waiting, entry);
+    bool first_open = true;
+    bool second_open = true;
+    std::thread first_thread([&] { first_open = first->Wait(); });
+    std::thread second_thread([&] { second_open = second->Wait(); });
+    waiting.arrive_and_wait();  // Both hold their flag mutex at CV wait entry.
+    const bool latched = writer.LatchReadinessFailure();
+    first_thread.join();
+    second_thread.join();
+    first->SetWaitEntryHookForTest(nullptr, nullptr);
+    second->SetWaitEntryHookForTest(nullptr, nullptr);
+    Require(latched, "capacity closure fixture did not latch");
+    Require(!first_open && !second_open, "blocked Wait did not return closed for every waiter");
+    Require(writer.WaitForWriterIdle(), "capacity closure did not finish its writer work");
+  } else {
+    Require(false, "core has no registered per-waiter capacity flags; supervisor drain is shared");
+  }
+}
+struct UnimplementedSessionWaiter {
+  void Clear() const noexcept {}
+  bool Wait() const noexcept { return false; }
+};
+template <typename Writer>
+auto SessionCapacityWaiter(Writer& writer) {
+  if constexpr (requires { writer.RegisterCapacityWaiter(); })
+    return writer.RegisterCapacityWaiter();
+  else
+    return std::shared_ptr<UnimplementedSessionWaiter>{};
+}
 void ParkedShutdown() {
   Fixture fixture;
   Require(Arm(fixture.writer, "after_decision", "resources_committed"),
@@ -398,14 +454,17 @@ void SessionProducerVector(bool close_at_capacity) {
   const auto second = fixture.writer.SubmitCandidate(fixtures::MakeSessionRetained(job));
   Require(first.code == IngressCode::kAdmitted && second.code == IngressCode::kAdmitted,
           "Session normal FIFO not full");
+  const auto capacity = SessionCapacityWaiter(fixture.writer);
+  Require(static_cast<bool>(capacity), "Session capacity wait has no independent registered flag");
   std::barrier refusal(2);
   bool full = false;
   bool resumed = true;
   std::thread producer([&] {
+    capacity->Clear();
     full = fixture.writer.SubmitCandidate(fixtures::MakeSessionRetained(job)).code ==
            IngressCode::kNormalFull;
     refusal.arrive_and_wait();
-    resumed = CapacityWait(fixture.writer);
+    resumed = capacity->Wait();
   });
   refusal.arrive_and_wait();
   const auto marker = fixture.writer.SubmitShutdown();

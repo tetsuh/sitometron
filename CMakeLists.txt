@@ -117,6 +117,47 @@ endforeach()
 if(SITOMETRON_ENABLE_HTTP)
   find_package(Boost CONFIG REQUIRED COMPONENTS beast asio)
 
+  if(WIN32)
+    set(_process_platform src/process/platform_windows.cpp)
+  else()
+    set(_process_platform src/process/platform_linux.cpp)
+  endif()
+  add_library(sitometron_process STATIC src/process/runner.cpp src/process/runner_port.cpp
+    src/process/windows_command_line.cpp ${_process_platform})
+  add_library(sitometron::process ALIAS sitometron_process)
+  target_include_directories(sitometron_process PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+  target_compile_features(sitometron_process PUBLIC cxx_std_20)
+  target_link_libraries(sitometron_process PRIVATE Threads::Threads)
+  if(WIN32)
+    target_compile_definitions(sitometron_process PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  else()
+    include(CheckCXXSymbolExists)
+    check_cxx_symbol_exists(posix_spawn_file_actions_addclosefrom_np "spawn.h"
+      SITOMETRON_PROCESS_HAVE_CLOSEFROM)
+    target_compile_definitions(sitometron_process PRIVATE
+      SITOMETRON_PROCESS_HAVE_CLOSEFROM=$<BOOL:${SITOMETRON_PROCESS_HAVE_CLOSEFROM}>)
+  endif()
+  sitometron_enable_project_warnings(sitometron_process)
+  sitometron_enable_sanitizers(sitometron_process)
+  get_target_property(SITOMETRON_PROCESS_LINK_TARGETS sitometron_process LINK_LIBRARIES)
+  get_target_property(SITOMETRON_PROCESS_INTERFACE_LINK_TARGETS sitometron_process INTERFACE_LINK_LIBRARIES)
+  file(GLOB_RECURSE SITOMETRON_PROCESS_SCAN_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/process/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/process/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/sitometron/process/*.hpp")
+  file(GLOB_RECURSE SITOMETRON_PROCESS_PUBLIC_SCAN_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/sitometron/process/*.hpp")
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_process_dependency_allowlist.cmake)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_process_public_api_isolation.cmake)
+  set(SITOMETRON_PROCESS_SCAN_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/process-scan-inputs.cmake")
+  file(WRITE "${SITOMETRON_PROCESS_SCAN_CONFIG}" "")
+  foreach(_process_input IN ITEMS LINK_TARGETS INTERFACE_LINK_TARGETS SCAN_FILES PUBLIC_SCAN_FILES)
+    file(APPEND "${SITOMETRON_PROCESS_SCAN_CONFIG}"
+      "set(SITOMETRON_PROCESS_${_process_input} [==[${SITOMETRON_PROCESS_${_process_input}}]==])\n")
+  endforeach()
+
   add_library(sitometron_registry STATIC src/registry/registry.cpp)
   add_library(sitometron::registry ALIAS sitometron_registry)
   target_include_directories(sitometron_registry PUBLIC
@@ -207,7 +248,7 @@ add_executable(sitometrond apps/sitometrond/main.cpp)
 target_include_directories(sitometrond PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 if(SITOMETRON_ENABLE_HTTP)
   add_library(sitometrond_composition STATIC apps/sitometrond/composition.cpp)
-  target_include_directories(sitometrond_composition PRIVATE src/core)
+  target_include_directories(sitometrond_composition PRIVATE src/core src/process)
   target_link_libraries(
     sitometrond_composition
     PRIVATE
@@ -215,7 +256,8 @@ if(SITOMETRON_ENABLE_HTTP)
       sitometron::journal
       sitometron::http
       sitometron::registry
-      sitometron::identity)
+      sitometron::identity
+      sitometron::process)
   sitometron_enable_project_warnings(sitometrond_composition)
   sitometron_enable_sanitizers(sitometrond_composition)
 endif()
@@ -379,6 +421,8 @@ if(SITOMETRON_BUILD_TESTS)
     sitometron_job_orchestration_tests
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/process
+      ${CMAKE_CURRENT_SOURCE_DIR}/apps/sitometrond
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/support)
   target_link_libraries(
     sitometron_job_orchestration_tests
@@ -615,6 +659,73 @@ if(SITOMETRON_BUILD_TESTS)
         -DHTTP_NEGATIVE_MODE=public
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_http_negative_isolation.cmake)
 
+    if(WIN32)
+      set(_process_test_platform tests/support/process_child_windows.cpp)
+    else()
+      set(_process_test_platform tests/support/process_child_linux.cpp)
+    endif()
+    add_library(sitometron_process_test_platform STATIC ${_process_test_platform})
+    sitometron_enable_project_warnings(sitometron_process_test_platform)
+    sitometron_enable_sanitizers(sitometron_process_test_platform)
+    # Parent IPC uses native Linux sockets (normal threaded Asio on Windows), so no
+    # single-thread Asio definitions leak into a runner/core/HTTP executable.
+    add_library(sitometron_process_test_control STATIC
+      tests/support/process_control_test_support.cpp)
+    target_link_libraries(sitometron_process_test_control PRIVATE
+      Boost::asio nlohmann_json::nlohmann_json)
+    sitometron_enable_project_warnings(sitometron_process_test_control)
+    sitometron_enable_sanitizers(sitometron_process_test_control)
+    add_executable(sitometron_process_test_child tests/support/process_test_child.cpp)
+    # Only this whole executable is single-threaded, including its descendant mode.
+    target_compile_definitions(sitometron_process_test_child PRIVATE BOOST_ASIO_DISABLE_THREADS)
+    target_link_libraries(sitometron_process_test_child PRIVATE
+      sitometron_process_test_platform Boost::asio nlohmann_json::nlohmann_json)
+    sitometron_enable_project_warnings(sitometron_process_test_child)
+    sitometron_enable_sanitizers(sitometron_process_test_child)
+
+    add_executable(sitometron_process_tests
+      tests/unit/process_runner_test.cpp tests/support/process_runner_driver.cpp
+      tests/support/process_handoff_allocation_probe.cpp)
+    target_include_directories(sitometron_process_tests PRIVATE tests/support)
+    target_link_libraries(sitometron_process_tests PRIVATE
+      sitometron::core sitometron_process_test_platform sitometron_process_test_control
+      nlohmann_json::nlohmann_json Threads::Threads)
+    # RED builds without a production stub; GREEN binds these same assertions to the adapter.
+    if(TARGET sitometron_process)
+      target_link_libraries(sitometron_process_tests PRIVATE sitometron_process)
+      target_include_directories(sitometron_process_tests PRIVATE src/process)
+      target_compile_definitions(sitometron_process_tests PRIVATE SITOMETRON_TEST_HAS_PROCESS=1)
+    endif()
+    add_dependencies(sitometron_process_tests sitometron_process_test_child)
+    sitometron_enable_project_warnings(sitometron_process_tests)
+    sitometron_enable_sanitizers(sitometron_process_tests)
+    foreach(_process_check IN ITEMS
+        process_launch_observed_after_start
+        process_failed_start_reports_failed
+        process_exit_confirmed_mode
+        process_stop_before_start_skips_launch
+        process_stop_delivery
+        process_handoff_bounded
+        process_normal_full_waits
+        process_exit_reported_after_rejected_observation
+        process_reaped_after_failure)
+      add_test(NAME ${_process_check} COMMAND sitometron_process_tests
+        ${_process_check} $<TARGET_FILE:sitometron_process_test_child>)
+      set_tests_properties(${_process_check} PROPERTIES TIMEOUT 120)
+    endforeach()
+    foreach(_process_scan IN ITEMS allowlist public)
+      if(_process_scan STREQUAL "allowlist")
+        set(_process_scan_name process_dependency_allowlist)
+      else()
+        set(_process_scan_name process_public_api_isolation)
+      endif()
+      add_test(NAME ${_process_scan_name} COMMAND ${CMAKE_COMMAND}
+        -DSITOMETRON_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DSITOMETRON_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -DPROCESS_TEST_MODE=${_process_scan}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/support/process_isolation_test.cmake)
+    endforeach()
+
     add_executable(sitometron_registry_tests tests/unit/registry_test.cpp)
     target_include_directories(sitometron_registry_tests PRIVATE src/registry)
     target_compile_definitions(sitometron_registry_tests PRIVATE
@@ -643,7 +754,9 @@ if(SITOMETRON_BUILD_TESTS)
       PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src/core
         ${CMAKE_CURRENT_SOURCE_DIR}/src/registry)
     target_compile_definitions(
-      sitometron_http_tests PRIVATE SITOMETRON_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+      sitometron_http_tests PRIVATE SITOMETRON_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        SITOMETRON_PROCESS_TEST_CHILD="$<TARGET_FILE:sitometron_process_test_child>")
+    add_dependencies(sitometron_http_tests sitometron_process_test_child)
     target_link_libraries(
       sitometron_http_tests
       PRIVATE
@@ -654,12 +767,15 @@ if(SITOMETRON_BUILD_TESTS)
         sitometron::core
         sitometron_core_fake_support
         sitometron_reducer_json_support
+        sitometron_process_test_platform
+        sitometron_process_test_control
         Boost::asio
         Boost::hash2
         nlohmann_json::nlohmann_json)
     sitometron_enable_project_warnings(sitometron_http_tests)
     sitometron_enable_sanitizers(sitometron_http_tests)
     foreach(_rest_v1_check IN ITEMS
+        rest_v1_protocol_less_process_fails
         registry_startup_refuses_invalid
         registry_bundle_digest_verified
         registry_absent_keeps_empty_set

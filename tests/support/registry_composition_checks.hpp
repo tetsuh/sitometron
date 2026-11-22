@@ -94,7 +94,7 @@ int RegistryRefused(RegistryFixture& fixture, std::string_view name, std::string
     std::string error;
     const bool started = daemon.Start(error);
     result |= Check(!started && daemon.listen_port() == 0, name,
-                    "invalid registry did not refuse before listening");
+                    "startup did not refuse before listening");
     if (started) {
       daemon.Stop();
       return result;  // Do not enter the executable's serve loop after an unexpected acceptance.
@@ -158,6 +158,22 @@ int RegistryStartupRefusesInvalid() {
   RegistryFixture fixture;
   std::filesystem::remove(fixture.file);
   int result = RegistryRefused(fixture, name, "registry");
+#ifndef _WIN32
+  {
+    namespace process_test = sitometron::test::process;
+    RegistryFixture signals("issue141-sigchld-");
+    signals.document["applications"] = Json::array();
+    signals.Save();
+    for (const auto disposition :
+         {process_test::ChildDisposition::kIgnored, process_test::ChildDisposition::kNoChildWait}) {
+      const auto signal_guard = process_test::SetChildDisposition(disposition);
+      result |= RegistryRefused(signals, name, "runner requires waitable children: SIGCHLD");
+    }
+    const auto signal_guard =
+        process_test::SetChildDisposition(process_test::ChildDisposition::kDefault);
+    result |= RegistryStarted(signals, name);
+  }
+#endif
   sitometron::test::registry_vectors::Inventory vectors(
       std::string(SITOMETRON_TEST_SOURCE_DIR) +
           "/schemas/application-registry/v1/application-registry-vectors.json",
@@ -413,10 +429,36 @@ int RegistryAbsentKeepsEmptySet() {
   return result;
 }
 
+std::string CopyRegisteredProcessHelper(const std::filesystem::path& executable) {
+  std::filesystem::copy_file(std::filesystem::path(SITOMETRON_PROCESS_TEST_CHILD), executable);
+  boost::hash2::sha2_256 hasher;
+  std::ifstream input(executable, std::ios::binary);
+  std::array<char, 65536> buffer{};
+  while (input) {
+    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    if (input.gcount() > 0) hasher.update(buffer.data(), static_cast<std::size_t>(input.gcount()));
+  }
+  if (!input.eof() || input.bad()) throw std::runtime_error("cannot hash registered test helper");
+  return boost::hash2::to_string(hasher.result());
+}
+Json RegisteredProcessArguments(const RegistryFixture& fixture, const std::string& port,
+                                const std::string& file = "registered process report.json") {
+  return Json::array({"--mode", "wait", "--status", "0", "--control-port", port, "--report",
+                      RegistryFixture::Text(fixture.root / file), "--entry-marker", file});
+}
+
 int RegisteredApplicationCreates() {
   constexpr std::string_view name = "rest_v1_registered_application_creates";
   RegistryFixture fixture;
+  sitometron::test::process::Control control;
+  fixture.bundle = fixture.root / "registered helper.exe";
+  auto& application = fixture.document["applications"][0];
+  application["executable"] = RegistryFixture::Text(fixture.bundle);
+  application["bundle_sha256"] = CopyRegisteredProcessHelper(fixture.bundle);
+  application["arguments"] = RegisteredProcessArguments(fixture, control.port());
+  fixture.Save();
   auto config = fixture.Config();
+  config.hold_runner_observations_for_test = true;
   SetRegistryPath(config, fixture.file);
   sitometron::daemon::Phase1Composition daemon(config);
   std::string error;
@@ -445,6 +487,8 @@ int RegisteredApplicationCreates() {
   if (created.status == 202) {
     const auto job = Json::parse(created.body);
     const auto id = job.at("job_id").get<std::string>();
+    daemon.WaitForRunnerObservationForTest();
+    (void)control.Ready();  // Real child initialized; its observation remains held before ingress.
     result |= Check(created.headers.at("location") == JobPath(id) &&
                         (job.at("state") == "admitted" || job.at("state") == "preparing") &&
                         !job.at("terminal").get<bool>() && job.at("outcome").is_null(),
@@ -474,6 +518,14 @@ int RegisteredApplicationCreates() {
                     after.at("outcome").is_null(),
                 name, "post-intent cancel did not leave production waiting for process facts");
     }
+    // Preserve every original before-release assertion above, then exercise the
+    // real adapter/bridge rejection after cancel has moved this Job out of preparing.
+    daemon.ReleaseRunnerObservationForTest();
+    result |= Check(daemon.WaitForRunnerExitForTest() && daemon.WaitForSupervisorIdleForTest(),
+                    name, "rejected real launch observation lost its exit/cleanup obligation");
+    const auto completed = daemon.backend().GetJob(id);
+    result |= Check(completed && completed->state == "cancelled" && completed->terminal, name,
+                    "cancelled real process did not reach its terminal cleanup");
   }
   daemon.Stop();
   std::cout << name << ": request vectors=" << requests << '\n';
@@ -488,19 +540,28 @@ bool RegistrySupervisorDrained(sitometron::daemon::Phase1Composition& daemon) {
 int RegistryLaunchIdentityFromEntry() {
   constexpr std::string_view name = "registry_launch_identity_from_entry";
   RegistryFixture fixture("issue133-registry-");
-  const auto second_bundle = fixture.root / "second-bundle";
-  RegistryFixture::Write(second_bundle, "");
+  sitometron::test::process::Control control;
+  fixture.bundle = fixture.root / "registered helper.exe";
+  fixture.document["applications"][0]["executable"] = RegistryFixture::Text(fixture.bundle);
+  fixture.document["applications"][0]["bundle_sha256"] =
+      CopyRegisteredProcessHelper(fixture.bundle);
+  fixture.document["applications"][0]["arguments"] =
+      RegisteredProcessArguments(fixture, control.port(), "entry-first.json");
+  const auto second_bundle = fixture.root / "second-helper.exe";
+  const auto second_digest = CopyRegisteredProcessHelper(second_bundle);
   std::string maximum_version;
   for (unsigned i = 0; i < 128; ++i) maximum_version.append("\xf0\x9f\x98\x80");
   fixture.document["applications"][0]["version"] = "v\\\"\\\\-あ";
-  fixture.document["applications"].push_back(
-      Json{{"application_id", "second-worker"},
-           {"version", maximum_version},
-           {"executable", RegistryFixture::Text(second_bundle)},
-           {"bundle_sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}});
+  fixture.document["applications"].push_back(Json{
+      {"application_id", "second-worker"},
+      {"version", maximum_version},
+      {"executable", RegistryFixture::Text(second_bundle)},
+      {"bundle_sha256", second_digest},
+      {"arguments", RegisteredProcessArguments(fixture, control.port(), "entry-second.json")}});
   auto minimum = fixture.document["applications"][0];
   minimum["application_id"] = "minimum-worker";
   minimum["version"] = "1";
+  minimum["arguments"] = RegisteredProcessArguments(fixture, control.port(), "entry-minimum.json");
   fixture.document["applications"].push_back(minimum);
   fixture.Save();
   auto config = fixture.Config();
@@ -518,7 +579,23 @@ int RegistryLaunchIdentityFromEntry() {
         Request("POST", "/v1/jobs", CreateBody(entry.at("application_id").get<std::string>())));
     result |= ExpectStatus(response, name, 202);
     if (response.status == 202) {
+      const auto peer = control.Ready();  // Each interleaved launch, including repeated entry 0.
       const auto id = Json::parse(response.body).at("job_id").get<std::string>();
+      const auto parameters = entry.at("arguments").get<std::vector<std::string>>();
+      const auto& report_text = parameters.at(7);
+      const auto report_path =
+          std::filesystem::path(std::u8string(report_text.begin(), report_text.end()));
+      const bool report_exists = std::filesystem::is_regular_file(report_path);
+      result |= Check(report_exists, name,
+                      "interleaved registry launch did not write its entry-specific report");
+      if (report_exists) {
+        const auto report = sitometron::test::process::ReadReport(report_path);
+        auto argv = parameters;
+        argv.insert(argv.begin(), entry.at("executable").get<std::string>());
+        result |= Check(report.at("argv") == argv && report.at("job_id") == id &&
+                            report.at("process_id") == control.ProcessId(peer),
+                        name, "interleaved registry launch ran the wrong entry or stale child");
+      }
       expected[id] = Json{{"application_id", entry.at("application_id")},
                           {"version", entry.at("version")},
                           {"bundle_sha256", entry.at("bundle_sha256")}};

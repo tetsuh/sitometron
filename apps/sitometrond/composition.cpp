@@ -20,11 +20,15 @@
 #include <variant>
 #include <vector>
 
+#include "handoff_probe.hpp"
 #include "job_orchestrator.hpp"
+#include "runner_internal.hpp"
+#include "session_producer.hpp"
 #include "sitometron/core/job_ports.hpp"
 #include "sitometron/identity/system_clock.hpp"
 #include "sitometron/journal/replay.hpp"
 #include "sitometron/journal/segment_journal.hpp"
+#include "sitometron/process/runner.hpp"
 #include "sitometron/registry/registry.hpp"
 
 namespace sitometron::daemon {
@@ -32,6 +36,8 @@ namespace {
 
 using core::internal::IngressCode;
 using core::internal::JobOrchestrator;
+using process::internal::ProbeCore;
+using process::internal::ProbeMutex;
 
 class CountingClock final : public core::ClockPort {
  public:
@@ -73,170 +79,170 @@ class CountingIdentitySource final : public core::IdentitySourcePort {
   std::atomic_size_t& reads_;
 };
 
-class Phase1Runner final : public core::ApplicationRunnerPort {
+// Private deterministic observation gate, unset in production. It never holds a core lock.
+class RunnerObservationGate final {
  public:
-  void HandoffLaunch(core::ApplicationLaunchRequest&&) noexcept override {}
-  void HandoffCooperativeStop(core::ApplicationStopRequest&&) noexcept override {}
-  void HandoffForcedStop(core::ApplicationStopRequest&&) noexcept override {}
-};
-
-// The port owns storage only. No writer/ingress pointer or result delivery in handoff.
-class Phase1SessionRetainer final : public core::SessionRetainerPort {
-  struct Slot {
-    core::SessionRetainRequest request;
-    bool occupied = false;
-  };
-
- public:
-  explicit Phase1SessionRetainer(std::size_t capacity) : requests_(capacity) {}
-  void HandoffRetainSameIdentity(core::SessionRetainRequest&& request) noexcept override {
-    std::lock_guard lock(mutex_);
-    if (stopped_) return;
-    for (auto& slot : requests_)
-      if (!slot.occupied) {
-        static_assert(noexcept(slot.request = std::move(request)));
-        slot.request = std::move(request);
-        slot.occupied = true;
-        wake_.notify_one();
-        return;
-      }
-    overflow_ = true;
-    wake_.notify_one();
+  void Reset(bool hold) noexcept {
+    held_ = hold;
+    reached_.store(0);
+    released_.store(!hold);
   }
-  std::optional<core::SessionRetainRequest> Take() {
-    std::unique_lock lock(mutex_);
-    wake_.wait(lock, [this] {
-      return stopped_ || overflow_ ||
-             std::ranges::any_of(requests_, [](const auto& r) { return r.occupied; });
-    });
-    if (stopped_ || overflow_) return std::nullopt;
-    for (auto& slot : requests_)
-      if (slot.occupied) {
-        // Copy on the producer, never construct a request in the writer's handoff.
-        auto request = slot.request;
-        slot.occupied = false;
-        active_ = true;
-        return request;
-      }
-    return std::nullopt;
+  void Reach() noexcept {
+    if (!held_) return;
+    ++reached_;
+    reached_.notify_all();
+    released_.wait(false, std::memory_order_acquire);
   }
-  void Done() noexcept {
-    std::lock_guard lock(mutex_);
-    active_ = false;
-    wake_.notify_all();
-  }
-  bool WaitIdle() {
-    std::unique_lock lock(mutex_);
-    wake_.wait(lock, [this] {
-      return stopped_ || overflow_ ||
-             (!active_ &&
-              std::ranges::none_of(requests_, [](const auto& r) { return r.occupied; }));
-    });
-    return !overflow_;
-  }
-  void Stop() noexcept {
-    std::lock_guard lock(mutex_);
-    stopped_ = true;
-    wake_.notify_all();
-  }
-  void Reset() {
-    std::lock_guard lock(mutex_);
-    stopped_ = false;
-    overflow_ = false;
-    active_ = false;
-    for (auto& r : requests_) {
-      r.occupied = false;
-      r.request.job_id.value.clear();
-      r.request.session_id.value.clear();
+  void Wait() const noexcept {
+    auto reached = reached_.load(std::memory_order_acquire);
+    while (reached == 0) {
+      reached_.wait(reached, std::memory_order_acquire);
+      reached = reached_.load(std::memory_order_acquire);
     }
   }
-  bool Overflowed() {
-    std::lock_guard lock(mutex_);
-    return overflow_;
+  void Release() noexcept {
+    released_.store(true, std::memory_order_release);
+    released_.notify_all();
+  }
+
+ private:
+  bool held_ = false;  // Configured before any producer starts.
+  std::atomic_size_t reached_{0};
+  std::atomic_bool released_{true};
+};
+class RunnerProgress final {
+ public:
+  void Reset() {
+    std::lock_guard lock(ProbeMutex(mutex_));
+    exits_ = 0;
+    closed_ = false;
+  }
+  void Close() noexcept {
+    std::lock_guard lock(ProbeMutex(mutex_));
+    closed_ = true;
+    wake_.notify_all();
+  }
+  void Exited() noexcept {
+    std::lock_guard lock(ProbeMutex(mutex_));
+    ++exits_;
+    wake_.notify_all();
+  }
+  bool Wait(std::size_t count) {
+    std::unique_lock lock(ProbeMutex(mutex_));
+    wake_.wait(lock, [this, count] { return closed_ || exits_ >= count; });
+    return exits_ >= count;
   }
 
  private:
   std::mutex mutex_;
   std::condition_variable wake_;
-  std::vector<Slot> requests_;
-  bool stopped_ = false;
-  bool overflow_ = false;
-  bool active_ = false;
+  std::size_t exits_ = 0;
+  bool closed_ = false;
 };
-
-class SessionProducer final {
+class RunnerIngress final : public process::IngressHandle {
  public:
-  explicit SessionProducer(Phase1SessionRetainer& mailbox) : mailbox_(mailbox) {}
-  ~SessionProducer() {
-    Stop();
-    (void)Join();
-  }
-  void Start(JobOrchestrator& writer) {
-    writer_ = &writer;
-    if (!writer.ready()) return;
-    endpoint_ = writer.RetainedCallback();
-    thread_ = std::thread([this] { Run(); });
-  }
-  void Stop() noexcept { mailbox_.Stop(); }
-  bool Join() noexcept {
-    // Check self before the join lock: another thread may hold it while joining us.
-    {
-      std::lock_guard lock(identity_mutex_);
-      if (!joined_ && thread_id_ == std::this_thread::get_id()) return false;
+  RunnerIngress(JobOrchestrator& writer, RunnerObservationGate& gate, RunnerProgress& progress)
+      : writer_(writer),
+        endpoint_(ProbeCore([&writer] { return writer.RetainedCallback(); })),
+        gate_(gate),
+        progress_(progress) {}
+  process::SubmissionResult Submit(core::RawCandidateEvent event) noexcept override {
+    if (event.event_type == "worker_launch_observed") gate_.Reach();
+    const bool exit = event.event_type == "process_exit_confirmed";
+    const auto admitted = ProbeCore([this, &event] { return endpoint_.Invoke(std::move(event)); });
+    process::SubmissionResult result;
+    switch (admitted.code) {
+      case IngressCode::kAdmitted:
+        result.admission = process::AdmissionCode::kAdmitted;
+        break;
+      case IngressCode::kCoalescedPending:
+        result.admission = process::AdmissionCode::kCoalescedPending;
+        return result;
+      case IngressCode::kAlreadyPending:
+        result.admission = process::AdmissionCode::kAlreadyPending;
+        return result;
+      case IngressCode::kNormalFull:
+        result.admission = process::AdmissionCode::kNormalFull;
+        return result;
+      case IngressCode::kResidentLimit:
+        result.admission = process::AdmissionCode::kResidentLimit;
+        return result;
+      case IngressCode::kAdmissionClosed:
+        result.admission = process::AdmissionCode::kAdmissionClosed;
+        return result;
+      case IngressCode::kServiceFailed:
+        result.admission = process::AdmissionCode::kServiceFailed;
+        return result;
     }
-    std::lock_guard lock(join_mutex_);
-    if (thread_.joinable()) {
-      thread_.join();
+    const auto completion =
+        ProbeCore([this, &admitted] { return writer_.AwaitCompletion(admitted.ingress_sequence); });
+    if (!completion) {
+      // Every admitted sequence completes once. Missing is an invariant breach, never success.
+      (void)ProbeCore([this] { return writer_.LatchReadinessFailure(); });
+      return result;
     }
-    {
-      std::lock_guard identity_lock(identity_mutex_);
-      joined_ = true;
+    process::CompletionResult value;
+    switch (completion->code) {
+      case core::internal::Completion::Code::kSuccess:
+        value.code = process::CompletionCode::kSuccess;
+        break;
+      case core::internal::Completion::Code::kReducerRejection:
+        value.code = process::CompletionCode::kRejected;
+        if (completion->rejection) value.rejection = completion->rejection->reason;
+        break;
+      case core::internal::Completion::Code::kResidentLimit:
+        value.code = process::CompletionCode::kRejected;
+        break;
+      case core::internal::Completion::Code::kServiceFailed:
+        value.code = process::CompletionCode::kServiceFailed;
+        break;
     }
-    return true;
+    result.completion = value;
+    if (exit) progress_.Exited();
+    return result;
   }
 
  private:
-  void Deliver(const core::RawCandidateEvent& event) {
-    using enum IngressCode;
-    for (;;) {
-      if (const auto result = endpoint_.Invoke(event); result.code == kNormalFull) {
-        if (writer_->WaitForNormalCapacityOrClosure()) continue;
-      } else if (result.code == kAdmitted || result.code == kCoalescedPending) {
-        (void)writer_->AwaitCompletion(result.ingress_sequence);
-      }
-      break;
-    }
-  }
-  void Run() {
-    {
-      std::lock_guard lock(identity_mutex_);
-      thread_id_ = std::this_thread::get_id();
-    }
-    try {
-      while (auto request = mailbox_.Take()) {
-        // Bound UUID strings need no escaping; application versions are escaped in core.
-        const core::RawCandidateEvent event{
-            1, request->job_id, "session_retained",
-            R"({"session_id":")" + request->session_id.value + R"("})"};
-        Deliver(event);
-        mailbox_.Done();
-      }
-      if (mailbox_.Overflowed()) writer_->LatchReadinessFailure();
-    } catch (...) {
-      writer_->LatchReadinessFailure();
-    }
-    mailbox_.Done();
-    writer_->NotifyProducerExited();
-  }
-  Phase1SessionRetainer& mailbox_;
-  JobOrchestrator* writer_ = nullptr;
+  JobOrchestrator& writer_;  // Composition-owned; every producer joins before core destruction.
   core::internal::CallbackHandle endpoint_;
-  std::mutex identity_mutex_;
-  std::thread::id thread_id_{};
-  bool joined_ = false;
-  std::mutex join_mutex_;
-  std::thread thread_;
+  RunnerObservationGate& gate_;
+  RunnerProgress& progress_;
 };
+class RunnerCapacity final : public process::CapacityWaiter {
+ public:
+  explicit RunnerCapacity(JobOrchestrator& writer)
+      : waiter_(ProbeCore([&writer] { return writer.RegisterCapacityWaiter(); })) {
+    if (!waiter_) throw std::invalid_argument("runner capacity registration exhausted");
+  }
+  void Clear() noexcept override {
+    ProbeCore([this] { waiter_->Clear(); });
+  }
+  void Set() noexcept override {
+    ProbeCore([this] { waiter_->Set(); });
+  }
+  bool Wait() noexcept override {
+    return ProbeCore([this] { return waiter_->Wait(); });
+  }
+  bool Closed() const noexcept override {
+    return ProbeCore([this] { return waiter_->Closed(); });
+  }
+
+ private:
+  std::shared_ptr<core::internal::CapacityWaiter> waiter_;
+};
+class RunnerFailure final : public process::FailureLatch {
+ public:
+  explicit RunnerFailure(JobOrchestrator& writer) : writer_(writer) {}
+  void Latch(std::string_view) noexcept override {
+    (void)ProbeCore([this] { return writer_.LatchReadinessFailure(); });
+  }
+
+ private:
+  JobOrchestrator& writer_;
+};
+
+using internal::Phase1SessionRetainer;
+using internal::SessionProducer;
 
 bool RegisteredApplicationForm(std::string_view value) {
   const auto alphanumeric = [](unsigned char c) {
@@ -302,7 +308,7 @@ class Phase1Backend final : public http::Backend {
       return {http::JobResultCode::kUnknownApplication, std::nullopt};
     // Serialize generation, admission, the sequence-specific wait, and index publication. Reads
     // use only the separate short-lived index mutex, never this create mutex.
-    const std::lock_guard creation(create_mutex_);
+    const std::lock_guard creation(ProbeMutex(create_mutex_));
     const auto created = orchestrator_.CreateJob(*application);
     if (created.ingress.code != IngressCode::kAdmitted)
       return {IngressStatus(created.ingress.code), std::nullopt};
@@ -318,7 +324,7 @@ class Phase1Backend final : public http::Backend {
     auto job = GetJob(created.job_id->value);
     if (!job) return {};
     {
-      const std::lock_guard index(index_mutex_);
+      const std::lock_guard index(ProbeMutex(index_mutex_));
       // Compact only after successful installation. Failure reads retain the old index.
       std::size_t retained = 0;
       for (std::size_t i = 0; i != order_size_; ++i) {
@@ -348,7 +354,7 @@ class Phase1Backend final : public http::Backend {
 
   [[nodiscard]] std::vector<http::JobResource> ListJobs() override {
     std::vector<http::JobResource> result;
-    const std::lock_guard index(index_mutex_);
+    const std::lock_guard index(ProbeMutex(index_mutex_));
     result.reserve(order_size_);
     for (std::size_t position = 0; position < order_size_; ++position) {
       auto job = GetJob(order_[position]);
@@ -583,9 +589,36 @@ struct Phase1Composition::Impl {
   std::atomic_size_t identity_read_count{0};
   std::unique_ptr<CountingClock> clock;
   std::unique_ptr<CountingIdentitySource> identity;
-  Phase1Runner runner;
+  std::unique_ptr<process::RunnerPort> runner;
   Phase1SessionRetainer session;
   std::unique_ptr<SessionProducer> producer;
+  std::unique_ptr<process::RunnerProducer> process_producer;
+  std::unique_ptr<RunnerFailure> runner_failure;
+  RunnerObservationGate runner_gate;
+  RunnerProgress runner_progress;
+  process::internal::TestHooks runner_hooks;
+  std::atomic_bool overflow_reached{false};
+  std::atomic_bool overflow_released{false};
+  std::atomic_bool overflow_processed{false};
+
+  void ReleaseOverflow() noexcept {
+    overflow_released.store(true, std::memory_order_release);
+    overflow_released.notify_all();
+  }
+  std::atomic_bool runner_joined{true};
+  std::atomic_bool last_stop_sealed{true};
+  std::size_t other_completion_budget = 0;
+
+  void CloseProducers() noexcept {
+    // Admission closure is not runner shutdown. No force, join, or writer wait here.
+    runner_progress.Close();
+    runner_gate.Release();
+    if (config.runner_overflow_for_test) ReleaseOverflow();
+    if (producer) producer->Stop();
+  }
+  bool ProducersJoined() const noexcept {
+    return runner_joined.load(std::memory_order_acquire) && (!producer || producer->Joined());
+  }
   std::unique_ptr<journal::SegmentJournal> journal;
   std::unique_ptr<JobOrchestrator> orchestrator;
   std::unique_ptr<http::Backend> backend;
@@ -640,31 +673,79 @@ bool Phase1Composition::Start(std::string& error) {
       return false;
     }
     impl_->session.Reset();
+    impl_->runner_gate.Reset(impl_->config.hold_runner_observations_for_test);
+    impl_->runner_progress.Reset();
+    impl_->runner = std::make_unique<process::RunnerPort>(impl_->config.max_jobs);
+    if (impl_->config.runner_overflow_for_test) {
+      impl_->overflow_reached.store(false);
+      impl_->overflow_released.store(false);
+      impl_->overflow_processed.store(false);
+      impl_->runner_hooks.exhaust_launch_inventory.store(false);
+      impl_->runner_hooks.context = impl_.get();
+      impl_->runner_hooks.reach = [](void* context, std::string_view point) noexcept {
+        auto& state = *static_cast<Impl*>(context);
+        if (point == "before_failure_latch") {
+          state.overflow_reached.store(true, std::memory_order_release);
+          state.overflow_reached.notify_all();
+          state.overflow_released.wait(false, std::memory_order_acquire);
+        } else if (point == "failure_processed") {
+          state.overflow_processed.store(true, std::memory_order_release);
+          state.overflow_processed.notify_all();
+        }
+      };
+      process::internal::TestAccess::Install(*impl_->runner, &impl_->runner_hooks);
+    }
+    impl_->runner_joined.store(false, std::memory_order_release);
+    impl_->last_stop_sealed.store(false, std::memory_order_release);
     impl_->producer = std::make_unique<SessionProducer>(impl_->session);
     core::internal::Config config;
     config.hold_supervisor_for_test = impl_->config.hold_supervisor_for_test;
-    config.producer_context = impl_->producer.get();
+    config.producer_context = impl_.get();
     config.stop_producers = [](void* context) noexcept {
-      static_cast<SessionProducer*>(context)->Stop();
+      static_cast<Impl*>(context)->CloseProducers();
     };
     config.join_producers = [](void* context) noexcept {
-      return static_cast<SessionProducer*>(context)->Join();
+      return static_cast<Impl*>(context)->ProducersJoined();
     };
     config.max_jobs = impl_->config.max_jobs;
     config.normal_capacity = 64;
     config.trace_capacity = config.total_capacity();
-    config.completion_capacity = config.total_capacity();
+    const auto limit = std::numeric_limits<std::size_t>::max();
+    if (config.max_jobs > limit - 3) throw std::invalid_argument("runner handle count overflow");
+    const auto runner_handles = config.max_jobs + 3;
+    if (config.total_capacity() == 0 || runner_handles > limit - config.total_capacity() ||
+        runner_handles > limit - 16)
+      throw std::invalid_argument("runner ingress inventory overflow");
+    impl_->other_completion_budget = config.total_capacity();
+    config.completion_capacity = config.total_capacity() + runner_handles;
     config.handoff_capacity = 4;
     config.ack_capacity = std::max<std::size_t>(impl_->config.max_jobs, 4);
-    config.callback_registration_capacity = 16;
+    config.callback_registration_capacity = 16 + runner_handles;
     config.initial_journal_sequence = replayed.next_sequence;
     config.replayed_jobs = replayed.jobs;
     config.replayed_created_sequences = replayed.created_sequences;
     config.unresolved_jobs = replayed.unresolved;
-    config.ports = {impl_->clock.get(), impl_->journal.get(), &impl_->runner, &impl_->session,
+    config.ports = {impl_->clock.get(), impl_->journal.get(), impl_->runner.get(), &impl_->session,
                     impl_->identity.get()};
     impl_->orchestrator = std::make_unique<JobOrchestrator>(config);
     impl_->producer->Start(*impl_->orchestrator);
+    std::vector<process::LaunchSpecification> specifications;
+    for (const auto& application : impl_->applications)
+      specifications.emplace_back(application.application_id, application.executable,
+                                  application.arguments, application.bundle_sha256);
+    std::vector<std::unique_ptr<process::IngressHandle>> handles;
+    handles.reserve(runner_handles);
+    for (std::size_t index = 0; index != runner_handles; ++index)
+      handles.push_back(std::make_unique<RunnerIngress>(*impl_->orchestrator, impl_->runner_gate,
+                                                        impl_->runner_progress));
+    std::vector<std::shared_ptr<process::CapacityWaiter>> waiters;
+    waiters.reserve(config.max_jobs + 2);
+    for (std::size_t index = 0; index != config.max_jobs + 2; ++index)
+      waiters.push_back(std::make_shared<RunnerCapacity>(*impl_->orchestrator));
+    impl_->runner_failure = std::make_unique<RunnerFailure>(*impl_->orchestrator);
+    impl_->process_producer = std::make_unique<process::RunnerProducer>(
+        *impl_->runner, std::move(specifications), std::move(handles), std::move(waiters),
+        *impl_->runner_failure);
     std::vector<core::internal::JobLaunchInputs> inputs;
     inputs.reserve(impl_->applications.size());
     for (const auto& application : impl_->applications)
@@ -695,15 +776,30 @@ void Phase1Composition::Stop() noexcept {
     impl_->server->Stop();
     impl_->server.reset();
   }
+  core::internal::IngressResult marker;
+  if (impl_->orchestrator) marker = impl_->orchestrator->SubmitShutdown();
+  impl_->CloseProducers();
+  if (impl_->process_producer) {
+    impl_->process_producer->RequestStop();
+    impl_->process_producer->Join();
+  }
+  if (impl_->producer) (void)impl_->producer->Join();
+  impl_->runner_joined.store(true, std::memory_order_release);
   if (impl_->orchestrator) {
-    const auto marker = impl_->orchestrator->SubmitShutdown();
+    // Re-drive deferred sealing after external joins, even without another FIFO/capacity event.
+    impl_->orchestrator->NotifyProducerExited();
+    (void)impl_->orchestrator->WaitForWriterIdle();
     if (marker.code == IngressCode::kAdmitted) {
       (void)impl_->orchestrator->AwaitCompletion(marker.ingress_sequence);
       (void)impl_->orchestrator->BeginShutdown();
     }
+    impl_->last_stop_sealed.store(impl_->orchestrator->sealed(), std::memory_order_release);
     impl_->orchestrator.reset();
   }
+  impl_->process_producer.reset();
+  impl_->runner_failure.reset();
   impl_->producer.reset();
+  impl_->runner.reset();
   impl_->backend.reset();
   impl_->journal.reset();
   impl_->clock.reset();
@@ -712,6 +808,65 @@ void Phase1Composition::Stop() noexcept {
   impl_->started = false;
 }
 
+bool Phase1Composition::HandoffProbeSelfTestForTest() {
+  if (!impl_->orchestrator) return false;
+  RunnerCapacity capacity(*impl_->orchestrator);
+  RunnerProgress progress;
+  const auto mutex_before = process::internal::HandoffMutexEntries();
+  const auto core_before = process::internal::HandoffCoreEntries();
+  {
+    const process::internal::HandoffProbeScope scope(true);
+    progress.Reset();  // Actual owned bridge mutex, not a synthetic increment.
+    capacity.Set();    // Actual bridge entry into a core capacity flag.
+  }
+  return process::internal::HandoffMutexEntries() == mutex_before + 1 &&
+         process::internal::HandoffCoreEntries() == core_before + 1;
+}
+bool Phase1Composition::LatchFailureForTest() {
+  return impl_->orchestrator && impl_->orchestrator->LatchReadinessFailure();
+}
+void Phase1Composition::ExhaustRunnerLaunchInventoryForTest() noexcept {
+  impl_->runner_hooks.exhaust_launch_inventory.store(true, std::memory_order_release);
+}
+void Phase1Composition::WaitForRunnerOverflowForTest() const noexcept {
+  impl_->overflow_reached.wait(false, std::memory_order_acquire);
+}
+void Phase1Composition::CompleteRunnerOverflowForTest() noexcept {
+  impl_->ReleaseOverflow();
+  impl_->overflow_processed.wait(false, std::memory_order_acquire);
+}
+std::vector<core::Snapshot> Phase1Composition::SnapshotJobsForTest(
+    const std::vector<std::string>& ids) const {
+  std::vector<core::Snapshot> snapshots;
+  for (const auto& id : ids)
+    if (const auto value = impl_->orchestrator->SnapshotFor(core::Uuid{id}))
+      snapshots.push_back(*value);
+  return snapshots;
+}
+bool Phase1Composition::FailureSealedForTest() const noexcept {
+  return impl_->orchestrator ? impl_->orchestrator->sealed() : impl_->last_stop_sealed.load();
+}
+bool Phase1Composition::FillOtherCompletionBudgetForTest() {
+  if (!impl_->orchestrator) return false;
+  const auto created = impl_->orchestrator->LastCreated();
+  if (!created) return false;
+  // Intentionally retain the entire pre-runner budget of completed normal inputs. They reject
+  // without changing the preparing Job, free normal permits, but keep their completion slots.
+  for (std::size_t index = 0; index != impl_->other_completion_budget; ++index) {
+    const auto result = impl_->orchestrator->SubmitCandidate(
+        {1, *created, "session_retained", R"({"session_id":")" + created->value + R"("})"});
+    if (result.code != IngressCode::kAdmitted || !impl_->orchestrator->WaitForWriterIdle())
+      return false;
+  }
+  return true;
+}
+bool Phase1Composition::WaitForRunnerExitForTest(std::size_t count) {
+  return impl_->runner_progress.Wait(count);
+}
+void Phase1Composition::WaitForRunnerObservationForTest() const noexcept {
+  impl_->runner_gate.Wait();
+}
+void Phase1Composition::ReleaseRunnerObservationForTest() noexcept { impl_->runner_gate.Release(); }
 bool Phase1Composition::WaitForSupervisorIdleForTest() {
   return impl_->orchestrator && impl_->orchestrator->WaitForSupervisorIdleForTest() &&
          impl_->session.WaitIdle() && impl_->orchestrator->WaitForSupervisorIdleForTest();
