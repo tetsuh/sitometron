@@ -182,9 +182,19 @@ report from the committed snapshot before it submits anything:
 - any other state: the adapter submits the report and the reducer's rejection decides the answer
   (Section 6).
 
+These answers come from the committed snapshot alone, so they do not depend on whether admission is
+open: a repeated `running` for a Job that is `running` is answered `204` also after admission has
+closed.
+
 The adapter holds no request until the launch is observed and arms no timer; the Worker's
-repetition is the only retry. `worker_failed` before the launch is observed needs no such rule: the
-reducer accepts it in `preparing` for the bound Worker.
+repetition is the only retry.
+
+A terminal report needs one rule of the same kind. The reducer accepts `completed` only after
+`running`, so a `completed` report for a Job that is still `preparing` is answered from the
+committed snapshot and not submitted: `503` `launch_not_observed` while the launch is not observed,
+and `409` `running_not_reported` once it is. A Worker that follows Section 9 meets neither, because
+it sends `completed` only after its `running` was answered `204`. A `failed` report needs no such
+rule: the reducer accepts it in `preparing` for the bound Worker.
 
 ### 6. Answers
 
@@ -199,7 +209,8 @@ conditions of this protocol are:
 | `worker_id` is not the Worker bound to the Job, or the Job has no Worker yet | `409` | `worker` | `worker_mismatch` |
 | A different terminal report is retained for the Job (Section 4) | `409` | `worker` | `report_conflict` |
 | The reducer rejects the report | `409` | `job` | the ADR-0002 rejection reason |
-| `running` before the launch is observed (Section 5) | `503` | `worker` | `launch_not_observed` |
+| `running` or `completed` before the launch is observed (Section 5) | `503` | `worker` | `launch_not_observed` |
+| `completed` for a Job that is `preparing` with its launch observed (Section 5) | `409` | `worker` | `running_not_reported` |
 | The writer refuses the report because admission is closed (`admission_closed`) | `503` | `service` | `not_ready` |
 | The ingress queue is full (`normal_full`), which only `running` can meet, or a retirement has claimed the Job and is not yet committed (Section 8) | `503` | `service` | `busy` |
 | The writer has failed closed, including a commit whose outcome is unknown | `503` | `service` | `service_failed` |
@@ -207,12 +218,13 @@ conditions of this protocol are:
 
 - When several conditions hold, the first matching one in this order decides: the request
   conditions of ADR-0008 Section 5 in their order; then, from the committed snapshot,
-  `job_not_found`, `worker_mismatch`, and `launch_not_observed`; then the answer of the writer
-  (Section 8).
+  `job_not_found`, `worker_mismatch`, `launch_not_observed`, `running_not_reported`, and the `204`
+  of a repeated `running`; then the answer of the writer (Section 8).
 - A `503` means "send the same request again". A `404` or a `409` is not a request to repeat: the
   same request gets another answer only after the Job's state has changed.
-- Validation, routing, `job_not_found`, `worker_mismatch`, and `launch_not_observed` are decided
-  before anything is submitted to the writer, so they create no Journal record.
+- Validation, routing, `job_not_found`, `worker_mismatch`, `launch_not_observed`, and
+  `running_not_reported` are decided before anything is submitted to the writer, so they create no
+  Journal record.
 
 ### 7. Late reports, reports after the exit, and retired Jobs
 
@@ -265,7 +277,8 @@ the core's internal API and adds no port (ADR-0005).
   registration and one more completion, on top of every other producer.
 - At shutdown the composition stops the Worker listener, which ends its I/O thread, before the
   writer seals, in the order ADR-0012 Section 5 gives producers. Closure of admission by the core
-  does not stop the listener: it keeps answering `503` `not_ready` until the composition stops it.
+  does not stop the listener: until the composition stops it, it keeps answering, with the answers
+  of Section 5 that need no submission and `503` `not_ready` for a report the writer refuses.
 - After a restart, replay reports a Job with a live or unknown Worker as unresolved and admission
   stays closed (ADR-0006), so its Worker's reports are answered `503` `not_ready`. Resolving such
   Jobs is not decided here.
@@ -275,7 +288,8 @@ the core's internal API and adds no port (ADR-0005).
 - Send `running` once it can do its work, and send it again on `503`. A Worker that never sends it
   never leaves `preparing` (ADR-0016 Section 2).
 - Send one terminal report, with `event_sequence` 1, when its work has ended, and repeat exactly
-  that report until it is answered `200` `{"acknowledged": true}`. Treat `202` and `503` as "send
+  that report until it is answered `200` `{"acknowledged": true}`. Send `completed` only after a
+  `running` was answered `204`; `failed` may be sent at any time. Treat `202` and `503` as "send
   again", and `404` and `409` as final.
 - Exit promptly after the acknowledgment, and exit when it gives up repeating. The daemon does not
   stop a Worker because it reported: until its exit is confirmed the Job stays resident (ADR-0014),
@@ -338,12 +352,13 @@ No sentence of an Accepted ADR is superseded.
 
 ## Requirements and checks
 
-This ADR adds `WRK-002` (MUST): serve Worker HTTP v1 on its own loopback listener and I/O thread as
-Sections 1 to 3 state, give each process the endpoint of Section 2, answer a terminal report
-`202` until its acknowledgment is authorized and `200` afterwards for as long as the Worker repeats
-it, never open a connection to a Worker or hold a request open for an acknowledgment, decide a
-`running` report before the launch observation from the committed snapshot, and submit a terminal
-report only through a Worker source lease of its Job.
+This ADR adds `WRK-002` (MUST): when `--worker-listen` is given, serve Worker HTTP v1 on its own
+loopback listener and I/O thread as Sections 1 to 3 state and give each process the endpoint of
+Section 2; without it, open no Worker listener and add no endpoint variable; answer a terminal
+report `202` until its acknowledgment is authorized and `200` afterwards for as long as the Worker
+repeats it, never open a connection to a Worker or hold a request open for an acknowledgment,
+decide the reports of Section 5 from the committed snapshot without submitting them, and submit a
+terminal report only through a Worker source lease of its Job.
 
 Its named checks, Planned until the implementation Issue activates them. No check sleeps or reads a
 host clock; orderings come from the adapter's submissions and the existing non-sleeping barriers:
@@ -358,7 +373,10 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   daemon's environment carried another value;
 - `worker_v1_running_after_launch_observed`: `running` before the launch observation is committed
   is answered `503` `launch_not_observed` and submits nothing; after it, `204` and the Job is
-  `running`; a repeated `running` is answered `204` and adds no Journal record;
+  `running`; a repeated `running` is answered `204` and adds no Journal record, also after
+  admission has closed; a `completed` for a Job still `preparing` is answered `503`
+  `launch_not_observed` before the launch observation and `409` `running_not_reported` after it,
+  and submits nothing, and the same report is accepted once `running` was accepted;
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report is answered `202` while the
   terminal outcome is not committed and `200` once it is, for `completed` and for `failed`, and no
   request stays open in between;
