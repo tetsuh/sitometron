@@ -143,11 +143,17 @@ report. The daemon never opens a connection to a Worker, and no request is held 
 acknowledgment is not yet authorized.
 
 1. The Worker sends its terminal report. The adapter submits it to the writer as the matching
-   critical input and waits for that turn (Section 8).
-2. While the report is retained and its acknowledgment is not authorized, the answer is `202`
-   `{"acknowledged": false}`. ADR-0002 authorizes the acknowledgment when the matching terminal
-   outcome is committed, and for a report normalized to `late_worker_event` when that record is
-   committed.
+   critical input and waits for that turn (Section 8). That turn records the report
+   (`worker_completed` or `worker_failed`) and moves the Job to `finalizing`; it does not authorize
+   the acknowledgment.
+2. ADR-0002 authorizes the acknowledgment in a later turn, when the matching
+   `terminal_outcome_committed` is committed. The supervisor drives the Job from `finalizing` to
+   that record through its own inputs (ADR-0012), each in a writer turn of its own, so the report's
+   turn completes and is answered while they are still to come. While the report is retained and
+   its acknowledgment is not authorized, the answer is `202` `{"acknowledged": false}`; the first
+   answer to a report is therefore `202` unless the terminal outcome was already committed when the
+   adapter asked. A report normalized to `late_worker_event` is different: its acknowledgment is
+   authorized by its own record, in its own turn.
 3. The Worker repeats the same report until it receives `200` `{"acknowledged": true}` or it gives
    up and exits (Section 9). Every repetition of a retained report coalesces in the writer under
    ADR-0003: it gets no new ingress sequence, reducer turn, or Journal record, and it authorizes
@@ -267,9 +273,10 @@ conditions of this protocol are:
   `{"acknowledged": true}`, because ADR-0002 authorizes that acknowledgment with the record itself.
   It is retained like any other report until the exit is confirmed (Section 4).
 - After the Job's process exit is confirmed, the retained report is released (ADR-0003) and every
-  report for the Job is answered `409` `process_exited` from the snapshot (Section 5, row 3). The
-  only report recorded after an exit is one that was already past that check when the exit was
-  confirmed (Section 5).
+  report that names the Job's Worker is answered `409` `process_exited` from the snapshot
+  (Section 5, row 3); a report with another `worker_id` is answered `409` `worker_mismatch` first
+  (row 2). The only report recorded after an exit is one that was already past that check when the
+  exit was confirmed (Section 5).
 - A report for a Job that is not resident is answered `404` `job_not_found`. A terminal report for
   such a Job reaches the writer in no form, as ADR-0014 Section 2 requires of a Worker fact for a
   retired Job; a `running` report that was submitted because the snapshot still showed the Job can
@@ -414,11 +421,13 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   admission has closed; a `completed` for a Job still `preparing` with its launch observed is
   answered `409` `running_not_reported` and submits nothing, and the same report is accepted once
   `running` was accepted; a `failed` for such a Job is accepted;
-- `worker_v1_outcome_recorded_then_acknowledged`: a terminal report is answered `202` while the
-  terminal outcome is not committed and `200` once it is, for `completed` and for `failed`, and no
-  request stays open in between; when the process exit is confirmed after the report's turn or
-  after a repetition coalesced and before the adapter asks about the acknowledgment (held at a
-  deterministic barrier), the answer is `202`, and the next repetition is answered `409`
+- `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
+  answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
+  deterministic barrier), and its repetition is answered `200` once that record is committed, for
+  `completed` and for `failed`; no request stays open in between; when the process exit is
+  confirmed after the report's turn or after a repetition coalesced and before the adapter asks
+  about the acknowledgment (held at a deterministic barrier), the answer is `202`, and the next
+  repetition is answered `409`
   `process_exited` and adds no record;
 - `worker_v1_repetition_coalesces`: repetitions of a retained report add no ingress sequence,
   reducer turn, or Journal record, before and after the acknowledgment is authorized, and are still
@@ -431,10 +440,11 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - `worker_v1_late_report_acknowledged`: a terminal report for a Job already `finalizing` or
   terminal, whose exit is not confirmed and with no report retained, is recorded as
   `late_worker_event`, changes no outcome, and is answered `200` at once; after the exit is
-  confirmed every report is answered `409` `process_exited` and adds no record, for a live Job and
-  for a resolved Job that replay restored; a terminal report that passed the snapshot check before
-  the exit was confirmed (held at a deterministic barrier) is recorded once as `late_worker_event`
-  and answered `200`, and does not keep the Job from being retired;
+  confirmed every report that names the Job's Worker is answered `409` `process_exited` and one
+  with another `worker_id` `409` `worker_mismatch`, and none adds a record, for a Job of this
+  daemon's lifetime and for a resolved Job that replay restored; a terminal report that passed the
+  snapshot check before the exit was confirmed (held at a deterministic barrier) is recorded once
+  as `late_worker_event` and answered `200`, and does not keep the Job from being retired;
 - `worker_v1_job_not_resident`: a report for an unknown Job and for a retired Job is answered `404`
   `job_not_found`, with no ingress result, no Journal record, and no failure latch, also when the
   retirement happens between two reports; a terminal report for a Job that a retirement has claimed
