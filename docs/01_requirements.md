@@ -164,3 +164,10 @@ nor its process checks.
 | ID | Level | Requirement | Authority |
 |---|---|---|---|
 | `WRK-001` | MUST | Run each Job as one local process started from its verified registry entry with the Job, Worker, and launch-operation identities in its environment, deliver cooperative and forced stops as ADR-0016 Section 3 states, and submit exactly `worker_launch_observed` and `process_exit_confirmed` as its Section 2 states, from storage and threads that never block, allocate, or re-enter the core inside a handoff. | Accepted [ADR-0016](adr/0016-run-each-job-as-one-local-process.md) under [Issue #126](https://github.com/tetsuh/sitometron/issues/126) |
+
+> **Planned, not yet normative:** [Issue #127](https://github.com/tetsuh/sitometron/issues/127) owns `WRK-002` through Proposed
+> [ADR-0017](adr/0017-let-a-worker-report-over-loopback-http-and-repeat-until-acknowledged.md). Implementers must not treat it as a finalized contract.
+
+| ID | Level | Requirement | Authority |
+|---|---|---|---|
+| `WRK-002` | MUST | Serve Worker HTTP v1 on its own loopback listener and I/O thread, give each process the endpoint of ADR-0017 Section 2, answer a terminal report `202` until its acknowledgment is authorized and `200` afterwards for as long as the Worker repeats it, never open a connection to a Worker or hold a request open for an acknowledgment, decide a `running` report before the launch observation from the committed snapshot, and submit a terminal report only through a Worker source lease of its Job. | Proposed [ADR-0017](adr/0017-let-a-worker-report-over-loopback-http-and-repeat-until-acknowledged.md) under [Issue #127](https://github.com/tetsuh/sitometron/issues/127) |
