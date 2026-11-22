@@ -329,7 +329,7 @@ The runner lives in `sitometron_process`, a static library under `src/process/` 
 Sitometron-owned public headers under `include/sitometron/process/`. Its public headers expose the
 port object as an implementation of `core::ApplicationRunnerPort`, the producer object, the launch
 specification as a struct of standard strings and vectors that the composition fills from each
-verified registry entry, and the two Sitometron-owned interfaces of Section 4 that the composition
+verified registry entry, and the three Sitometron-owned interfaces of Section 4 that the composition
 implements. The adapter includes `<sitometron/core/job_ports.hpp>` and
 `<sitometron/core/job_reducer.hpp>` for the port and the DTOs, and no header of another adapter.
 `sitometron_registry` is not changed. `sitometron_core` gains no public API; the implementation
