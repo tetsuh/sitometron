@@ -108,7 +108,7 @@ foreach(_fixture IN ITEMS dependency_scanner_forbidden_range_open.hpp
   endif()
   source_probe(1 "${_fixture}:${_line}:" "${SITOMETRON_SOURCE_DIR}/tests/fixtures/${_fixture}")
 endforeach()
-# Compiler acceptance is independently proved for this inventory in the round-4 report.
+# Compiler verdicts are checked separately; literal-nested is intentionally invalid C++.
 # Generate the whole matrix before running probes, so RED leaves every specimen available.
 set(_family_cases)
 function(family_case _name _text _line _expected)
@@ -289,6 +289,31 @@ constexpr auto last = ")";
       "${_prefix}// first${_eol}#if __has_include_next(<map>)${_eol}#include_next <map>${_eol}#endif${_eol}" 3 1)
     family_case("${_ending}-${_encoding}-inactive-brace-import"
       "${_prefix}// first${_eol}#if 0${_eol}void hidden() {${_eol}#endif${_eol}import <map>;${_eol}" 5 1)
+    # Word policy is independent of the compiler's brace depth.
+    family_case("${_ending}-${_encoding}-r6-macro-close"
+      "${_prefix}#define CLOSE }${_eol}namespace scan_probe { CLOSE${_eol}import <map>;${_eol}" 3 1)
+    family_case("${_ending}-${_encoding}-r6-literal-nested"
+      "${_prefix}namespace scan_probe {${_eol}import <map>;${_eol}}${_eol}" 2 1)
+    foreach(_word IN ITEMS import module)
+      family_case("${_ending}-${_encoding}-r6-${_word}-replacement"
+        "${_prefix}// first${_eol}#define WORD ${_word}${_eol}" 2 1)
+      family_case("${_ending}-${_encoding}-r6-${_word}-macro"
+        "${_prefix}// first${_eol}#define ${_word} 1${_eol}" 2 1)
+      family_case("${_ending}-${_encoding}-r6-${_word}-variable"
+        "${_prefix}// first${_eol}int ${_word} = 0;${_eol}" 2 1)
+      family_case("${_ending}-${_encoding}-r6-${_word}-function"
+        "${_prefix}// first${_eol}int ${_word}() { return 0; }${_eol}" 2 1)
+      family_case("${_ending}-${_encoding}-r6-${_word}-member"
+        "${_prefix}// first${_eol}struct Fields { int ${_word}; };${_eol}" 2 1)
+      family_case("${_ending}-${_encoding}-r6-${_word}-namespace"
+        "${_prefix}// first${_eol}namespace ${_word} {}${_eol}" 2 1)
+      family_case("${_ending}-${_encoding}-r6-${_word}-label"
+        "${_prefix}// first${_eol}int f() { goto ${_word}; ${_word}: return 0; }${_eol}" 2 1)
+      family_case("${_ending}-${_encoding}-r6-${_word}-data"
+        "${_prefix}// ${_word}${_eol}/* ${_word} */${_eol}constexpr auto ordinary = \"${_word}\";${_eol}constexpr auto raw = R\"tag(${_eol}${_word}${_eol})tag\";${_eol}constexpr int chars = '${_word}';${_eol}" 1 0)
+    endforeach()
+    family_case("${_ending}-${_encoding}-r6-near-misses"
+      "${_prefix}int imported, modules, my_module, importer, éimport, importé, émodule, moduleé;${_eol}" 1 0)
     set(_identifiers [=[int module = 1;
 int import = 2;
 int émodule = 3;
@@ -313,7 +338,7 @@ int identifiers() {
 constexpr auto words = "module process_scan_module; import <map>; _Pragma __pragma #pragma #embed";
 ]=])
     string(REPLACE "\n" "${_eol}" _identifiers "${_identifiers}")
-    family_case("${_ending}-${_encoding}-ordinary-identifiers" "${_prefix}${_identifiers}" 1 0)
+    family_case("${_ending}-${_encoding}-ordinary-identifiers" "${_prefix}${_identifiers}" 1 1)
     foreach(_asm IN ITEMS asm __asm __asm__)
       family_case("${_ending}-${_encoding}-asm-${_asm}"
         "${_prefix}// first${_eol}${_asm}(\".include \\\"process-scan.s\\\"\");${_eol}" 2 1)
@@ -371,7 +396,7 @@ int nested(int import) {
 }
 ]=])
     string(REPLACE "\n" "${_eol}" _arms "${_arms}")
-    family_case("${_ending}-${_encoding}-r5-ordinary-arms" "${_prefix}${_arms}" 1 0)
+    family_case("${_ending}-${_encoding}-r5-ordinary-arms" "${_prefix}${_arms}" 1 1)
     foreach(_case IN ITEMS true false before nested omitted)
       if(_case STREQUAL "true")
         # The second guard activates the tail only for this alternative.
@@ -418,7 +443,11 @@ constexpr int modules = 0, imported = 0;
 #define HASH #
 ]=])
     string(REPLACE "\n" "${_eol}" _ordinary "${_ordinary}")
-    family_case("${_ending}-${_encoding}-r5-ordinary-tokens" "${_prefix}${_ordinary}" 1 0)
+    family_case("${_ending}-${_encoding}-r5-ordinary-tokens" "${_prefix}${_ordinary}" 15 1)
+    # Keep a passing lexer control for the number/literal/digraph spellings
+    # in the preceding specimen, without its newly forbidden identifiers.
+    string(REPLACE "import" "importer" _near_misses "${_ordinary}")
+    family_case("${_ending}-${_encoding}-r6-ordinary-tokens" "${_prefix}${_near_misses}" 1 0)
     family_case("${_ending}-${_encoding}-r5-number-then-import"
       "${_prefix}// first${_eol}constexpr int n = 1'000; import process_scan_module;${_eol}" 2 1)
     family_case("${_ending}-${_encoding}-r5-number-then-include"

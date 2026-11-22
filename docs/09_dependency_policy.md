@@ -79,11 +79,12 @@ Dedicated dependency-allowlist and public-boundary scanners enforce exact privat
 these direct includes, with positive and planted-rejection controls. A process-only conservative
 lexer strips a leading BOM, handles CRLF, and rejects line splices before inspecting comments or
 literals. It refuses block comments on directive-introducer lines (including spanning comments),
-comments before a directive name, alternate include directives, macro/unparseable includes, and
-module/header-unit imports and every module declaration (including implementation/partition units
-and global/private fragments). The process adapter is not a module under these scanners.
-Contextual control tokens are distinguished from ordinary identifiers named `module` or `import`.
-Token pasting, function-like macro definitions, control-keyword macro definitions, pragmas
+comments before a directive name, alternate include directives, and macro/unparseable includes.
+Under the owner's 2026-11-22 decision, the scanners refuse the whole words `import` and `module` in
+process sources or public headers outside comments and string or character literals, regardless
+of their role. This includes ordinary identifiers and macro names or replacement text, but not
+longer identifiers such as `importer`. The process adapter is not a module.
+Token pasting, function-like macro definitions, pragmas
 (including `_Pragma`/`__pragma`), assembler entry points, unsupported directives and escapes outside
 literals are refused rather than guessing preprocessing effects. Strings, character literals and raw strings are masked;
 guarded includes are checked even in inactive branches. Diagnostics name the physical source line.
