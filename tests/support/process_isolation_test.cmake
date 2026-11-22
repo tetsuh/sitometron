@@ -335,6 +335,100 @@ constexpr auto words = "module process_scan_module; import <map>; _Pragma __prag
       family_case("${_ending}-${_encoding}-pragma-${_pragma}"
         "${_prefix}// first${_eol}${_text}${_eol}" 2 1)
     endforeach()
+    foreach(_gap IN ITEMS " " "\t")
+      if(_gap STREQUAL "\t")
+        set(_whitespace tabs)
+      else()
+        set(_whitespace spaces)
+      endif()
+      family_case("${_ending}-${_encoding}-r5-${_whitespace}-pragma"
+        "${_prefix}// first${_eol}${_gap}#${_gap}pragma once${_eol}" 2 1)
+      family_case("${_ending}-${_encoding}-r5-${_whitespace}-include"
+        "${_prefix}// first${_eol}${_gap}#${_gap}include${_gap}<string>${_eol}" 2 0)
+    endforeach()
+    set(_names "struct caféHANDLE {}; struct HANDLEé {}; struct caféDWORD {}; struct DWORDé {};")
+    family_case("${_ending}-${_encoding}-r5-whole-names" "${_prefix}${_names}${_eol}" 1 0)
+    set(_arms [=[int f(int import) {
+#if ARM
+  return import
+#else
+  return 1
+#endif
+  ;
+}
+int nested(int import) {
+  return import
+#if ARM
+#if INNER
+  + 1
+#else
+  - 1
+#endif
+#elif OUTER
+  + 2
+#endif
+  ;
+}
+]=])
+    string(REPLACE "\n" "${_eol}" _arms "${_arms}")
+    family_case("${_ending}-${_encoding}-r5-ordinary-arms" "${_prefix}${_arms}" 1 0)
+    foreach(_case IN ITEMS true false before nested omitted)
+      if(_case STREQUAL "true")
+        # The second guard activates the tail only for this alternative.
+        set(_body "#if ARM\nimport\n#else\n// no import\n#endif\n#if ARM\n<map>;\n#endif\n")
+        set(_control_line 2)
+      elseif(_case STREQUAL "false")
+        set(_body "#if ARM\n// no import\n#else\nimport\n#endif\n#if !ARM\n<map>;\n#endif\n")
+        set(_control_line 4)
+      elseif(_case STREQUAL "before")
+        set(_body "import\n#if ARM\n<map>;\n#else\n<string>;\n#endif\n")
+        set(_control_line 1)
+      elseif(_case STREQUAL "omitted")
+        set(_body "import\n#if ARM\n<map>;\n#endif\n#if !ARM\n<string>;\n#endif\n")
+        set(_control_line 1)
+      else()
+        set(_body "#if ARM\n#if INNER\nimport\n#else\nimport\n#endif\n#else\nimport\n#endif\n<map>;\n")
+        set(_control_line 3)
+      endif()
+      string(REPLACE "\n" "${_eol}" _body "${_body}")
+      family_case("${_ending}-${_encoding}-r5-import-arm-${_case}" "${_prefix}${_body}" ${_control_line} 1)
+    endforeach()
+    set(_ordinary [=[constexpr int decimal = 1'000;
+constexpr auto hexa = 0xCA'FE;
+constexpr auto binary = 0b1010'0101;
+constexpr auto floating = .1'25e+0'2;
+constexpr auto hex_float = 0xA'B.C'Dp-0'2;
+constexpr unsigned long long operator""_counter(unsigned long long value) { return value; }
+constexpr auto custom = 1'024_counter;
+constexpr auto utf8_char = u8'x';
+constexpr auto wide = L"import HANDLE";
+constexpr auto raw_quote = R"x(" import HANDLE)x";
+constexpr auto quote = '\'';
+constexpr auto slash = "\\";
+constexpr int array<:1:> = <% 1 %>;
+struct Thing <% int operator<(const Thing&) const <% return 1; %> %>;
+template<int N> constexpr int import() <% return N; %>
+template<> constexpr int import<1>() <% return 1; %>
+[[maybe_unused]] constexpr auto use = import<1>();
+int compare(int import) <%
+  import < 3;
+  return import;
+%>
+constexpr int modules = 0, imported = 0;
+#define HASH #
+]=])
+    string(REPLACE "\n" "${_eol}" _ordinary "${_ordinary}")
+    family_case("${_ending}-${_encoding}-r5-ordinary-tokens" "${_prefix}${_ordinary}" 1 0)
+    family_case("${_ending}-${_encoding}-r5-number-then-import"
+      "${_prefix}// first${_eol}constexpr int n = 1'000; import process_scan_module;${_eol}" 2 1)
+    family_case("${_ending}-${_encoding}-r5-number-then-include"
+      "${_prefix}// first${_eol}#if 1'000${_eol}#include <map>${_eol}#endif${_eol}" 3 1)
+    family_case("${_ending}-${_encoding}-r5-sameline-comment-include"
+      "${_prefix}// first${_eol}/* 1'000 */ #include <map>${_eol}" 2 1)
+    family_case("${_ending}-${_encoding}-r5-stringize"
+      "${_prefix}// first${_eol}#define STR(arg) #arg${_eol}static_assert(sizeof(STR(text)) == 5);${_eol}" 2 1)
+    family_case("${_ending}-${_encoding}-r5-comment-splice"
+      "${_prefix}// first${_eol}// splice \\${_eol}#include <map>${_eol}int retained;${_eol}" 2 1)
     family_case("${_ending}-${_encoding}-approved-guard"
       "${_prefix}#if __has_include(<string>)${_eol}#include <string> // allowed${_eol}#endif${_eol}" 2 0)
   endforeach()
