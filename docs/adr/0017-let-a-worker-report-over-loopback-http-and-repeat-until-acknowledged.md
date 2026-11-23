@@ -180,8 +180,8 @@ define.
 3. The Worker repeats the same report until it receives `200` `{"acknowledged": true}` or it gives
    up and exits (Section 9). Section 5 alone decides what a repetition meets. While its row 5
    matches, which needs the binding in the current committed snapshot, the repetition is answered
-   `202` or `200` by the same rule, without a submission. It therefore
-   gets no ingress sequence, reducer turn, or Journal record, and it waits for nothing.
+   `202` or `200` by the same rule, without a submission. It therefore gets no ingress sequence,
+   reducer turn, or Journal record, and it waits for nothing.
 4. The binding lasts until the Job's process exit is confirmed, and a repetition is no longer
    answered from it once the Job is retired (Section 5, rows 3 and 1). The daemon does not end the
    binding when it writes a `200`: a response that was written may not have arrived, and while
@@ -206,16 +206,15 @@ define.
    a different case, decided in Section 5: the reducer records it as a `late_worker_event`.
 
 This is ADR-0002's "the Phase 2 adapter sends that idempotent ACK and retries until delivery or
-confirmed process exit" for a protocol in which the Worker is the client: once the acknowledgment
-is authorized the adapter sends it in every answer to a repetition of the report, for as long as
-the Worker repeats; before that a repetition is answered `202`; and confirmed process exit ends
-the obligation. Delivery is observed by the Worker, which
-stops repeating. ADR-0003, as ADR-0014 Section 6 words it, names three causes that retire the
-Worker gate: "Successful ACK, confirmed process exit, or retirement under ADR-0014 retires the
-Worker gate and identity". v1 never asserts the first, because the daemon cannot observe it; the
-other two apply as written. Because a repetition is answered before ingress, ADR-0003's coalescing
-of an exact retransmission is not reached by this adapter; the gate still admits the one terminal
-report and refuses any other while it is retained.
+confirmed process exit" for a protocol in which the Worker is the client: once the acknowledgment is
+authorized the adapter sends it in every answer to a repetition of the report, for as long as the
+Worker repeats; before that a repetition is answered `202`; and confirmed process exit ends the
+obligation. Delivery is observed by the Worker, which stops repeating. ADR-0003, as ADR-0014 Section
+6 words it, names three causes that retire the Worker gate: "Successful ACK, confirmed process exit,
+or retirement under ADR-0014 retires the Worker gate and identity". v1 never asserts the first,
+because the daemon cannot observe it; the other two apply as written. Because a repetition is
+answered before ingress, ADR-0003's coalescing of an exact retransmission is not reached by this
+adapter; the gate still admits the one terminal report and refuses any other while it is retained.
 
 A terminal report with the other `outcome` while a binding exists is answered `409`
 `report_conflict` from the snapshot and is not submitted. This holds for as long as the binding
@@ -248,15 +247,16 @@ which is a `failed` for a Job that is `preparing` or either outcome for a Job th
 recorded terminal report (ADR-0002), so a terminal report for a Job in `finalizing` or a terminal
 state always meets row 3, 5, or 6.
 
-- The rows submit nothing and depend only on the snapshot, so they hold whether or not admission is
-  open and whichever daemon lifetime recorded the Job: a repeated `running` or a repeated terminal
-  report is still answered by its row after admission has closed and after a restart. A restart
-  promises no earlier answer again: the rows are decided anew from the snapshot that replay folds
-  from the durable records, which can hold a record the stopped daemon had made durable and not
-  yet installed, such as a confirmed exit (row 3 instead of row 5), a terminal report whose commit
-  outcome was unknown (row 5 instead of `service_failed`), or a retirement (row 1). For the same
-  restored snapshot and a surviving binding, only the source of the authorization differs, which
-  can turn a `202` into a `200` (Section 4, step 5).
+- The rows submit nothing and depend only on the snapshot and, for row 5, on the acknowledgment view
+  read with it (Section 8), so they hold whether or not admission is open and whichever daemon
+  lifetime recorded the Job: a repeated `running` or a repeated terminal report is still answered by
+  its row after admission has closed and after a restart. A restart promises no earlier answer
+  again: the rows are decided anew from the snapshot that replay folds from the durable records,
+  which can hold a record the stopped daemon had made durable and not yet installed, such as a
+  confirmed exit (row 3 instead of row 5), a terminal report whose commit outcome was unknown (row 5
+  instead of `service_failed`), or a retirement (row 1). For the same restored snapshot and a
+  surviving binding, only the source of the authorization differs, which can turn a `202` into a
+  `200` (Section 4, step 5).
 - Row 3 is the owner's decision of 2026-11-23. Once the exit is confirmed the Worker is gone, so a
   report can only come from another process, and it is refused without a record.
 - Row 4 covers every first report in every state in which the launch is not yet observed: a Job
@@ -346,11 +346,11 @@ conditions of this protocol are:
   row 3); a report with another `worker_id` is answered `409` `worker_mismatch` first (row 2).
 - A report for a Job that the snapshot shows as not resident is answered `404` `job_not_found`
   (Section 5, row 1), and so is a terminal report whose lease is refused with the reason
-  `job_not_found` (Section 8). A terminal report for such a Job reaches the
-  writer in no form, as ADR-0014 Section 2 requires of a Worker fact for a retired Job. A `running`
-  report that was submitted because the snapshot still showed the Job gets the writer's answer
-  (Section 5): `404` only when it is admitted and the reducer rejects it, and otherwise the `503`
-  of the refusal, for example `busy`.
+  `job_not_found` (Section 8). A terminal report for such a Job reaches the writer in no form, as
+  ADR-0014 Section 2 requires of a Worker fact for a retired Job. A `running` report that was
+  submitted because the snapshot still showed the Job gets the writer's answer (Section 5): `404`
+  only when it is admitted and the reducer rejects it, and otherwise the `503` of the refusal, for
+  example `busy`.
 
 ### 8. What the adapter does toward the core
 
@@ -488,9 +488,11 @@ No sentence of an Accepted ADR is superseded.
 - [ADR-0008](0008-define-the-external-rest-v1-job-surface.md) and
   [ADR-0009](0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md): their transport,
   syntax, limit, and error rules are unchanged and reused for a second listener. One sentence of
-  ADR-0008 Section 1 is narrowed: "Paths outside `/v1` are not part of any contract." It keeps
-  holding for the External REST listener, where a `/worker/v1` path is still `route_not_found`.
-  The Worker listener is a separate contract, whose paths start with `/worker/v1` (Section 1).
+  ADR-0008's Decision is superseded: "Paths outside `/v1` are not part of any contract." becomes
+  "On the External REST listener, paths outside `/v1` are not part of any contract; the Worker
+  listener serves the separate contract of ADR-0017, whose paths start with `/worker/v1`". On the
+  External REST listener a `/worker/v1` path is still `route_not_found` (Section 1). This ADR
+  names that superseding path, and every other rule of ADR-0008 stands.
 - [ADR-0012](0012-drive-each-job-with-a-supervisor-in-the-core.md): unchanged.
 - [ADR-0014](0014-retire-closed-jobs-under-capacity-pressure.md): unchanged. Its Section 1 speaks
   of a `late_worker_event` recorded after `process_exit_confirmed` and its single best-effort
@@ -657,7 +659,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   core, so the adapter keeps no state. After a restart every answer is decided anew from the
   replayed snapshot (Section 5): a repetition is acknowledged when its binding survived replay
   and the Worker can reach the listener (Section 2).
-- Neutral: a second startup option and a second OpenAPI document.
+- Neutral: a second startup option and a second OpenAPI document; one sentence of ADR-0008's
+  Decision is superseded (Section 11).
 - Bad: until the OpenAPI document exists, the contract is prose and tables only.
 
 ## Options considered
@@ -725,7 +728,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - Contract Registry: `Worker HTTP v1 routes and JSON schemas` stays `Planned | Planned` while this
   ADR is Proposed and becomes `Normative | Planned` when it is Accepted; the row of the
   `sitometrond` startup configuration and command line keeps `Planned | Implemented`, which covers
-  the existing options only: `--worker-listen` is planned and not implemented
+  the existing options only: `--worker-listen` is planned and not implemented; `External REST v1` keeps `Normative |
+  Implemented` (one sentence of ADR-0008 superseded, Section 11)
 - Related ADR: ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0009, ADR-0010,
   ADR-0011, ADR-0012, ADR-0014, ADR-0015, ADR-0016
 - `spike/README.md`: finding 9
