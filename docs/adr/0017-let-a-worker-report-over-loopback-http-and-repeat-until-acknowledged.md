@@ -182,28 +182,19 @@ define.
    matches, which needs the binding in the current committed snapshot, the repetition is answered
    `202` or `200` by the same rule, without a submission. It therefore gets no ingress sequence,
    reducer turn, or Journal record, and it waits for nothing.
-4. The binding lasts until the Job's process exit is confirmed, and a repetition is no longer
-   answered from it once the Job is retired (Section 5, rows 3 and 1). The daemon does not end the
-   binding when it writes a `200`: a response that was written may not have arrived, and while
-   row 5 still matches the next repetition gets the same answer.
-5. After a restart the binding is whatever replay folds from the durable records. When the replayed
-   snapshot still holds it and the Worker can reach the listener (Section 2), a Worker that outlived
-   the daemon is still answered by row 5. Replay "dispatches no post-sync effect" and "sends no
-   acknowledgment" (ADR-0006 Section 6), so no ACK effect exists in the new daemon. By the owner's
-   decision of 2026-11-24, the durable `terminal_outcome_committed` record is then the
-   authorization: for a Job that replay restored, the acknowledgment is authorized exactly when the
-   restored snapshot is terminal and holds the binding. The ACK effect follows from that record
-   without any further decision, so the record decides what the effect would have decided. This
-   includes a daemon that stopped after the record was durable and before the effect was dispatched:
-   a repetition that was answered before the stop got `202`, and one that reaches the restarted
-   daemon gets `200`, which is the progress the Worker would have seen without the stop. The
-   restored snapshot is what replay folds from the durable records, so every other row of Section 5
-   is decided from it as well, and a durable exit or retirement that the stopped daemon had not
-   installed selects row 3 or row 1 instead.
-6. If the process exit is confirmed after a report's turn and before the adapter reads the
-   snapshot again, the binding is gone and the answer is the `409` `process_exited` of Section 5.
-   The retry obligation is not extended past the exit. A report whose turn came after the exit is
-   a different case, decided in Section 5: the reducer records it as a `late_worker_event`.
+4. The daemon does not end the binding when it writes a `200`: a response that was written may
+   not have arrived, and while row 5 still matches, the next repetition gets the same answer.
+5. After a restart, replay "dispatches no post-sync effect" and "sends no acknowledgment"
+   (ADR-0006 Section 6), so no ACK effect exists in the new daemon. By the owner's decision of
+   2026-11-24, the durable `terminal_outcome_committed` record is then the authorization: for a
+   Job that replay restored, the acknowledgment is authorized exactly when the restored snapshot is
+   terminal and holds the binding. The ACK effect follows from that record without any further
+   decision, so the record decides what the effect would have decided. This includes a daemon that
+   stopped after the record was durable and before the effect was dispatched.
+
+Steps 2 and 5 are the whole rule for when an acknowledgment is authorized. Which report meets the
+binding at all, in a running daemon and after a restart, is decided by Section 5 alone; what a
+report meets when the exit is confirmed around its turn is decided by Sections 5 and 8.
 
 This is ADR-0002's "the Phase 2 adapter sends that idempotent ACK and retries until delivery or
 confirmed process exit" for a protocol in which the Worker is the client: once the acknowledgment is
@@ -216,9 +207,7 @@ because the daemon cannot observe it; the other two apply as written. Because a 
 answered before ingress, ADR-0003's coalescing of an exact retransmission is not reached by this
 adapter; the gate still admits the one terminal report and refuses any other while it is retained.
 
-A terminal report with the other `outcome` while a binding exists is answered `409`
-`report_conflict` from the snapshot and is not submitted. This holds for as long as the binding
-exists, also after the acknowledgment and after a restart.
+A terminal report with the other `outcome` than the binding's is a conflict (Section 5, row 6).
 
 ### 5. Answers decided from the committed snapshot
 
@@ -254,9 +243,8 @@ state always meets row 3, 5, or 6.
   again: the rows are decided anew from the snapshot that replay folds from the durable records,
   which can hold a record the stopped daemon had made durable and not yet installed, such as a
   confirmed exit (row 3 instead of row 5), a terminal report whose commit outcome was unknown (row 5
-  instead of `service_failed`), or a retirement (row 1). For the same restored snapshot and a
-  surviving binding, only the source of the authorization differs, which can turn a `202` into a
-  `200` (Section 4, step 5).
+  instead of `service_failed`), or a retirement (row 1). Whether a surviving binding is answered
+  `202` or `200` is the authorization rule of Section 4.
 - Row 3 is the owner's decision of 2026-11-23. Once the exit is confirmed the Worker is gone, so a
   report can only come from another process, and it is refused without a record.
 - Row 4 covers every first report in every state in which the launch is not yet observed: a Job
@@ -336,21 +324,17 @@ conditions of this protocol are:
 
 ### 7. Late reports, reports after the exit, and retired Jobs
 
-- v1 gives a Worker no way to make a late report on purpose. Before the exit is confirmed, a Job
-  in `finalizing` or a terminal state holds the binding of its one terminal report, so another
-  report is a repetition or a conflict (Section 5, rows 5 and 6). The only `late_worker_event` this
-  adapter can cause is a terminal report that was past the snapshot check when the exit was
-  confirmed; when its turn succeeds it is recorded and acknowledged once (Section 5).
-- After the Job's process exit is confirmed, the binding is cleared (ADR-0002) and every report
-  that names the Job's Worker is answered `409` `process_exited` from the snapshot (Section 5,
-  row 3); a report with another `worker_id` is answered `409` `worker_mismatch` first (row 2).
-- A report for a Job that the snapshot shows as not resident is answered `404` `job_not_found`
-  (Section 5, row 1), and so is a terminal report whose lease is refused with the reason
-  `job_not_found` (Section 8). A terminal report for such a Job reaches the writer in no form, as
-  ADR-0014 Section 2 requires of a Worker fact for a retired Job. A `running` report that was
-  submitted because the snapshot still showed the Job gets the writer's answer (Section 5): `404`
-  only when it is admitted and the reducer rejects it, and otherwise the `503` of the refusal, for
-  example `busy`.
+This section decides nothing of its own; it says where each of these cases is decided.
+
+- Late reports: v1 gives a Worker no way to make one on purpose, because before the exit is
+  confirmed another terminal report is a repetition or a conflict (Section 5, rows 5 and 6). The
+  only `late_worker_event` this adapter can cause is the report the exit overtook after its
+  snapshot check (Section 5, the cases after the table).
+- Reports after the confirmed exit: Section 5, rows 2 and 3.
+- Reports for a Job that is not resident: Section 5, row 1, for a Job the snapshot does not show;
+  Section 8 for a terminal report whose Job was retired after the snapshot was read, which reaches
+  the writer in no form, as ADR-0014 Section 2 requires of a Worker fact for a retired Job; and
+  Section 5, the cases after the table, for a `running` report submitted in that window.
 
 ### 8. What the adapter does toward the core
 
@@ -385,12 +369,11 @@ the core's internal API and adds no port (ADR-0005).
 - The core's internal API gains two things. One is submitting a Worker fact through a lease the
   source acquired, with the reason of a refused lease as just described and a completion that says
   whether the reducer recorded the fact as itself or normalized it to `late_worker_event`. The other
-  is the read-only acknowledgment view just named: for a Job of this daemon's lifetime it turns true
-  when the writer dispatches the ACK effect of the terminal-outcome turn, and for a Job that replay
-  restored it is true from startup exactly when the restored snapshot is terminal and holds a
-  binding (Section 4, step 5); it is false again once the exit clears the binding. Nothing waits on
-  it. The implementation Issue names the exact operations. They change no rule of ADR-0003 or
-  ADR-0014, and `sitometron_core` gains no public API.
+  is the read-only acknowledgment view just named, which reports the authorization that Section 4,
+  steps 2 and 5, define: it turns true at the ACK effect of the terminal-outcome turn or, for a Job
+  that replay restored, is true from startup under step 5, and it is false again once the exit
+  clears the binding. Nothing waits on it. The implementation Issue names the exact operations. They
+  change no rule of ADR-0003 or ADR-0014, and `sitometron_core` gains no public API.
 - A submission that is refused, or whose turn fails, is answered by the mapping below and never with
   `200` or `202`. After a terminal report's turn succeeded, the adapter answers: `200` when the
   completion says the report was normalized to `late_worker_event`; otherwise by the rows of Section
@@ -656,9 +639,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   Job is terminal only the shutdown does.
 - Bad: a report that arrives after the confirmed exit leaves no audit record.
 - Good: the answer to a repetition comes from the committed binding and one read-only view of the
-  core, so the adapter keeps no state. After a restart every answer is decided anew from the
-  replayed snapshot (Section 5): a repetition is acknowledged when its binding survived replay
-  and the Worker can reach the listener (Section 2).
+  core, so the adapter keeps no state, and after a restart every answer is decided anew from the
+  replayed snapshot (Section 5).
 - Neutral: a second startup option and a second OpenAPI document; one sentence of ADR-0008's
   Decision is superseded (Section 11).
 - Bad: until the OpenAPI document exists, the contract is prose and tables only.
