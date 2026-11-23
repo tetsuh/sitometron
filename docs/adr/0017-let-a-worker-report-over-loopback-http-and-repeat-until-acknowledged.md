@@ -169,9 +169,10 @@ the report.
    does not end it when it writes a `200`: a response that was written may not have arrived, and
    the next repetition must get the same answer. After a restart the replayed snapshot holds the
    same binding, so a Worker that outlived the daemon is answered by the same rule.
-5. If the process exit is confirmed before the adapter reads the snapshot after a report's turn,
-   the binding is gone and the answer is the `409` `process_exited` of Section 5. The retry
-   obligation is not extended past the exit.
+5. If the process exit is confirmed after a report's turn and before the adapter reads the
+   snapshot again, the binding is gone and the answer is the `409` `process_exited` of Section 5.
+   The retry obligation is not extended past the exit. A report whose turn came after the exit is
+   a different case, decided in Section 5: the reducer records it as a `late_worker_event`.
 
 This is ADR-0002's "the Phase 2 adapter sends that idempotent ACK and retries until delivery or
 confirmed process exit" for a protocol in which the Worker is the client: the adapter sends the
@@ -237,9 +238,12 @@ to answer by the rows above:
   for a retired Job, and the answer is `404`; refused by admission, the answer is the `503` of
   that refusal;
 - a terminal report whose Job's exit was confirmed in between is admitted through its lease and
-  normalized by the reducer to the `late_worker_event` of ADR-0002, the single acknowledgment of
-  ADR-0014 Section 1. It is recorded as an audit fact and changes no outcome; its answer is the
-  `409` `process_exited` of row 3, because no Worker is left to acknowledge.
+  normalized by the reducer to the `late_worker_event` of ADR-0002. It is recorded as an audit fact
+  and changes no outcome, and ADR-0002 authorizes its acknowledgment with the record. The adapter
+  learns from the completion of its submission that the report was normalized (Section 8) and
+  answers `200` `{"acknowledged": true}` once. This is the single best-effort acknowledgment of
+  ADR-0014 Section 1: nothing is bound or retained for it, it does not keep the Job resident, and
+  a repetition meets row 3.
 
 ### 6. Answers
 
@@ -282,7 +286,7 @@ conditions of this protocol are:
   in `finalizing` or a terminal state holds the binding of its one terminal report, so another
   report is a repetition or a conflict (Section 5, rows 5 and 6). The only `late_worker_event` this
   adapter can cause is a terminal report that was past the snapshot check when the exit was
-  confirmed (Section 5).
+  confirmed; it is recorded and acknowledged once (Section 5).
 - After the Job's process exit is confirmed, the binding is cleared (ADR-0002) and every report
   that names the Job's Worker is answered `409` `process_exited` from the snapshot (Section 5,
   row 3); a report with another `worker_id` is answered `409` `worker_mismatch` first (row 2).
@@ -318,8 +322,13 @@ the core's internal API and adds no port (ADR-0005).
 - It reads the committed snapshot for the rows of Section 5, before a submission and again after a
   terminal report's turn. It asks the core nothing about the Worker gate's state.
 - The core's internal API gains one thing: submitting a Worker fact through a lease the source
-  acquired. The implementation Issue names the exact operation. It changes no rule of ADR-0003 or
-  ADR-0014, and `sitometron_core` gains no public API.
+  acquired, with a completion that says whether the reducer recorded the fact as itself or
+  normalized it to `late_worker_event`. The implementation Issue names the exact operation. It
+  changes no rule of ADR-0003 or ADR-0014, and `sitometron_core` gains no public API.
+- After a terminal report's turn succeeded, the adapter answers: `200` when the completion says the
+  report was normalized to `late_worker_event`; otherwise by the rows of Section 5 from the
+  snapshot it reads then, which is `202` or `200` from the binding, or `409` `process_exited` when
+  the exit was confirmed after the turn.
 - It maps the writer's answers as Section 6 states: `admission_closed` to `not_ready`,
   `service_failed` to `service_failed`, `normal_full` to `busy`, and `already_pending` to
   `report_conflict`. `coalesced_pending` means the report was recorded by a turn the snapshot did
@@ -381,9 +390,9 @@ No sentence of an Accepted ADR is superseded.
 - [ADR-0002](0002-define-core-job-reducer-contract.md): unchanged. Section 4 states how its
   acknowledgment sentence is met by a Worker-driven exchange answered from the committed binding.
   ADR-0002 says a late Worker event is "acknowledged without changing the result"; that describes
-  an input that reaches the reducer. This adapter submits no report after the confirmed exit
-  (Section 5, row 3), and it answers the one report the exit can overtake with `409`
-  `process_exited`, because the acknowledgment has no Worker left to receive it.
+  an input that reaches the reducer, and the one report the exit can overtake is recorded and
+  acknowledged so (Section 5). The adapter submits no report after the confirmed exit (Section 5,
+  row 3); ADR-0002 does not require the Worker-protocol boundary to submit one.
 - [ADR-0003](0003-define-single-state-writer-ingress-contract.md): unchanged. The Worker gate
   admits the one terminal report and refuses another while it is retained; its coalescing of a
   retransmission is not reached, because the adapter answers a repetition from the snapshot; and
@@ -395,9 +404,9 @@ No sentence of an Accepted ADR is superseded.
   transport, syntax, limit, and error rules are reused for a second listener.
 - [ADR-0012](0012-drive-each-job-with-a-supervisor-in-the-core.md): unchanged.
 - [ADR-0014](0014-retire-closed-jobs-under-capacity-pressure.md): unchanged. Its Section 1 speaks
-  of a `late_worker_event` recorded after `process_exit_confirmed` and its single acknowledgment;
-  under this ADR such a record arises only when the exit overtakes a report, and that
-  acknowledgment is not sent.
+  of a `late_worker_event` recorded after `process_exit_confirmed` and its single best-effort
+  acknowledgment; under this ADR such a record arises only when the exit overtakes a report, and
+  that acknowledgment is the one `200` of Section 5.
 - [ADR-0015](0015-register-applications-with-a-verified-registry-file.md) Section 6: the question
   it assigned here is decided (Section 1): the External REST I/O model stays, and the Worker
   listener does not share its thread.
@@ -467,7 +476,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   `worker_mismatch`, and none adds a record, for a Job of this daemon's lifetime and for a resolved
   Job that replay restored; a terminal report that passed the snapshot check before the exit was
   confirmed (held at a deterministic barrier) is recorded once as `late_worker_event`, changes no
-  outcome, is answered `409` `process_exited`, and does not keep the Job from being retired;
+  outcome, is answered `200` `{"acknowledged": true}` once, leaves no binding, and does not keep
+  the Job from being retired, and its repetition is answered `409` `process_exited`;
 - `worker_v1_job_not_resident`: a report for an unknown Job and for a retired Job is answered `404`
   `job_not_found`, with no ingress result, no Journal record, and no failure latch, also when the
   retirement happens between two reports; a terminal report whose snapshot was read before its Job
