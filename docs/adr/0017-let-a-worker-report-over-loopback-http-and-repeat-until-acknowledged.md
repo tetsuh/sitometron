@@ -127,14 +127,14 @@ ADR-0009 Section 5 says of a creation.
 | Route | Request body | Answers |
 |---|---|---|
 | `POST /worker/v1/jobs/{job_id}/running` | `{"worker_id": "..."}` | `204` with no body: the Job is `running` for this Worker |
-| `POST /worker/v1/jobs/{job_id}/outcome` | `{"worker_id": "...", "event_sequence": 1, "outcome": "completed"}` | `202` `{"acknowledged": false}`: recorded, not yet acknowledged; `200` `{"acknowledged": true}`: acknowledged |
+| `POST /worker/v1/jobs/{job_id}/outcome` | `{"worker_id": "...", "outcome": "completed"}` | `202` `{"acknowledged": false}`: recorded, not yet acknowledged; `200` `{"acknowledged": true}`: acknowledged |
 
 - `outcome` is `completed` or `failed`. It selects `worker_completed` or `worker_failed`.
-- `event_sequence` is an integer from 1 to 9007199254740991. A Worker sends one terminal report and
-  uses 1 for it; v1 gives no other number a use. Two requests are the same report when their
-  `job_id`, `worker_id`, and `event_sequence` are equal. A Worker must not send two outcomes under
-  one sequence: the committed binding holds no outcome, so the second is answered as a repetition
-  of the first (Section 4).
+- A request carries no event sequence. ADR-0002 requires one of at least 1 in the Worker event and
+  leaves "sequence validation" to "the Worker-protocol boundary"; the adapter assigns it from the
+  outcome: 1 for `completed` and 2 for `failed`. The committed binding of Section 4 holds the
+  Worker identity and that sequence, so it identifies the recorded outcome. Two requests are the
+  same report exactly when their `job_id`, `worker_id`, and `outcome` are equal.
 - A report carries nothing else: no exit status, message, progress, or result. Results and
   Artifacts are later phases.
 
@@ -185,9 +185,9 @@ other two apply as written. Because a repetition is answered before ingress, ADR
 of an exact retransmission is not reached by this adapter; the gate still admits the one terminal
 report and refuses any other while it is retained.
 
-A terminal report with another `event_sequence` while a binding exists is answered `409`
+A terminal report with the other `outcome` while a binding exists is answered `409`
 `report_conflict` from the snapshot and is not submitted. This holds for as long as the binding
-exists, also after the acknowledgment.
+exists, also after the acknowledgment and after a restart.
 
 ### 5. Answers decided from the committed snapshot
 
@@ -202,8 +202,8 @@ checks and before it submits anything. The first row that matches decides:
 | 2 | another Worker bound to the Job, or none yet | any | `409` `worker_mismatch` |
 | 3 | the Job's process exit confirmed | any | `409` `process_exited` |
 | 4 | the Job `preparing` and its launch not yet observed | any | `503` `launch_not_observed` |
-| 5 | an acknowledgment binding with this report's `event_sequence` | terminal | `200` if the Job is terminal, otherwise `202` (Section 4) |
-| 6 | an acknowledgment binding with another `event_sequence` | terminal | `409` `report_conflict` |
+| 5 | an acknowledgment binding for this report's `outcome` | terminal | `200` if the Job is terminal, otherwise `202` (Section 4) |
+| 6 | an acknowledgment binding for the other `outcome` | terminal | `409` `report_conflict` |
 | 7 | the Job `running` | `running` | `204` |
 | 8 | the Job `preparing` (its launch observed) | `completed` | `409` `running_not_reported` |
 
@@ -263,7 +263,7 @@ conditions of this protocol are:
 | The writer has failed closed, including a commit whose outcome is unknown | `503` | `service` | `service_failed` |
 | The writer refuses the report because admission is closed (`admission_closed`) | `503` | `service` | `not_ready` |
 | The ingress queue is full (`normal_full`), which only `running` can meet, or a retirement has claimed the Job and is not yet committed (Section 8) | `503` | `service` | `busy` |
-| A terminal report with another `event_sequence` than the Job's acknowledgment binding (Section 5, row 6), or one the writer answers `already_pending` | `409` | `worker` | `report_conflict` |
+| A terminal report with the other `outcome` than the Job's acknowledgment binding records (Section 5, row 6), or one the writer answers `already_pending` | `409` | `worker` | `report_conflict` |
 | The reducer rejects the report | `409` | `job` | the ADR-0002 rejection reason |
 | Any other failure inside the daemon | `500` | `service` | `internal` |
 
@@ -353,7 +353,7 @@ the core's internal API and adds no port (ADR-0005).
 
 - Send `running` once it can do its work, and send it again on `503`. A Worker that never sends it
   never enters `running` (ADR-0016 Section 2).
-- Send one terminal report, with `event_sequence` 1, when its work has ended, and repeat exactly
+- Send one terminal report when its work has ended, `completed` or `failed`, and repeat exactly
   that report until it is answered `200` `{"acknowledged": true}`, also across a restart of the
   daemon. Send `completed` only after a `running` was answered `204`; `failed` may be sent at any
   time. Treat `202` and `503` as "send again", and `404` and `409` as final. After `503`
@@ -465,11 +465,11 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   from the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or
   Journal record, before and after the terminal outcome is committed; a repetition is still
   answered `200` after an earlier `200` was written, and after the daemon is restarted with the
-  Worker's exit unconfirmed; a repetition with the other `outcome` under the same `event_sequence`
-  is answered as the same report;
-- `worker_v1_conflicting_report_refused`: a terminal report with another `event_sequence` is
-  answered `409` `report_conflict` while a binding exists, also after its acknowledgment and after
-  a restart, and submits nothing;
+  Worker's exit unconfirmed; the recorded Worker event carries event sequence 1 for `completed`
+  and 2 for `failed`;
+- `worker_v1_conflicting_report_refused`: a terminal report with the other `outcome` is answered
+  `409` `report_conflict` while a binding exists, in both directions, also after its
+  acknowledgment and after a restart, and submits nothing;
 - `worker_v1_identity_mismatch_refused`: a wrong `worker_id`, and a Job without a Worker, are
   answered `409` `worker_mismatch` and submit nothing;
 - `worker_v1_report_after_exit_refused`: after the exit is confirmed every report that names the
@@ -502,8 +502,10 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   a creation's turn is in progress waits for that turn, which is the shared writer and not the
   External REST thread;
 - `worker_v1_request_rules`: the message-syntax, limit, media-type, strict-JSON, and field rules of
-  ADR-0008 and ADR-0009 hold on the Worker listener, with the `event_sequence` and `outcome` ranges
-  of Section 3;
+  ADR-0008 and ADR-0009 hold on the Worker listener, with the `outcome` values of Section 3; a
+  request with an `event_sequence` field, or any other unknown field, is `422` `validation_failed`;
+  a request target with a query component on a Worker route is `404` `route_not_found`
+  (ADR-0009 Section 4);
 - `worker_v1_error_envelope_and_codes`: every response of `400` or above on the Worker listener
   carries the error object of ADR-0008 Section 5 with the `domain` and `code` of Section 6, for one
   request error, each protocol condition, and each service condition, and no `message` or `details`
@@ -531,7 +533,6 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - Bad: a report that arrives after the confirmed exit leaves no audit record.
 - Good: the answer to a repetition comes from the committed snapshot, so it is the same after a
   restart and needs no state in the adapter and no question to the Worker gate.
-- Bad: the binding holds no outcome, so two outcomes under one sequence are not told apart.
 - Neutral: a second startup option and a second OpenAPI document.
 
 ## Options considered
@@ -543,6 +544,10 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - **Let the daemon deliver the acknowledgment to a server in the Worker**: rejected on 2026-11-22
   because every Worker would need a listener and the daemon would need a retry interval and a
   timer of its own.
+- **Let the Worker choose the event sequence**: rejected because the committed binding holds the
+  Worker identity and the sequence but not the outcome, so a repetition with the other outcome
+  under the same sequence could not be told from the recorded report after a restart; a sequence
+  fixed by the outcome makes the binding identify the report.
 - **End the obligation when the `200` is written**: rejected because a written response may not
   have arrived; the Worker's next repetition must get the same answer, and ADR-0002 already ends
   the binding at the confirmed exit.
