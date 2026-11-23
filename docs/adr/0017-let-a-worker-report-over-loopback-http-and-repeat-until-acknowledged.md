@@ -170,12 +170,18 @@ the report.
    gets no ingress sequence, reducer turn, or Journal record, and it waits for nothing.
 4. The binding, and with it the answer, lasts until the Job's process exit is confirmed. The daemon
    does not end it when it writes a `200`: a response that was written may not have arrived, and
-   the next repetition must get the same answer. After a restart the replayed snapshot holds the
-   same binding, and replay dispatches no effect (ADR-0006); for a Job that replay restored, the
-   acknowledgment is authorized exactly when the restored snapshot is terminal and holds the
-   binding, because the record that authorized it is durable. So a Worker that outlived the daemon
-   is answered by the same rule.
-5. If the process exit is confirmed after a report's turn and before the adapter reads the
+   the next repetition must get the same answer.
+5. After a restart the replayed snapshot holds the same binding, so a Worker that outlived the
+   daemon is still answered. Replay "dispatches no post-sync effect" and "sends no acknowledgment"
+   (ADR-0006 Section 6), so no ACK effect exists in the new daemon. By the owner's decision of
+   2026-11-24, the durable `terminal_outcome_committed` record is then the authorization: for a
+   Job that replay restored, the acknowledgment is authorized exactly when the restored snapshot is
+   terminal and holds the binding. The ACK effect follows from that record without any further
+   decision, so the record decides what the effect would have decided. This includes a daemon that
+   stopped after the record was durable and before the effect was dispatched: the Worker was
+   answered `202` before the stop and is answered `200` after the restart, which is the same
+   progress it would have seen without the stop.
+6. If the process exit is confirmed after a report's turn and before the adapter reads the
    snapshot again, the binding is gone and the answer is the `409` `process_exited` of Section 5.
    The retry obligation is not extended past the exit. A report whose turn came after the exit is
    a different case, decided in Section 5: the reducer records it as a `late_worker_event`.
@@ -344,10 +350,11 @@ the core's internal API and adds no port (ADR-0005).
   source acquired, with a completion that says whether the reducer recorded the fact as itself or
   normalized it to `late_worker_event`. The other is the read-only acknowledgment view just named:
   for a Job of this daemon's lifetime it turns true when the writer dispatches the ACK effect of
-  the terminal-outcome turn, and for a Job that replay restored it is true exactly when the
-  restored snapshot is terminal and holds a binding; it is false again once the exit clears the
-  binding. Nothing waits on it. The implementation Issue names the exact operations. They change
-  no rule of ADR-0003 or ADR-0014, and `sitometron_core` gains no public API.
+  the terminal-outcome turn, and for a Job that replay restored it is true from startup exactly
+  when the restored snapshot is terminal and holds a binding (Section 4, step 5); it is false
+  again once the exit clears the binding. Nothing waits on it. The implementation Issue names the
+  exact operations. They change no rule of ADR-0003 or ADR-0014, and `sitometron_core` gains no
+  public API.
 - After a terminal report's turn succeeded, the adapter answers: `200` when the completion says the
   report was normalized to `late_worker_event`; otherwise by the rows of Section 5 from the
   snapshot and the view it reads then, which is `202` or `200` for the binding, or `409`
@@ -421,10 +428,17 @@ No sentence of an Accepted ADR is superseded.
 - [ADR-0003](0003-define-single-state-writer-ingress-contract.md): unchanged. The Worker gate
   admits the one terminal report and refuses another while it is retained; its coalescing of a
   retransmission is not reached, because the adapter answers a repetition from the snapshot; the
-  ACK effect stays the authorization point, which the acknowledgment view reports (Section 8); and
-  v1 never asserts a successful ACK (Section 4). ADR-0003's "a distinct post-terminal sequence may
-  acquire the gate" stays true of the gate; this adapter does not submit one.
+  ACK effect stays the authorization point in a running daemon, which the acknowledgment view
+  reports (Section 8); and v1 never asserts a successful ACK (Section 4). ADR-0003 says "An
+  ADR-0002 ACK effect is itself ACK authorization at its declared effect-list position" and does
+  not say what authorizes an acknowledgment after a restart, when no effect is dispatched; this
+  ADR decides that case (Section 4, step 5) and changes nothing for a running daemon. ADR-0003's
+  "a distinct post-terminal sequence may acquire the gate" stays true of the gate; this adapter
+  does not submit one.
 - [ADR-0005](0005-define-phase-0a-core-capability-port-contracts.md): unchanged. No port is added.
+- [ADR-0006](0006-define-physical-jobjournal-durability-contract.md): unchanged. Replay still
+  dispatches no effect and sends no acknowledgment. Answering a repetition that a Worker sends
+  after the restart is not part of replay; the restored snapshot decides it (Section 4, step 5).
 - [ADR-0008](0008-define-the-external-rest-v1-job-surface.md) and
   [ADR-0009](0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md): unchanged. Their
   transport, syntax, limit, and error rules are reused for a second listener.
@@ -487,7 +501,10 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
   deterministic barrier); its repetition is still answered `202` while the writer is held after it
   installed the terminal snapshot and before it dispatched the ACK effect, and `200` once that
-  effect is dispatched, for `completed` and for `failed`; no request stays open in between; when
+  effect is dispatched, for `completed` and for `failed`; no request stays open in between; a
+  daemon stopped at that same point, after the terminal record is durable and before the ACK
+  effect, answers the repetition `200` after its restart, and one stopped before the terminal
+  record answers `202`; when
   the process exit is confirmed after the report's turn and before the adapter reads the snapshot
   again (held at a deterministic barrier), the answer is `409` `process_exited`;
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered
