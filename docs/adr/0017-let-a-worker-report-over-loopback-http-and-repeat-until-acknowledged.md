@@ -381,8 +381,10 @@ unchanged. The producer of `sitometron_process` takes the endpoint as one more v
 construction; its launch specification is unchanged. Worker HTTP v1 exists only in builds with HTTP
 enabled, like the External REST adapter and the runner.
 
-An OpenAPI document `schemas/openapi/worker-v1.openapi.json` describes Sections 3 and 6 and is
-written by the implementation Issue; this ADR remains the authority.
+An OpenAPI document `schemas/openapi/worker-v1.openapi.json` describes Sections 3 and 6. By the
+owner's decision of 2026-11-23 it is written after this ADR is Accepted, by the implementation
+Issue, as ADR-0008 Section 8 did for External REST v1; until then the contract is the prose and
+tables of this ADR, which remains the authority afterwards.
 
 ### 11. What changes in the Accepted ADRs
 
@@ -534,6 +536,7 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - Good: the answer to a repetition comes from the committed snapshot, so it is the same after a
   restart and needs no state in the adapter and no question to the Worker gate.
 - Neutral: a second startup option and a second OpenAPI document.
+- Bad: until the OpenAPI document exists, the contract is prose and tables only.
 
 ## Options considered
 
@@ -544,6 +547,9 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - **Let the daemon deliver the acknowledgment to a server in the Worker**: rejected on 2026-11-22
   because every Worker would need a listener and the daemon would need a retry interval and a
   timer of its own.
+- **Write the OpenAPI document in the same pull request**: rejected on 2026-11-23, as it was for
+  ADR-0008, to keep this decision small and to avoid fixing a machine-readable form of a contract
+  that is still Proposed.
 - **Let the Worker choose the event sequence**: rejected because the committed binding holds the
   Worker identity and the sequence but not the outcome, so a repetition with the other outcome
   under the same sequence could not be told from the recorded report after a restart; a sequence
