@@ -290,10 +290,13 @@ conditions of this protocol are:
 - After the Job's process exit is confirmed, the binding is cleared (ADR-0002) and every report
   that names the Job's Worker is answered `409` `process_exited` from the snapshot (Section 5,
   row 3); a report with another `worker_id` is answered `409` `worker_mismatch` first (row 2).
-- A report for a Job that is not resident is answered `404` `job_not_found`. A terminal report for
-  such a Job reaches the writer in no form, as ADR-0014 Section 2 requires of a Worker fact for a
-  retired Job; a `running` report that was submitted because the snapshot still showed the Job can
-  reach the reducer, which rejects it (Section 5).
+- A report for a Job that the snapshot shows as not resident is answered `404` `job_not_found`
+  (Section 5, row 1), and so is a terminal report whose lease is refused because the Job was
+  retired after the snapshot was read (Section 8). A terminal report for such a Job reaches the
+  writer in no form, as ADR-0014 Section 2 requires of a Worker fact for a retired Job. A `running`
+  report that was submitted because the snapshot still showed the Job gets the writer's answer
+  (Section 5): `404` only when it is admitted and the reducer rejects it, and otherwise the `503`
+  of the refusal, for example `busy`.
 
 ### 8. What the adapter does toward the core
 
@@ -507,7 +510,10 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   ADR-0008 and ADR-0009 hold on the Worker listener, with the `outcome` values of Section 3; a
   request with an `event_sequence` field, or any other unknown field, is `422` `validation_failed`;
   a request target with a query component on a Worker route is `404` `route_not_found`
-  (ADR-0009 Section 4);
+  (ADR-0009 Section 4); a `job_id` in the path that is not a canonical lowercase UUIDv7 is `400`
+  `invalid_job_id`; a method other than `POST` on a route, `GET` and `OPTIONS` among them, is
+  `405` `method_not_allowed` with `Allow: POST` (ADR-0009 Section 6); none of these submits
+  anything;
 - `worker_v1_error_envelope_and_codes`: every response of `400` or above on the Worker listener
   carries the error object of ADR-0008 Section 5 with the `domain` and `code` of Section 6, for one
   request error, each protocol condition, and each service condition, and no `message` or `details`
