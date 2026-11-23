@@ -154,21 +154,27 @@ the report.
    the adapter submits the report to the writer as the matching critical input and waits for that
    turn (Section 8). That turn records the report (`worker_completed` or `worker_failed`), moves
    the Job to `finalizing`, and binds the obligation; it does not authorize the acknowledgment.
-2. ADR-0002 authorizes the acknowledgment in a later turn, when the matching
-   `terminal_outcome_committed` is committed. The supervisor drives the Job from `finalizing` to
-   that record through its own inputs (ADR-0012), each in a writer turn of its own. The adapter
-   therefore answers from the committed snapshot it reads after the report's turn: `202`
-   `{"acknowledged": false}` while the binding names this report and the Job is not yet terminal,
-   and `200` `{"acknowledged": true}` once the Job is terminal. The first answer is `202` unless
-   the terminal outcome was already committed when the adapter read the snapshot.
+2. ADR-0002 authorizes the acknowledgment in a later turn, the one that commits the matching
+   `terminal_outcome_committed`. The supervisor drives the Job from `finalizing` to that record
+   through its own inputs (ADR-0012), each in a writer turn of its own. ADR-0003 makes the ACK
+   effect of that turn the authorization: "An ADR-0002 ACK effect is itself ACK authorization at
+   its declared effect-list position". The writer installs a turn's snapshot before it dispatches
+   the turn's effects, so a terminal snapshot alone is not yet the authorization. The adapter
+   therefore asks the core whether the acknowledgment of the Job's binding is authorized
+   (Section 8) and answers `202` `{"acknowledged": false}` while the binding names this report and
+   it is not, and `200` `{"acknowledged": true}` once it is. The first answer is `202` unless the
+   authorization had already happened when the adapter asked.
 3. The Worker repeats the same report until it receives `200` `{"acknowledged": true}` or it gives
    up and exits (Section 9). A repetition finds the binding in the committed snapshot and is
-   answered from it, `202` or `200` by the same rule, without a submission (Section 5, row 5). It
-   therefore gets no ingress sequence, reducer turn, or Journal record.
+   answered `202` or `200` by the same rule, without a submission (Section 5, row 5). It therefore
+   gets no ingress sequence, reducer turn, or Journal record, and it waits for nothing.
 4. The binding, and with it the answer, lasts until the Job's process exit is confirmed. The daemon
    does not end it when it writes a `200`: a response that was written may not have arrived, and
    the next repetition must get the same answer. After a restart the replayed snapshot holds the
-   same binding, so a Worker that outlived the daemon is answered by the same rule.
+   same binding, and replay dispatches no effect (ADR-0006); for a Job that replay restored, the
+   acknowledgment is authorized exactly when the restored snapshot is terminal and holds the
+   binding, because the record that authorized it is durable. So a Worker that outlived the daemon
+   is answered by the same rule.
 5. If the process exit is confirmed after a report's turn and before the adapter reads the
    snapshot again, the binding is gone and the answer is the `409` `process_exited` of Section 5.
    The retry obligation is not extended past the exit. A report whose turn came after the exit is
@@ -201,32 +207,37 @@ checks and before it submits anything. The first row that matches decides:
 | 1 | no such resident Job | any | `404` `job_not_found` |
 | 2 | another Worker bound to the Job, or none yet | any | `409` `worker_mismatch` |
 | 3 | the Job's process exit confirmed | any | `409` `process_exited` |
-| 4 | the Job `preparing` and its launch not yet observed | any | `503` `launch_not_observed` |
-| 5 | an acknowledgment binding for this report's `outcome` | terminal | `200` if the Job is terminal, otherwise `202` (Section 4) |
+| 4 | the Job's launch not yet observed | any | `503` `launch_not_observed` |
+| 5 | an acknowledgment binding for this report's `outcome` | terminal | `200` if its acknowledgment is authorized, otherwise `202` (Section 4) |
 | 6 | an acknowledgment binding for the other `outcome` | terminal | `409` `report_conflict` |
 | 7 | the Job `running` | `running` | `204` |
 | 8 | the Job `preparing` (its launch observed) | `completed` | `409` `running_not_reported` |
 
-A report that matches no row is submitted, and the writer's answer applies (Sections 6 and 8): a
-`running` for a Job that is `preparing` with its launch observed, which the reducer accepts and
-which is answered `204` when its turn commits; a `running` in any later state, which the reducer
-rejects; and a first terminal report, which is a `failed` for a Job that is `preparing` with its
-launch observed or either outcome for a Job that is `running` or `stopping`. A Job with a bound
-Worker and no confirmed exit reaches `finalizing` only through a recorded terminal report
-(ADR-0002), so a terminal report for a Job in `finalizing` or a terminal state always meets row 3,
-5, or 6.
+A report that matches no row is submitted, and the writer's answer applies (Sections 6 and 8). In
+every such case the launch is observed and the exit is not confirmed. They are: a `running` for a
+Job that is `preparing`, which the reducer accepts and which is answered `204` when its turn
+commits; a `running` in any later state, which the reducer rejects; and a first terminal report,
+which is a `failed` for a Job that is `preparing` or either outcome for a Job that is `running` or
+`stopping`. A Job with a bound Worker and no confirmed exit reaches `finalizing` only through a
+recorded terminal report (ADR-0002), so a terminal report for a Job in `finalizing` or a terminal
+state always meets row 3, 5, or 6.
 
 - The rows submit nothing and depend only on the snapshot, so they hold whether or not admission is
   open and whichever daemon lifetime recorded the Job: a repeated `running` or a repeated terminal
   report is answered the same after admission has closed and after a restart.
 - Row 3 is the owner's decision of 2026-11-23. Once the exit is confirmed the Worker is gone, so a
   report can only come from another process, and it is refused without a record.
-- Row 4 covers every first report, `failed` included: the reducer would accept a `failed` before
-  the launch observation and then reject the runner's observation, so the adapter does not submit
-  it. The adapter holds no request until the launch is observed and arms no timer; the Worker's
-  repetition is the only retry.
-- Row 8 exists because the reducer accepts `completed` only after `running`. A Worker that follows
-  Section 9 never meets it.
+- Row 4 covers every first report in every state in which the launch is not yet observed: a Job
+  that is `preparing`, and a Job that a cancel, a terminate, or the preparation timeout moved to
+  `stopping` before the runner's observation (ADR-0016 Section 2). The reducer would accept a
+  `failed` there, and in `stopping` a `completed` too, and it would then reject the runner's
+  observation, so the adapter submits none of them. The adapter holds no request until the launch
+  is observed and arms no timer; the Worker's repetition is the only retry. If the launch is never
+  observed as started, the runner's exit report ends the Job and row 3 answers.
+- Row 8 guards `preparing` only, where the reducer rejects `completed`. In `stopping` the reducer
+  accepts either outcome whether or not `running` was reported, and the report is submitted; that
+  a Worker sends `completed` only after `running` is its obligation under Section 9, not a rule
+  the adapter enforces there.
 
 The snapshot can be overtaken before a submission is admitted. The writer and the reducer then
 decide, nothing is latched, and the adapter reads the snapshot again after a terminal report's turn
@@ -237,13 +248,15 @@ to answer by the rows above:
   `job_not_found` under ADR-0002's absent-entity rule, as ADR-0014 Section 2 says of a terminate
   for a retired Job, and the answer is `404`; refused by admission, the answer is the `503` of
   that refusal;
-- a terminal report whose Job's exit was confirmed in between is admitted through its lease and
-  normalized by the reducer to the `late_worker_event` of ADR-0002. It is recorded as an audit fact
-  and changes no outcome, and ADR-0002 authorizes its acknowledgment with the record. The adapter
-  learns from the completion of its submission that the report was normalized (Section 8) and
-  answers `200` `{"acknowledged": true}` once. This is the single best-effort acknowledgment of
-  ADR-0014 Section 1: nothing is bound or retained for it, it does not keep the Job resident, and
-  a repetition meets row 3.
+- a terminal report whose Job's exit was confirmed in between, and whose lease is still granted, is
+  admitted and normalized by the reducer to the `late_worker_event` of ADR-0002. It is recorded as
+  an audit fact and changes no outcome, and ADR-0002 authorizes its acknowledgment with the record.
+  The adapter learns from the completion of its submission that the report was normalized
+  (Section 8) and answers `200` `{"acknowledged": true}` once. This is the single best-effort
+  acknowledgment of ADR-0014 Section 1: nothing is bound or retained for it and it does not keep
+  the Job resident. A repetition meets row 3 while the Job is resident and row 1 once it is
+  retired. If the Job was claimed or retired before the lease, the refusals of Section 8 apply
+  instead and nothing is recorded.
 
 ### 6. Answers
 
@@ -258,7 +271,7 @@ conditions of this protocol are:
 | The Job is not resident: unknown, never created, or retired (ADR-0014), found from the snapshot (Section 5, row 1), from a refused lease (Section 8), or by the reducer for a submitted `running` (Section 5) | `404` | `job` | `job_not_found` |
 | `worker_id` is not the Worker bound to the Job, or the Job has no Worker yet (Section 5, row 2) | `409` | `worker` | `worker_mismatch` |
 | The Job's process exit is confirmed (Section 5, row 3) | `409` | `worker` | `process_exited` |
-| Any report before the launch is observed (Section 5, row 4) | `503` | `worker` | `launch_not_observed` |
+| Any report while the Job's launch is not yet observed (Section 5, row 4) | `503` | `worker` | `launch_not_observed` |
 | `completed` for a Job that is `preparing` with its launch observed (Section 5, row 8) | `409` | `worker` | `running_not_reported` |
 | The writer has failed closed, including a commit whose outcome is unknown | `503` | `service` | `service_failed` |
 | The writer refuses the report because admission is closed (`admission_closed`) | `503` | `service` | `not_ready` |
@@ -324,15 +337,21 @@ the core's internal API and adds no port (ADR-0005).
   keep a Job from being retired (ADR-0014 Section 1), so no retirement can fall between the lease
   and the submission.
 - It reads the committed snapshot for the rows of Section 5, before a submission and again after a
-  terminal report's turn. It asks the core nothing about the Worker gate's state.
-- The core's internal API gains one thing: submitting a Worker fact through a lease the source
-  acquired, with a completion that says whether the reducer recorded the fact as itself or
-  normalized it to `late_worker_event`. The implementation Issue names the exact operation. It
-  changes no rule of ADR-0003 or ADR-0014, and `sitometron_core` gains no public API.
+  terminal report's turn, and with the snapshot it reads whether the acknowledgment of the Job's
+  binding is authorized (Section 4). The two are read together, so an answer never combines a
+  binding with the authorization of another turn.
+- The core's internal API gains two things. One is submitting a Worker fact through a lease the
+  source acquired, with a completion that says whether the reducer recorded the fact as itself or
+  normalized it to `late_worker_event`. The other is the read-only acknowledgment view just named:
+  for a Job of this daemon's lifetime it turns true when the writer dispatches the ACK effect of
+  the terminal-outcome turn, and for a Job that replay restored it is true exactly when the
+  restored snapshot is terminal and holds a binding; it is false again once the exit clears the
+  binding. Nothing waits on it. The implementation Issue names the exact operations. They change
+  no rule of ADR-0003 or ADR-0014, and `sitometron_core` gains no public API.
 - After a terminal report's turn succeeded, the adapter answers: `200` when the completion says the
   report was normalized to `late_worker_event`; otherwise by the rows of Section 5 from the
-  snapshot it reads then, which is `202` or `200` from the binding, or `409` `process_exited` when
-  the exit was confirmed after the turn.
+  snapshot and the view it reads then, which is `202` or `200` for the binding, or `409`
+  `process_exited` when the exit was confirmed after the turn.
 - It maps the writer's answers as Section 6 states: `admission_closed` to `not_ready`,
   `service_failed` to `service_failed`, `normal_full` to `busy`, and `already_pending` to
   `report_conflict`. `coalesced_pending` means the report was recorded by a turn the snapshot did
@@ -401,7 +420,8 @@ No sentence of an Accepted ADR is superseded.
   row 3); ADR-0002 does not require the Worker-protocol boundary to submit one.
 - [ADR-0003](0003-define-single-state-writer-ingress-contract.md): unchanged. The Worker gate
   admits the one terminal report and refuses another while it is retained; its coalescing of a
-  retransmission is not reached, because the adapter answers a repetition from the snapshot; and
+  retransmission is not reached, because the adapter answers a repetition from the snapshot; the
+  ACK effect stays the authorization point, which the acknowledgment view reports (Section 8); and
   v1 never asserts a successful ACK (Section 4). ADR-0003's "a distinct post-terminal sequence may
   acquire the gate" stays true of the gate; this adapter does not submit one.
 - [ADR-0005](0005-define-phase-0a-core-capability-port-contracts.md): unchanged. No port is added.
@@ -454,18 +474,22 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   `SITOMETRON_WORKER_ENDPOINT` with the bound address and port, also for port 0, for an IPv6
   loopback address written in brackets, and when the daemon's environment carried another value;
 - `worker_v1_running_after_launch_observed`: before the launch observation is committed, `running`,
-  `completed`, and `failed` are each answered `503` `launch_not_observed` and submit nothing, and
-  the runner's observation is then accepted; after it, `running` is answered `204` and the Job is
-  `running`; a repeated `running` is answered `204` and adds no Journal record, also after
+  `completed`, and `failed` are each answered `503` `launch_not_observed` and submit nothing, for a
+  Job that is `preparing` and for one that a cancel moved to `stopping` first, and the runner's
+  observation is then decided by the reducer as without the reports; after it, `running` is
+  answered `204` and the Job is `running`, and for a Job that is `stopping` with its launch
+  observed a `completed` or a `failed` is submitted and accepted; a repeated `running` is answered
+  `204` and adds no Journal record, also after
   admission has closed; a `completed` for a Job still `preparing` with its launch observed is
   answered `409` `running_not_reported` and submits nothing, and the same report is accepted once
   `running` was accepted; a `failed` for such a Job is accepted;
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
-  deterministic barrier), and its repetition is answered `200` once that record is committed, for
-  `completed` and for `failed`; no request stays open in between; when the process exit is
-  confirmed after the report's turn and before the adapter reads the snapshot again (held at a
-  deterministic barrier), the answer is `409` `process_exited`;
+  deterministic barrier); its repetition is still answered `202` while the writer is held after it
+  installed the terminal snapshot and before it dispatched the ACK effect, and `200` once that
+  effect is dispatched, for `completed` and for `failed`; no request stays open in between; when
+  the process exit is confirmed after the report's turn and before the adapter reads the snapshot
+  again (held at a deterministic barrier), the answer is `409` `process_exited`;
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered
   from the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or
   Journal record, before and after the terminal outcome is committed; a repetition is still
@@ -481,9 +505,10 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   Job's Worker is answered `409` `process_exited` and one with another `worker_id` `409`
   `worker_mismatch`, and none adds a record, for a Job of this daemon's lifetime and for a resolved
   Job that replay restored; a terminal report that passed the snapshot check before the exit was
-  confirmed (held at a deterministic barrier) is recorded once as `late_worker_event`, changes no
-  outcome, is answered `200` `{"acknowledged": true}` once, leaves no binding, and does not keep
-  the Job from being retired, and its repetition is answered `409` `process_exited`;
+  confirmed (held at a deterministic barrier), and whose lease is granted, is recorded once as
+  `late_worker_event`, changes no outcome, is answered `200` `{"acknowledged": true}` once, leaves
+  no binding, and does not keep the Job from being retired; its repetition is answered `409`
+  `process_exited` while the Job is resident and `404` `job_not_found` once it is retired;
 - `worker_v1_job_not_resident`: a report for an unknown Job and for a retired Job is answered `404`
   `job_not_found`, with no ingress result, no Journal record, and no failure latch, also when the
   retirement happens between two reports; a terminal report whose snapshot was read before its Job
@@ -494,9 +519,10 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   `404` when it is admitted, is answered `503` `busy` when it meets `normal_full` instead, and in
   both cases adds no Journal record and no failure latch;
 - `worker_v1_not_ready_and_busy`: a report the writer refuses with `admission_closed` is answered
-  `503` `not_ready`, for a daemon started with unresolved Jobs and for one that is shutting down,
-  while for the same unresolved Job a repeated `running` is still answered `204` and a repeated
-  terminal report `202` from the snapshot;
+  `503` `not_ready`, for a daemon started with unresolved Jobs and for one that is shutting down;
+  in separate restart fixtures, an unresolved Job restored as `running` answers a repeated `running`
+  `204` and a first terminal report `503` `not_ready`, and an unresolved Job restored as
+  `finalizing` with a binding answers the repetition of its terminal report `202`;
   after a fail-closed latch the answer is `503` `service_failed`, also for a commit whose outcome
   is unknown and whose record exists at the next start; a `running` that meets `normal_full` is
   answered `503` `busy`; the listener keeps answering after admission closes and until the
@@ -539,8 +565,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - Bad: without credentials, any local process that knows a Job's identities can report for it.
 - Bad: until Issue #128, a Worker that reports and does not exit keeps its Job resident.
 - Bad: a report that arrives after the confirmed exit leaves no audit record.
-- Good: the answer to a repetition comes from the committed snapshot, so it is the same after a
-  restart and needs no state in the adapter and no question to the Worker gate.
+- Good: the answer to a repetition comes from the committed binding and one read-only view of the
+  core, so it is the same after a restart and needs no state in the adapter.
 - Neutral: a second startup option and a second OpenAPI document.
 - Bad: until the OpenAPI document exists, the contract is prose and tables only.
 
@@ -563,10 +589,12 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - **End the obligation when the `200` is written**: rejected because a written response may not
   have arrived; the Worker's next repetition must get the same answer, and ADR-0002 already ends
   the binding at the confirmed exit.
-- **Answer repetitions through the writer and ask the Worker gate whether the acknowledgment is
-  authorized**: rejected because the gate is not restored by replay, so a Worker that outlives a
-  restart could never be answered, and because the committed binding of ADR-0002 already holds the
-  retry identity.
+- **Answer repetitions through the writer, by the gate's coalescing**: rejected because the gate is
+  not restored by replay, so a Worker that outlives a restart could never be answered, and because
+  the committed binding of ADR-0002 already holds the retry identity.
+- **Take the acknowledgment from the terminal state of the snapshot alone**: rejected because the
+  writer installs a turn's snapshot before it dispatches the turn's effects, and ADR-0003 makes the
+  ACK effect the authorization point; a repetition could be acknowledged a moment too early.
 - **Record a terminal report after the confirmed exit as a late event**: rejected on 2026-11-23
   because the Worker is gone by then, a Job that replay restored has no Worker gate to submit
   through, and each further report would need a rule of its own; a refusal from the snapshot needs
