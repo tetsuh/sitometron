@@ -123,8 +123,9 @@ record, but its Worker cannot reach it and is not acknowledged.
 
 The composition binds the Worker listener's address, so that its port is known, before it builds the
 runner, and gives the endpoint to the runner's producer as a value of its own, next to the launch
-specifications. The listener starts accepting connections after the runner is built and before the
-External REST listener opens (Section 11).
+specifications. Binding reserves the address and port only: the composition starts listening on the
+socket, and accepting, after the runner is built and before the External REST listener opens
+(Section 11). Until then a connection attempt to the endpoint does not complete.
 
 ### 3. Routes
 
@@ -164,9 +165,10 @@ define.
 
 1. The Worker sends its terminal report. If no row of Section 5 answers it, which requires among
    other things that the committed snapshot holds no binding, the adapter submits the report to the
-   writer as the matching critical input and waits for that turn (Section 8). That turn records the
-   report (`worker_completed` or `worker_failed`), moves the Job to `finalizing`, and binds the
-   obligation; it does not authorize the acknowledgment.
+   writer as the matching critical input and waits for that turn (Section 8). Unless the confirmed
+   exit overtook the report (Section 5), that turn records the report (`worker_completed` or
+   `worker_failed`), moves the Job to `finalizing`, and binds the obligation; it does not authorize
+   the acknowledgment.
 2. ADR-0002 authorizes the acknowledgment in a later turn, the one that commits the matching
    `terminal_outcome_committed`. The supervisor drives the Job from `finalizing` to that record
    through its own inputs (ADR-0012), each in a writer turn of its own. ADR-0003 makes the ACK
@@ -192,9 +194,11 @@ define.
    decision, so the record decides what the effect would have decided. This includes a daemon that
    stopped after the record was durable and before the effect was dispatched.
 
-Steps 2 and 5 are the whole rule for when an acknowledgment is authorized. Which report meets the
-binding at all, in a running daemon and after a restart, is decided by Section 5 alone; what a
-report meets when the exit is confirmed around its turn is decided by Sections 5 and 8.
+Steps 1 to 5 concern a report that establishes or meets a binding, and steps 2 and 5 are the whole
+rule for when the acknowledgment of a binding is authorized. Which report meets the binding at all,
+in a running daemon and after a restart, is decided by Section 5 alone. A submitted report that the
+confirmed exit overtook establishes no binding and is outside these steps: Sections 5 and 8 decide
+it, with the single acknowledgment that its own turn authorizes.
 
 This is ADR-0002's "the Phase 2 adapter sends that idempotent ACK and retries until delivery or
 confirmed process exit" for a protocol in which the Worker is the client: once the acknowledgment is
@@ -431,8 +435,8 @@ and the Job's outcome is the one the exit decided.
 
 The routes are added to `sitometron_http` behind a Sitometron-owned Worker backend interface, next
 to the existing Job backend interface, and the composition implements that interface on the core's
-internal API. The adapter's server separates binding its address from accepting connections, which
-Section 2 needs. The adapter adds no third-party dependency and the allowlists of ADR-0010 are
+internal API. The adapter's server separates binding its address from listening and accepting on it,
+which Section 2 needs. The adapter adds no third-party dependency and the allowlists of ADR-0010 are
 unchanged. The producer of `sitometron_process` takes the endpoint as one more value at
 construction; its launch specification is unchanged. Worker HTTP v1 exists only in builds with HTTP
 enabled, like the External REST adapter and the runner.
@@ -489,8 +493,9 @@ below. No other sentence of an Accepted ADR is superseded.
   gains `SITOMETRON_WORKER_ENDPOINT`, and the question of Section 2 about a first report before the
   launch observation is decided (Section 5). Section 6 says the composition constructs the producer
   "before any listener opens"; this ADR binds the Worker listener's address before the producer is
-  constructed and starts accepting on it afterwards, and reads "opens" as accepting connections, so
-  that no connection is accepted before the runner exists.
+  constructed and starts listening and accepting on it afterwards. A bound socket that does not
+  listen completes no connection, so the Worker listener opens after the producer exists and the
+  sentence holds as written.
 
 ### 12. Not decided here
 
@@ -515,11 +520,11 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 
 - `worker_v1_listener_loopback_only`: a Worker listen address that is not loopback, a repeated or
   empty `--worker-listen`, a malformed one, and one with the address and nonzero port of `--listen`
-  each refuse startup; both options with port 0 on the same loopback address start and get
-  different ports; without
-  `--worker-listen` no Worker listener exists and the runner adds no endpoint variable; each
-  listener answers the other's paths `404` `route_not_found`; no connection to the Worker listener
-  is accepted before the runner is built;
+  each refuse startup; both options with port 0 on the same loopback address start and get different
+  ports; without `--worker-listen` no Worker listener exists and the runner adds no endpoint
+  variable; each listener answers the other's paths `404` `route_not_found`; while the construction
+  of the runner's producer is held (at a deterministic barrier) a TCP connection attempt to the
+  bound Worker endpoint does not complete, and it completes once the listener has started;
 - `worker_v1_endpoint_in_environment`: with a Worker listener, a started process has
   `SITOMETRON_WORKER_ENDPOINT` with the bound address and port, also for port 0, for an IPv6
   loopback address written in brackets, and when the daemon's environment carried another value;
@@ -567,12 +572,12 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   confirmed (held at a deterministic barrier), and whose lease is granted, is recorded once as
   `late_worker_event`, changes no outcome, is answered `200` `{"acknowledged": true}` once, and
   leaves no binding in the snapshot; the same report is answered `503` `service_failed`, with no
-  `200`, when the service fails after the lease is acquired and before the submission, and when
-  the report's own commit fails; a creation that needs the Job's slot is refused while the
-  adapter holds the lease or the report's turn is in flight, and afterwards retires the Job and
-  clears the permit the Worker gate still retains, without another acknowledgment; its
-  repetition is answered `409` `process_exited` while the Job is resident and `404`
-  `job_not_found` once it is retired;
+  `200`, when the service fails after the lease is acquired and before the submission, and when the
+  report's own commit fails; a creation whose victim selection runs while the adapter still holds
+  the lease (held at a deterministic barrier) is refused, and one whose victim selection runs after
+  the lease is returned retires the Job and clears the permit the Worker gate still retains, without
+  another acknowledgment; its repetition is answered `409` `process_exited` while the Job is
+  resident and `404` `job_not_found` once it is retired;
 - `worker_v1_job_not_resident`: a report for an unknown Job and for a retired Job is answered `404`
   `job_not_found`, with no ingress result, no Journal record, and no failure latch, also when the
   retirement happens between two reports; a terminal report whose snapshot was read before its Job
