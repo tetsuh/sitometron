@@ -678,5 +678,5 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - Requirements: `WRK-002` (Planned)
 - Contract Registry: `Worker HTTP v1 routes and JSON schemas`
 - Related ADR: ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0009, ADR-0010,
-  ADR-0012, ADR-0014, ADR-0015, ADR-0016
+  ADR-0011, ADR-0012, ADR-0014, ADR-0015, ADR-0016
 - `spike/README.md`: finding 9
