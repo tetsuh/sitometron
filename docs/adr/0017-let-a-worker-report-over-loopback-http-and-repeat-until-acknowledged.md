@@ -728,8 +728,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - Contract Registry: `Worker HTTP v1 routes and JSON schemas` stays `Planned | Planned` while this
   ADR is Proposed and becomes `Normative | Planned` when it is Accepted; the row of the
   `sitometrond` startup configuration and command line keeps `Planned | Implemented`, which covers
-  the existing options only: `--worker-listen` is planned and not implemented; `External REST v1` keeps `Normative |
-  Implemented` (one sentence of ADR-0008 superseded, Section 11)
+  the existing options only: `--worker-listen` is planned and not implemented; `External REST v1`
+  keeps `Normative | Implemented` (one sentence of ADR-0008 superseded, Section 11)
 - Related ADR: ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0009, ADR-0010,
   ADR-0011, ADR-0012, ADR-0014, ADR-0015, ADR-0016
 - `spike/README.md`: finding 9
