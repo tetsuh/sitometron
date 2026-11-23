@@ -444,7 +444,8 @@ tables of this ADR, which remains the authority afterwards.
 
 ### 11. What changes in the Accepted ADRs
 
-No sentence of an Accepted ADR is superseded.
+One sentence of an Accepted ADR is superseded: the ADR-0008 Section 1 sentence named under ADR-0008
+below. No other sentence of an Accepted ADR is superseded.
 
 - [ADR-0002](0002-define-core-job-reducer-contract.md): unchanged. Section 4 states how its
   acknowledgment sentence is met by a Worker-driven exchange answered from the committed binding.
