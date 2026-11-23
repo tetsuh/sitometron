@@ -314,11 +314,12 @@ the core's internal API and adds no port (ADR-0005).
   the Job is not resident; and otherwise `busy`, which is the case of a Job that a retirement has
   claimed and not yet committed (ADR-0014 Section 1). The last two need a Job that became closed
   after its snapshot was read, since Section 5 answers a closed Job without a lease. A Job that
-  replay restored has no Worker gate; it is never asked for a lease, because a restored Job with a
-  bound Worker has a binding or a confirmed exit, or is unresolved and refused as `not_ready`. The
-  adapter returns the lease when the submission has been answered; a held lease and an admitted
-  input each keep a Job from being retired (ADR-0014 Section 1), so no retirement can fall between
-  the lease and the submission.
+  replay restored has no Worker gate, and none is ever consulted for it: a restored Job with a
+  bound Worker either has a binding or a confirmed exit, and is answered by Section 5, or is
+  unresolved, and then admission is closed and the lease is refused as `not_ready`. The adapter
+  returns the lease when the submission has been answered; a held lease and an admitted input each
+  keep a Job from being retired (ADR-0014 Section 1), so no retirement can fall between the lease
+  and the submission.
 - It reads the committed snapshot for the rows of Section 5, before a submission and again after a
   terminal report's turn. It asks the core nothing about the Worker gate's state.
 - The core's internal API gains one thing: submitting a Worker fact through a lease the source
@@ -355,9 +356,9 @@ the core's internal API and adds no port (ADR-0005).
 - Send one terminal report, with `event_sequence` 1, when its work has ended, and repeat exactly
   that report until it is answered `200` `{"acknowledged": true}`, also across a restart of the
   daemon. Send `completed` only after a `running` was answered `204`; `failed` may be sent at any
-  time. Treat `202` and `503` as "send
-  again", and `404` and `409` as final. After `503` `service_failed` or `not_ready` it may give up,
-  and it must not assume that its report was or was not recorded.
+  time. Treat `202` and `503` as "send again", and `404` and `409` as final. After `503`
+  `service_failed` or `not_ready` it may give up, and it must not assume that its report was or
+  was not recorded.
 - Exit promptly after the acknowledgment, and exit when it gives up repeating. The daemon does not
   stop a Worker because it reported: until its exit is confirmed the Job stays resident (ADR-0014),
   and a Worker that does not exit is ended only by the timers of Issue #128.
