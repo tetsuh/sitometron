@@ -429,13 +429,14 @@ the core's internal API and adds no port (ADR-0005).
 - Send one terminal report when its work has ended, `completed` or `failed`, and repeat exactly that
   report until it is answered `200` `{"acknowledged": true}`, also across a restart of the daemon.
   Send `completed` only after a `running` was answered `204`; `failed` may be sent at any time.
-  Treat `202` and `503` as "send again", and every other answer of `400` or above as final, except
-  `500`, which it treats as `503`: `404` and `409` say that this report will not be taken, and any
-  other `4xx` says that the request itself is wrong. After a final answer the Worker stops reporting
-  and exits. A `202` says the report is recorded and its acknowledgment is pending: the Worker keeps
-  repeating for as long as it is answered `202`, whatever the number of repetitions. It may give up
-  only after a `503` or a `500`, whatever its code, or when the daemon gives no answer, and it must
-  then not assume that its report was or was not recorded.
+  Treat `202`, `503`, and `408` `request_timeout` as "send again", and `500` as `503`. Every other
+  answer of `400` or above is final: after it the Worker stops repeating and exits. A final `404` or
+  `409` ends the repetition and does not prove that nothing was recorded (Section 6); any other
+  final `4xx` says that the request itself is wrong. A `202` says the report is recorded and its
+  acknowledgment is pending: the Worker keeps repeating for as long as it is answered `202`,
+  whatever the number of repetitions. It may give up only after a `503`, a `500`, or a `408`,
+  whatever its code, or when the daemon gives no answer, and it must then not assume that its report
+  was or was not recorded.
 - Exit promptly after the acknowledgment, and exit when it gives up repeating. Reporting does not
   by itself make the daemon stop a Worker, and until its exit is confirmed the Job stays resident
   (ADR-0014). The existing stops still apply to a Worker that has reported: a terminate while the
@@ -669,9 +670,11 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   request on a route is answered `405` with `Allow: POST` and no body;
 - `worker_v1_openapi_contract`: the OpenAPI document matches Sections 3 and 6;
 - `rest_v1_worker_job_succeeds`: through production `sitometrond` with a verified registry and a
-  Worker listener, a test Worker that reports `running` and `completed`, repeats until
-  acknowledged, and exits brings its Job to `succeeded` with its exit confirmed and a recorded
-  cleanup status, on Linux and Windows; a test Worker that reports `failed` brings it to `failed`.
+  Worker listener, a test Worker that reports `running` and `completed`, repeats until acknowledged,
+  and exits brings its Job to `succeeded` with its exit confirmed and a recorded cleanup status, on
+  Linux and Windows; a test Worker that reports `failed` brings it to `failed`; a test Worker whose
+  first terminal report is answered `408` `request_timeout`, once for a delayed header and once for
+  a delayed body, sends the same report again and is acknowledged.
 
 ## Consequences
 
