@@ -425,8 +425,9 @@ the core's internal API and adds no port (ADR-0005).
 
 ### 9. What a Worker must do
 
-- Send `running` once it can do its work, and send it again on `503`. A Worker that never sends it
-  never enters `running` (ADR-0016 Section 2).
+- Send `running` once it can do its work, and send the same report again on `503`, `500`, or `408`
+  `request_timeout`; any other answer of `400` or above to it is final, as for a terminal report. A
+  Worker that never sends it never enters `running` (ADR-0016 Section 2).
 - Send one terminal report when its work has ended, `completed` or `failed`, and repeat exactly that
   report until it is answered `200` `{"acknowledged": true}`, also across a restart of the daemon.
   Send `completed` only after a `running` was answered `204`; `failed` may be sent at any time.
@@ -574,10 +575,13 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   cancel moves the Job to `stopping` before the answer is written; a `running` for a Job that is
   already `stopping` with its launch observed, and one for a Job that is `finalizing` with its exit
   unconfirmed, is submitted, rejected by the reducer, and answered `409` with the ADR-0002 rejection
-  reason, never `204`; a repeated `running` is answered `204` and adds no Journal record, also after
-  admission has closed; a `completed` for a Job still `preparing` with its launch observed is
-  answered `409` `running_not_reported` and submits nothing, and the same report is accepted once
-  `running` was accepted; a `failed` for such a Job is accepted;
+  reason, never `204`; the same holds for a `running` against a terminal Job whose exit is
+  unconfirmed, and none of these adds a record; a first `running` that is answered `408`
+  `request_timeout`, for a delayed header and for a delayed body, submits nothing, and the same
+  report sent again is answered `204`; a repeated `running` is answered `204` and adds no Journal
+  record, also after admission has closed; a `completed` for a Job still `preparing` with its launch
+  observed is answered `409` `running_not_reported` and submits nothing, and the same report is
+  accepted once `running` was accepted; a `failed` for such a Job is accepted;
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
   deterministic barrier), where the test Worker keeps repeating through successive `202` answers
