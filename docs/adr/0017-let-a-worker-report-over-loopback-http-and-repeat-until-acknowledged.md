@@ -260,10 +260,11 @@ state always meets row 3, 5, or 6.
   `stopping` before the runner's observation (ADR-0016 Section 2). The reducer would accept a
   `failed` there, and in `stopping` a `completed` too, and it would then reject the runner's
   observation, so the adapter submits none of them. The adapter holds no request until the launch
-  is observed and arms no timer; the Worker's repetition is the only retry. Row 3 takes
-  over only when the committed snapshot shows the exit confirmed, through an accepted failed
-  launch observation, which produces no separate exit fact (ADR-0016 Section 2), or through a
-  recorded exit; until then, and for as long as neither is recorded, row 4 keeps answering.
+  is observed and arms no timer; the Worker's repetition is the only retry. Row 4 answers
+  only while the snapshot shows the launch unobserved and the exit unconfirmed. Once either fact
+  changes, the ordered table decides again: an observed launch lets the report pass row 4, and a
+  confirmed exit, which an accepted failed launch observation gives without a separate exit fact
+  (ADR-0016 Section 2), selects row 3.
 - Row 8 guards `preparing` only, where the reducer rejects `completed`. In `stopping` the reducer
   accepts either outcome whether or not `running` was reported, and the report is submitted; that
   a Worker sends `completed` only after `running` is its obligation under Section 9, not a rule
@@ -394,10 +395,10 @@ the core's internal API and adds no port (ADR-0005).
   completion says the report was normalized to `late_worker_event`; otherwise by the rows of Section
   5 from the snapshot and the view it reads then, which is `202` or `200` for the binding, or `409`
   `process_exited` when the exit was confirmed after the turn; in that last case the report stays
-  recorded (Section 6). The completion of the submission decides, not the daemon's readiness when
-  the answer is written: a turn that was dequeued before a fail-closed latch and committed is
-  answered as a success (ADR-0003), with the `204`, the `202` or `200`, or the single late `200`
-  that it earned.
+  recorded (Section 6). A fail-closed latch that comes after the turn committed never replaces this
+  mapping with `service_failed`: a turn that was dequeued before the latch and committed
+  (ADR-0003) is answered exactly as without the latch, with the `204`, the `202` or `200`, the
+  single late `200`, or the `409` `process_exited` that the read after the turn gives.
 - It maps the writer's answers as Section 6 states: `admission_closed` to `not_ready`,
   `service_failed` to `service_failed`, `normal_full` to `busy`, and `already_pending` to
   `report_conflict`. `coalesced_pending` cannot occur in v1: the adapter submits one request at a
@@ -544,8 +545,9 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   variable; each listener answers a well-formed request for the other's paths `404`
   `route_not_found`, and a request refused before route resolution, such as one without a valid
   `Host`, keeps that refusal; while the construction of the runner's producer is held (at a
-  deterministic barrier) a TCP connection attempt to the bound Worker endpoint does not complete,
-  and it completes once the listener has started;
+  deterministic barrier) a TCP connection attempt to the bound Worker endpoint establishes no
+  connection, and after the barrier is released and the listener has started a new attempt
+  succeeds;
 - `worker_v1_endpoint_in_environment`: with a Worker listener, a started process has
   `SITOMETRON_WORKER_ENDPOINT` with the bound address and port, also for port 0, for an IPv6
   loopback address written in brackets, and when the daemon's environment carried another value;
@@ -575,7 +577,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   record answers `202`; when
   the process exit is confirmed after the report's turn and before the adapter reads the snapshot
   again (held at a deterministic barrier), the answer is `409` `process_exited` and the Journal
-  holds the report's record;
+  holds the report's record, also when another turn's commit fails and latches the service before
+  that read;
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered from
   the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or Journal
   record, before and after the terminal outcome is committed; a repetition is still answered `200`
