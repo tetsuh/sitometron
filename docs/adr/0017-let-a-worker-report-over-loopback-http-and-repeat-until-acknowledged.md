@@ -608,7 +608,9 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   External REST thread;
 - `worker_v1_request_rules`: the message-syntax, limit, media-type, strict-JSON, and field rules of
   ADR-0008 and ADR-0009 hold on the Worker listener, with the `outcome` values of Section 3; a
-  request with an `event_sequence` field, or any other unknown field, is `422` `validation_failed`;
+  request with an `event_sequence` field, or any other unknown field, is `422` `validation_failed`,
+  and so is a `worker_id` that is missing, not a string, or not a canonical lowercase UUIDv4, on
+  both routes, and an `outcome` that is missing, not a string, or neither `completed` nor `failed`;
   a request target with a query component on a Worker route is `404` `route_not_found`
   (ADR-0009 Section 4); a `job_id` in the path that is not a canonical lowercase UUIDv7 is `400`
   `invalid_job_id`; a method other than `POST` on a route, `GET` and `OPTIONS` among them, is
@@ -618,8 +620,10 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   byte-order mark, a lone surrogate, and a JSON parse error as ADR-0011 Sections 2 to 4 state,
   with the same answers as on the External REST listener;
 - `worker_v1_error_envelope_and_codes`: every response of `400` or above on the Worker listener
-  carries the error object of ADR-0008 Section 5 with the `domain` and `code` of Section 6, for one
-  request error, each protocol condition, and each service condition, and no `message` or `details`
+  carries the error object of ADR-0008 Section 5 with its `domain` and `code`, for every request
+  error that `worker_v1_request_rules` exercises (a malformed body, a failed validation, an invalid
+  `job_id`, an unknown route, and a refused method among them), and for each protocol condition and
+  each service condition of Section 6, and no `message` or `details`
   contains a file-system path, a raw operating-system or library error, a Journal record, or a
   secret; a `HEAD` request on a route is answered `405` with `Allow: POST` and no body;
 - `worker_v1_openapi_contract`: the OpenAPI document matches Sections 3 and 6;
