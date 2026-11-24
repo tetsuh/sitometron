@@ -549,15 +549,15 @@ Its named checks, Planned until the implementation Issue activates them. No chec
 host clock; orderings come from the adapter's submissions and the existing non-sleeping barriers:
 
 - `worker_v1_listener_loopback_only`: a Worker listen address that is not loopback, a repeated or
-  empty `--worker-listen`, a malformed one, and one with the address and nonzero port of `--listen`
-  each refuse startup; both options with port 0 on the same loopback address start and get different
-  ports; without `--worker-listen` no Worker listener exists and the runner adds no endpoint
-  variable; each listener answers a well-formed request for the other's paths `404`
+  empty `--worker-listen`, one given as the last argument with no value, one followed by another
+  option instead of a value, a malformed one, and one with the address and nonzero port of
+  `--listen` each refuse startup; both options with port 0 on the same loopback address start and
+  get different ports; without `--worker-listen` no Worker listener exists and the runner adds no
+  endpoint variable; each listener answers a well-formed request for the other's paths `404`
   `route_not_found`, and a request refused before route resolution, such as one without a valid
   `Host`, keeps that refusal; while the construction of the runner's producer is held (at a
   deterministic barrier) a TCP connection attempt to the bound Worker endpoint establishes no
-  connection, and after the barrier is released and the listener has started a new attempt
-  succeeds;
+  connection, and after the barrier is released and the listener has started a new attempt succeeds;
 - `worker_v1_endpoint_in_environment`: with a Worker listener, a started process has
   `SITOMETRON_WORKER_ENDPOINT` with the bound address and port, also for port 0, for an IPv6
   loopback address written in brackets, and when the daemon's environment carried another value;
