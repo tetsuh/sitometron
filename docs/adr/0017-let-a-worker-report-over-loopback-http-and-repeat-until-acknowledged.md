@@ -135,7 +135,12 @@ Both routes take `POST` with a JSON object body. `{job_id}` is a canonical lower
 `worker_id` is a canonical lowercase UUIDv4. An unknown field, a missing field, a wrong type, and a
 value out of range are `422` `validation_failed` (ADR-0008 Section 5); the strict JSON rules of
 ADR-0009 Section 8 apply before that. A report without a body is `400` `malformed_json`, as
-ADR-0009 Section 5 says of a creation.
+ADR-0009 Section 5 says of a creation, and whether a request has a body is decided by its framing,
+as the shared adapter decides it for a creation. A request with no body framing, or with
+`Content-Length: 0`, has no body: it has no media type to check and is `400` `malformed_json`
+whatever its `Content-Type`. A request with chunked framing has a body even when the chunks carry
+no data: the media-type check comes first, so it is `415` `unsupported_media_type` without a JSON
+media type and `400` `malformed_json` with one.
 
 | Route | Request body | Answers |
 |---|---|---|
@@ -688,7 +693,12 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   these submits anything; the combined request bound, the time bounds, a request line with a higher
   `HTTP/1.x` version, and `Expect: 100-continue` behave as ADR-0010 Sections 3 to 6 state, and a
   leading byte-order mark, a lone surrogate, and a JSON parse error as ADR-0011 Sections 2 to 4
-  state, with the same answers as on the External REST listener;
+  state, with the same answers as on the External REST listener; on both routes, a request with no
+  body framing and one with `Content-Length: 0` are `400` `malformed_json` with and without a JSON
+  media type, and a chunked request without data is `415` `unsupported_media_type` without a JSON
+  media type and `400` `malformed_json` with one; a body with a raw NUL, one with invalid UTF-8, one
+  with trailing non-whitespace, and one with a duplicate key at any depth are each `400`
+  `malformed_json` on a Worker route and reach no ingress (ADR-0009 Section 8);
 - `worker_v1_error_envelope_and_codes`: every response of `400` or above on the Worker listener that
   has a body carries the error object of ADR-0008 Section 5 with its `domain` and `code`, for every
   request error that `worker_v1_request_rules` exercises (a malformed body, a failed validation, an
