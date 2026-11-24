@@ -182,8 +182,9 @@ define.
    the adapter reads the snapshot after the report's turn, the first answer is therefore `202`
    unless the authorization had already happened; Section 8 gives the answer when it no longer
    matches.
-3. The Worker repeats the same report until it receives `200` `{"acknowledged": true}` or it gives
-   up and exits (Section 9). Section 5 alone decides what a repetition meets. While its row 5
+3. The Worker repeats the same report until it receives `200` `{"acknowledged": true}`, or a
+   final answer, or until it gives up where Section 9 allows that; a `202` never ends the
+   repetition. Section 5 alone decides what a repetition meets. While its row 5
    matches, which needs the binding in the current committed snapshot, the repetition is answered
    `202` or `200` by the same rule, without a submission. It therefore gets no ingress sequence,
    reducer turn, or Journal record, and it waits for nothing.
@@ -319,7 +320,9 @@ conditions of this protocol are:
 
 - When several conditions hold, the first matching one in this order decides: the request
   conditions of ADR-0008 Section 5 in their order; then the rows of Section 5 in their order; then
-  the answer of the writer (Section 8).
+  the answer of the writer (Section 8). Within the validation stage of ADR-0008 Section 5 the body
+  is validated before the `job_id` of the path, as the External REST adapter does: a report with
+  an invalid field and a non-canonical `job_id` is `422` `validation_failed`.
 - A `503` means the same request may be sent again. It promises no particular next answer: after
   `launch_not_observed` or `busy` a repetition can succeed, or meet another refusal, for example
   `process_exited` once the snapshot shows the exit confirmed or `job_not_found` when the Job is
@@ -421,11 +424,13 @@ the core's internal API and adds no port (ADR-0005).
 
 - Send `running` once it can do its work, and send it again on `503`. A Worker that never sends it
   never enters `running` (ADR-0016 Section 2).
-- Send one terminal report when its work has ended, `completed` or `failed`, and repeat exactly
-  that report until it is answered `200` `{"acknowledged": true}`, also across a restart of the
-  daemon. Send `completed` only after a `running` was answered `204`; `failed` may be sent at any
-  time. Treat `202` and `503` as "send again", and `404` and `409` as final. After `503`
-  `service_failed` or `not_ready` it may give up, and it must not assume that its report was or
+- Send one terminal report when its work has ended, `completed` or `failed`, and repeat exactly that
+  report until it is answered `200` `{"acknowledged": true}`, also across a restart of the daemon.
+  Send `completed` only after a `running` was answered `204`; `failed` may be sent at any time.
+  Treat `202` and `503` as "send again", and `404` and `409` as final. A `202` says the report is
+  recorded and its acknowledgment is pending: the Worker keeps repeating for as long as it is
+  answered `202`, whatever the number of repetitions. It may give up only after a `503`, whatever
+  its code, or when the daemon gives no answer, and it must then not assume that its report was or
   was not recorded.
 - Exit promptly after the acknowledgment, and exit when it gives up repeating. Reporting does not
   by itself make the daemon stop a Worker, and until its exit is confirmed the Job stays resident
@@ -433,7 +438,8 @@ the core's internal API and adds no port (ADR-0005).
   Job is `finalizing` and its exit is unconfirmed (ADR-0002 rejects a terminate once the Job is
   terminal), and the forced stop of the runner's shutdown in every state (ADR-0016 Section 5).
   Issue #128 adds the timers that end a Worker which does not exit when none of these happens.
-- Choose its own pause between repetitions and its own limit. This contract fixes no duration.
+- Choose its own pause between repetitions, and its own limit for the cases in which it may give
+  up. This contract fixes no duration.
 - Treat a cooperative stop (ADR-0016 Section 3) as a request to end its work; it may still send its
   terminal report before it exits.
 
@@ -560,7 +566,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   accepted;
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
-  deterministic barrier); its repetition is still answered `202` while the writer is held after it
+  deterministic barrier), where the test Worker keeps repeating through successive `202` answers
+  and stops only at `200`; its repetition is still answered `202` while the writer is held after it
   installed the terminal snapshot and before it dispatched the ACK effect, and `200` once that
   effect is dispatched, for `completed` and for `failed`; no request stays open in between; a
   daemon stopped at that same point, after the terminal record is durable and before the ACK
@@ -572,10 +579,11 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered from
   the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or Journal
   record, before and after the terminal outcome is committed; a repetition is still answered `200`
-  after an earlier `200` was written, and after the daemon is restarted on the same fixed Worker
-  address and port with the Worker's exit unconfirmed; in separate fixtures, a daemon restarted on
-  another fixed Worker port, and one restarted without `--worker-listen`, hold the binding and are
-  not reachable at the old endpoint; the recorded Worker event carries event
+  after an earlier `200` was written, and after the commit of another Job's turn failed and latched
+  the service while the listener is still up, with no ingress, and after the daemon is restarted on
+  the same fixed Worker address and port with the Worker's exit unconfirmed; in separate fixtures, a
+  daemon restarted on another fixed Worker port, and one restarted without `--worker-listen`, hold
+  the binding and are not reachable at the old endpoint; the recorded Worker event carries event
   sequence 1 for `completed` and 2 for `failed`;
 - `worker_v1_conflicting_report_refused`: a terminal report with the other `outcome` is answered
   `409` `report_conflict` while a binding exists, in both directions, also after its
@@ -629,14 +637,15 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   request with an `event_sequence` field, or any other unknown field, is `422` `validation_failed`,
   and so is a `worker_id` that is missing, not a string, or not a canonical lowercase UUIDv4, on
   both routes, and an `outcome` that is missing, not a string, or neither `completed` nor `failed`;
-  a request target with a query component on a Worker route is `404` `route_not_found`
-  (ADR-0009 Section 4); a `job_id` in the path that is not a canonical lowercase UUIDv7 is `400`
-  `invalid_job_id`; a method other than `POST` on a route, `GET` and `OPTIONS` among them, is
-  `405` `method_not_allowed` with `Allow: POST` (ADR-0009 Section 6); none of these submits
-  anything; the combined request bound, the time bounds, a request line with a higher `HTTP/1.x`
-  version, and `Expect: 100-continue` behave as ADR-0010 Sections 3 to 6 state, and a leading
-  byte-order mark, a lone surrogate, and a JSON parse error as ADR-0011 Sections 2 to 4 state,
-  with the same answers as on the External REST listener;
+  a request target with a query component on a Worker route is `404` `route_not_found` (ADR-0009
+  Section 4); a `job_id` in the path that is not a canonical lowercase UUIDv7 is `400`
+  `invalid_job_id`; a method other than `POST` on a route, `GET` and `OPTIONS` among them, is `405`
+  `method_not_allowed` with `Allow: POST` (ADR-0009 Section 6); a report with both a `worker_id` of
+  the wrong type and a non-canonical `job_id` is `422` `validation_failed` on both routes; none of
+  these submits anything; the combined request bound, the time bounds, a request line with a higher
+  `HTTP/1.x` version, and `Expect: 100-continue` behave as ADR-0010 Sections 3 to 6 state, and a
+  leading byte-order mark, a lone surrogate, and a JSON parse error as ADR-0011 Sections 2 to 4
+  state, with the same answers as on the External REST listener;
 - `worker_v1_error_envelope_and_codes`: every response of `400` or above on the Worker listener that
   has a body carries the error object of ADR-0008 Section 5 with its `domain` and `code`, for every
   request error that `worker_v1_request_rules` exercises (a malformed body, a failed validation, an
