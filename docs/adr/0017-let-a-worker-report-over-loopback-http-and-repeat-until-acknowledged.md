@@ -254,8 +254,10 @@ state always meets row 3, 5, or 6.
   confirmed exit (row 3 instead of row 5), a terminal report whose commit outcome was unknown (row 5
   instead of `service_failed`), or a retirement (row 1). Whether a surviving binding is answered
   `202` or `200` is the authorization rule of Section 4.
-- Row 3 is the owner's decision of 2026-11-23. Once the exit is confirmed the Worker is gone, so a
-  report can only come from another process, and it is refused without a record.
+- Row 3 is the owner's decision of 2026-11-23. It applies to every request whose snapshot check
+  sees the confirmed exit, whichever process sent it and whenever it was sent: also to a report
+  the Worker itself sent before it exited and that the adapter checked only afterwards. It is
+  refused without a record.
 - Row 4 covers every first report in every state in which the launch is not yet observed: a Job
   that is `preparing`, and a Job that a cancel, a terminate, or the preparation timeout moved to
   `stopping` before the runner's observation (ADR-0016 Section 2). The reducer would accept a
@@ -446,8 +448,9 @@ the core's internal API and adds no port (ADR-0005).
 | No complete response: the connection fails, is closed, or ends before the response is complete | The result is unknown, and the report may or may not be recorded: it sends the same report again, or gives up |
 | Any other response | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other `4xx` says that the request itself is wrong |
 
-- A Worker that gives up, or whose terminal report got a final response, exits. One whose `running`
-  got a final response or was given up cannot send `completed`; it sends `failed` or exits. A
+- A Worker that gives up on its terminal report, or whose terminal report got a final response,
+  exits. One whose `running` got a final response or was given up cannot send `completed`; it sends
+  `failed`, which is then its terminal report under the table, or exits. A
   Worker that gives up must not assume that its report was or was not recorded.
 - Reporting does not by itself make the daemon stop a Worker, and until its exit is confirmed the
   Job stays resident (ADR-0014). The existing stops still apply to a Worker that has reported: a
@@ -496,8 +499,8 @@ acceptance that sentence stands as written.
 - [ADR-0002](0002-define-core-job-reducer-contract.md): unchanged. Section 4 states how its
   acknowledgment sentence is met by a Worker-driven exchange answered from the committed binding.
   ADR-0002 says a late Worker event is "acknowledged without changing the result"; that describes
-  an input that reaches the reducer, and the one report the exit can overtake is recorded and
-  acknowledged so (Section 5). The adapter submits no report whose snapshot check sees the
+  an input that reaches the reducer, and the one report the exit can overtake is handled under the
+  conditions of Sections 5 and 8. The adapter submits no report whose snapshot check sees the
   confirmed exit (Section 5, row 3), and Section 5 states the one exception, a report the exit
   overtook after that check; ADR-0002 does not require the Worker-protocol boundary to submit
   any other.
@@ -526,8 +529,8 @@ acceptance that sentence stands as written.
 - [ADR-0012](0012-drive-each-job-with-a-supervisor-in-the-core.md): unchanged.
 - [ADR-0014](0014-retire-closed-jobs-under-capacity-pressure.md): unchanged. Its Section 1 speaks
   of a `late_worker_event` recorded after `process_exit_confirmed` and its single best-effort
-  acknowledgment; under this ADR such a record arises only when the exit overtakes a report, and
-  that acknowledgment is the one `200` of Section 5.
+  acknowledgment; under this ADR such a record can arise only when the exit overtakes a report,
+  under the conditions of Sections 5 and 8, and that acknowledgment is the one `200` of Section 5.
 - [ADR-0015](0015-register-applications-with-a-verified-registry-file.md) Section 6: the question
   it assigned here is decided (Section 1): the External REST I/O model stays, and the Worker
   listener does not share its thread.
@@ -576,27 +579,27 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - `worker_v1_running_after_launch_observed`: before the launch observation is committed, `running`,
   `completed`, and `failed` are each answered `503` `launch_not_observed` and submit nothing; in the
   fixture of a `preparing` Job the test Worker sends its `running` again after that answer, the
-  runner's observation is then accepted, `running` is answered
-  `204`, and the Job is `running`; in a separate fixture a cancel moves the Job to `stopping` before
-  the observation, the reducer then rejects the observation, every report stays `503`
-  `launch_not_observed` and reaches no ingress, and after the runner's exit report the answer is
-  `409` `process_exited`; in a fixture whose launch fails and whose failed observation the reducer
-  accepts, the answer is `409` `process_exited` with no exit report from the runner; in a third
-  fixture the observation commits before the cancel, and for that `stopping` Job a `completed` or a
-  `failed` is submitted and accepted; a `running` whose turn committed is answered `204` also when a
-  cancel moves the Job to `stopping` before the answer is written; a `running` for a Job that is
-  already `stopping` with its launch observed, and one for a Job that is `finalizing` with its exit
-  unconfirmed, is submitted, rejected by the reducer, and answered `409` with the ADR-0002 rejection
-  reason, never `204`; the same holds for a `running` against a terminal Job whose exit is
-  unconfirmed, and none of these adds a record; a first `running` that is answered `408`
-  `request_timeout`, for a delayed header and for a delayed body, submits nothing, and the same
-  report sent again is answered `204`; a `running` whose turn committed and whose response is
-  discarded before the Worker receives it is sent again by the same Worker, is answered `204`,
-  reaches no ingress, and adds no second `worker_running` record; a repeated `running` is answered
-  `204` and adds no Journal record, also after admission has closed; a `completed` for a Job still
-  `preparing` with its launch observed is answered `409` `running_not_reported` and submits nothing,
-  and the same report is accepted once `running` was accepted; a `failed` for such a Job is
-  accepted;
+  runner's observation is then accepted, `running` is answered `204`, and the Job is `running`; in a
+  separate fixture a cancel moves the Job to `stopping` before the observation, the reducer then
+  rejects the observation, every report stays `503` `launch_not_observed` and reaches no ingress,
+  and after the runner's exit report the answer is `409` `process_exited`; in a fixture whose launch
+  fails and whose failed observation the reducer accepts, the answer is `409` `process_exited` with
+  no exit report from the runner; in a third fixture the observation commits before the cancel, and
+  for that `stopping` Job a `completed` or a `failed` is submitted and accepted; a `running` whose
+  turn committed is answered `204` also when a cancel moves the Job to `stopping` before the answer
+  is written; a `running` for a Job that is already `stopping` with its launch observed, and one for
+  a Job that is `finalizing` with its exit unconfirmed, is submitted, rejected by the reducer, and
+  answered `409` with the ADR-0002 rejection reason, never `204`; the same holds for a `running`
+  against a terminal Job whose exit is unconfirmed, and none of these adds a record; a first
+  `running` that is answered `408` `request_timeout`, for a delayed header and for a delayed body,
+  submits nothing, and the same report sent again is answered `204`; a `running` whose turn
+  committed and whose response is discarded before the Worker receives it is sent again by the same
+  Worker, is answered `204`, reaches no ingress, and adds no second `worker_running` record; a test
+  Worker that gives up on a `running` without a complete response sends `failed`, keeps repeating it
+  through `202`, and exits at `200`; a repeated `running` is answered `204` and adds no Journal
+  record, also after admission has closed; a `completed` for a Job still `preparing` with its launch
+  observed is answered `409` `running_not_reported` and submits nothing, and the same report is
+  accepted once `running` was accepted; a `failed` for such a Job is accepted;
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
   deterministic barrier), where the test Worker keeps repeating through successive `202` answers
@@ -627,17 +630,19 @@ host clock; orderings come from the adapter's submissions and the existing non-s
 - `worker_v1_report_after_exit_refused`: after the exit is confirmed every report that names the
   Job's Worker is answered `409` `process_exited` and one with another `worker_id` `409`
   `worker_mismatch`, and none adds a record, for a Job of this daemon's lifetime and for a resolved
-  Job that replay restored; a terminal report that passed the snapshot check before the exit was
-  confirmed (held at a deterministic barrier), and whose lease is granted, is recorded once as
-  `late_worker_event`, changes no outcome, is answered `200` `{"acknowledged": true}` once, and
-  leaves no binding in the snapshot; the same report is answered `503` `service_failed`, with no
-  `200`, when the service fails after the lease is acquired and before the submission, when the
-  report was admitted and is disposed because another turn's commit fails before it is dequeued, and
-  when the report's own commit fails; a creation whose victim selection runs while the adapter still
-  holds the lease (held at a deterministic barrier) is refused, and one whose victim selection runs
-  after the lease is returned retires the Job and clears the permit the Worker gate still retains,
-  without another acknowledgment; its repetition is answered `409` `process_exited` while the Job is
-  resident and `404` `job_not_found` once it is retired;
+  Job that replay restored, and for a report that the Job's own Worker sent before it exited and
+  that is held before the snapshot check until the exit is confirmed (at a deterministic barrier); a
+  terminal report that passed the snapshot check before the exit was confirmed (held at a
+  deterministic barrier), and whose lease is granted, is recorded once as `late_worker_event`,
+  changes no outcome, is answered `200` `{"acknowledged": true}` once, and leaves no binding in the
+  snapshot; the same report is answered `503` `service_failed`, with no `200`, when the service
+  fails after the lease is acquired and before the submission, when the report was admitted and is
+  disposed because another turn's commit fails before it is dequeued, and when the report's own
+  commit fails; a creation whose victim selection runs while the adapter still holds the lease (held
+  at a deterministic barrier) is refused, and one whose victim selection runs after the lease is
+  returned retires the Job and clears the permit the Worker gate still retains, without another
+  acknowledgment; its repetition is answered `409` `process_exited` while the Job is resident and
+  `404` `job_not_found` once it is retired;
 - `worker_v1_job_not_resident`: a report for an unknown Job and for a retired Job is answered `404`
   `job_not_found`, with no ingress result, no Journal record, and no failure latch, also when the
   retirement happens between two reports; a terminal report whose snapshot was read before its Job
