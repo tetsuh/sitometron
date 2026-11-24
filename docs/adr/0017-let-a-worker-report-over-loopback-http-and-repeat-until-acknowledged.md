@@ -425,30 +425,35 @@ the core's internal API and adds no port (ADR-0005).
 
 ### 9. What a Worker must do
 
-- Send `running` once it can do its work, and send the same report again on `503`, `500`, or `408`
-  `request_timeout`; any other answer of `400` or above to it is final, as for a terminal report. A
-  Worker that never sends it never enters `running` (ADR-0016 Section 2).
-- Send one terminal report when its work has ended, `completed` or `failed`, and repeat exactly that
-  report until it is answered `200` `{"acknowledged": true}`, also across a restart of the daemon.
-  Send `completed` only after a `running` was answered `204`; `failed` may be sent at any time.
-  Treat `202`, `503`, and `408` `request_timeout` as "send again", and `500` as `503`. Every other
-  answer of `400` or above is final: after it the Worker stops repeating and exits. A final `404` or
-  `409` ends the repetition and does not prove that nothing was recorded (Section 6); any other
-  final `4xx` says that the request itself is wrong. A `202` says the report is recorded and its
-  acknowledgment is pending: the Worker keeps repeating for as long as it is answered `202`,
-  whatever the number of repetitions. It may give up only after a `503`, a `500`, or a `408`,
-  whatever its code, or when the daemon gives no answer, and it must then not assume that its report
-  was or was not recorded.
-- Exit promptly after the acknowledgment, and exit when it gives up repeating. Reporting does not
-  by itself make the daemon stop a Worker, and until its exit is confirmed the Job stays resident
-  (ADR-0014). The existing stops still apply to a Worker that has reported: a terminate while the
-  Job is `finalizing` and its exit is unconfirmed (ADR-0002 rejects a terminate once the Job is
-  terminal), and the forced stop of the runner's shutdown in every state (ADR-0016 Section 5).
-  Issue #128 adds the timers that end a Worker which does not exit when none of these happens,
-  for a Job the running daemon drives. A Job that replay left unresolved is not driven (ADR-0012
-  Section 7) and replay arms no timer for it (ADR-0006 Section 6), so its restored binding can keep
-  answering `202` for as long as the Job is unresolved, and its Worker keeps repeating until an
-  operator stops it. Resolving such Jobs is not decided here.
+- Send `running` once it can do its work. A Worker that never sends it never enters `running`
+  (ADR-0016 Section 2).
+- Send one terminal report when its work has ended, `completed` or `failed`, and never the other
+  one afterwards. Send `completed` only after a `running` was answered `204`; `failed` may be sent
+  at any time.
+- Act on the result of each request as the table says. It covers every result, for both reports;
+  "the same report" has the identical `job_id`, `worker_id`, and, for a terminal report, `outcome`.
+
+| Result of a request | What the Worker does |
+|---|---|
+| `204` to `running` | The report is accepted; it does not send `running` again |
+| `200` `{"acknowledged": true}` to a terminal report | It stops repeating and exits promptly |
+| `202` `{"acknowledged": false}` to a terminal report | The report is recorded and its acknowledgment is pending: it sends the same report again, for as long as it is answered `202`, whatever the number of repetitions, also across a restart of the daemon |
+| `503`, `500`, or `408` `request_timeout` | It sends the same report again, or gives up |
+| No complete response: the connection fails, is closed, or ends before the response is complete | The result is unknown, and the report may or may not be recorded: it sends the same report again, or gives up |
+| Any other response | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other `4xx` says that the request itself is wrong |
+
+- A Worker that gives up, or whose terminal report got a final response, exits. One whose `running`
+  got a final response or was given up cannot send `completed`; it sends `failed` or exits. A
+  Worker that gives up must not assume that its report was or was not recorded.
+- Reporting does not by itself make the daemon stop a Worker, and until its exit is confirmed the
+  Job stays resident (ADR-0014). The existing stops still apply to a Worker that has reported: a
+  terminate while the Job is `finalizing` and its exit is unconfirmed (ADR-0002 rejects a terminate
+  once the Job is terminal), and the forced stop of the runner's shutdown in every state (ADR-0016
+  Section 5). Issue #128 adds the timers that end a Worker which does not exit when none of these
+  happens, for a Job the running daemon drives. A Job that replay left unresolved is not driven
+  (ADR-0012 Section 7) and replay arms no timer for it (ADR-0006 Section 6), so its restored binding
+  can keep answering `202` for as long as the Job is unresolved, and its Worker keeps repeating
+  until an operator stops it. Resolving such Jobs is not decided here.
 - Choose its own pause between repetitions, and its own limit for the cases in which it may give
   up. This contract fixes no duration.
 - Treat a cooperative stop (ADR-0016 Section 3) as a request to end its work; it may still send its
@@ -578,10 +583,13 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   reason, never `204`; the same holds for a `running` against a terminal Job whose exit is
   unconfirmed, and none of these adds a record; a first `running` that is answered `408`
   `request_timeout`, for a delayed header and for a delayed body, submits nothing, and the same
-  report sent again is answered `204`; a repeated `running` is answered `204` and adds no Journal
-  record, also after admission has closed; a `completed` for a Job still `preparing` with its launch
-  observed is answered `409` `running_not_reported` and submits nothing, and the same report is
-  accepted once `running` was accepted; a `failed` for such a Job is accepted;
+  report sent again is answered `204`; a `running` whose turn committed and whose response is
+  discarded before the Worker receives it is sent again by the same Worker, is answered `204`,
+  reaches no ingress, and adds no second `worker_running` record; a repeated `running` is answered
+  `204` and adds no Journal record, also after admission has closed; a `completed` for a Job still
+  `preparing` with its launch observed is answered `409` `running_not_reported` and submits nothing,
+  and the same report is accepted once `running` was accepted; a `failed` for such a Job is
+  accepted;
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
   deterministic barrier), where the test Worker keeps repeating through successive `202` answers
