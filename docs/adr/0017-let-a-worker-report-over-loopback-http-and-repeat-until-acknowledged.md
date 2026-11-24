@@ -89,8 +89,9 @@ for every implementation; anything they do not state is not part of v1.
   authentication (ADR-0004). Restricting who can reach the listener is the deployment's
   responsibility until Worker bearer tokens are designed.
 - Every path of this contract starts with `/worker/v1`. The External REST listener serves no
-  `/worker/v1` path and the Worker listener serves no `/v1` path; each answers the other's paths
-  `404` `route_not_found`.
+  `/worker/v1` path and the Worker listener serves no `/v1` path; a request for the other's path
+  that reaches route resolution is answered `404` `route_not_found`, after the refusals that
+  ADR-0009 Section 1 decides before a route is known.
 - Request and response bodies, the message-syntax rules, the limits, and the refusals before a
   route is known are those of External REST v1 (ADR-0008 Section 1, ADR-0009 Sections 1, 2, 4, 5,
   6, 7, and 8), applied to this listener with the same configured bounds. The decisions of the
@@ -177,8 +178,10 @@ define.
    the turn's effects, so a terminal snapshot alone is not yet the authorization. The adapter
    therefore asks the core whether the acknowledgment of the Job's binding is authorized
    (Section 8) and answers `202` `{"acknowledged": false}` while the binding names this report and
-   it is not, and `200` `{"acknowledged": true}` once it is. The first answer is `202` unless the
-   authorization had already happened when the adapter asked.
+   it is not, and `200` `{"acknowledged": true}` once it is. While the binding still matches when
+   the adapter reads the snapshot after the report's turn, the first answer is therefore `202`
+   unless the authorization had already happened; Section 8 gives the answer when it no longer
+   matches.
 3. The Worker repeats the same report until it receives `200` `{"acknowledged": true}` or it gives
    up and exits (Section 9). Section 5 alone decides what a repetition meets. While its row 5
    matches, which needs the binding in the current committed snapshot, the repetition is answered
@@ -256,8 +259,10 @@ state always meets row 3, 5, or 6.
   `stopping` before the runner's observation (ADR-0016 Section 2). The reducer would accept a
   `failed` there, and in `stopping` a `completed` too, and it would then reject the runner's
   observation, so the adapter submits none of them. The adapter holds no request until the launch
-  is observed and arms no timer; the Worker's repetition is the only retry. If the launch is never
-  observed as started, the runner's exit report ends the Job and row 3 answers.
+  is observed and arms no timer; the Worker's repetition is the only retry. Row 3 takes
+  over only when the committed snapshot shows the exit confirmed, through an accepted failed
+  launch observation, which produces no separate exit fact (ADR-0016 Section 2), or through a
+  recorded exit; until then, and for as long as neither is recorded, row 4 keeps answering.
 - Row 8 guards `preparing` only, where the reducer rejects `completed`. In `stopping` the reducer
   accepts either outcome whether or not `running` was reported, and the report is submitted; that
   a Worker sends `completed` only after `running` is its obligation under Section 9, not a rule
@@ -317,13 +322,16 @@ conditions of this protocol are:
   the answer of the writer (Section 8).
 - A `503` means the same request may be sent again. It promises no particular next answer: after
   `launch_not_observed` or `busy` a repetition can succeed, or meet another refusal, for example
-  `process_exited` when the launch is never observed as started or `job_not_found` when the Job is
+  `process_exited` once the snapshot shows the exit confirmed or `job_not_found` when the Job is
   retired; after `not_ready` and `service_failed` it does not succeed until the daemon is restarted
   or its unresolved Jobs are resolved. A `404` or a `409` is not a request to repeat.
-- An answer decided from the request or from the committed snapshot submits nothing to the writer,
-  and a submission that the writer refuses or the reducer rejects is not appended (ADR-0002), so
-  none of these creates a Journal record. `service_failed` is the exception: it includes a commit
-  whose outcome is unknown (ADR-0006 Section 3), after which the record may or may not exist. A
+- An answer decided from the request, or from the committed snapshot before any submission,
+  submits nothing to the writer, and a submission that the writer refuses or the reducer rejects
+  is not appended (ADR-0002), so none of these creates a Journal record. There are two exceptions.
+  `service_failed` includes a commit whose outcome is unknown (ADR-0006 Section 3), after which
+  the record may or may not exist. And the `409` `process_exited` that Section 8 gives after a
+  terminal report's own turn succeeded follows a report that is recorded: the exit was confirmed
+  after that turn, and the Job's outcome is the one the recorded report led to. A
   Worker must not infer from `service_failed` whether its report was recorded.
 
 ### 7. Late reports, reports after the exit, and retired Jobs
@@ -382,7 +390,11 @@ the core's internal API and adds no port (ADR-0005).
   `200` or `202`. After a terminal report's turn succeeded, the adapter answers: `200` when the
   completion says the report was normalized to `late_worker_event`; otherwise by the rows of Section
   5 from the snapshot and the view it reads then, which is `202` or `200` for the binding, or `409`
-  `process_exited` when the exit was confirmed after the turn.
+  `process_exited` when the exit was confirmed after the turn; in that last case the report stays
+  recorded (Section 6). The completion of the submission decides, not the daemon's readiness when
+  the answer is written: a turn that was dequeued before a fail-closed latch and committed is
+  answered as a success (ADR-0003), with the `204`, the `202` or `200`, or the single late `200`
+  that it earned.
 - It maps the writer's answers as Section 6 states: `admission_closed` to `not_ready`,
   `service_failed` to `service_failed`, `normal_full` to `busy`, and `already_pending` to
   `report_conflict`. `coalesced_pending` cannot occur in v1: the adapter submits one request at a
@@ -396,7 +408,8 @@ the core's internal API and adds no port (ADR-0005).
   writer seals, in the order ADR-0012 Section 5 gives producers. Closure of admission by the core
   does not stop the listener: until the composition stops it, it keeps answering, with the rows of
   Section 5 and with `503` `not_ready` for a report the writer refuses. After a fail-closed latch
-  the listener likewise stays up and answers `503` `service_failed` for a submission; readiness is
+  the listener likewise stays up and answers `503` `service_failed` for a submission that is
+  refused or whose completion reports a failure; readiness is
   false from the latch, and the writer seals when the composition has stopped the listener, as for
   the runner (ADR-0016 Section 5).
 - After a restart, replay reports a Job with a live or unknown Worker as unresolved and admission
@@ -522,26 +535,29 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   empty `--worker-listen`, a malformed one, and one with the address and nonzero port of `--listen`
   each refuse startup; both options with port 0 on the same loopback address start and get different
   ports; without `--worker-listen` no Worker listener exists and the runner adds no endpoint
-  variable; each listener answers the other's paths `404` `route_not_found`; while the construction
-  of the runner's producer is held (at a deterministic barrier) a TCP connection attempt to the
-  bound Worker endpoint does not complete, and it completes once the listener has started;
+  variable; each listener answers a well-formed request for the other's paths `404`
+  `route_not_found`, and a request refused before route resolution, such as one without a valid
+  `Host`, keeps that refusal; while the construction of the runner's producer is held (at a
+  deterministic barrier) a TCP connection attempt to the bound Worker endpoint does not complete,
+  and it completes once the listener has started;
 - `worker_v1_endpoint_in_environment`: with a Worker listener, a started process has
   `SITOMETRON_WORKER_ENDPOINT` with the bound address and port, also for port 0, for an IPv6
   loopback address written in brackets, and when the daemon's environment carried another value;
 - `worker_v1_running_after_launch_observed`: before the launch observation is committed, `running`,
   `completed`, and `failed` are each answered `503` `launch_not_observed` and submit nothing; in the
   fixture of a `preparing` Job the runner's observation is then accepted, `running` is answered
-  `204`, and the Job is `running`; in a separate fixture a cancel moves the Job to `stopping`
-  before the observation, the reducer then rejects the observation, every report stays `503`
+  `204`, and the Job is `running`; in a separate fixture a cancel moves the Job to `stopping` before
+  the observation, the reducer then rejects the observation, every report stays `503`
   `launch_not_observed` and reaches no ingress, and after the runner's exit report the answer is
-  `409` `process_exited`; in a third fixture the observation commits before the cancel, and for
-  that `stopping` Job a `completed` or a `failed` is submitted and accepted; a `running` whose
-  turn committed is answered `204` also when a cancel moves the Job to `stopping` before the
-  answer is written; a repeated
-  `running` is answered `204` and adds no Journal record, also after admission has closed; a
-  `completed` for a Job still `preparing` with its launch observed is answered `409`
-  `running_not_reported` and submits nothing, and the same report is accepted once `running` was
-  accepted; a `failed` for such a Job is accepted;
+  `409` `process_exited`; in a fixture whose launch fails and whose failed observation the reducer
+  accepts, the answer is `409` `process_exited` with no exit report from the runner; in a third
+  fixture the observation commits before the cancel, and for that `stopping` Job a `completed` or a
+  `failed` is submitted and accepted; a `running` whose turn committed is answered `204` also when a
+  cancel moves the Job to `stopping` before the answer is written; a repeated `running` is answered
+  `204` and adds no Journal record, also after admission has closed; a `completed` for a Job still
+  `preparing` with its launch observed is answered `409` `running_not_reported` and submits nothing,
+  and the same report is accepted once `running` was accepted; a `failed` for such a Job is
+  accepted;
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
   deterministic barrier); its repetition is still answered `202` while the writer is held after it
@@ -551,7 +567,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   effect, answers the repetition `200` after its restart, and one stopped before the terminal
   record answers `202`; when
   the process exit is confirmed after the report's turn and before the adapter reads the snapshot
-  again (held at a deterministic barrier), the answer is `409` `process_exited`;
+  again (held at a deterministic barrier), the answer is `409` `process_exited` and the Journal
+  holds the report's record;
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered from
   the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or Journal
   record, before and after the terminal outcome is committed; a repetition is still answered `200`
@@ -590,17 +607,18 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   `job_not_found` and answered `404` when it is admitted, is answered `503` `busy` when it meets
   `normal_full` instead, and in both cases adds no Journal record and no failure latch;
 - `worker_v1_not_ready_and_busy`: a report the writer refuses with `admission_closed` is answered
-  `503` `not_ready`, for a daemon started with unresolved Jobs and for one that is shutting down;
-  in separate restart fixtures, an unresolved Job restored as `running` answers a repeated `running`
+  `503` `not_ready`, for a daemon started with unresolved Jobs and for one that is shutting down; in
+  separate restart fixtures, an unresolved Job restored as `running` answers a repeated `running`
   `204` and a first terminal report `503` `not_ready`, and an unresolved Job restored as
-  `finalizing` with a binding answers the repetition of its terminal report `202`; a daemon
-  stopped after a `process_exit_confirmed` record was durable and before its snapshot was
-  installed answered the repetition from the binding before the stop and answers it `409`
-  `process_exited` after the restart;
-  after a fail-closed latch the answer is `503` `service_failed`, also for a commit whose outcome
-  is unknown and whose record exists at the next start; a `running` that meets `normal_full` is
-  answered `503` `busy`; the listener keeps answering after admission closes and until the
-  composition stops it;
+  `finalizing` with a binding answers the repetition of its terminal report `202`; a daemon stopped
+  after a `process_exit_confirmed` record was durable and before its snapshot was installed answered
+  the repetition from the binding before the stop and answers it `409` `process_exited` after the
+  restart; after a fail-closed latch a refused submission, and one whose completion reports a
+  failure, is answered `503` `service_failed`, also for a commit whose outcome is unknown and whose
+  record exists at the next start; a report whose turn was dequeued before the latch (held at a
+  deterministic barrier) and then committed is answered by its completion, not `service_failed`; a
+  `running` that meets `normal_full` is answered `503` `busy`; the listener keeps answering after
+  admission closes and until the composition stops it;
 - `worker_v1_listener_has_its_own_thread`: while an External REST handler is held outside any
   writer turn (at a deterministic barrier), the Worker listener answers a report decided from the
   snapshot and a terminal report that needs a writer turn; a report that needs a writer turn while
@@ -619,13 +637,13 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   version, and `Expect: 100-continue` behave as ADR-0010 Sections 3 to 6 state, and a leading
   byte-order mark, a lone surrogate, and a JSON parse error as ADR-0011 Sections 2 to 4 state,
   with the same answers as on the External REST listener;
-- `worker_v1_error_envelope_and_codes`: every response of `400` or above on the Worker listener
-  carries the error object of ADR-0008 Section 5 with its `domain` and `code`, for every request
-  error that `worker_v1_request_rules` exercises (a malformed body, a failed validation, an invalid
-  `job_id`, an unknown route, and a refused method among them), and for each protocol condition and
-  each service condition of Section 6, and no `message` or `details`
-  contains a file-system path, a raw operating-system or library error, a Journal record, or a
-  secret; a `HEAD` request on a route is answered `405` with `Allow: POST` and no body;
+- `worker_v1_error_envelope_and_codes`: every response of `400` or above on the Worker listener that
+  has a body carries the error object of ADR-0008 Section 5 with its `domain` and `code`, for every
+  request error that `worker_v1_request_rules` exercises (a malformed body, a failed validation, an
+  invalid `job_id`, an unknown route, and a refused method among them), and for each protocol
+  condition and each service condition of Section 6, and no `message` or `details` contains a
+  file-system path, a raw operating-system or library error, a Journal record, or a secret; a `HEAD`
+  request on a route is answered `405` with `Allow: POST` and no body;
 - `worker_v1_openapi_contract`: the OpenAPI document matches Sections 3 and 6;
 - `rest_v1_worker_job_succeeds`: through production `sitometrond` with a verified registry and a
   Worker listener, a test Worker that reports `running` and `completed`, repeats until
