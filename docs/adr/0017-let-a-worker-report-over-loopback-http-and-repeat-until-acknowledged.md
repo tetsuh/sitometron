@@ -430,15 +430,19 @@ the core's internal API and adds no port (ADR-0005).
 - Send one terminal report when its work has ended, `completed` or `failed`, and never the other
   one afterwards. Send `completed` only after a `running` was answered `204`; `failed` may be sent
   at any time.
-- Act on the result of each request as the table says. It covers every result, for both reports;
-  "the same report" has the identical `job_id`, `worker_id`, and, for a terminal report, `outcome`.
+- Act on the result of each request as the table says. It covers every result, for both reports,
+  where a result is a complete final response or the failure to receive one. An interim response,
+  such as the `100 Continue` of ADR-0010 Section 6, is not a result: the Worker continues the same
+  exchange, and an exchange that ends after only an interim response has no complete response.
+  "The same report" has the identical `job_id`, `worker_id`, and, for a terminal report, `outcome`.
 
 | Result of a request | What the Worker does |
 |---|---|
 | `204` to `running` | The report is accepted; it does not send `running` again |
 | `200` `{"acknowledged": true}` to a terminal report | It stops repeating and exits promptly |
 | `202` `{"acknowledged": false}` to a terminal report | The report is recorded and its acknowledgment is pending: it sends the same report again, for as long as it is answered `202`, whatever the number of repetitions, also across a restart of the daemon |
-| `503`, `500`, or `408` `request_timeout` | It sends the same report again, or gives up |
+| `503` `launch_not_observed` | The daemon has not yet observed the launch: it sends the same report again and does not give up on this answer |
+| Any other `503`, `500`, or `408` `request_timeout` | It sends the same report again, or gives up |
 | No complete response: the connection fails, is closed, or ends before the response is complete | The result is unknown, and the report may or may not be recorded: it sends the same report again, or gives up |
 | Any other response | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other `4xx` says that the request itself is wrong |
 
@@ -457,7 +461,9 @@ the core's internal API and adds no port (ADR-0005).
 - Choose its own pause between repetitions, and its own limit for the cases in which it may give
   up. This contract fixes no duration.
 - Treat a cooperative stop (ADR-0016 Section 3) as a request to end its work; it may still send its
-  terminal report before it exits.
+  terminal report before it exits. A cooperative stop also ends a repetition that the table makes
+  mandatory: a Worker that is asked to stop may exit while its report is still answered `503`
+  `launch_not_observed` or `202`.
 
 A Worker that exits without an acknowledged terminal report is decided by the facts the daemon has:
 with no recorded report the reducer decides its exit by the Job's state, as for a process without
@@ -569,7 +575,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   loopback address written in brackets, and when the daemon's environment carried another value;
 - `worker_v1_running_after_launch_observed`: before the launch observation is committed, `running`,
   `completed`, and `failed` are each answered `503` `launch_not_observed` and submit nothing; in the
-  fixture of a `preparing` Job the runner's observation is then accepted, `running` is answered
+  fixture of a `preparing` Job the test Worker sends its `running` again after that answer, the
+  runner's observation is then accepted, `running` is answered
   `204`, and the Job is `running`; in a separate fixture a cancel moves the Job to `stopping` before
   the observation, the reducer then rejects the observation, every report stays `503`
   `launch_not_observed` and reaches no ingress, and after the runner's exit report the answer is
