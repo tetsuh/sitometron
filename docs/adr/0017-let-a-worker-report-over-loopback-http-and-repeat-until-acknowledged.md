@@ -569,11 +569,13 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   accepts, the answer is `409` `process_exited` with no exit report from the runner; in a third
   fixture the observation commits before the cancel, and for that `stopping` Job a `completed` or a
   `failed` is submitted and accepted; a `running` whose turn committed is answered `204` also when a
-  cancel moves the Job to `stopping` before the answer is written; a repeated `running` is answered
-  `204` and adds no Journal record, also after admission has closed; a `completed` for a Job still
-  `preparing` with its launch observed is answered `409` `running_not_reported` and submits nothing,
-  and the same report is accepted once `running` was accepted; a `failed` for such a Job is
-  accepted;
+  cancel moves the Job to `stopping` before the answer is written; a `running` for a Job that is
+  already `stopping` with its launch observed, and one for a Job that is `finalizing` with its exit
+  unconfirmed, is submitted, rejected by the reducer, and answered `409` with the ADR-0002 rejection
+  reason, never `204`; a repeated `running` is answered `204` and adds no Journal record, also after
+  admission has closed; a `completed` for a Job still `preparing` with its launch observed is
+  answered `409` `running_not_reported` and submits nothing, and the same report is accepted once
+  `running` was accepted; a `failed` for such a Job is accepted;
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
   deterministic barrier), where the test Worker keeps repeating through successive `202` answers
@@ -674,7 +676,8 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   and exits brings its Job to `succeeded` with its exit confirmed and a recorded cleanup status, on
   Linux and Windows; a test Worker that reports `failed` brings it to `failed`; a test Worker whose
   first terminal report is answered `408` `request_timeout`, once for a delayed header and once for
-  a delayed body, sends the same report again and is acknowledged.
+  a delayed body, sends the same report again and is acknowledged; and a test Worker whose terminal
+  report is answered a transient `503` sends the identical report again and is acknowledged.
 
 ## Consequences
 
