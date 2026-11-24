@@ -271,14 +271,15 @@ state always meets row 3, 5, or 6.
   the adapter enforces there.
 
 The snapshot can be overtaken before a submission is admitted. The writer and the reducer then
-decide, nothing is latched, and the adapter reads the snapshot again after a terminal report's turn
-to answer by the rows above:
+decide, the race itself latches nothing, and the adapter reads the snapshot again after a terminal
+report's turn to answer by the rows above. A refusal, and a submission that was admitted and then
+disposed or failed because the service failed, is answered as Section 8 maps it, in each of these
+cases:
 
 - a `running` whose Job was retired in between goes through normal admission as for an unknown Job
-  (it is a normal input without a gate, ADR-0003): admitted, the reducer rejects it as
-  `job_not_found` under ADR-0002's absent-entity rule, as ADR-0014 Section 2 says of a terminate
-  for a retired Job, and the answer is `404`; refused by admission, the answer is the `503` of
-  that refusal;
+  (it is a normal input without a gate, ADR-0003): when its turn completes, the reducer has
+  rejected it as `job_not_found` under ADR-0002's absent-entity rule, as ADR-0014 Section 2 says of
+  a terminate for a retired Job, and the answer is `404`;
 - a terminal report whose Job's exit was confirmed in between, and whose lease is still granted, is
   submitted. A refusal or a failure of the writer is answered as Section 8 maps it, as for any
   other submission: for example `503` `service_failed` when the service failed after the lease
@@ -428,17 +429,23 @@ the core's internal API and adds no port (ADR-0005).
 - Send one terminal report when its work has ended, `completed` or `failed`, and repeat exactly that
   report until it is answered `200` `{"acknowledged": true}`, also across a restart of the daemon.
   Send `completed` only after a `running` was answered `204`; `failed` may be sent at any time.
-  Treat `202` and `503` as "send again", and `404` and `409` as final. A `202` says the report is
-  recorded and its acknowledgment is pending: the Worker keeps repeating for as long as it is
-  answered `202`, whatever the number of repetitions. It may give up only after a `503`, whatever
-  its code, or when the daemon gives no answer, and it must then not assume that its report was or
-  was not recorded.
+  Treat `202` and `503` as "send again", and every other answer of `400` or above as final, except
+  `500`, which it treats as `503`: `404` and `409` say that this report will not be taken, and any
+  other `4xx` says that the request itself is wrong. After a final answer the Worker stops reporting
+  and exits. A `202` says the report is recorded and its acknowledgment is pending: the Worker keeps
+  repeating for as long as it is answered `202`, whatever the number of repetitions. It may give up
+  only after a `503` or a `500`, whatever its code, or when the daemon gives no answer, and it must
+  then not assume that its report was or was not recorded.
 - Exit promptly after the acknowledgment, and exit when it gives up repeating. Reporting does not
   by itself make the daemon stop a Worker, and until its exit is confirmed the Job stays resident
   (ADR-0014). The existing stops still apply to a Worker that has reported: a terminate while the
   Job is `finalizing` and its exit is unconfirmed (ADR-0002 rejects a terminate once the Job is
   terminal), and the forced stop of the runner's shutdown in every state (ADR-0016 Section 5).
-  Issue #128 adds the timers that end a Worker which does not exit when none of these happens.
+  Issue #128 adds the timers that end a Worker which does not exit when none of these happens,
+  for a Job the running daemon drives. A Job that replay left unresolved is not driven (ADR-0012
+  Section 7) and replay arms no timer for it (ADR-0006 Section 6), so its restored binding can keep
+  answering `202` for as long as the Job is unresolved, and its Worker keeps repeating until an
+  operator stops it. Resolving such Jobs is not decided here.
 - Choose its own pause between repetitions, and its own limit for the cases in which it may give
   up. This contract fixes no duration.
 - Treat a cooperative stop (ADR-0016 Section 3) as a request to end its work; it may still send its
@@ -521,7 +528,7 @@ below. No other sentence of an Accepted ADR is superseded.
 
 - Worker bearer tokens and any authentication of a report (ADR-0004).
 - Timer durations and the timer port (Issue #128), which end a Worker that never reports or never
-  exits.
+  exits, for a Job the running daemon drives.
 - A heartbeat, progress, results, logs, and Artifacts.
 - Resolving Jobs that replay leaves unresolved (ADR-0006; #35, #73).
 - A Worker protocol over any transport other than loopback HTTP.
@@ -600,11 +607,12 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   confirmed (held at a deterministic barrier), and whose lease is granted, is recorded once as
   `late_worker_event`, changes no outcome, is answered `200` `{"acknowledged": true}` once, and
   leaves no binding in the snapshot; the same report is answered `503` `service_failed`, with no
-  `200`, when the service fails after the lease is acquired and before the submission, and when the
-  report's own commit fails; a creation whose victim selection runs while the adapter still holds
-  the lease (held at a deterministic barrier) is refused, and one whose victim selection runs after
-  the lease is returned retires the Job and clears the permit the Worker gate still retains, without
-  another acknowledgment; its repetition is answered `409` `process_exited` while the Job is
+  `200`, when the service fails after the lease is acquired and before the submission, when the
+  report was admitted and is disposed because another turn's commit fails before it is dequeued, and
+  when the report's own commit fails; a creation whose victim selection runs while the adapter still
+  holds the lease (held at a deterministic barrier) is refused, and one whose victim selection runs
+  after the lease is returned retires the Job and clears the permit the Worker gate still retains,
+  without another acknowledgment; its repetition is answered `409` `process_exited` while the Job is
   resident and `404` `job_not_found` once it is retired;
 - `worker_v1_job_not_resident`: a report for an unknown Job and for a retired Job is answered `404`
   `job_not_found`, with no ingress result, no Journal record, and no failure latch, also when the
@@ -615,21 +623,24 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   `service_failed`, and when the claim commits after the lease was refused and before the answer is
   written it is still `503` `busy`; a `running` report whose Job is retired after the snapshot was
   read and before the submission (held at a deterministic barrier) is rejected by the reducer as
-  `job_not_found` and answered `404` when it is admitted, is answered `503` `busy` when it meets
-  `normal_full` instead, and in both cases adds no Journal record and no failure latch;
+  `job_not_found` and answered `404` when its turn completes, is answered `503` `busy` when it
+  meets `normal_full` instead, and is answered `503` `service_failed` when it was admitted and
+  is disposed because another turn's commit fails first; the race itself adds no Journal record
+  and no failure latch;
 - `worker_v1_not_ready_and_busy`: a report the writer refuses with `admission_closed` is answered
   `503` `not_ready`, for a daemon started with unresolved Jobs and for one that is shutting down; in
   separate restart fixtures, an unresolved Job restored as `running` answers a repeated `running`
   `204` and a first terminal report `503` `not_ready`, and an unresolved Job restored as
-  `finalizing` with a binding answers the repetition of its terminal report `202`; a daemon stopped
-  after a `process_exit_confirmed` record was durable and before its snapshot was installed answered
-  the repetition from the binding before the stop and answers it `409` `process_exited` after the
-  restart; after a fail-closed latch a refused submission, and one whose completion reports a
-  failure, is answered `503` `service_failed`, also for a commit whose outcome is unknown and whose
-  record exists at the next start; a report whose turn was dequeued before the latch (held at a
-  deterministic barrier) and then committed is answered by its completion, not `service_failed`; a
-  `running` that meets `normal_full` is answered `503` `busy`; the listener keeps answering after
-  admission closes and until the composition stops it;
+  `finalizing` with a binding answers the repetition of its terminal report `202`, and keeps doing
+  so, since nothing drives that Job; a daemon stopped after a `process_exit_confirmed` record was
+  durable and before its snapshot was installed answered the repetition from the binding before the
+  stop and answers it `409` `process_exited` after the restart; after a fail-closed latch a refused
+  submission, and one whose completion reports a failure, is answered `503` `service_failed`, also
+  for a commit whose outcome is unknown and whose record exists at the next start; a report whose
+  turn was dequeued before the latch (held at a deterministic barrier) and then committed is
+  answered by its completion, not `service_failed`; a `running` that meets `normal_full` is answered
+  `503` `busy`; the listener keeps answering after admission closes and until the composition stops
+  it;
 - `worker_v1_listener_has_its_own_thread`: while an External REST handler is held outside any
   writer turn (at a deterministic barrier), the Worker listener answers a report decided from the
   snapshot and a terminal report that needs a writer turn; a report that needs a writer turn while
