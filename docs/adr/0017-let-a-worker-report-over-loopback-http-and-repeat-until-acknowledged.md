@@ -608,8 +608,10 @@ receive timer, never from elapsed host time:
   `running` that is answered `408` `request_timeout`, for a delayed header and for a delayed body,
   submits nothing, and the same report sent again is answered `204`; a `running` whose turn
   committed and whose response is discarded before the Worker receives it is sent again by the same
-  Worker, is answered `204`, reaches no ingress, and adds no second `worker_running` record; a test
-  Worker that gives up on a `running` without a complete response sends `failed`, keeps repeating it
+  Worker, is answered `204`, also when a `408` `request_timeout` interrupts that repetition, which
+  does not end it, reaches no ingress, and adds no second `worker_running` record; a test Worker
+  whose first `running` is answered `408` `request_timeout`, with no earlier answer that made its
+  repetition mandatory, may give up on it, and one that does sends `failed`, keeps repeating it
   through `202`, and exits at `200`; a repeated `running` is answered `204` and adds no Journal
   record, also after admission has closed; a `completed` for a Job still `preparing` with its launch
   observed is answered `409` `running_not_reported` and submits nothing, and the same report is
@@ -625,15 +627,17 @@ receive timer, never from elapsed host time:
   `request_timeout`, once for a delayed header and once for a delayed body, sends the same report
   again and is acknowledged, and so does one whose first terminal report is answered an injected
   transient `503`; a first terminal report whose turn commits and whose response is discarded before
-  the Worker receives it is sent again, is answered from the binding, and adds no second record; its
-  repetition is still answered `202` while the writer is held after it installed the terminal
-  snapshot and before it dispatched the ACK effect, and `200` once that effect is dispatched, for
-  `completed` and for `failed`; no request stays open in between; a daemon stopped at that same
-  point, after the terminal record is durable and before the ACK effect, answers the repetition
-  `200` after its restart, and one stopped before the terminal record answers `202`; when the
-  process exit is confirmed after the report's turn and before the adapter reads the snapshot again
-  (held at a deterministic barrier), the answer is `409` `process_exited` and the Journal holds the
-  report's record, also when another turn's commit fails and latches the service before that read;
+  the Worker receives it is sent again, is answered from the binding, and adds no second record,
+  also when a `408` `request_timeout` or an injected `503` interrupts that repetition, which does
+  not end it; its repetition is still answered `202` while the writer is held after it installed the
+  terminal snapshot and before it dispatched the ACK effect, and `200` once that effect is
+  dispatched, for `completed` and for `failed`; no request stays open in between; a daemon stopped
+  at that same point, after the terminal record is durable and before the ACK effect, answers the
+  repetition `200` after its restart, and one stopped before the terminal record answers `202`; when
+  the process exit is confirmed after the report's turn and before the adapter reads the snapshot
+  again (held at a deterministic barrier), the answer is `409` `process_exited` and the Journal
+  holds the report's record, also when another turn's commit fails and latches the service before
+  that read;
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered from
   the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or Journal
   record, before and after the terminal outcome is committed; a repetition is still answered `200`
