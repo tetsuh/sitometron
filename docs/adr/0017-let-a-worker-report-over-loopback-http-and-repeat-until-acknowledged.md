@@ -109,7 +109,7 @@ the runner adds one variable, overriding any inherited value:
 
 | Variable | Value |
 |---|---|
-| `SITOMETRON_WORKER_ENDPOINT` | `http://ADDRESS:PORT`, the address and the bound port of the Worker listener, with no path and no trailing slash; an IPv6 address is written in brackets, as a URI authority requires (`http://[::1]:PORT`) |
+| `SITOMETRON_WORKER_ENDPOINT` | `http://ADDRESS:PORT`, the address and the bound port of the Worker listener, with no path and no trailing slash; the address is the bound address in its canonical text form, never the option's spelling, and carries no IPv6 scope identifier; an IPv6 address is written in brackets, as a URI authority requires (`http://[::1]:PORT`) |
 
 A Worker forms a request URL by appending a path of Section 3 to that value. When the daemon has no
 Worker listener the runner adds nothing: the process inherits the daemon's environment as ADR-0016
@@ -585,7 +585,9 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   connection, and after the barrier is released and the listener has started a new attempt succeeds;
 - `worker_v1_endpoint_in_environment`: with a Worker listener, a started process has
   `SITOMETRON_WORKER_ENDPOINT` with the bound address and port, also for port 0, for an IPv6
-  loopback address written in brackets, and when the daemon's environment carried another value;
+  loopback address written in brackets, for a `--worker-listen` whose IPv6 loopback address carries
+  a scope identifier, which gives `http://[::1]:PORT` and is accepted by the shared `Host` parser
+  when a Worker uses it, and when the daemon's environment carried another value;
 - `worker_v1_running_after_launch_observed`: before the launch observation is committed, `running`,
   `completed`, and `failed` are each answered `503` `launch_not_observed` and submit nothing; in the
   fixture of a `preparing` Job the test Worker sends its `running` again after that answer, the
@@ -614,16 +616,18 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
   deterministic barrier), where the test Worker keeps repeating through successive `202` answers and
   stops only at `200`; when the exchange after a `202` is interrupted, by a `408` `request_timeout`,
-  by a `503` `busy`, and by a connection closed after only `100 Continue`, the test Worker sends the
-  identical report again and is answered `200` once the ACK effect is dispatched; its repetition is
-  still answered `202` while the writer is held after it installed the terminal snapshot and before
-  it dispatched the ACK effect, and `200` once that effect is dispatched, for `completed` and for
-  `failed`; no request stays open in between; a daemon stopped at that same point, after the
-  terminal record is durable and before the ACK effect, answers the repetition `200` after its
-  restart, and one stopped before the terminal record answers `202`; when the process exit is
-  confirmed after the report's turn and before the adapter reads the snapshot again (held at a
-  deterministic barrier), the answer is `409` `process_exited` and the Journal holds the report's
-  record, also when another turn's commit fails and latches the service before that read;
+  by a `503` `busy` that the fixture injects between the Worker and the listener (the adapter itself
+  answers a repetition with a binding from row 5), and by a connection closed after only `100
+  Continue`, the test Worker sends the identical report again and is answered `200` once the ACK
+  effect is dispatched; its repetition is still answered `202` while the writer is held after it
+  installed the terminal snapshot and before it dispatched the ACK effect, and `200` once that
+  effect is dispatched, for `completed` and for `failed`; no request stays open in between; a daemon
+  stopped at that same point, after the terminal record is durable and before the ACK effect,
+  answers the repetition `200` after its restart, and one stopped before the terminal record answers
+  `202`; when the process exit is confirmed after the report's turn and before the adapter reads the
+  snapshot again (held at a deterministic barrier), the answer is `409` `process_exited` and the
+  Journal holds the report's record, also when another turn's commit fails and latches the service
+  before that read;
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered from
   the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or Journal
   record, before and after the terminal outcome is committed; a repetition is still answered `200`
