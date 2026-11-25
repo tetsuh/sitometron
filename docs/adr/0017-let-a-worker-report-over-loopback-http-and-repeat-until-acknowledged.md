@@ -189,8 +189,8 @@ define.
    unless the authorization had already happened; Section 8 gives the answer when it no longer
    matches.
 3. The Worker repeats the same report until it receives `200` `{"acknowledged": true}`, or a
-   final answer, or until it gives up where Section 9 allows that; a `202` never ends the
-   repetition. Section 5 alone decides what a repetition meets. While its row 5
+   final answer, or until it gives up where Section 9 allows that; after a `202` it no longer may
+   give up (Section 9). Section 5 alone decides what a repetition meets. While its row 5
    matches, which needs the binding in the current committed snapshot, the repetition is answered
    `202` or `200` by the same rule, without a submission. It therefore gets no ingress sequence,
    reducer turn, or Journal record, and it waits for nothing.
@@ -449,10 +449,15 @@ the core's internal API and adds no port (ADR-0005).
 | `200` `{"acknowledged": true}` to a terminal report | It stops repeating and exits promptly |
 | `202` `{"acknowledged": false}` to a terminal report | The report is recorded and its acknowledgment is pending: it sends the same report again, for as long as it is answered `202`, whatever the number of repetitions, also across a restart of the daemon |
 | `503` `launch_not_observed` | The daemon has not yet observed the launch: it sends the same report again and does not give up on this answer |
-| Any other `503`, `500`, or `408` `request_timeout` | It sends the same report again, or gives up |
-| No complete response: the connection fails, is closed, or ends before the response is complete | The result is unknown, and the report may or may not be recorded: it sends the same report again, or gives up |
+| Any other `503`, `500`, or `408` `request_timeout` | It sends the same report again, or gives up unless the repetition is mandatory (below) |
+| No complete response: the connection fails, is closed, or ends before the response is complete | The result is unknown, and the report may or may not be recorded: it sends the same report again, or gives up unless the repetition is mandatory (below) |
 | Any other response | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other `4xx` says that the request itself is wrong |
 
+- Once a report has been answered `202` or `503` `launch_not_observed`, its repetition is
+  mandatory: a later `503` of another code, `500`, `408` `request_timeout`, or exchange without a
+  complete response does not let the Worker give up on it, and it sends the same report again.
+  Only a `204` to `running`, a `200` to a terminal report, a final response, or a cooperative stop
+  ends a mandatory repetition.
 - A Worker that gives up on its terminal report, or whose terminal report got a final response,
   exits. One whose `running` got a final response or was given up cannot send `completed`; it sends
   `failed`, which is then its terminal report under the table, or exits. A
@@ -467,7 +472,7 @@ the core's internal API and adds no port (ADR-0005).
   can keep answering `202` for as long as the Job is unresolved, and its Worker keeps repeating
   until an operator stops it. Resolving such Jobs is not decided here.
 - Choose its own pause between repetitions, and its own limit for the cases in which it may give
-  up. This contract fixes no duration.
+  up, which are those of a repetition that is not mandatory. This contract fixes no duration.
 - Treat a cooperative stop (ADR-0016 Section 3) as a request to end its work; it may still send its
   terminal report before it exits. A cooperative stop also ends a repetition that the table makes
   mandatory: a Worker that is asked to stop may exit while its report is still answered `503`
@@ -607,17 +612,18 @@ host clock; orderings come from the adapter's submissions and the existing non-s
   accepted once `running` was accepted; a `failed` for such a Job is accepted;
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
-  deterministic barrier), where the test Worker keeps repeating through successive `202` answers
-  and stops only at `200`; its repetition is still answered `202` while the writer is held after it
-  installed the terminal snapshot and before it dispatched the ACK effect, and `200` once that
-  effect is dispatched, for `completed` and for `failed`; no request stays open in between; a
-  daemon stopped at that same point, after the terminal record is durable and before the ACK
-  effect, answers the repetition `200` after its restart, and one stopped before the terminal
-  record answers `202`; when
-  the process exit is confirmed after the report's turn and before the adapter reads the snapshot
-  again (held at a deterministic barrier), the answer is `409` `process_exited` and the Journal
-  holds the report's record, also when another turn's commit fails and latches the service before
-  that read;
+  deterministic barrier), where the test Worker keeps repeating through successive `202` answers and
+  stops only at `200`; when the exchange after a `202` is interrupted, by a `408` `request_timeout`,
+  by a `503` `busy`, and by a connection closed after only `100 Continue`, the test Worker sends the
+  identical report again and is answered `200` once the ACK effect is dispatched; its repetition is
+  still answered `202` while the writer is held after it installed the terminal snapshot and before
+  it dispatched the ACK effect, and `200` once that effect is dispatched, for `completed` and for
+  `failed`; no request stays open in between; a daemon stopped at that same point, after the
+  terminal record is durable and before the ACK effect, answers the repetition `200` after its
+  restart, and one stopped before the terminal record answers `202`; when the process exit is
+  confirmed after the report's turn and before the adapter reads the snapshot again (held at a
+  deterministic barrier), the answer is `409` `process_exited` and the Journal holds the report's
+  record, also when another turn's commit fails and latches the service before that read;
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered from
   the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or Journal
   record, before and after the terminal outcome is committed; a repetition is still answered `200`
