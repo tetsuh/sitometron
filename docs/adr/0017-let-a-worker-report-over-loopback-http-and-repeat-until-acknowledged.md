@@ -338,14 +338,16 @@ conditions of this protocol are:
   `process_exited` once the snapshot shows the exit confirmed or `job_not_found` when the Job is
   retired; after `not_ready` and `service_failed` it does not succeed until the daemon is restarted
   or its unresolved Jobs are resolved. A `404` or a `409` is not a request to repeat.
-- An answer decided from the request, or from the committed snapshot before any submission,
-  submits nothing to the writer, and a submission that the writer refuses or the reducer rejects
-  is not appended (ADR-0002), so none of these creates a Journal record. There are two exceptions.
-  `service_failed` includes a commit whose outcome is unknown (ADR-0006 Section 3), after which
-  the record may or may not exist. And the `409` `process_exited` that Section 8 gives after a
-  terminal report's own turn succeeded follows a report that is recorded: the exit was confirmed
-  after that turn, and the Job's outcome is the one the recorded report led to. A
-  Worker must not infer from `service_failed` whether its report was recorded.
+- An answer decided from the request, or from the committed snapshot before any submission, submits
+  nothing to the writer, and a submission that the writer refuses or the reducer rejects is not
+  appended (ADR-0002), so none of these creates a Journal record. There are three exceptions.
+  `service_failed` includes a commit whose outcome is unknown (ADR-0006 Section 3), after which the
+  record may or may not exist. A `500` `internal` can follow a report whose turn committed, when the
+  adapter fails while it reads the snapshot or the acknowledgment view after that turn. And the
+  `409` `process_exited` that Section 8 gives after a terminal report's own turn succeeded follows a
+  report that is recorded: the exit was confirmed after that turn, and the Job's outcome is the one
+  the recorded report led to. A Worker must not infer from `service_failed` whether its report was
+  recorded.
 
 ### 7. Late reports, reports after the exit, and retired Jobs
 
@@ -449,17 +451,20 @@ the core's internal API and adds no port (ADR-0005).
 | `200` `{"acknowledged": true}` to a terminal report | It stops repeating and exits promptly |
 | `202` `{"acknowledged": false}` to a terminal report | The report is recorded and its acknowledgment is pending: it sends the same report again, for as long as it is answered `202`, whatever the number of repetitions, also across a restart of the daemon |
 | `503` `launch_not_observed` | The daemon has not yet observed the launch: it sends the same report again and does not give up on this answer |
-| Any other `503`, `500`, or `408` `request_timeout` | It sends the same report again, or gives up unless the repetition is mandatory (below) |
+| `408` `request_timeout`, `503` `not_ready`, or `503` `busy` | The report was not submitted: it sends the same report again, or gives up unless the repetition is mandatory (below) |
+| `503` `service_failed` or `500` `internal` | The report may already be recorded (Section 6): it sends the same report again; for a terminal report this repetition is mandatory (below), and for `running` it may give up unless the repetition is mandatory |
 | No complete response: the connection fails, is closed, or ends before the response is complete | The result is unknown, and the report may already be recorded: it sends the same report again, and this repetition is mandatory (below) |
 | Any other response | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other `4xx` says that the request itself is wrong |
 
 - Once a report has been answered `202` or `503` `launch_not_observed`, once a terminal report has
-  been answered `503` `service_failed`, which can follow a commit whose outcome is unknown and whose
-  record may exist (Section 6), or once one of its exchanges, the first included, ended without a
+  been answered `503` `service_failed` or `500` `internal`, either of which can follow a report that
+  is recorded (Section 6), or once one of its exchanges, the first included, ended without a
   complete response, its repetition is mandatory: a later `503` of another code, `500`, `408`
   `request_timeout`, or exchange without a complete response does not let the Worker give up on it,
   and it sends the same report again. Only a `204` to `running`, a `200` to a terminal report, a
-  final response, or a cooperative stop ends a mandatory repetition.
+  final response, or a cooperative stop ends a mandatory repetition. A Worker may therefore give up
+  on a terminal report only after a `408` `request_timeout`, a `503` `not_ready`, or a `503` `busy`,
+  each of which comes before any submission, and only while its repetition is not mandatory.
 - A Worker that gives up on its terminal report, or whose terminal report got a final response,
   exits. One whose `running` got a final response or was given up cannot send `completed`; it sends
   `failed`, which is then its terminal report under the table, or exits. A
@@ -632,16 +637,19 @@ receive timer, never from elapsed host time:
   the Worker receives it is sent again, is answered from the binding, and adds no second record,
   also when a `408` `request_timeout` or an injected `503` interrupts that repetition, which does
   not end it; a test Worker whose first terminal report is answered `503` `service_failed` keeps
-  sending the same report, does not exit on a later `503`, `500`, or `408`, and is answered from the
-  binding after the daemon is restarted on the same endpoint when the record was durable; its
-  repetition is still answered `202` while the writer is held after it installed the terminal
-  snapshot and before it dispatched the ACK effect, and `200` once that effect is dispatched, for
-  `completed` and for `failed`; no request stays open in between; a daemon stopped at that same
-  point, after the terminal record is durable and before the ACK effect, answers the repetition
-  `200` after its restart, and one stopped before the terminal record answers `202`; when the
-  process exit is confirmed after the report's turn and before the adapter reads the snapshot again
-  (held at a deterministic barrier), the answer is `409` `process_exited` and the Journal holds the
-  report's record, also when another turn's commit fails and latches the service before that read;
+  sending the same report, does not exit on a later `503`, `500`, or `408`, and so does one whose
+  first terminal report commits and is then answered `500` `internal` because the read after the
+  turn fails (injected), which is answered from the binding when sent again and adds no second
+  Worker record, and is answered from the binding after the daemon is restarted on the same endpoint
+  when the record was durable; its repetition is still answered `202` while the writer is held after
+  it installed the terminal snapshot and before it dispatched the ACK effect, and `200` once that
+  effect is dispatched, for `completed` and for `failed`; no request stays open in between; a daemon
+  stopped at that same point, after the terminal record is durable and before the ACK effect,
+  answers the repetition `200` after its restart, and one stopped before the terminal record answers
+  `202`; when the process exit is confirmed after the report's turn and before the adapter reads the
+  snapshot again (held at a deterministic barrier), the answer is `409` `process_exited` and the
+  Journal holds the report's record, also when another turn's commit fails and latches the service
+  before that read;
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered from
   the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or Journal
   record, before and after the terminal outcome is committed; a repetition is still answered `200`
