@@ -452,19 +452,20 @@ the core's internal API and adds no port (ADR-0005).
 | `202` `{"acknowledged": false}` to a terminal report | The report is recorded and its acknowledgment is pending: it sends the same report again, for as long as it is answered `202`, whatever the number of repetitions, also across a restart of the daemon |
 | `503` `launch_not_observed` | The daemon has not yet observed the launch: it sends the same report again and does not give up on this answer |
 | `408` `request_timeout`, `503` `not_ready`, or `503` `busy` | The report was not submitted: it sends the same report again, or gives up unless the repetition is mandatory (below) |
-| `503` `service_failed` or `500` `internal` | The report may already be recorded (Section 6): it sends the same report again; for a terminal report this repetition is mandatory (below), and for `running` it may give up unless the repetition is mandatory |
+| `503` `service_failed`, `500` `internal`, or any `503` or `500` whose code the Worker does not know (ADR-0008 Section 2 lets codes be added) | The report may already be recorded (Section 6): it sends the same report again; for a terminal report this repetition is mandatory (below), and for `running` it may give up unless the repetition is mandatory |
 | No complete response: the connection fails, is closed, or ends before the response is complete | The result is unknown, and the report may already be recorded: it sends the same report again, and this repetition is mandatory (below) |
 | Any other response | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other `4xx` says that the request itself is wrong |
 
 - Once a report has been answered `202` or `503` `launch_not_observed`, once a terminal report has
   been answered `503` `service_failed` or `500` `internal`, either of which can follow a report that
   is recorded (Section 6), or once one of its exchanges, the first included, ended without a
-  complete response, its repetition is mandatory: a later `503` of another code, `500`, `408`
-  `request_timeout`, or exchange without a complete response does not let the Worker give up on it,
-  and it sends the same report again. Only a `204` to `running`, a `200` to a terminal report, a
-  final response, or a cooperative stop ends a mandatory repetition. A Worker may therefore give up
-  on a terminal report only after a `408` `request_timeout`, a `503` `not_ready`, or a `503` `busy`,
-  each of which comes before any submission, and only while its repetition is not mandatory.
+  complete response, its repetition is mandatory: a later `503` or `500` of any code, known or not,
+  `408` `request_timeout`, or exchange without a complete response does not let the Worker give up
+  on it, and it sends the same report again. Only a `204` to `running`, a `200` to a terminal
+  report, a final response, or a cooperative stop ends a mandatory repetition. A Worker may
+  therefore give up on a terminal report only after a `408` `request_timeout`, a `503` `not_ready`,
+  or a `503` `busy`, each of which comes before any submission, and only while its repetition is not
+  mandatory.
 - A Worker that gives up on its terminal report, or whose terminal report got a final response,
   exits. One whose `running` got a final response or was given up cannot send `completed`; it sends
   `failed`, which is then its terminal report under the table, or exits. A
@@ -637,12 +638,14 @@ receive timer, never from elapsed host time:
   the Worker receives it is sent again, is answered from the binding, and adds no second record,
   also when a `408` `request_timeout` or an injected `503` interrupts that repetition, which does
   not end it; a test Worker whose first terminal report is answered `503` `service_failed` keeps
-  sending the same report, does not exit on a later `503`, `500`, or `408`, and so does one whose
-  first terminal report commits and is then answered `500` `internal` because the read after the
-  turn fails (injected), which is answered from the binding when sent again and adds no second
-  Worker record, and is answered from the binding after the daemon is restarted on the same endpoint
-  when the record was durable; its repetition is still answered `202` while the writer is held after
-  it installed the terminal snapshot and before it dispatched the ACK effect, and `200` once that
+  sending the same report, does not exit on a later `503`, `500`, or `408`, a test Worker whose
+  terminal report, after a `202`, is answered an injected `503` and an injected `500` with codes it
+  does not know keeps sending the same report and is acknowledged, and so does one whose first
+  terminal report commits and is then answered `500` `internal` because the read after the turn
+  fails (injected), which is answered from the binding when sent again and adds no second Worker
+  record, and is answered from the binding after the daemon is restarted on the same endpoint when
+  the record was durable; its repetition is still answered `202` while the writer is held after it
+  installed the terminal snapshot and before it dispatched the ACK effect, and `200` once that
   effect is dispatched, for `completed` and for `failed`; no request stays open in between; a daemon
   stopped at that same point, after the terminal record is durable and before the ACK effect,
   answers the repetition `200` after its restart, and one stopped before the terminal record answers
