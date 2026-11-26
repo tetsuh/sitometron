@@ -451,7 +451,7 @@ the core's internal API and adds no port (ADR-0005).
 | `200` `{"acknowledged": true}` to a terminal report | It stops repeating and exits promptly |
 | `202` `{"acknowledged": false}` to a terminal report | The report is recorded and its acknowledgment is pending: it sends the same report again, for as long as it is answered `202`, whatever the number of repetitions, also across a restart of the daemon |
 | `503` `launch_not_observed` | The daemon has not yet observed the launch: it sends the same report again and does not give up on this answer |
-| `408` `request_timeout`, `503` `not_ready`, or `503` `busy` | The report was not submitted: it sends the same report again, or gives up unless the repetition is mandatory (below) |
+| `408` of any code, known or not (a request timeout), `503` `not_ready`, or `503` `busy` | The report was not submitted: it sends the same report again, or gives up unless the repetition is mandatory (below) |
 | `503` `service_failed`, `500` `internal`, or any `503` or `500` whose code the Worker does not know (ADR-0008 Section 2 lets codes be added) | The report may already be recorded (Section 6): it sends the same report again; for a terminal report this repetition is mandatory (below), and for `running` it may give up unless the repetition is mandatory |
 | No complete response: the connection fails, is closed, or ends before the response is complete | The result is unknown, and the report may already be recorded: it sends the same report again, and this repetition is mandatory (below) |
 | Any other response | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other `4xx` says that the request itself is wrong |
@@ -461,12 +461,12 @@ the core's internal API and adds no port (ADR-0005).
   is a terminal report and was answered by the row that says it may already be recorded (`503`
   `service_failed`, `500` `internal`, or a `503` or `500` with a code the Worker does not know), at
   its first attempt or later; or one of its exchanges, the first included, ended without a complete
-  response. Then a later `503` or `500` of any code, known or not, `408` `request_timeout`, or
-  exchange without a complete response does not let the Worker give up on it, and it sends the same
-  report again. Only a `204` to `running`, a `200` to a terminal report, a final response, or a
-  cooperative stop ends a mandatory repetition. A Worker may therefore give up on a terminal report
-  only after a `408` `request_timeout`, a `503` `not_ready`, or a `503` `busy`, each of which comes
-  before any submission, and only while its repetition is not mandatory.
+  response. Then a later `503`, `500`, or `408` of any code, known or not, or exchange without a
+  complete response does not let the Worker give up on it, and it sends the same report again. Only
+  a `204` to `running`, a `200` to a terminal report, a final response, or a cooperative stop ends a
+  mandatory repetition. A Worker may therefore give up on a terminal report only after a `408` of
+  any code, a `503` `not_ready`, or a `503` `busy`, each of which comes before any submission, and
+  only while its repetition is not mandatory.
 - A Worker that gives up on its terminal report, or whose terminal report got a final response,
   exits. One whose `running` got a final response or was given up cannot send `completed`; it sends
   `failed`, which is then its terminal report under the table, or exits. A
@@ -641,21 +641,23 @@ receive timer, never from elapsed host time:
   not end it; a test Worker whose first terminal report is answered `503` `service_failed` keeps
   sending the same report, does not exit on a later `503`, `500`, or `408`, a test Worker whose
   terminal report, after a `202`, is answered an injected `503` and an injected `500` with codes it
-  does not know keeps sending the same report and is acknowledged, and so does one whose first
-  terminal report is answered an injected `503` or `500` with a code it does not know and then a
-  `408` `request_timeout` or a `503` `busy` before any `202`, where the next identical report
-  reaches the binding and adds no second record, and so does one whose first terminal report commits
-  and is then answered `500` `internal` because the read after the turn fails (injected), which is
-  answered from the binding when sent again and adds no second Worker record, and is answered from
-  the binding after the daemon is restarted on the same endpoint when the record was durable; its
-  repetition is still answered `202` while the writer is held after it installed the terminal
-  snapshot and before it dispatched the ACK effect, and `200` once that effect is dispatched, for
-  `completed` and for `failed`; no request stays open in between; a daemon stopped at that same
-  point, after the terminal record is durable and before the ACK effect, answers the repetition
-  `200` after its restart, and one stopped before the terminal record answers `202`; when the
-  process exit is confirmed after the report's turn and before the adapter reads the snapshot again
-  (held at a deterministic barrier), the answer is `409` `process_exited` and the Journal holds the
-  report's record, also when another turn's commit fails and latches the service before that read;
+  does not know keeps sending the same report and is acknowledged, and so does one whose terminal
+  report, after a `202`, is answered an injected `408` with a code it does not know, and so does one
+  whose first terminal report is answered an injected `503` or `500` with a code it does not know
+  and then a `408` `request_timeout` or a `503` `busy` before any `202`, where the next identical
+  report reaches the binding and adds no second record, and so does one whose first terminal report
+  commits and is then answered `500` `internal` because the read after the turn fails (injected),
+  which is answered from the binding when sent again and adds no second Worker record, and is
+  answered from the binding after the daemon is restarted on the same endpoint when the record was
+  durable; its repetition is still answered `202` while the writer is held after it installed the
+  terminal snapshot and before it dispatched the ACK effect, and `200` once that effect is
+  dispatched, for `completed` and for `failed`; no request stays open in between; a daemon stopped
+  at that same point, after the terminal record is durable and before the ACK effect, answers the
+  repetition `200` after its restart, and one stopped before the terminal record answers `202`; when
+  the process exit is confirmed after the report's turn and before the adapter reads the snapshot
+  again (held at a deterministic barrier), the answer is `409` `process_exited` and the Journal
+  holds the report's record, also when another turn's commit fails and latches the service before
+  that read;
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered from
   the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or Journal
   record, before and after the terminal outcome is committed; a repetition is still answered `200`
@@ -737,13 +739,15 @@ receive timer, never from elapsed host time:
   media type and `400` `malformed_json` with one; a body with a raw NUL, one with invalid UTF-8, one
   with trailing non-whitespace, and one with a duplicate key at any depth are each `400`
   `malformed_json` on a Worker route and reach no ingress (ADR-0009 Section 8);
-- `worker_v1_error_envelope_and_codes`: every response of `400` or above on the Worker listener that
-  has a body carries the error object of ADR-0008 Section 5 with its `domain` and `code`, for every
-  request error that `worker_v1_request_rules` exercises (a malformed body, a failed validation, an
-  invalid `job_id`, an unknown route, and a refused method among them), and for each protocol
-  condition and each service condition of Section 6, and no `message` or `details` contains a
-  file-system path, a raw operating-system or library error, a Journal record, or a secret; a `HEAD`
-  request on a route is answered `405` with `Allow: POST` and no body;
+- `worker_v1_error_envelope_and_codes`: every response of `400` or above on the Worker listener to a
+  request other than `HEAD` has a body, and that body carries the error object of ADR-0008 Section 5
+  with its `domain` and `code`, for every request error that `worker_v1_request_rules` exercises,
+  the refusals decided before a route is known included (a request without a valid `Host`, a
+  malformed body, a failed validation, an invalid `job_id`, an unknown route, and a refused method
+  among them), and for each protocol condition and each service condition of Section 6, and no
+  `message` or `details` contains a file-system path, a raw operating-system or library error, a
+  Journal record, or a secret; a `HEAD` request on a route is answered `405` with `Allow: POST` and
+  no body;
 - `worker_v1_openapi_contract`: the OpenAPI document matches Sections 3 and 6;
 - `rest_v1_worker_job_succeeds`: through production `sitometrond` with a verified registry and a
   Worker listener, a test Worker that reports `running` and `completed`, repeats until acknowledged,
