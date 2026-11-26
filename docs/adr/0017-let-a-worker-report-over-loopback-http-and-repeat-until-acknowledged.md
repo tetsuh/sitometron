@@ -188,12 +188,12 @@ define.
    the adapter reads the snapshot after the report's turn, the first answer is therefore `202`
    unless the authorization had already happened; Section 8 gives the answer when it no longer
    matches.
-3. The Worker repeats the same report until it receives `200` `{"acknowledged": true}`, or a
-   final answer, or until it gives up where Section 9 allows that; after a `202` it no longer may
-   give up (Section 9). Section 5 alone decides what a repetition meets. While its row 5
-   matches, which needs the binding in the current committed snapshot, the repetition is answered
-   `202` or `200` by the same rule, without a submission. It therefore gets no ingress sequence,
-   reducer turn, or Journal record, and it waits for nothing.
+3. The Worker repeats the same report until it receives `200` `{"acknowledged": true}` or a final
+   answer, or until a cooperative stop; it never gives up on it (Section 9). Section 5 alone decides
+   what a repetition meets. While its row 5 matches, which needs the binding in the current
+   committed snapshot, the repetition is answered `202` or `200` by the same rule, without a
+   submission. It therefore gets no ingress sequence, reducer turn, or Journal record, and it waits
+   for nothing.
 4. The daemon does not end the binding when it writes a `200`: a response that was written may
    not have arrived, and while row 5 still matches, the next repetition gets the same answer.
 5. After a restart, replay "dispatches no post-sync effect" and "sends no acknowledgment"
@@ -449,28 +449,17 @@ the core's internal API and adds no port (ADR-0005).
 |---|---|
 | `204` to `running` | The report is accepted; it does not send `running` again |
 | `200` `{"acknowledged": true}` to a terminal report | It stops repeating and exits promptly |
-| `202` `{"acknowledged": false}` to a terminal report | The report is recorded and its acknowledgment is pending: it sends the same report again, for as long as it is answered `202`, whatever the number of repetitions, also across a restart of the daemon |
-| `503` `launch_not_observed` | The daemon has not yet observed the launch: it sends the same report again and does not give up on this answer |
-| `408` of any code, known or not (a request timeout), `503` `not_ready`, or `503` `busy` | The report was not submitted: it sends the same report again, or gives up unless the repetition is mandatory (below) |
-| `503` `service_failed`, `500` `internal`, or any `503` or `500` whose code the Worker does not know (ADR-0008 Section 2 lets codes be added) | The report may already be recorded (Section 6): it sends the same report again; for a terminal report this repetition is mandatory (below), and for `running` it may give up unless the repetition is mandatory |
-| No complete response: the connection fails, is closed, or ends before the response is complete | The result is unknown, and the report may already be recorded: it sends the same report again, and this repetition is mandatory (below) |
-| Any other response | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other `4xx` says that the request itself is wrong |
+| A response of `400` to `499` other than `408` | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other such response says that the request itself is wrong |
+| Anything else: `202`, any `408`, any `5xx`, whatever its code, or no complete response because the connection fails, is closed, or ends before the response is complete | It sends the same report again |
 
-- This is the one rule for when a repetition is mandatory. It becomes mandatory, and stays so, once
-  any of these has happened to the report: it was answered `202` or `503` `launch_not_observed`; it
-  is a terminal report and was answered by the row that says it may already be recorded (`503`
-  `service_failed`, `500` `internal`, or a `503` or `500` with a code the Worker does not know), at
-  its first attempt or later; or one of its exchanges, the first included, ended without a complete
-  response. Then a later `503`, `500`, or `408` of any code, known or not, or exchange without a
-  complete response does not let the Worker give up on it, and it sends the same report again. Only
-  a `204` to `running`, a `200` to a terminal report, a final response, or a cooperative stop ends a
-  mandatory repetition. A Worker may therefore give up on a terminal report only after a `408` of
-  any code, a `503` `not_ready`, or a `503` `busy`, each of which comes before any submission, and
-  only while its repetition is not mandatory.
-- A Worker that gives up on its terminal report, or whose terminal report got a final response,
-  exits. One whose `running` got a final response or was given up cannot send `completed`; it sends
-  `failed`, which is then its terminal report under the table, or exits. A
-  Worker that gives up must not assume that its report was or was not recorded.
+- A Worker never gives up on its terminal report. By the owner's decision of 2026-11-26 it
+  repeats that report until it is answered `200` or a final response, or until a cooperative stop
+  (below); no number of repetitions, no duration, and no kind of non-final result ends the
+  repetition, also across a restart of the daemon. A `202` says the report is recorded and its
+  acknowledgment is pending; any other non-final result says nothing about whether it is recorded.
+- A Worker may stop sending `running` at any time, also before a `204`. It then cannot send
+  `completed`: it sends `failed`, which is its terminal report under the rule above, or exits.
+- A Worker whose terminal report got `200` or a final response exits.
 - Reporting does not by itself make the daemon stop a Worker, and until its exit is confirmed the
   Job stays resident (ADR-0014). The existing stops still apply to a Worker that has reported: a
   terminate while the Job is `finalizing` and its exit is unconfirmed (ADR-0002 rejects a terminate
@@ -479,13 +468,14 @@ the core's internal API and adds no port (ADR-0005).
   happens, for a Job the running daemon drives. A Job that replay left unresolved is not driven
   (ADR-0012 Section 7) and replay arms no timer for it (ADR-0006 Section 6), so its restored binding
   can keep answering `202` for as long as the Job is unresolved, and its Worker keeps repeating
-  until an operator stops it. Resolving such Jobs is not decided here.
-- Choose its own pause between repetitions, and its own limit for the cases in which it may give
-  up, which are those of a repetition that is not mandatory. This contract fixes no duration.
+  until an operator stops it. The same holds while the daemon is down or answers `503`
+  `not_ready`: the Worker keeps repeating until one of these stops it. Resolving such Jobs is not
+  decided here.
+- Choose its own pause between repetitions. This contract fixes no duration.
 - Treat a cooperative stop (ADR-0016 Section 3) as a request to end its work; it may still send its
-  terminal report before it exits. A cooperative stop also ends a repetition that the table makes
-  mandatory: a Worker that is asked to stop may exit while its report is still answered `503`
-  `launch_not_observed` or `202`.
+  terminal report before it exits. A cooperative stop is the one thing besides `200` and a final
+  response that ends the repetition of a terminal report: a Worker that is asked to stop may exit
+  while its report is still answered `202` or another non-final result.
 
 A Worker that exits without an acknowledged terminal report is decided by the facts the daemon has:
 with no recorded report the reducer decides its exit by the Job's state, as for a process without
@@ -619,12 +609,11 @@ receive timer, never from elapsed host time:
   committed and whose response is discarded before the Worker receives it is sent again by the same
   Worker, is answered `204`, also when a `408` `request_timeout` interrupts that repetition, which
   does not end it, reaches no ingress, and adds no second `worker_running` record; a test Worker
-  whose first `running` is answered `408` `request_timeout`, with no earlier answer that made its
-  repetition mandatory, may give up on it, and one that does sends `failed`, keeps repeating it
-  through `202`, and exits at `200`; a repeated `running` is answered `204` and adds no Journal
-  record, also after admission has closed; a `completed` for a Job still `preparing` with its launch
-  observed is answered `409` `running_not_reported` and submits nothing, and the same report is
-  accepted once `running` was accepted; a `failed` for such a Job is accepted;
+  that stops sending `running` before any `204` sends `failed`, keeps repeating it through `202`,
+  and exits at `200`; a repeated `running` is answered `204` and adds no Journal record, also after
+  admission has closed; a `completed` for a Job still `preparing` with its launch observed is
+  answered `409` `running_not_reported` and submits nothing, and the same report is accepted once
+  `running` was accepted; a `failed` for such a Job is accepted;
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
   deterministic barrier), where the test Worker keeps repeating through successive `202` answers and
@@ -765,8 +754,10 @@ receive timer, never from elapsed host time:
 - Good: Worker reports have their own listener and thread, so they do not wait for the External
   REST thread, and External REST v1 is unchanged. They still share the one writer with every other
   input.
-- Bad: a Worker must implement the repetition, and a Worker that stops repeating never learns that
-  its report was acknowledged; its Job's outcome is unaffected.
+- Bad: a Worker must implement the repetition, and it never gives up on its terminal report: while
+  the daemon is down, or answers `503` without end, it keeps repeating until it is stopped. A
+  Worker that is stopped while repeating never learns that its report was acknowledged; its Job's
+  outcome is unaffected.
 - Bad: without credentials, any local process that knows a Job's identities can report for it.
 - Bad: until Issue #128, a Worker that reports and does not exit keeps its Job resident unless a
   terminate while the Job is still `finalizing`, or the daemon's shutdown, stops it. Once such a
