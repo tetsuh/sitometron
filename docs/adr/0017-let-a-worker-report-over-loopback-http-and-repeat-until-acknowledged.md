@@ -241,14 +241,18 @@ checks and before it submits anything. The first row that matches decides:
 | 7 | the Job `running` | `running` | `204` |
 | 8 | the Job `preparing` (its launch observed) | `completed` | `409` `running_not_reported` |
 
-A report that matches no row is submitted, and the writer's answer applies (Sections 6 and 8). In
-every such case the launch is observed and the exit is not confirmed. They are: a `running` for a
-Job that is `preparing`, which the reducer accepts and which is answered `204` when its turn
-commits; a `running` in any later state, which the reducer rejects; and a first terminal report,
-which is a `failed` for a Job that is `preparing` or either outcome for a Job that is `running` or
-`stopping`. A Job with a bound Worker and no confirmed exit reaches `finalizing` only through a
-recorded terminal report (ADR-0002), so a terminal report for a Job in `finalizing` or a terminal
-state always meets row 3, 5, or 6.
+The rows are read in order, so each row's explanation below holds only for a report that no earlier
+row matched: the Job is resident, the report names the Worker bound to it, and, from row 4 on, the
+exit is not confirmed. A Job that has no bound Worker yet, as before `worker_launch_intent` or after
+a cancel that ended it before the launch, meets row 2 whatever its state. A report that matches no
+row is submitted, and the writer's answer applies (Sections 6 and 8). In every such case the Job is
+resident with this Worker bound, the launch is observed, and the exit is not confirmed. They are: a
+`running` for a Job that is `preparing`, which the reducer accepts and which is answered `204` when
+its turn commits; a `running` in any later state, which the reducer rejects; and a first terminal
+report, which is a `failed` for a Job that is `preparing` or either outcome for a Job that is
+`running` or `stopping`. A Job with a bound Worker and no confirmed exit reaches `finalizing` only
+through a recorded terminal report (ADR-0002), so a terminal report for a Job in `finalizing` or a
+terminal state always meets row 3, 5, or 6.
 
 - The rows submit nothing and depend only on the snapshot and, for row 5, on the acknowledgment view
   read with it (Section 8), so they hold whether or not admission is open and whichever daemon
@@ -263,16 +267,16 @@ state always meets row 3, 5, or 6.
   sees the confirmed exit, whichever process sent it and whenever it was sent: also to a report
   the Worker itself sent before it exited and that the adapter checked only afterwards. It is
   refused without a record.
-- Row 4 covers every first report in every state in which the launch is not yet observed: a Job
-  that is `preparing`, and a Job that a cancel, a terminate, or the preparation timeout moved to
-  `stopping` before the runner's observation (ADR-0016 Section 2). The reducer would accept a
-  `failed` there, and in `stopping` a `completed` too, and it would then reject the runner's
-  observation, so the adapter submits none of them. The adapter holds no request until the launch
-  is observed and arms no timer; the Worker's repetition is the only retry. Row 4 answers
-  only while the snapshot shows the launch unobserved and the exit unconfirmed. Once either fact
-  changes, the ordered table decides again: an observed launch lets the report pass row 4, and a
-  confirmed exit, which an accepted failed launch observation gives without a separate exit fact
-  (ADR-0016 Section 2), selects row 3.
+- Row 4 covers every first report that names the bound Worker of a resident Job whose exit is not
+  confirmed, in every state in which the launch is not yet observed: a Job that is `preparing`, and
+  a Job that a cancel, a terminate, or the preparation timeout moved to `stopping` before the
+  runner's observation (ADR-0016 Section 2). The reducer would accept a `failed` there, and in
+  `stopping` a `completed` too, and it would then reject the runner's observation, so the adapter
+  submits none of them. The adapter holds no request until the launch is observed and arms no timer;
+  the Worker's repetition is the only retry. Row 4 answers only while the snapshot shows the launch
+  unobserved and the exit unconfirmed. Once either fact changes, the ordered table decides again: an
+  observed launch lets the report pass row 4, and a confirmed exit, which an accepted failed launch
+  observation gives without a separate exit fact (ADR-0016 Section 2), selects row 3.
 - Row 8 guards `preparing` only, where the reducer rejects `completed`. In `stopping` the reducer
   accepts either outcome whether or not `running` was reported, and the report is submitted; that
   a Worker sends `completed` only after `running` is its obligation under Section 9, not a rule
@@ -319,7 +323,7 @@ conditions of this protocol are:
 | The Job is not resident: unknown, never created, or retired (ADR-0014), found from the snapshot (Section 5, row 1), from a refused lease (Section 8), or by the reducer for a submitted `running` (Section 5) | `404` | `job` | `job_not_found` |
 | `worker_id` is not the Worker bound to the Job, or the Job has no Worker yet (Section 5, row 2) | `409` | `worker` | `worker_mismatch` |
 | The Job's process exit is confirmed (Section 5, row 3) | `409` | `worker` | `process_exited` |
-| Any report while the Job's launch is not yet observed (Section 5, row 4) | `503` | `worker` | `launch_not_observed` |
+| A report for a resident Job whose bound Worker it names, whose exit is not confirmed, and whose launch is not yet observed (Section 5, row 4) | `503` | `worker` | `launch_not_observed` |
 | `completed` for a Job that is `preparing` with its launch observed (Section 5, row 8) | `409` | `worker` | `running_not_reported` |
 | The writer has failed closed, including a commit whose outcome is unknown | `503` | `service` | `service_failed` |
 | The writer refuses the report because admission is closed (`admission_closed`) | `503` | `service` | `not_ready` |
@@ -456,12 +460,16 @@ the core's internal API and adds no port (ADR-0005).
 | A response of `400` to `499` other than `408` | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other such response says that the request itself is wrong |
 | Anything else: `202`, any `408`, any `5xx`, whatever its code, or no complete response because the connection fails, is closed, or ends before the response is complete | It sends the same report again |
 
+- The acknowledgment needs a body that is one JSON object with exactly one member named
+  `acknowledged` after the decoding of escapes, and that member is the JSON value `true`. A body
+  with that member twice, in any order or spelling, or with any other value, is not the
+  acknowledgment and is answered by sending the report again.
 - A Worker never gives up on its terminal report. By the owner's decision of 2026-11-26 it repeats
-  that report until it gets the acknowledgment or a
-  final response, as the table defines them, or until a cooperative stop (below); no number of
-  repetitions, no duration, and no kind of non-final result ends the repetition, also across a
-  restart of the daemon. A `202` says the report is recorded and its acknowledgment is pending; any
-  other non-final result says nothing about whether it is recorded.
+  that report until it gets the acknowledgment or a final response, as the table defines them, or
+  until a cooperative stop (below); no number of repetitions, no duration, and no kind of non-final
+  result ends the repetition, also across a restart of the daemon. A `202` says the report is
+  recorded and its acknowledgment is pending; any other non-final result says nothing about whether
+  it is recorded.
 - A Worker may stop sending `running` at any time before it is answered `204`. One that stops
   without a `204` cannot send `completed`: it sends `failed`, which is its terminal report under the
   rule above, or exits.
@@ -627,18 +635,20 @@ receive timer, never from elapsed host time:
   stops only at `200`; a test Worker whose terminal report is answered, by an injected response,
   `200` with no body, `200` with `{"acknowledged": false}`, or `200` with a body that is not JSON,
   sends the identical report again until the acknowledgment arrives, one answered `200` with
-  `{"acknowledged": true, "extension": 1}` stops repeating and exits, a test Worker whose attempt
-  stays open past its deadline with no response, with only `100 Continue`, or with part of a final
-  response, both before any answer and after a `202`, on a connection the peer does not close and
-  with a test-controlled client deadline, ends that attempt and sends the identical report again,
-  and one whose terminal report is answered an injected `400`, `404`, `409`, or `422` stops
-  repeating and exits; a test Worker that receives a cooperative stop while its terminal report is
-  still answered `202`, and one that receives it while its exchanges end without a complete
-  response, stops repeating and exits; when the exchange after a `202` is interrupted, by a `408`
-  `request_timeout`, by a `503` `busy` that the fixture injects between the Worker and the listener
-  (the adapter itself answers a repetition with a binding from row 5), and by a connection closed
-  after only `100 Continue`, the test Worker sends the identical report again and is answered `200`
-  once the ACK effect is dispatched; a test Worker whose first terminal report is answered `408`
+  `{"acknowledged": true, "extension": 1}` stops repeating and exits, one answered `200` with the
+  member `acknowledged` twice, `false` then `true` and `true` then `false`, and with the second
+  spelled with an escape, sends the identical report again, a test Worker whose attempt stays open
+  past its deadline with no response, with only `100 Continue`, or with part of a final response,
+  both before any answer and after a `202`, on a connection the peer does not close and with a
+  test-controlled client deadline, ends that attempt and sends the identical report again, and one
+  whose terminal report is answered an injected `400`, `404`, `409`, or `422` stops repeating and
+  exits; a test Worker that receives a cooperative stop while its terminal report is still answered
+  `202`, and one that receives it while its exchanges end without a complete response, stops
+  repeating and exits; when the exchange after a `202` is interrupted, by a `408` `request_timeout`,
+  by a `503` `busy` that the fixture injects between the Worker and the listener (the adapter itself
+  answers a repetition with a binding from row 5), and by a connection closed after only `100
+  Continue`, the test Worker sends the identical report again and is answered `200` once the ACK
+  effect is dispatched; a test Worker whose first terminal report is answered `408`
   `request_timeout`, once for a delayed header and once for a delayed body, sends the same report
   again and is acknowledged, and so does one whose first terminal report is answered an injected
   transient `503`; a first terminal report whose turn commits and whose response is discarded before
