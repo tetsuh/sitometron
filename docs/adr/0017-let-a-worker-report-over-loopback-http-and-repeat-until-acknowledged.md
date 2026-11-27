@@ -619,36 +619,39 @@ receive timer, never from elapsed host time:
 - `worker_v1_outcome_recorded_then_acknowledged`: a terminal report whose own turn has committed is
   answered `202` while the supervisor is held before `terminal_outcome_committed` (at a
   deterministic barrier), where the test Worker keeps repeating through successive `202` answers and
-  stops only at `200`; when the exchange after a `202` is interrupted, by a `408` `request_timeout`,
-  by a `503` `busy` that the fixture injects between the Worker and the listener (the adapter itself
-  answers a repetition with a binding from row 5), and by a connection closed after only `100
-  Continue`, the test Worker sends the identical report again and is answered `200` once the ACK
-  effect is dispatched; a test Worker whose first terminal report is answered `408`
-  `request_timeout`, once for a delayed header and once for a delayed body, sends the same report
-  again and is acknowledged, and so does one whose first terminal report is answered an injected
-  transient `503`; a first terminal report whose turn commits and whose response is discarded before
-  the Worker receives it is sent again, is answered from the binding, and adds no second record,
-  also when a `408` `request_timeout` or an injected `503` interrupts that repetition, which does
-  not end it; a test Worker whose first terminal report is answered `503` `service_failed` keeps
-  sending the same report, does not exit on a later `503`, `500`, or `408`, a test Worker whose
-  terminal report, after a `202`, is answered an injected `503` and an injected `500` with codes it
-  does not know keeps sending the same report and is acknowledged, and so does one whose terminal
-  report, after a `202`, is answered an injected `408` with a code it does not know, and so does one
-  whose first terminal report is answered an injected `503` or `500` with a code it does not know
-  and then a `408` `request_timeout` or a `503` `busy` before any `202`, where the next identical
-  report reaches the binding and adds no second record, and so does one whose first terminal report
-  commits and is then answered `500` `internal` because the read after the turn fails (injected),
-  which is answered from the binding when sent again and adds no second Worker record, and is
-  answered from the binding after the daemon is restarted on the same endpoint when the record was
-  durable; its repetition is still answered `202` while the writer is held after it installed the
-  terminal snapshot and before it dispatched the ACK effect, and `200` once that effect is
-  dispatched, for `completed` and for `failed`; no request stays open in between; a daemon stopped
-  at that same point, after the terminal record is durable and before the ACK effect, answers the
-  repetition `200` after its restart, and one stopped before the terminal record answers `202`; when
-  the process exit is confirmed after the report's turn and before the adapter reads the snapshot
-  again (held at a deterministic barrier), the answer is `409` `process_exited` and the Journal
-  holds the report's record, also when another turn's commit fails and latches the service before
-  that read;
+  stops only at `200`; a test Worker whose terminal report is answered, by an injected response,
+  `200` with no body, `200` with `{"acknowledged": false}`, or `200` with a body that is not JSON,
+  sends the identical report again until the acknowledgment arrives, and one whose terminal report
+  is answered an injected `400`, `404`, `409`, or `422` stops repeating and exits; when the exchange
+  after a `202` is interrupted, by a `408` `request_timeout`, by a `503` `busy` that the fixture
+  injects between the Worker and the listener (the adapter itself answers a repetition with a
+  binding from row 5), and by a connection closed after only `100 Continue`, the test Worker sends
+  the identical report again and is answered `200` once the ACK effect is dispatched; a test Worker
+  whose first terminal report is answered `408` `request_timeout`, once for a delayed header and
+  once for a delayed body, sends the same report again and is acknowledged, and so does one whose
+  first terminal report is answered an injected transient `503`; a first terminal report whose turn
+  commits and whose response is discarded before the Worker receives it is sent again, is answered
+  from the binding, and adds no second record, also when a `408` `request_timeout` or an injected
+  `503` interrupts that repetition, which does not end it; a test Worker whose first terminal report
+  is answered `503` `service_failed` keeps sending the same report, does not exit on a later `503`,
+  `500`, or `408`, a test Worker whose terminal report, after a `202`, is answered an injected `503`
+  and an injected `500` with codes it does not know keeps sending the same report and is
+  acknowledged, and so does one whose terminal report, after a `202`, is answered an injected `408`
+  with a code it does not know, and so does one whose first terminal report is answered an injected
+  `503` or `500` with a code it does not know and then a `408` `request_timeout` or a `503` `busy`
+  before any `202`, where the next identical report reaches the binding and adds no second record,
+  and so does one whose first terminal report commits and is then answered `500` `internal` because
+  the read after the turn fails (injected), which is answered from the binding when sent again and
+  adds no second Worker record, and is answered from the binding after the daemon is restarted on
+  the same endpoint when the record was durable; its repetition is still answered `202` while the
+  writer is held after it installed the terminal snapshot and before it dispatched the ACK effect,
+  and `200` once that effect is dispatched, for `completed` and for `failed`; no request stays open
+  in between; a daemon stopped at that same point, after the terminal record is durable and before
+  the ACK effect, answers the repetition `200` after its restart, and one stopped before the
+  terminal record answers `202`; when the process exit is confirmed after the report's turn and
+  before the adapter reads the snapshot again (held at a deterministic barrier), the answer is `409`
+  `process_exited` and the Journal holds the report's record, also when another turn's commit fails
+  and latches the service before that read;
 - `worker_v1_repetition_answered_from_binding`: repetitions of a recorded report are answered from
   the committed binding, reach no ingress, and add no ingress sequence, reducer turn, or Journal
   record, before and after the terminal outcome is committed; a repetition is still answered `200`
