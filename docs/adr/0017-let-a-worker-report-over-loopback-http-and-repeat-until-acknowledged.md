@@ -452,14 +452,16 @@ the core's internal API and adds no port (ADR-0005).
 | A response of `400` to `499` other than `408` | Final: it stops sending that report. A final `404` or `409` does not prove that nothing was recorded (Section 6); any other such response says that the request itself is wrong |
 | Anything else: `202`, any `408`, any `5xx`, whatever its code, or no complete response because the connection fails, is closed, or ends before the response is complete | It sends the same report again |
 
-- A Worker never gives up on its terminal report. By the owner's decision of 2026-11-26 it
-  repeats that report until it is answered `200` or a final response, or until a cooperative stop
-  (below); no number of repetitions, no duration, and no kind of non-final result ends the
-  repetition, also across a restart of the daemon. A `202` says the report is recorded and its
-  acknowledgment is pending; any other non-final result says nothing about whether it is recorded.
+- A Worker never gives up on its terminal report. By the owner's decision of 2026-11-26 it repeats
+  that report until it gets the acknowledgment (`200` with the body `{"acknowledged": true}`) or a
+  final response, as the table defines them, or until a cooperative stop (below); no number of
+  repetitions, no duration, and no kind of non-final result ends the repetition, also across a
+  restart of the daemon. A `202` says the report is recorded and its acknowledgment is pending; any
+  other non-final result says nothing about whether it is recorded.
 - A Worker may stop sending `running` at any time, also before a `204`. It then cannot send
   `completed`: it sends `failed`, which is its terminal report under the rule above, or exits.
-- A Worker whose terminal report got `200` or a final response exits.
+- A Worker whose terminal report got the acknowledgment or a final response, as the table defines
+  them, exits. Any other complete response, a `200` without that body included, is sent again.
 - Reporting does not by itself make the daemon stop a Worker, and until its exit is confirmed the
   Job stays resident (ADR-0014). The existing stops still apply to a Worker that has reported: a
   terminate while the Job is `finalizing` and its exit is unconfirmed (ADR-0002 rejects a terminate
@@ -473,9 +475,9 @@ the core's internal API and adds no port (ADR-0005).
   decided here.
 - Choose its own pause between repetitions. This contract fixes no duration.
 - Treat a cooperative stop (ADR-0016 Section 3) as a request to end its work; it may still send its
-  terminal report before it exits. A cooperative stop is the one thing besides `200` and a final
-  response that ends the repetition of a terminal report: a Worker that is asked to stop may exit
-  while its report is still answered `202` or another non-final result.
+  terminal report before it exits. A cooperative stop is the one thing besides the acknowledgment
+  and a final response that ends the repetition of a terminal report: a Worker that is asked to stop
+  may exit while its report is still answered `202` or another non-final result.
 
 A Worker that exits without an acknowledged terminal report is decided by the facts the daemon has:
 with no recorded report the reducer decides its exit by the Job's state, as for a process without
