@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-11-22
+Accepted — 2026-11-28
 
 ## Context
 
@@ -62,9 +62,8 @@ whose process exit is already confirmed is refused and not recorded.
 
 We will define Worker HTTP v1: two loopback routes on a listener of their own, through which a
 Worker reports that it is running and reports its terminal outcome, and in which the Worker repeats
-the terminal report until the daemon's answer says it is acknowledged. When this ADR is Accepted,
-Sections 1 to 9 become normative for every implementation; anything they do not state is not part
-of v1. While it is Proposed it is no implementation authority.
+the terminal report until the daemon's answer says it is acknowledged. Sections 1 to 9 are normative
+for every implementation; anything they do not state is not part of v1.
 
 ### 1. Transport, listener, and trust
 
@@ -516,9 +515,8 @@ tables of this ADR, which remains the authority afterwards.
 
 ### 11. What changes in the Accepted ADRs
 
-When this ADR is Accepted, one sentence of an Accepted ADR is superseded: the ADR-0008 Section 1
-sentence named under ADR-0008 below. No other sentence of an Accepted ADR is superseded, and until
-acceptance that sentence stands as written.
+One sentence of an Accepted ADR is superseded: the ADR-0008 Section 1 sentence named under ADR-0008
+below. No other sentence of an Accepted ADR is superseded.
 
 - [ADR-0002](0002-define-core-job-reducer-contract.md): unchanged. Section 4 states how its
   acknowledgment sentence is met by a Worker-driven exchange answered from the committed binding.
@@ -545,7 +543,7 @@ acceptance that sentence stands as written.
 - [ADR-0008](0008-define-the-external-rest-v1-job-surface.md) and
   [ADR-0009](0009-settle-the-external-rest-v1-gaps-found-by-the-prototype.md): their transport,
   syntax, limit, and error rules are unchanged and reused for a second listener. One sentence of
-  ADR-0008's Decision is superseded at acceptance: "Paths outside `/v1` are not part of any
+  ADR-0008's Decision is superseded: "Paths outside `/v1` are not part of any
   contract." becomes "On the External REST listener, paths outside `/v1` are not part of any
   contract; the Worker listener serves the separate contract of ADR-0017, whose paths start with
   `/worker/v1`". On the External REST listener a `/worker/v1` path is still `route_not_found`
@@ -795,7 +793,7 @@ receive timer, never from elapsed host time:
   core, so the adapter keeps no state, and after a restart every answer is decided anew from the
   replayed snapshot (Section 5).
 - Neutral: a second startup option and a second OpenAPI document; one sentence of ADR-0008's
-  Decision is superseded at acceptance (Section 11).
+  Decision is superseded (Section 11).
 - Bad: until the OpenAPI document exists, the contract is prose and tables only.
 
 ## Options considered
@@ -859,12 +857,12 @@ receive timer, never from elapsed host time:
 ## References
 
 - Issue #127; Gate #123 (P2-4); Issues #128, #126, #141, #73, #35
-- Requirements: `WRK-002` (Planned)
-- Contract Registry: `Worker HTTP v1 routes and JSON schemas` stays `Planned | Planned` while this
-  ADR is Proposed and becomes `Normative | Planned` when it is Accepted; the row of the
-  `sitometrond` startup configuration and command line keeps `Planned | Implemented`, which covers
-  the existing options only: `--worker-listen` is planned and not implemented; `External REST v1`
-  keeps `Normative | Implemented` (one sentence of ADR-0008 superseded at acceptance, Section 11)
+- Requirements: `WRK-002` (Normative)
+- Contract Registry: `Worker HTTP v1 routes and JSON schemas` moves from `Planned | Planned` to
+  `Normative | Planned` with this ADR's acceptance; the row of the `sitometrond` startup
+  configuration and command line keeps `Planned | Implemented`, which covers the existing options
+  only: `--worker-listen` is planned and not implemented; `External REST v1` keeps `Normative |
+  Implemented` (one sentence of ADR-0008 superseded, Section 11)
 - Related ADR: ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0009, ADR-0010,
   ADR-0011, ADR-0012, ADR-0014, ADR-0015, ADR-0016
 - `spike/README.md`: finding 9
