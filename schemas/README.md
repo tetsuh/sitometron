@@ -16,7 +16,10 @@ Machine-readable contracts are registered here before implementation.
   the C++ loader's private stage A (schema rules only). Unique identifiers and native absolute
   paths are owned stage B checks; byte rules, readable regular files after following symbolic
   links, and SHA-256 verification are loader checks, not JSON Schema assertions;
-- `worker-protocol/`: Worker loopback HTTP JSON schemas.
+- Worker HTTP v1 has no schema file yet. Accepted
+  [ADR-0017](../docs/adr/0017-let-a-worker-report-over-loopback-http-and-repeat-until-acknowledged.md)
+  under Issue #127 places its description in `openapi/worker-v1.openapi.json`, which the Worker
+  protocol implementation Issue adds; a separate `worker-protocol/` directory is not used.
 
 A contract becomes normative only when its named authority is Accepted and its Contract Registry row
 is Normative. Each contract carries an explicit status and authority. Core schemas are validated

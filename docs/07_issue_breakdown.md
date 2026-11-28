@@ -109,6 +109,8 @@ Physical JobJournal durability and production adapters are not Phase 0A exit cri
   P1-4), and the rest of the Application Registry stays with Issue #35.
   [Issue #126](https://github.com/tetsuh/sitometron/issues/126) designs the application runner and
   the local process lifecycle through Accepted ADR-0016 (Gate #123, P2-3).
+  [Issue #127](https://github.com/tetsuh/sitometron/issues/127) designs the Worker protocol and
+  its acknowledgment through Accepted ADR-0017 (Gate #123, P2-4).
 - Phase 3 owns topology, ResourceProfile, scheduling, and reservation contracts.
 - Phase 4 owns the installed Sitos adapter and required upstream contract gates.
 - Phase 5 owns Artifact REST and terminal-manifest contracts.
